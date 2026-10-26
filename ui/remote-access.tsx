@@ -26,7 +26,8 @@ export function RemoteAccess() {
   const [info, setInfo] = useState<RemoteInfo | null>(null);
   const [busy, setBusy] = useState(false);
   const [checking, setChecking] = useState(false);
-  const [error, setError] = useState("");
+  const [loadError, setLoadError] = useState("");
+  const [actionError, setActionError] = useState("");
   const [now, setNow] = useState(Date.now());
   const generation = useRef(0);
   const saving = useRef(false);
@@ -38,40 +39,43 @@ export function RemoteAccess() {
     const id = ++generation.current;
     try {
       const value = await api<RemoteInfo>(`/api/remote${force ? "?refresh=1" : ""}`);
-      if (id === generation.current) { setInfo(value); setError(""); setNow(Date.now()); }
+      if (id === generation.current) { setInfo(value); setLoadError(""); setNow(Date.now()); }
     } catch (err) {
-      if (id === generation.current) setError((err as Error).message);
+      if (id === generation.current) setLoadError((err as Error).message);
     } finally { reading.current = false; setChecking(false); }
   };
   useEffect(() => {
     const stopPolling = pollVisible(() => { setNow(Date.now()); return refresh(); }, 10_000);
     return () => { stopPolling(); ++generation.current; };
   }, []);
-  const set = async (patch: object, path = "/api/remote") => {
+  const set = async (patch: object, path = "/api/remote", localError = false) => {
     if (saving.current) return false;
     saving.current = true;
     const id = ++generation.current;
     setBusy(true);
+    if (!localError) setActionError("");
     try {
       const value = await post<RemoteInfo>(path, patch);
-      if (id === generation.current) { setInfo(value); setError(""); setNow(Date.now()); }
+      if (id === generation.current) { setInfo(value); setLoadError(""); setNow(Date.now()); }
       return true;
     } catch (err) {
-      if (id === generation.current) setError((err as Error).message);
+      if (localError) throw err;
+      if (id === generation.current) setActionError((err as Error).message);
       return false;
     } finally { saving.current = false; setBusy(false); }
   };
   const tailscale = info?.transport === "tailscale";
   const full = !!info?.control && info.lan;
   const expired = full && now >= (info?.pairingUntil ?? 0);
-  const links = !info || expired || error ? [] : tailscale ? (info.tailscaleUrl ? [info.tailscaleUrl] : []) : info.lanUrls;
+  const links = !info || expired || loadError ? [] : tailscale ? (info.tailscaleUrl ? [info.tailscaleUrl] : []) : info.lanUrls;
   const short = (url: string) => url.replace(/\/r\/(\w{6})\w+/, "/r/$1…");
   return <section class="section auto-card phone-card" aria-label="Remote access">
     <h2 class="section-title">Remote access</h2>
     <p class="help">Open Codeflow from your phone, tablet or another computer. This computer must stay awake and Codeflow must remain running.</p>
     <ol class="connection-checklist"><li>Choose Wi-Fi for nearby devices or Tailscale for access across networks.</li><li>Set up HTTPS to enable full control, then scan the QR code on your device.</li><li>Manage paired devices below. To invite a teammate with their own account, use <a href="#/settings/connections/host">Host a team</a>.</li></ol>
-    {error ? <p class="msg err" role="alert">{error} <button class="btn small" disabled={busy} onClick={() => void refresh(true)}>Retry</button></p> : null}
-    {!info ? <p class="help">{error ? "Remote access settings could not be loaded." : "Loading remote access…"}</p> : <>
+    {loadError ? <p class="msg err" role="alert">{loadError} <button class="btn small" disabled={busy} onClick={() => void refresh(true)}>Retry</button></p> : null}
+    {actionError ? <p class="msg err" role="alert">{actionError} <button class="btn small" onClick={() => setActionError("")}>Dismiss</button></p> : null}
+    {!info ? <p class="help">{loadError ? "Remote access settings could not be loaded." : "Loading remote access…"}</p> : <>
       <label class="checkpoint">
         <input type="checkbox" aria-label="Enable remote access" disabled={busy} checked={info.enabled} onChange={(e) => void set({ enabled: e.currentTarget.checked })} />
         <span><b>Enable remote access</b> — a private link to your runs and results. Starts with a read-only view.</span>
@@ -95,7 +99,7 @@ export function RemoteAccess() {
           <p class="help">Connect your other device to the same Tailscale network. Its access rules must allow this computer's remote port. Codeflow listens only on the Tailscale address in this mode.</p>
         </div> : info.lan ? <p class="help">Your other device must be on the same trusted Wi-Fi network. HTTPS is required for full control.</p> : null}
         {info.lan ? <>
-          <SecureRemoteSetup info={info} busy={busy} save={(body) => set(body, "/api/remote/tls")} />
+          <SecureRemoteSetup info={info} busy={busy} save={(body) => set(body, "/api/remote/tls", true)} />
           <label class={`checkpoint${info.control ? " danger" : ""}`}>
             <input type="checkbox" aria-label="Full control from remote devices" disabled={busy || (!info.secure && !info.insecureDevelopment)} checked={info.control} onChange={(e) => void set({ control: e.currentTarget.checked })} />
             <span><b>Full control from remote devices</b> — start runs, answer questions, review changes, merge and open pull requests. Anyone with the pairing link has your control of this computer.</span>
@@ -108,7 +112,7 @@ export function RemoteAccess() {
         {links[0] ? <div class="phone-qr">
           <QrCode text={links[0]} />
           <div class="phone-qr-text"><b>Scan with your phone</b><span class="help">{full ? "Pairs this device with full control" : "Opens the read-only view"} at {short(links[0])}. {tailscale ? "Turn on Tailscale on the phone before opening the link." : "Connect your phone to the same Wi-Fi first."}</span></div>
-        </div> : info.lan && !expired && !error ? <p class="help">No remote link until {tailscale ? "Tailscale is connected and Codeflow can listen on its address" : "Codeflow can listen on your network"}.</p> : null}
+        </div> : info.lan && !expired && !loadError && !info.lanError ? <p class="help">No remote link until {tailscale ? "Tailscale is connected and Codeflow can listen on its address" : "Codeflow can listen on your network"}.</p> : null}
         <div class="hook">
           {(info.lan ? links : [info.local]).map((url) => <div key={url}>
             <code>{short(url)}</code>{" "}<button class="btn small" onClick={() => copy(url, "Link copied")}>Copy link</button>{" "}
@@ -128,6 +132,8 @@ export function SecureRemoteSetup({ info, busy, save }: { info: RemoteInfo; busy
   const [method, setMethod] = useState("tailscale");
   const [hostname, setHostname] = useState(info.tls?.hostname ?? info.tailscale.dnsName ?? "");
   const [error, setError] = useState("");
+  const alert = useRef<HTMLParagraphElement>(null);
+  useEffect(() => { if (error) alert.current?.scrollIntoView({ block: "nearest" }); }, [error]);
   const certFile = useRef<HTMLInputElement>(null), keyFile = useRef<HTMLInputElement>(null);
   const canTailscale = info.transport === "tailscale";
   const automatic = canTailscale && method === "tailscale";
@@ -149,13 +155,15 @@ export function SecureRemoteSetup({ info, busy, save }: { info: RemoteInfo; busy
   };
   return <div class="remote-status secure-remote-setup">
     <b>{info.secure ? "Secure remote access is set up" : "Set up secure remote access"}</b>
+    {expires ? <p class="help">Certificate expires {new Date(expires).toLocaleDateString()}</p> : null}
+    {info.tls?.error ? <p class="msg err" role="alert">{info.tls.error}</p> : null}
     {info.tls?.source === "environment" ? <p class="help">HTTPS is managed by this server's environment configuration.</p> : <>
-      {info.tls?.hostname ? <p class="help">{info.tls.hostname}{expires ? ` · Certificate expires ${new Date(expires).toLocaleDateString()}` : ""}</p> : null}
-      {info.tls?.error ? <p class="msg err">{info.tls.error}</p> : expiring && !renewal ? <p class="help">Renew the certificate before it expires to keep remote access available.</p> : null}
+      {info.tls?.hostname ? <p class="help">{info.tls.hostname}</p> : null}
+      {!info.tls?.error && expiring && !renewal ? <p class="help">Renew the certificate before it expires to keep remote access available.</p> : null}
       {renewal ? <div class="help"><b>Automatic renewal is on</b><p>{renewal.running ? "Renewing certificate…" : `Next renewal attempt: ${new Date(Math.max(Date.now(), renewal.nextAttempt)).toLocaleString()}`}{renewal.lastSuccess ? ` · Last renewed ${new Date(renewal.lastSuccess).toLocaleString()}` : ""}</p><p>Codeflow renews within 30 days of expiry while it is running and Tailscale access is enabled. Paired devices stay signed in.</p>{renewal.error ? <p role="status">{renewal.error}</p> : null}</div> : null}
       <p class="help">Configure HTTPS here. Codeflow saves the certificate privately and applies it immediately without restarting your chats. Manually replacing a certificate turns full control off until you enable it below.</p>
       {info.tls?.editable ? <button class="btn small" disabled={busy} aria-expanded={open} onClick={() => setOpen(!open)}>{open ? "Close setup" : info.secure ? "Renew or replace certificate" : "Set up secure remote access"}</button> : <p class="help">Open these settings on the computer running Codeflow to configure HTTPS.</p>}
-      {open ? <form class="secure-remote-form" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
+      {open ? <form class="secure-remote-form" onInput={() => setError("")} onChange={() => setError("")} onSubmit={(event) => { event.preventDefault(); void submit(); }}>
         <fieldset disabled={busy}>
           {canTailscale ? <label>Certificate setup<select class="field" value={method} onChange={(event) => setMethod(event.currentTarget.value)}><option value="tailscale">Use Tailscale · recommended</option><option value="import">Import certificate files</option></select></label> : null}
           {automatic ? <>
@@ -169,7 +177,7 @@ export function SecureRemoteSetup({ info, busy, save }: { info: RemoteInfo; busy
             <p class="help">Use a certificate trusted by your other device for this exact hostname or IP. The hostname must resolve to this computer. The key must be unencrypted; it is saved privately on this computer and never returned to the browser.</p>
           </>}
           <p class="help">Replacing a certificate signs paired devices out. Pair them again after enabling full control.</p>
-          {error ? <p class="msg err" role="alert">{error}</p> : null}
+          {error ? <p class="msg err" role="alert" ref={alert}>{error}</p> : null}
           <button type="submit" class="btn primary" disabled={busy || automatic && (info.tailscale.state !== "connected" || !info.tailscale.dnsName)}>{busy ? "Setting up HTTPS…" : automatic ? "Get Tailscale certificate" : "Save and apply HTTPS"}</button>
         </fieldset>
       </form> : null}

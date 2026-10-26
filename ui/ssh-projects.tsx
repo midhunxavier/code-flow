@@ -2,10 +2,13 @@ import { signal } from "@preact/signals";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { api, localApi, workspaceId, workspaceUrl, showToast } from "./lib.js";
 import { Menu, MenuItem, MenuTitle } from "./panel-bits.js";
+import { confirmAction } from "./confirm-state.js";
+import { pollVisible } from "./polling.js";
 import { Icon } from "./icons.js";
 import { projectEdit, projectsOpen, route } from "./state.js";
 
-type HostContext = { kind: "local" | "host" } | { kind: "ssh"; id: string; name: string; connected: boolean; error?: string };
+type HostContext = ({ kind: "local" | "host" } | { kind: "ssh"; id: string; name: string; connected: boolean; error?: string }) & { connections?: boolean };
+export const managesConnections = (context: HostContext) => context.kind !== "host" && context.connections !== false;
 export const executionHost = signal<HostContext>({ kind: "local" });
 const localPost = <T = any>(path: string, body: unknown = {}) => localApi<T>(path, { method: "POST", body: JSON.stringify(body) });
 export async function loadExecutionHost() {
@@ -41,7 +44,7 @@ function HostChoices({ close, projectName }: { close: () => void; projectName?: 
   const active = useRef(true);
   useEffect(() => () => { active.current = false; }, []);
   const [hosts, setHosts] = useState<SavedHost[]>([]);
-  const [loading, setLoading] = useState(context.kind !== "host");
+  const [loading, setLoading] = useState(managesConnections(context));
   const [busy, setBusy] = useState(""), [error, setError] = useState("");
   const refresh = async () => {
     setLoading(true); setError("");
@@ -49,7 +52,7 @@ function HostChoices({ close, projectName }: { close: () => void; projectName?: 
     catch (error) { setError((error as Error).message); }
     finally { setLoading(false); }
   };
-  useEffect(() => { if (context.kind !== "host") void refresh(); }, []);
+  useEffect(() => { if (managesConnections(context)) void refresh(); }, []);
   const choose = async (id: string, name: string) => {
     if (id === (workspaceId ?? "local")) return close();
     setBusy(`Opening ${name}…`); setError("");
@@ -60,12 +63,12 @@ function HostChoices({ close, projectName }: { close: () => void; projectName?: 
   };
   return <>
     <MenuTitle>{projectName === undefined ? "Computer" : "Project location"}</MenuTitle>
-    {context.kind !== "host" ? <>
+    {managesConnections(context) ? <>
       <MenuItem on={!workspaceId} disabled={!!busy} onClick={() => void choose("local", "This computer")} sub={!workspaceId ? "Current" : undefined}>This computer</MenuItem>
       {loading ? <p class="host-feedback" role="status">Loading connections…</p> : hosts.map((host) => <MenuItem key={host.id} on={host.id === workspaceId} disabled={!!busy} onClick={() => void choose(host.id, host.name)} sub={host.id === workspaceId ? "Current" : host.state}>{host.name}</MenuItem>)}
       {!loading && !hosts.length && !error ? <p class="host-feedback help">Save a remote connection in Settings to use it here.</p> : null}
       <MenuItem disabled={!!busy} onClick={() => { close(); projectsOpen.value = false; projectEdit.value = null; route.value = { view: "settings", section: "connections", group: "workspace" }; }}>Manage connections…</MenuItem>
-    </> : <p class="host-feedback help">Open the app on your computer to manage connections.</p>}
+    </> : <p class="host-feedback help">SSH connections are managed in CodeFlow on your computer.</p>}
     {busy ? <p class="host-feedback" role="status">{busy}</p> : null}
     {error ? <><p class="host-feedback msg err" role="alert">{error}</p><MenuItem onClick={() => void refresh()}>Refresh connections</MenuItem></> : null}
   </>;
@@ -78,21 +81,22 @@ export function SshConnections() {
   const [hosts, setHosts] = useState<SavedHost[]>([]), [aliases, setAliases] = useState<string[]>([]);
   const [sshHost, setSshHost] = useState(""), [name, setName] = useState("");
   const [port, setPort] = useState(""), [identityFile, setIdentityFile] = useState("");
-  const [loading, setLoading] = useState(context.kind !== "host");
+  const [loading, setLoading] = useState(managesConnections(context));
   const [busy, setBusy] = useState(""), [error, setError] = useState("");
-  const refresh = async () => { const data = await localApi<{ hosts: SavedHost[]; aliases: string[] }>("/api/ssh-hosts"); setHosts(data.hosts); setAliases(data.aliases); };
-  useEffect(() => { if (context.kind !== "host") void refresh().catch((error) => setError(error.message)).finally(() => setLoading(false)); }, []);
-  const act = async (label: string, work: () => Promise<unknown>) => { setBusy(label); setError(""); try { await work(); } catch (error) { setError((error as Error).message); } finally { setBusy(""); } };
+  const refreshVersion = useRef(0);
+  const refresh = async () => { const version = ++refreshVersion.current; const data = await localApi<{ hosts: SavedHost[]; aliases: string[] }>("/api/ssh-hosts"); if (version === refreshVersion.current) { setHosts(data.hosts); setAliases(data.aliases); } };
+  useEffect(() => { if (managesConnections(context)) return pollVisible(() => refresh().finally(() => setLoading(false)), 5000, error => setError((error as Error).message)); }, []);
+  const act = async (label: string, work: () => Promise<unknown>) => { refreshVersion.current++; setBusy(label); setError(""); try { await work(); } catch (error) { setError((error as Error).message); } finally { refreshVersion.current++; setBusy(""); } };
   const connect = async (id: string) => { const result = await localPost<{ url: string }>(`/api/ssh-hosts/${id}/connect`, {}); location.assign(result.url); };
   const save = (open: boolean) => act(open ? `Connecting to ${name || sshHost}…` : "Saving connection…", async () => {
-    const host = await localPost<SavedHost>("/api/ssh-hosts", { sshHost: sshHost.trim(), name: name.trim() || sshHost.trim(), ...(port ? { port: Number(port) } : {}), ...(identityFile.trim() ? { identityFile: identityFile.trim() } : {}) });
+    const host = await localPost<SavedHost>("/api/ssh-hosts", { sshHost: sshHost.trim(), name: name.trim(), ...(port ? { port: Number(port) } : {}), ...(identityFile.trim() ? { identityFile: identityFile.trim() } : {}) });
     // Keep the saved connection visible even if opening it fails, so retry never creates a duplicate.
     setHosts((current) => [...current, { ...host, state: "disconnected" }]);
     setSshHost(""); setName(""); setPort(""); setIdentityFile("");
     if (open) await connect(host.id); else showToast("SSH connection saved");
   });
   return <div class="ssh-connections" aria-busy={!!busy || loading}>
-      {context.kind === "host" ? <p>Manage SSH connections in the app on your computer.</p> : <>
+      {!managesConnections(context) ? <p>SSH connections are managed in CodeFlow on your computer.</p> : <>
         <div class="ssh-local"><strong>This computer</strong><span class="badge ok">Local workspace</span></div>
         <div class="ssh-saved-heading"><h3>Saved connections</h3><button class="btn small" disabled={!!busy || loading} onClick={() => void act("Refreshing…", refresh)}>Refresh connections</button></div>
         {loading ? <p role="status">Loading connections…</p> : !hosts.length ? <p class="help">No remote machines yet. Connect your first VM below.</p> : null}
@@ -102,11 +106,11 @@ export function SshConnections() {
           {host.error ? <p class="msg err">{host.error}</p> : null}
           <div class="ssh-actions">
             <button class="btn primary" disabled={!!busy} onClick={() => void act(`Connecting to ${host.name}…`, () => connect(host.id))}>Open {host.name}</button>
-            {host.state === "connected" ? <>
+            {["connected", "unavailable"].includes(host.state) ? <>
               <button class="btn" disabled={!!busy} onClick={() => void act("Disconnecting…", async () => { await localPost(`/api/ssh-hosts/${host.id}/disconnect`, {}); await refresh(); })}>Disconnect</button>
-              <button class="btn" disabled={!!busy} title="Stops an idle backend; running work and open terminals must finish first" onClick={() => void act("Stopping backend…", async () => { await localPost(`/api/ssh-hosts/${host.id}/stop`, {}); await refresh(); })}>Stop backend</button>
+              <button class="btn" disabled={!!busy || host.state !== "connected"} title="Stops an idle backend; running work and open terminals must finish first" onClick={() => void act("Stopping backend…", async () => { await localPost(`/api/ssh-hosts/${host.id}/stop`, {}); await refresh(); })}>Stop backend</button>
             </> : null}
-            <button class="btn" disabled={!!busy} onClick={() => void act("Removing connection…", async () => { await localApi(`/api/ssh-hosts/${host.id}`, { method: "DELETE" }); await refresh(); })}>Remove</button>
+            <button class="btn ghost" disabled={!!busy} onClick={async () => { if (!await confirmAction(`Remove the saved connection “${host.name}”? Any open connection will close. Projects, runs and running work stay on that computer; using it again requires adding its connection details again.`, { title: "Remove SSH connection?", confirmLabel: "Remove connection", danger: true })) return; void act("Removing connection…", async () => { await localApi(`/api/ssh-hosts/${host.id}`, { method: "DELETE" }); await refresh(); showToast(`Removed ${host.name}`); }); }}>Remove</button>
           </div>
         </article>)}
         <form class="ssh-new" onSubmit={(event) => { event.preventDefault(); const submitter = (event as SubmitEvent).submitter as HTMLButtonElement | null; void save(submitter?.value !== "save"); }}>

@@ -11,7 +11,7 @@ export function projectDestination(projects: Project[], id: string, repository: 
     : project && repository && !project.repos.includes(repository) ? "This repository is no longer in the project. Add it explicitly or choose another repository."
     : !project && repository ? "Choose a project for this repository before starting."
     : "";
-  return { project, matches, problem };
+  return { project, matches, problem, unavailable: !!id && !project };
 }
 
 /** Infer legacy ownership only when it is unambiguous; never choose the first matching project. */
@@ -21,6 +21,10 @@ export function legacyDraftProject(projects: Project[], preferred: string, repos
   return matches.length === 1 ? matches[0]!.id : "";
 }
 
+export class ProjectDraftReadError extends Error {
+  constructor(readonly key: string, cause: unknown) { super(`Saved draft could not be read: ${(cause as Error)?.message ?? cause}. Its stored data has been retained.`); }
+}
+
 /** IndexedDB accommodates attachments that exceed localStorage's quota. Writes are ordered. */
 export class ProjectDraftStore<T> {
   private database?: Promise<IDBDatabase | undefined>;
@@ -28,8 +32,9 @@ export class ProjectDraftStore<T> {
   private writes: Promise<unknown> = Promise.resolve();
   private memory = new Map<string, T>();
   private failures = new Set<string>();
+  private unreadable = new Map<string, ProjectDraftReadError>();
   get unsavedKeys(): string[] { return [...this.failures]; }
-  constructor(private readonly prefix: string, private readonly fallback: Storage | undefined = globalThis.localStorage) {}
+  constructor(private readonly prefix: string, private readonly fallback: Storage | undefined = globalThis.localStorage, private readonly validate?: (value: T) => void) {}
 
   private open(): Promise<IDBDatabase | undefined> {
     return this.database ??= new Promise<IDBDatabase>((resolve, reject) => {
@@ -43,6 +48,18 @@ export class ProjectDraftStore<T> {
   }
 
   async read(key: string): Promise<T | undefined> {
+    if (this.unreadable.has(key)) throw this.unreadable.get(key)!;
+    try {
+      const value = await this.readValue(key);
+      if (value !== undefined) this.validate?.(value);
+      return value;
+    } catch (cause) {
+      const error = new ProjectDraftReadError(key, cause);
+      this.unreadable.set(key, error); throw error;
+    }
+  }
+
+  private async readValue(key: string): Promise<T | undefined> {
     await this.writes.catch(() => undefined);
     const id = this.prefix + key;
     if (this.memory.has(id)) return structuredClone(this.memory.get(id)!);
@@ -60,6 +77,7 @@ export class ProjectDraftStore<T> {
   }
 
   write(key: string, value: T): Promise<void> {
+    if (this.unreadable.has(key)) return Promise.reject(this.unreadable.get(key)!);
     const id = this.prefix + key;
     const snapshot = structuredClone(value);
     this.memory.set(id, snapshot);

@@ -43,9 +43,10 @@ export const theme = signal<Theme>(effective());
 export const themeChoice = signal<ThemeChoice>(picked() ?? "system");
 
 function apply() {
-  theme.value = effective();
+  const next = effective();
+  if (root) root.dataset.theme = next; // Subscribers read the newly applied CSS variables.
+  theme.value = next;
   themeChoice.value = picked() ?? "system";
-  if (root) root.dataset.theme = theme.value;
 }
 apply();
 system?.addEventListener("change", apply);

@@ -1,53 +1,67 @@
+import { teamApprovalProblem } from "./task-team-choices.js";
+import { composerCheckMode, checkExplanation, type CheckMode } from "./composer-checks.js";
+import { modelIdProblem } from "../src/model-id.js";
+import { providerProblem, providerSetupProblem } from "./provider-readiness.js";
+import { startBranchLabel } from "./start-branch.js";
 import { BrowserDraftCards } from "./browser-context-cards.js";
 import { browserImageNames, editBrowserText, parseBrowserMessage } from "./browser-context.js";
 import { TaskTeamControl } from "./task-team.js";
 import type { TaskTeamConfig } from "../src/task-team.js";
 import { WorkerModelCatalog, discoveredCatalogs } from "./model-catalog.js";
-import { supportsRunPermissions, type PermissionRequirement } from "../src/run-permissions.js";
+import { runProviderProblem, supportsRunPermissions, type PermissionRequirement } from "../src/run-permissions.js";
 import { TeamTemplateLibrary } from "./team-template-library.js";
 import { selectedTeamTemplate } from "./team-template-state.js";
 import { confirmAction } from "./confirm-state.js";
-import { DEFAULT_EXECUTION_BUDGET } from "../src/execution-budget.js";
 import { intentDraft, WorkflowRecommendation } from "./experience.js";
 import { journeyDraft } from "./journeys.js";
-import { comparisonDraft } from "./workflow-ui.js";
+import { composerRunBody } from "./composer-body.js";
+import { NumberField, numberInputProblem } from "./number-field.js";
+import { EXECUTION_LIMITS, MAX_COMPARE_RUNS, acceptanceCriteriaProblem, executionLimitsProblem, numberProblem, taskTeamLimitsProblem } from "../src/start-input-validation.js";
 import { SCHEDULE_KINDS, type ScheduleKind } from "./scheduling.js";
 import { improveSettings } from "./improve-settings.js";
 import { IMPROVE_NAMES } from "../src/improve-settings.js";
 import { ModelSelect } from "./model-select.js";
 import { freeModelsFirst, isFreeModel } from "./model-order.js";
 import type { ComponentChildren } from "preact";
-import { ChatControls, PermissionMenu } from "./chat-controls.js";
+import { ChatControls, PermissionMenu, type ChatPermissions } from "./chat-controls.js";
+import { canAskForApproval, toolApprovalState } from "./composer-permissions.js";
 import type { VerificationProfile } from "../src/verification.js";
-import { effect } from "@preact/signals";
+import { batch, effect } from "@preact/signals";
 import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import { AgentTag } from "./bits.js";
-import { api, ApiError, baseName, enc, fmtSize, post, readBase64, SHORT, store, useLatest } from "./lib.js";
+import { api, showToast, ApiError, baseName, enc, fmtSize, post, readBase64, SHORT, store, useLatest, plural } from "./lib.js";
 import { useDialog } from "./app.js";
 import { AcceptanceEditor, ContextInspector, EffectiveSettings, ProviderSetupPrompt, RepositoryReadiness, SaveTaskTemplateDialog, UseTaskTemplateDialog } from "./onboarding.js";
-import { rerunDraft, sourceForRerun } from "./rerun-draft.js";
+import { rerunDraft } from "./rerun-draft.js";
 import { RemoteWorkerSelect, type WorkerChoice } from "./remote-workers.js";
 import type { WorkerCapabilities } from "../src/remote-workers/protocol.js";
 import { DeferredRunsPanel } from "./deferred-runs.js";
 import { contextBudget } from "./context-budget.js";
-import { taskWithCriteria } from "./composer-tools.js";
 import {
   agents,
+  executionPaused,
   composerProject,
   composerLoading,
   composerRunOptions,
   draftError,
+  draftUnavailable,
+  unreadableDrafts,
+  projectsLoaded,
+  projectsStatus,
+  projectPickerPurpose,
+  projectsOpen,
   saveComposerDraft,
   chooseComposerRepository,
   projects,
   repositoryChoice,
-  projectsLoaded,
+  openComposer,
   acceptanceCriteria,
   setAcceptanceCriteria,
   configChecking,
   agentSettings,
   planApprovalFor,
   health,
+  healthError,
   repoConfig,
   roleModels,
   setRoleModel,
@@ -60,7 +74,7 @@ import {
   branchPrefix,
   catalogs,
   checkCmd,
-  checkHint,
+  checkWarning,
   contextError,
   contextPaths,
   currentProject,
@@ -78,9 +92,17 @@ import {
   repoInfo,
   rolesFor,
   route,
-  setAgentSetting,
+  setProviderDefault,
+  providerDefaults,
   setRunCheck,
   setRunSetup,
+  setRunLimits,
+  forgetChoices,
+  composerOrigins,
+  RERUN_ORIGIN,
+  rememberBase,
+  knownBase,
+  baseNotice,
   loadCheck,
   setOption,
   setPattern,
@@ -106,11 +128,14 @@ import { SourceChip } from "./github.js";
 import { SaveAutomationDialog } from "./automations.js";
 import { Icon } from "./icons.js";
 import { Menu, MenuItem, MenuTitle } from "./panel-bits.js";
+import { POLICY_PAUSED, PolicyPauseNotice } from "./policy-pause.js";
 import type { AgentId, AgentInfo, ContextItem, ModelCatalog, PatternInfo, TreeEntry } from "./types.js";
 
 const DRAG_TYPE = "application/x-codeflow-path";
 const MAX_FILE = 10 * 1024 * 1024;
 const MAX_TOTAL = 25 * 1024 * 1024;
+/** The Permissions choice this browser remembers; undefined until one is made. */
+const storedToolApprovals = () => { const value = store.get("interactiveApprovals"); return value === null ? undefined : value === "1"; };
 
 // ================================================================= composer
 export function Composer() {
@@ -130,36 +155,35 @@ export function Composer() {
   const profileRequest = useRef(0);
   const [nativeAntigravity, setNativeAntigravity] = useState(initialOptions.current.antigravityExecution === "native");
   const [permissionRequirements, setPermissionRequirements] = useState<PermissionRequirement[]>(initialOptions.current.permissionRequirements ?? []);
-  const [toolApprovals, setToolApprovals] = useState(initialOptions.current.toolApprovals ?? store.get("interactiveApprovals") === "1");
+  // Only an explicit choice is kept (and saved with the draft); without one the default follows the workflow and provider.
+  const [toolApprovals, setToolApprovals] = useState<boolean | undefined>(initialOptions.current.toolApprovals ?? storedToolApprovals());
   const improve = useImprove(remoteWorker ? "Improve uses a local provider. Choose This computer to rewrite this task." : containerEnabled ? "Improve uses a local provider. Turn off Docker isolation to rewrite this task." : "");
   const p = pattern.value;
   const single = p?.id === "solo";
-  useEffect(() => {
-    if (trust.value === "safe") setToolApprovals(false);
-    else if (initialOptions.current.toolApprovals === undefined && store.get("interactiveApprovals") === null) setToolApprovals(single && ["claude", "codex"].includes(rolesFor(p).agent?.[0] ?? ""));
-  }, [single, rolesFor(p).agent?.[0], trust.value]);
+  const checkMode = composerCheckMode(p?.id, { checkpointOnFinish: restored?.checkpointOnFinish, remote: !!remoteWorker, team: !!taskTeam?.enabled, container: containerEnabled });
+  const automaticChecks = checkMode !== "conversation";
   const [moreOptions, setMoreOptions] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(() => store.get("composerAdvanced") === "1");
   const selectVerification = async (selected: string) => {
     const request = ++profileRequest.current;
     const current = repo.value;
-    setProfileError(false); setError(""); setVerificationPreset(selected); setVerificationProfile(null); setProfileLoading(!!selected);
+    setProfileError(""); setError(""); setVerificationPreset(selected); setVerificationProfile(null); setProfileLoading(!!selected);
     if (!selected) return;
     try {
       const profile = await api<VerificationProfile>(`/api/verification/profile?repo=${enc(current)}&preset=${selected}`);
       if (repo.value === current && request === profileRequest.current) setVerificationProfile(profile);
     } catch (error) {
-      if (request === profileRequest.current) { setError((error as Error).message); setProfileError(true); }
+      if (request === profileRequest.current) { setProfileError((error as Error).message); }
     } finally { if (request === profileRequest.current) setProfileLoading(false); }
   };
-  const [profileError, setProfileError] = useState(false);
+  const [profileError, setProfileError] = useState("");
   useLayoutEffect(() => {
     const defaults = readProjectDefaults(repo.value);
     const container = initialOptions.current.container ?? defaults.container;
     setContainerEnabled(container.enabled); setContainerImage(container.image); setContainerVolume(container.authVolume);
     setRemoteWorker(initialOptions.current.remoteWorker);
-    setToolApprovals(initialOptions.current.toolApprovals ?? store.get("interactiveApprovals") === "1");
-    setProfileError(false);
+    setToolApprovals(initialOptions.current.toolApprovals ?? storedToolApprovals());
+    setProfileError("");
     if (initialOptions.current.verification === "restored") {
       ++profileRequest.current;
       setProfileLoading(false);
@@ -170,10 +194,24 @@ export function Composer() {
   }, [repo.value, projectDefaultsVersion.value, restored]);
 
   useLayoutEffect(() => {
-    if (!composerLoading.value) composerRunOptions.value = { taskTeam, remoteWorker, container: { enabled: containerEnabled, image: containerImage, authVolume: containerVolume }, verification: verificationPreset, verificationProfile, toolApprovals, antigravityExecution: nativeAntigravity ? "native" : "isolated", permissionRequirements };
+    // An option equal to the project's default isn't the draft's own: the draft follows a later default.
+    const defaults = readProjectDefaults(repo.value), container = { enabled: containerEnabled, image: containerImage, authVolume: containerVolume };
+    const ownContainer = container.enabled !== defaults.container.enabled || container.image !== defaults.container.image || container.authVolume !== defaults.container.authVolume;
+    if (!composerLoading.value) composerRunOptions.value = { taskTeam, remoteWorker, container: ownContainer ? container : undefined, verification: verificationPreset === defaults.verification ? undefined : verificationPreset, verificationProfile, toolApprovals, antigravityExecution: nativeAntigravity ? "native" : "isolated", permissionRequirements };
   }, [taskTeam, remoteWorker, containerEnabled, containerImage, containerVolume, verificationPreset, verificationProfile, toolApprovals, nativeAntigravity, permissionRequirements]);
   const [error, setError] = useState("");
   const [starting, setStarting] = useState(false);
+  const startError = useRef<HTMLDivElement>(null);
+  useEffect(() => setError(""), [task.value, branchPrefix.value, contextPaths.value, baseRef.value, source.value, roleModels.value, agentSettings.value, containerEnabled, containerImage]);
+  useLayoutEffect(() => { if (error) { startError.current?.scrollIntoView({ block: "nearest" }); startError.current?.focus({ preventScroll: true }); } }, [error]);
+  // .codeflow/config.json may have changed since the draft last read it (when a run started, or
+  // while you were in another tab): read it again on the way in. What the draft chose stays.
+  useEffect(() => {
+    const refresh = () => { if (!document.hidden && repo.value && !composerLoading.value) void loadCheck(); };
+    refresh();
+    document.addEventListener("visibilitychange", refresh);
+    return () => document.removeEventListener("visibilitychange", refresh);
+  }, []);
   // Pins sent from the side panel's Browser: their text joins the task, their snapshots its attachments.
   useEffect(() => {
     const drafts = takeDrafts("composer");
@@ -184,62 +222,23 @@ export function Composer() {
   const roles = rolesFor(p);
   const soloAgent = roles.agent?.[0];
   const soloSettings = soloAgent && soloAgent !== "auto" ? { ...agentSettings.value[soloAgent], ...roleModels.value[p!.id]?.agent?.[soloAgent] } : {};
-  const problem = (p?.id === "auto-team" && teamRollout.value?.enabled === false ? "Team is disabled on this server. Choose Agent or a template in Advanced." : "") || (remoteWorker ? remoteError || (!remoteAgents ? "Checking remote worker…" : startProblem(p, roles, true, remoteAgents)) : startProblem(p, roles)) || (profileLoading ? "Loading verification profile…" : profileError ? "Verification profile unavailable. Choose another profile in Run options." : "");
+  // The Permissions control, Run details and the start request all use this one value.
+  const runTrust = externalSource.value ? "safe" : trust.value;
+  const approvals = toolApprovalState({ choice: toolApprovals, trust: runTrust, p, roles, remote: !!remoteWorker, container: containerEnabled, external: !!externalSource.value });
+  const choosePermissions = (value: ChatPermissions) => { setTrust(value.trust); setToolApprovals(value.tools); store.set("interactiveApprovals", value.tools ? "1" : "0"); };
+  // Both "Save as template…" and "Save task preset" save through one dialog, so they share one guard.
+  const templateBlocked = verificationPreset === "restored" ? "Choose a verification preset before saving a template" : "";
+  const canSaveTemplate = !!p && projectsLoaded.value && !!task.value.trim() && !templateBlocked;
+  const problem = (p?.id === "auto-team" && teamRollout.value?.enabled === false ? "Team is disabled on this server. Choose Agent or a template in Advanced." : "") || (remoteWorker ? remoteError || (!remoteAgents ? "Checking remote worker…" : startProblem(p, roles, true, remoteAgents)) : startProblem(p, roles, true, undefined, nativeAntigravity ? "native" : "isolated")) || approvals.conflict || (containerEnabled && !remoteWorker && !containerImage.trim() ? "Choose a prebuilt agent image in Run options → Agent isolation." : "") || (automaticChecks && profileLoading ? "Loading verification profile…" : automaticChecks && profileError ? "Verification profile unavailable. Choose another profile in Run options." : "");
 
   const [scheduling, setScheduling] = useState(false);
   const [savingTemplate, setSavingTemplate] = useState(false);
   const [usingTemplate, setUsingTemplate] = useState(false);
   const [libraryScope, setLibraryScope] = useState("project");
-  const runBody = (p: PatternInfo) => ({
-    intent: journeyDraft.value?.repo === repo.value ? "bug" : intentDraft.value,
-    journeyId: journeyDraft.value?.repo === repo.value ? journeyDraft.value.id : undefined,
-    repo: repo.value,
-    project: composerProject.value || undefined,
-    projectSelection: "explicit",
-    parentRunId: restored?.id,
-    task: taskWithCriteria(task.value, acceptanceCriteria.value),
-    pattern: p.id,
-    taskTeam: single && !remoteWorker && !containerEnabled ? taskTeam : undefined,
-    checkpointOnFinish: restored?.checkpointOnFinish,
-    templateRef: selectedTeamTemplate.value ? { id: selectedTeamTemplate.value.template.id, version: selectedTeamTemplate.value.template.version, inputs: selectedTeamTemplate.value.inputs } : undefined,
-    roles,
-    options: optionsFor(p),
-    baseRef: baseRef.value,
-    source: sourceForRerun(source.value, restored?.source),
-    branchPrefix: branchPrefix.value.trim(),
-    externalSourceId: externalSource.value?.id,
-    context: {
-      paths: [...contextPaths.value.values()].map((c) => ({ path: c.path })),
-      attachments: attachments.value.map((a) => ({ name: a.name, data: a.data })),
-    },
-    agentSettings: single && soloAgent && soloAgent !== "auto" ? { ...agentSettings.value, [soloAgent]: soloSettings } : agentSettings.value,
-    approvals: { plan: !!CHECKPOINTS[p.id] && planApprovalFor(p.id), tools: remoteWorker ? false : toolApprovals },
-    trust: trust.value,
-    permissionRequirements,
-    antigravityExecution: nativeAntigravity ? "native" : "isolated",
-    roleSettings: roleModels.value[p.id] ?? {},
-    loop: {
-      ...restored?.loop,
-      check: checkCmd.value.trim(),
-      setup: setupCmd.value.trim(),
-      maxMinutes: limits.value.maxMinutes,
-      maxSteps: limits.value.maxSteps,
-      maxTokens: limits.value.maxTokens,
-      maxCostUsd: limits.value.maxCostUsd,
-      contextBudget: contextBudget.value,
-      verification: verificationProfile,
-      remoteWorker,
-      agentContainer: containerEnabled && !remoteWorker ? { ...restored?.loop.agentContainer, image: containerImage.trim(), authVolume: containerVolume.trim() || undefined, network: restored?.loop.agentContainer?.network ?? true } : undefined,
-      copy: remoteWorker ? [] : restored ? restored.loop.copy ?? [] : repoConfig.value?.config.copy,
-    },
-  });
-  // Publish a lightweight snapshot after rendering. Attachment strings are immutable;
-  // serializing or cloning their payloads on each keystroke would block editing.
-  const comparisonBody = p ? runBody(p) : null;
-  useLayoutEffect(() => { comparisonDraft.value = comparisonBody; }, [comparisonBody]);
+  const runBody = composerRunBody;
   const [scheduleKind, setScheduleKind] = useState<ScheduleKind | null>(null);
   const start = async () => {
-    if (problem || !p || starting || profileLoading) return;
+    if (problem || !p || starting || automaticChecks && profileLoading) return;
     if (containerEnabled && !remoteWorker && !containerImage.trim()) { setError("Choose a prebuilt agent image"); return; }
     improve.stop();
     setStarting(true);
@@ -256,12 +255,17 @@ export function Composer() {
     }
   };
   // Fresh composer for the next run; "Edit & run again" brings these back.
-  const resetComposer = () => {
+  const resetComposer = () => batch(() => {
+    const retry = rerunDraft.value;
     rerunDraft.value = null;
-    store.set("baseRef", baseRef.value);
+    // A retry's pinned commit and permissions were for that retry: the next run starts from the current branch.
+    if (retry && !knownBase(baseRef.value)) baseRef.value = "";
+    rememberBase();
+    baseNotice.value = "";
+    // Commands and limits typed for the run that just started go back to the defaults (loadCheck).
+    forgetChoices(composerOrigins.value.trust === RERUN_ORIGIN ? ["check", "setup", "limits", "trust"] : ["check", "setup", "limits"]);
     setTask("");
     void loadCheck();
-    limits.value = store.json("limits", DEFAULT_EXECUTION_BUDGET);
     setAcceptanceCriteria([]);
     branchPrefix.value = "";
     source.value = null;
@@ -270,9 +274,13 @@ export function Composer() {
     attachments.value = [];
     journeyDraft.value = undefined;
     intentDraft.value = undefined;
-  };
+    // Unrestricted Antigravity is an opt-in for the run just started, never a default for the next
+    // one. Written straight to the run options too: the draft is saved before this composer renders again.
+    setNativeAntigravity(false);
+    composerRunOptions.value = { ...composerRunOptions.value, antigravityExecution: "isolated" };
+  });
 
-  if (!projects.value.length && !repo.value && !task.value.trim()) return <div class="composer project-welcome">
+  if (projectsLoaded.value && projectsStatus.value.available && !projectsStatus.value.recovery && !composerProject.value && !Object.keys(unreadableDrafts.value).length && !projects.value.length && !repo.value && !task.value.trim()) return <div class="composer project-welcome">
     <div class="eyebrow">Your first project</div><h1>What would you like to work on?</h1><p class="lede">Open a repository to start a project, describe a task, and review your agents’ work.</p>
     <div class="project-welcome-actions"><button class="btn primary" onClick={() => openRepository()}>Open repository</button><a class="btn" href="#/settings/connections/join">Join shared project</a></div>
     <p class="help">Computer: {computerLabel()} · <a href="#/settings/connections/workspace">On another computer</a></p><ProviderSetupPrompt />
@@ -288,8 +296,11 @@ export function Composer() {
           : target.value.project && target.value.project.repos.length > 1 ? <label class="composer-repository">Repository<select class="field" aria-label="Run repository" value={repo.value} onChange={event => void chooseComposerRepository(event.currentTarget.value)}>{!target.value.project.repos.includes(repo.value) ? <option value="">Choose repository</option> : null}{target.value.project.repos.map(folder => <option value={folder}>{baseName(folder)} · {folder}</option>)}</select></label> : <RepoButton />}
         <button class="btn small ghost" onClick={() => openRepository(composerProject.value)}>Open another repository</button>
       </div>
-      {draftError.value ? <p class="msg warn" role="alert">{draftError.value} <button class="btn small" onClick={() => void saveComposerDraft()}>Retry saving</button></p> : null}
-      {repo.value && target.value.problem ? <div class="banner"><p>{target.value.problem}</p><button class="btn" onClick={() => { repositoryChoice.value = { repository: repo.value, project: target.value.project?.id }; }}>Choose destination</button></div> : null}
+      {projectsStatus.value.recovery ? <div class="banner" role="alert"><p>{projectsStatus.value.available ? `Project storage recovered: projects.json ${projectsStatus.value.recovery.reason}. The original file is retained as ${projectsStatus.value.recovery.aside} in CODEFLOW_HOME. Existing runs are retained. Restore the backup manually with Code Flow stopped, or continue with the recovered project list.` : `Projects are off: projects.json ${projectsStatus.value.reason}. Fix the file in CODEFLOW_HOME and restart Code Flow. You can still open a repository and start an unassigned run.`}</p>{!projectsStatus.value.available && composerProject.value ? <button class="btn" onClick={() => void openComposer("", { repository: repo.value })}>Open unassigned draft</button> : null}</div> : null}
+      {Object.entries(unreadableDrafts.value).map(([id, message]) => <p class="msg warn" role="alert">{projects.value.find(item => item.id === id)?.name ?? (id || "Unassigned draft")}: {message} Choose another project's draft to continue. Restore the saved data in browser storage, then reload to retry.</p>)}
+      {draftError.value && !Object.keys(unreadableDrafts.value).length ? <p class="msg warn" role="alert">{draftError.value} <button class="btn small" onClick={() => void saveComposerDraft()}>Retry saving</button></p> : null}
+      {baseNotice.value ? <p class="msg warn" role="status">{baseNotice.value} <button class="btn small" onClick={() => { baseNotice.value = ""; }}>Dismiss</button></p> : null}
+      {projectsLoaded.value && target.value.problem ? <div class="banner"><p>{target.value.problem}</p><button class="btn" onClick={() => { if (repo.value) repositoryChoice.value = { repository: repo.value, project: target.value.project?.id }; else { projectPickerPurpose.value = "composer"; projectsOpen.value = true; } }}>Choose destination</button></div> : null}
       <ProviderSetupPrompt />
       {!repoInfo.value ? (
         <div class={`banner ${repoError.value ? "bad" : ""}`}>
@@ -310,48 +321,52 @@ export function Composer() {
 
       {externalSource.value ? <div class="banner"><p>External context: {externalSource.value.provider} {externalSource.value.kind} {externalSource.value.key} · {externalSource.value.title}</p><p class="help">This source remains untrusted. The run uses Safe permissions and isolated checks.</p><button class="btn small" onClick={() => { externalSource.value = null; }}>Remove source</button></div> : null}
       {p?.id === "auto-team" ? <TeamRolloutNotice /> : null}
+      <PolicyPauseNotice what="Agent runs are paused" />
       {journeyDraft.value?.repo === repo.value ? <p class="help">Recorded scenario: {journeyDraft.value.title} <button class="btn ghost small" onClick={() => { journeyDraft.value = undefined; }}>Detach scenario</button></p> : null}
       <TaskBox onStart={start} improve={improve} controls={<>
-        {single ? <TaskTeamControl config={taskTeam} lead={soloAgent && soloAgent !== "auto" ? soloAgent : "claude"} project={composerProject.value || undefined} toolApprovals={toolApprovals} disabledReason={remoteWorker || containerEnabled ? "Teams in this conversation require This computer without Docker isolation. Standalone workflows remain available in Advanced." : undefined} onChange={next => { setTaskTeam(next); if (next.enabled) { setRoles(p!.id, "agent", [next.coordinator]); setRoleModel(p!.id, "agent", next.coordinator, next.settings[next.coordinator] ?? {}); } }} /> : <button class="btn ghost" onClick={() => setPattern("solo")}>Back to Agent conversation</button>}
+        {single ? <TaskTeamControl config={taskTeam} lead={soloAgent && soloAgent !== "auto" ? soloAgent : "claude"} project={composerProject.value || undefined} toolApprovals={approvals.tools} disabledReason={remoteWorker || containerEnabled ? "Teams in this conversation require This computer without Docker isolation. Standalone workflows remain available in Advanced." : undefined} onChange={next => { setTaskTeam(next); if (next.enabled) { setRoles(p!.id, "agent", [next.coordinator]); setRoleModel(p!.id, "agent", next.coordinator, next.settings[next.coordinator] ?? {}); } }} /> : <button class="btn ghost" onClick={() => setPattern("solo")}>Back to Agent conversation</button>}
         {single ? taskTeam?.enabled && !remoteWorker && !containerEnabled ? null : <>
         {soloAgent && soloAgent !== "auto" ? <ChatControls
           agent={soloAgent} providers={remoteAgents}
           onAgent={(id) => setRoles(p!.id, "agent", [id])}
           settings={soloSettings}
           onSettings={(value) => setRoleModel(p!.id, "agent", soloAgent, value)}
-          permissions={{ trust: externalSource.value ? "safe" : trust.value, tools: !remoteWorker && !containerEnabled && !externalSource.value && toolApprovals }}
-          onPermissions={(value) => { setTrust(value.trust); setToolApprovals(value.tools); store.set("interactiveApprovals", value.tools ? "1" : "0"); }}
+          permissions={{ trust: runTrust, tools: approvals.tools }}
+          onPermissions={choosePermissions}
           restricted={!!externalSource.value} approvalsAvailable={!remoteWorker && !containerEnabled}
+          unrestricted={soloAgent === "agy" && nativeAntigravity}
         /> : <Menu above label="Provider" icon="layers" class="chat-choice" trigger={<><span>{soloAgent === "auto" ? "Auto provider" : "Choose provider"}</span><Icon name="chevron" /></>}>
-          {(close) => <>{(remoteAgents ?? agents.value).map((entry) => <MenuItem key={entry.id} disabled={!entry.available || !supportsRunPermissions(entry.id)} onClick={() => { setRoles(p!.id, "agent", [entry.id]); close(); }}>{entry.displayName}</MenuItem>)}</>}
+          {(close) => <>{(remoteAgents ?? agents.value).map((entry) => <MenuItem key={entry.id} disabled={!!providerProblem(entry, remoteAgents ? null : health.value)} sub={providerProblem(entry, remoteAgents ? null : health.value) || undefined} onClick={() => { setRoles(p!.id, "agent", [entry.id]); close(); }}>{entry.displayName}</MenuItem>)}</>}
         </Menu>}
         </> : <span class="help">{selectedTeamTemplate.value ? `Template: ${selectedTeamTemplate.value.template.name} v${selectedTeamTemplate.value.template.version}` : p?.id === "auto-team" ? "Plans and delegates dynamically" : `Template: ${p?.name}`}</span>}
-        {!single ? <><button type="button" class="btn ghost" onClick={() => { setMoreOptions(true); setAdvancedOpen(true); store.set("composerAdvanced", "1"); }}>Advanced</button><PermissionMenu permissions={{ trust: externalSource.value ? "safe" : trust.value, tools: !remoteWorker && !containerEnabled && !externalSource.value && toolApprovals }} onPermissions={(value) => { setTrust(value.trust); setToolApprovals(value.tools); store.set("interactiveApprovals", value.tools ? "1" : "0"); }} restricted={!!externalSource.value} approvalsAvailable={!remoteWorker && !containerEnabled && Object.values(roles).flat().some((id) => id === "codex" || id.startsWith("acp:"))} agent={Object.values(roles).flat().find((id) => id.startsWith("acp:")) as AgentId | undefined} /></> : null}
+        {!single ? <><button type="button" class="btn ghost" onClick={() => { setMoreOptions(true); setAdvancedOpen(true); store.set("composerAdvanced", "1"); }}>Advanced</button><PermissionMenu permissions={{ trust: runTrust, tools: approvals.tools }} onPermissions={choosePermissions} restricted={!!externalSource.value} approvalsAvailable={!remoteWorker && !containerEnabled && Object.values(roles).flat().some(canAskForApproval)} agent={Object.values(roles).flat().find((id) => id.startsWith("acp:")) as AgentId | undefined} unrestricted={nativeAntigravity && Object.values(roles).flat().some(id => id === "agy" || id === "auto")} /></> : null}
         <button class="btn primary task-start" disabled={!!problem || starting} onClick={start} title={problem || "Start run (⌘↵)"}>{starting ? "Starting…" : single ? "Send" : "Start run"}<Icon name="send" /></button>
         <Menu above label="Run actions" icon="more" class="chat-choice">{(close) => <>
           <MenuItem disabled={!p || !projectsLoaded.value} onClick={() => { close(); setUsingTemplate(true); }}><Icon name="files" />Use template…</MenuItem>
-          <MenuItem disabled={!p || !projectsLoaded.value || !task.value.trim() || verificationPreset === "restored"} sub={verificationPreset === "restored" ? "Choose a verification preset before saving a template" : undefined} onClick={() => { close(); setSavingTemplate(true); }}><Icon name="files" />Save as template…</MenuItem>
+          <MenuItem disabled={!canSaveTemplate} sub={templateBlocked || undefined} onClick={() => { close(); setSavingTemplate(true); }}><Icon name="files" />Save as template…</MenuItem>
           <MenuItem disabled={!!problem} onClick={() => { close(); setScheduleKind(null); setScheduling(true); }}><Icon name="clock" />Schedule…</MenuItem>
         </>}</Menu>
       </>} />
+      {error ? <div ref={startError} class="msg err composer-start-error" role="alert" tabIndex={-1}>{error}</div> : null}
       <div class="composer-summary" aria-label="Run configuration summary">
         <span><b>Computer</b> {computerLabel()}{remoteWorker ? ` · Agent worker: ${remoteWorker.workerId}` : ""}</span>
         <span><b>Project</b> {target.value.project?.name ?? "Choose project"}</span>
-        <span><b>Repository</b> {repo.value ? baseName(repo.value) : "Choose repository"} · {baseRef.value || repoInfo.value?.current || "HEAD"}</span>
-        <span><b>Limit</b> {restored?.loop.maxInvocations ?? limits.value.maxSteps} calls · {limits.value.maxMinutes} minutes</span>
-        {problem ? <span class="composer-problem" role="status">{problem}</span> : null}
+        <span><b>Repository</b> {repo.value ? baseName(repo.value) : "Choose repository"} · {startBranchLabel(source.value, baseRef.value, repoInfo.value?.current)}</span>
+        <span><b>Limit</b> {plural(restored?.loop.maxInvocations ?? limits.value.maxSteps, "call")} · {limits.value.maxMinutes} minutes</span>
+        {problem ? <span class="composer-problem" role="status">{problem}{/Settings/.test(problem) ? <> <a href="#/settings/agents">Open provider settings</a></> : null}</span> : null}
         {trust.value === "full" ? <span class="warn">Full access · no provider sandbox</span> : null}
+        {nativeAntigravity ? <span class="warn">Unrestricted Antigravity · no Code Flow sandbox</span> : null}
         <button class="btn small ghost" onClick={() => setMoreOptions(!moreOptions)} aria-expanded={moreOptions}>Edit run options</button>
       </div>
       <WorkflowRecommendation repository={repo.value} intent={journeyDraft.value?.repo === repo.value ? "bug" : intentDraft.value} />
       {contextError.value ? <div class="msg err">{contextError.value}</div> : null}
       <details class="composer-options compact" open={moreOptions} onToggle={(event) => setMoreOptions(event.currentTarget.open)}>
         <summary>Run options <span>Agents, context, checks and limits for this task</span></summary>
-      {repoConfig.value?.found && !repoConfig.value.error ? <div class="config-note"><Icon name="sliders" />Using <code>.codeflow/config.json</code>{configSummary(repoConfig.value.config)}</div> : null}
+      {repoConfig.value?.found && !repoConfig.value.error ? <div class="config-note"><Icon name="sliders" />Using <code>.codeflow/config.json</code>{repoConfig.value.ref ? <> from <code>{repoConfig.value.ref}</code></> : null}{configSummary(repoConfig.value.config, !!repoConfig.value.ref)}</div> : null}
       <AcceptanceEditor />
 
       <div class="section">
-        {p ? <p class="pattern-why">{teamSentence(p, roles)}</p> : null}
+        {p ? <p class="pattern-why">{teamSentence(p, roles, true, checkMode)}</p> : null}
         {trust.value === "full" ? <p class="full-warn" role="alert"><b>Full access: no sandbox.</b> Agents can run commands and change files outside their worktree with your credentials. Review permissions in Advanced agent settings.</p> : null}
         {p && CHECKPOINTS[p.id] && (p.id !== "debate" || roles.builder?.length) ? (
           <label class="checkpoint">
@@ -360,9 +375,10 @@ export function Composer() {
           </label>
         ) : null}
         <div class={`donewhen ${p?.requiresCheck && !checkCmd.value.trim() ? "required" : ""}`}>
-          <label class="lbl" for="checkCmd">Done when this passes</label>
-          <div class="dw-row"><span class="dw-prompt">$</span><input class="field" id="checkCmd" disabled={repoChecking.value} placeholder="e.g. npm test" spellcheck={false} autocomplete="off" value={checkCmd.value} onInput={(e) => { setRunCheck(e.currentTarget.value); checkHint.value = "Override for this run."; }} /></div>
-          <div class="help">Override the project check for this run. A run without a passing automated check is unchecked.</div>
+          <label class="lbl" for="checkCmd">{automaticChecks ? "Done when this passes" : "Check command for merge validation"}</label>
+          <div class="dw-row"><span class="dw-prompt">$</span><input class="field" id="checkCmd" disabled={repoChecking.value} placeholder="e.g. npm test" spellcheck={false} autocomplete="off" aria-describedby={checkWarning.value ? "checkCmd-warning" : undefined} value={checkCmd.value} onInput={(e) => { setRunCheck(e.currentTarget.value); checkWarning.value = ""; }} /></div>
+          {checkWarning.value ? <div class="msg warn" id="checkCmd-warning" role="status">{checkWarning.value}</div> : null}
+          <div class="help">Override the project check for this run. {checkExplanation(checkMode, checkCmd.value)} A result without a passing check is unchecked.</div>
         </div>
         <div class="donewhen">
           <label class="lbl" for="setupCmd">Worktree setup command</label>
@@ -386,30 +402,30 @@ export function Composer() {
         {p?.id === "auto-team" ? <WorkerModelCatalog remote={!!remoteWorker || containerEnabled} nativeAntigravity={nativeAntigravity} /> : null}
         <fieldset class="section"><legend>Antigravity execution</legend>
           <label class="checkpoint"><input type="checkbox" checked={nativeAntigravity} onChange={e => setNativeAntigravity(e.currentTarget.checked)} /><span>Use unrestricted Antigravity with my existing login</span></label>
-          <p class="help">Opt-in for this run. Antigravity uses your normal profile without Code Flow's sandbox. Terminal, browser, MCP, hooks and native agents follow provider settings. Read-only requests are advisory and native child usage is outside the worker budget. Claude and Codex keep their run permissions. Requires a valid saved login, local attended execution, and no mandatory boundaries, Safe mode or tool approvals.</p>
+          <p class="help">Opt-in for this run; the next run starts isolated again. Antigravity uses your normal profile without Code Flow's sandbox. Terminal, browser, MCP, hooks and native agents follow provider settings. Read-only requests are advisory and native child usage is outside the worker budget. Claude and Codex keep their run permissions. Requires a valid saved login, local attended execution, and no mandatory boundaries, Safe mode or tool approvals.</p>
         </fieldset>
         <fieldset class="section"><legend>Required permission enforcement</legend>
           {([ ["workspace-writes", "Require an agent workspace write boundary"], ["no-command-network", "Block network access from agent commands"], ["no-external-tools", "Disable external browser and MCP tools"] ] as [PermissionRequirement, string][]).map(([id, label]) => <label class="checkpoint" key={id}><input type="checkbox" checked={permissionRequirements.includes(id)} onChange={e => setPermissionRequirements(e.currentTarget.checked ? [...permissionRequirements, id] : permissionRequirements.filter(p => p !== id))} /><span>{label}</span></label>)}
           <p class="help">Only providers that enforce these requirements can run. Command network restrictions do not cover provider inference or external tools. With none selected, the existing provider-specific permission profile applies.</p>
         </fieldset>
-        <div class="section"><button class="btn" disabled={!p || !projectsLoaded.value} onClick={() => setUsingTemplate(true)}>Browser task library</button>{" "}<button class="btn" disabled={!p || !task.value.trim()} onClick={() => setSavingTemplate(true)}>Save task preset</button><p class="help">Existing browser presets remain available. Applying a preset keeps this run's permissions and isolation.</p></div>
+        <div class="section"><button class="btn" disabled={!p || !projectsLoaded.value} onClick={() => setUsingTemplate(true)}>Browser task library</button>{" "}<button class="btn" disabled={!canSaveTemplate} aria-describedby={templateBlocked ? "save-preset-blocked" : undefined} onClick={() => setSavingTemplate(true)}>Save task preset</button>{templateBlocked ? <p class="help" id="save-preset-blocked">{templateBlocked}.</p> : null}<p class="help">Existing browser presets remain available. Applying a preset keeps this run's permissions and isolation.</p></div>
         <RemoteWorkerSelect value={remoteWorker} onChange={(value) => { improve.stop(); setRemoteWorker(value); }} disabled={starting} />
         {remoteWorker ? <p class="help">Provider availability comes from this worker. Checks and setup run on the application server. Copied workspace files and native interactive approvals are unavailable; use explicitly staged references.</p> : null}
         {p && !single ? <Team p={p} roles={roles} providers={remoteAgents} remote={!!remoteWorker} /> : null}
-        <div class="section"><label class="lbl" for="verification-profile">Verification gates</label><select class="field" id="verification-profile" value={verificationPreset} disabled={!repo.value} onChange={(event) => void selectVerification(event.currentTarget.value)}><option value="">Single configured check</option>{verificationPreset === "restored" ? <option value="restored">From original run · {verificationProfile?.name}</option> : null}<option value="lightweight">Lightweight profile</option><option value="standard">Standard profile</option><option value="thorough">Thorough profile</option></select>{verificationProfile ? <p class="help">Required gates: {verificationProfile.checks.map((gate) => gate.command).join(" · ") || "No runnable gates detected"}. Each gate appears in the run's evidence.</p> : null}</div>
+        <div class="section"><label class="lbl" for="verification-profile">Verification gates</label><select class="field" id="verification-profile" value={verificationPreset} disabled={!repo.value} onChange={(event) => void selectVerification(event.currentTarget.value)}><option value="">Single configured check</option>{verificationPreset === "restored" ? <option value="restored">From original run · {verificationProfile?.name}</option> : null}<option value="lightweight">Lightweight profile</option><option value="standard">Standard profile</option><option value="thorough">Thorough profile</option></select>{automaticChecks && profileError ? <p class="msg err" role="alert">{profileError}</p> : null}{!automaticChecks ? <p class="help">Verification gates are inactive for Agent conversations. Turn on AI team or choose a managed workflow to run them.</p> : verificationProfile ? <p class="help">Required gates: {verificationProfile.checks.map((gate) => gate.command).join(" · ") || "No runnable gates detected"}. Each gate appears in the run's evidence.</p> : null}</div>
       {p ? <Settings p={p} roles={roles} /> : null}
         </div>
       </details>
-      {p ? <EffectiveSettings p={p} verificationProfile={verificationProfile} container={{ enabled: containerEnabled, image: containerImage, authVolume: containerVolume, network: restored?.loop.agentContainer?.network }} /> : null}
+      {p ? <EffectiveSettings p={p} checkMode={checkMode} toolApprovals={approvals} verificationProfile={verificationProfile} container={{ enabled: containerEnabled, image: containerImage, authVolume: containerVolume, network: restored?.loop.agentContainer?.network }} /> : null}
       <ContextInspector />
 
       <details class="settings agent-isolation"><summary><span class="st">Agent isolation</span><span class="ss">{containerEnabled && !remoteWorker ? `Prebuilt Docker image${containerImage.trim() ? ` · ${containerImage.trim()}` : ""}` : "Off · agents use this computer's CLIs"}</span></summary><div class="settings-body"><label class="checkpoint"><input type="checkbox" checked={containerEnabled} disabled={!!remoteWorker} onChange={(event) => { improve.stop(); setContainerEnabled(event.currentTarget.checked); }} /><span>Run agents in a prebuilt Docker image</span></label>{containerEnabled ? <><label class="iso-field">Image<input class="field mono" placeholder="Your prepared image:tag" spellcheck={false} value={containerImage} onInput={(event) => setContainerImage(event.currentTarget.value)} /></label><label class="iso-field">Authentication volume<input class="field mono" spellcheck={false} placeholder="Optional explicitly named Docker volume" value={containerVolume} onInput={(event) => setContainerVolume(event.currentTarget.value)} /></label><p class="help">The image must contain compatible official CLIs and be authenticated inside the image or selected volume. Host credential folders are never mounted. Agents receive their worktree and read-only Git metadata; network access is {restored?.loop.agentContainer?.network === false ? "disabled by the original run" : "enabled for inference"}. Live team bridges use structured turn-boundary replies in containers.</p></> : null}</div></details>
 
       </div>
       </details>
-      {error ? <div class="msg err">{error}</div> : null}
-      {usingTemplate ? <UseTaskTemplateDialog initialScope={libraryScope} onConfigured={template => { if (template.runOptions?.verification) void selectVerification(template.runOptions.verification); }} onClose={() => setUsingTemplate(false)} onUsed={(scope) => { setLibraryScope(scope); setUsingTemplate(false); }} /> : null}
-      {savingTemplate && p ? <SaveTaskTemplateDialog p={p} runOptions={{ verification: verificationPreset as "" | "lightweight" | "standard" | "thorough", container: { enabled: containerEnabled, image: containerImage, authVolume: containerVolume } }} initialScope={libraryScope} onClose={() => setSavingTemplate(false)} onSaved={(scope) => { setLibraryScope(scope); setSavingTemplate(false); }} /> : null}
+
+      {usingTemplate ? <UseTaskTemplateDialog initialScope={libraryScope} onConfigured={template => { if (template.runOptions) void selectVerification(template.runOptions.verification); }} onClose={() => setUsingTemplate(false)} onUsed={(scope) => { setLibraryScope(scope); setUsingTemplate(false); }} /> : null}
+      {savingTemplate && p && !templateBlocked ? <SaveTaskTemplateDialog p={p} toolApprovals={approvals.tools} runOptions={{ verification: verificationPreset as "" | "lightweight" | "standard" | "thorough", container: { enabled: containerEnabled, image: containerImage, authVolume: containerVolume } }} initialScope={libraryScope} onClose={() => setSavingTemplate(false)} onSaved={(scope) => { setLibraryScope(scope); setSavingTemplate(false); }} /> : null}
       {scheduling && p && !scheduleKind ? <ScheduleChoiceDialog onClose={() => setScheduling(false)} onChoose={kind => { if (kind === "backlog" || kind === "missions") { setScheduling(false); route.value = { view: "automations", kind }; } else setScheduleKind(kind); }} /> : null}
       {scheduling && p && scheduleKind === "once" ? <ScheduleRunDialog body={runBody(p)} onClose={() => setScheduling(false)} /> : null}
       {scheduling && p && scheduleKind === "repeat" ? <SaveAutomationDialog body={runBody(p)} onClose={() => setScheduling(false)} /> : null}
@@ -463,7 +479,7 @@ export function CompareDialog({ base, onClose, onStarted }: { base: Record<strin
   const [error, setError] = useState("");
   const choices = patterns.value.map((p) => {
     const roles = rolesFor(p);
-    return { p, roles, problem: startProblem(p, roles) };
+    return { p, roles, problem: startProblem(p, roles, true, undefined, base.antigravityExecution) };
   });
   const runs = picked.size * repeat;
   const go = async () => {
@@ -473,7 +489,8 @@ export function CompareDialog({ base, onClose, onStarted }: { base: Record<strin
       const variants = choices
         .filter((c) => picked.has(c.p.id))
         .map((c) => ({ label: c.p.name, pattern: c.p.id, roles: c.roles, options: optionsFor(c.p), roleSettings: roleModels.value[c.p.id] ?? {} }));
-      const { group } = await postConfirmed<{ group: string }>("/api/compare", { run: base, variants, repeat });
+      const { group, failed } = await postConfirmed<{ group: string; failed?: { error: string } }>("/api/compare", { run: base, variants, repeat });
+      if (failed) showToast(`Comparison partially started. ${failed.error}. Started runs are shown in this group.`, 10000);
       onClose();
       onStarted(group);
     } catch (err) {
@@ -489,7 +506,7 @@ export function CompareDialog({ base, onClose, onStarted }: { base: Record<strin
           <h3 id="compare-title">Compare setups</h3>
           <div class="help">
             Runs this task once per setup, at the same time, and shows the results side by side in Insights: did it pass, how long, how many steps and tokens, did it touch the
-            tests. Each pattern uses the team you last picked for it — select a pattern in the composer to change its team.
+            tests. Each pattern uses the team you last picked for it — select a pattern in the composer to change its team. A custom result branch name gets a unique suffix for each run.
           </div>
         </div>
         <div class="dialog-body">
@@ -526,12 +543,12 @@ export function CompareDialog({ base, onClose, onStarted }: { base: Record<strin
         <div class="picker-foot">
           <span class="ps">
             {runs} run{runs === 1 ? "" : "s"}
-            {runs > 9 ? " — at most 9" : ""}; they share code-flow's agent slots, so some may wait their turn.
+            {runs > MAX_COMPARE_RUNS ? ` — at most ${MAX_COMPARE_RUNS}` : ""}; they share code-flow's agent slots, so some may wait their turn.
           </span>
           <button class="btn" onClick={onClose}>
             Cancel
           </button>
-          <button class="btn primary" disabled={busy || picked.size < 2 || runs > 9} onClick={go} title={picked.size < 2 ? "Pick at least two setups" : ""}>
+          <button class="btn primary" disabled={busy || picked.size < 2 || runs > MAX_COMPARE_RUNS} onClick={go} title={picked.size < 2 ? "Pick at least two setups" : ""}>
             {busy ? "Starting…" : `Start ${runs} run${runs === 1 ? "" : "s"}`}
           </button>
         </div>
@@ -541,21 +558,45 @@ export function CompareDialog({ base, onClose, onStarted }: { base: Record<strin
 }
 
 /** Why the run can't start yet ("" when it can); `needsTask: false` for sweeps, whose items bring their tasks. */
-export function startProblem(p: PatternInfo | undefined, roles: Record<string, RoleValue[]>, needsTask = true, inventory?: AgentInfo[]): string {
+export function startProblem(p: PatternInfo | undefined, roles: Record<string, RoleValue[]>, needsTask = true, inventory?: AgentInfo[], antigravityExecution: "isolated" | "native" = "isolated"): string {
+  const invalid = numberInputProblem("composer:") || numberInputProblem("context:") || executionLimitsProblem(limits.value) || (needsTask ? acceptanceCriteriaProblem(acceptanceCriteria.value) : "");
+  if (invalid) return invalid;
+  if (p?.id === "solo" && composerRunOptions.value.taskTeam?.enabled) { const problem = taskTeamLimitsProblem(composerRunOptions.value.taskTeam as unknown as Record<string, unknown>); if (problem) return problem; }
+  for (const option of p?.options ?? []) if (option.type !== "boolean") {
+    const problem = numberProblem(optionsFor(p)[option.id], { label: option.label, min: option.min ?? 0, max: option.max ?? Number.MAX_SAFE_INTEGER, integer: true });
+    if (problem) return problem;
+  }
+  if (p?.id === "solo" && composerRunOptions.value.taskTeam?.enabled && !inventory && !composerRunOptions.value.remoteWorker && !composerRunOptions.value.container?.enabled) {
+    if (teamRollout.value?.enabled === false) return "Team is disabled on this server. Turn AI team off to continue with one agent.";
+    const approvals = toolApprovalState({ choice: composerRunOptions.value.toolApprovals, trust: externalSource.value ? "safe" : trust.value, p, roles, external: !!externalSource.value }).tools;
+    const permission = teamApprovalProblem(composerRunOptions.value.taskTeam, approvals); if (permission) return permission;
+  }
   if (p?.id === "auto-team" && teamRollout.value?.enabled === false) return "New teams are disabled. Existing teams can still be resumed.";
+  // Before "Pick an agent": the providers are greyed out because the pause applies everywhere.
+  if (executionPaused.value) return "Agent runs are paused by a project's filesystem restriction";
   if (composerLoading.value) return "Restoring project draft…";
+  if (draftUnavailable.value) return "This saved draft is unreadable. Choose another project to continue.";
+  if (target.value.unavailable && projectsLoaded.value) return target.value.problem;
   if (repoChecking.value) return "Checking repository…";
   if (!repo.value) return "Choose a repository first";
   if (target.value.problem) return target.value.problem;
   if (configChecking.value) return "Loading repository configuration…";
   if (needsTask && !task.value.trim()) return "Describe the task to start";
   if (!p) return "Pick how the agents work together";
+  if (!inventory) { const readiness = providerSetupProblem(agents.value, health.value); if (readiness) return readiness; }
+  for (const [role, ids] of Object.entries(roles)) for (const id of ids) {
+    if (id === "auto") continue;
+    const settings = { ...agentSettings.value[id], ...roleModels.value[p.id]?.[role]?.[id] };
+    const invalid = [settings, ...(settings.variants ?? [])].find(value => modelIdProblem(id, value.model));
+    if (invalid) return `${(inventory ?? agents.value).find(entry => entry.id === id)?.displayName ?? id}: ${modelIdProblem(id, invalid.model)}`;
+  }
   const unsupported = (p.id === "auto-team" ? roles.coordinator ?? [] : Object.values(roles).flat()).find(id => id !== "auto" && !supportsRunPermissions(id));
-  if (unsupported) return `${unsupported} cannot enforce managed run permissions yet. Choose Claude or Codex.`;
-  for (const role of p.roles) if (!role.optional && !roles[role.id]?.length) return `Pick an agent for ${role.label}`;
-  if (p.id === "race" && participantCount(p.id, "contestants", roles.contestants ?? []) < 2) return "A race needs at least two contestants";
-  if (p.id === "debate" && participantCount(p.id, "debaters", roles.debaters ?? []) < 2) return "A debate needs at least two debaters";
-  if (p.id === "auto-team" && !roles.pool?.some(supportsRunPermissions)) return "Keep at least one compatible provider in the pool (Claude or Codex)";
+  if (unsupported) return runProviderProblem(unsupported, (inventory ?? agents.value).find(agent => agent.id === unsupported)?.displayName)!;
+  for (const role of p.roles) if (!role.optional && !roles[role.id]?.length) return p.roles.length === 1 ? "Choose a provider" : `Choose a provider for ${role.label}`;
+  const unavailableHint = !inventory && health.value?.some(item => item.installed && item.signedIn === false) ? " Some providers are signed out; open Settings → Agents & models." : "";
+  if (p.id === "race" && participantCount(p.id, "contestants", roles.contestants ?? []) < 2) return "A race needs at least two contestants." + unavailableHint;
+  if (p.id === "debate" && participantCount(p.id, "debaters", roles.debaters ?? []) < 2) return "A debate needs at least two debaters." + unavailableHint;
+  if (p.id === "auto-team" && !roles.pool?.some(supportsRunPermissions)) return "Keep at least one compatible provider in the pool (Claude Code, Codex or Antigravity)";
   if (p.id === "auto-team" && limits.value.maxSteps < 4) return "A team needs at least 4 steps: planning, work, review and recovery";
   if (p.requiresCheck && !checkCmd.value.trim()) return `${p.name} needs a “Done when” command, e.g. npm test`;
   // An Auto pool is permission to choose from these providers; availability is checked by
@@ -569,6 +610,14 @@ export function startProblem(p: PatternInfo | undefined, roles: Record<string, R
   }
   const signedOut = health.value?.find((h) => used.has(h.id) && h.installed && h.signedIn === false);
   if (signedOut) return `${signedOut.name} isn't signed in — open Settings → Agents & models`;
+  const unready = agents.value.find(entry => used.has(entry.id) && providerProblem(entry, health.value));
+  if (unready) return `${unready.displayName}: ${providerProblem(unready, health.value)}`;
+  // Runs use isolated Antigravity unless the run opts out; the doctor knows whether this computer can.
+  const needsIsolation = used.has("agy") && antigravityExecution !== "native";
+  const agyHealth = health.value?.find((h) => h.id === "agy");
+  if (needsIsolation && !agyHealth) return healthError.value ? "Antigravity compatibility could not be checked. Refresh providers in Settings → Agents & models." : "Checking whether Antigravity can run isolated…";
+  const isolatedAgy = needsIsolation && agyHealth?.installed && agyHealth.managedCompatible === false ? agyHealth : undefined;
+  if (isolatedAgy) return `Antigravity${isolatedAgy.version ? ` ${isolatedAgy.version}` : ""} can't run isolated on this computer (it needs macOS, a verified CLI version and an existing Keychain login). Update Antigravity, or turn on Run options → Advanced → Use unrestricted Antigravity.`;
   return "";
 }
 
@@ -635,6 +684,7 @@ function useImprove(disabledReason: string) {
         method: "POST", signal: operation.stop.signal,
         body: JSON.stringify({
           text, repo: repo.value, mode: how, execution: "local", settings: improveSettings.value,
+          criteria: acceptanceCriteria.value.map(value => value.trim()).filter(Boolean),
           context: [...contextPaths.value.values()].map((item) => item.path).concat(attachments.value.map((item) => item.name)),
           source: source.value ? { kind: source.value.kind, number: source.value.number, title: source.value.title } : undefined,
         }),
@@ -707,11 +757,11 @@ function WorktreeBranchPicker() {
   const pr = source.value?.kind === "pr" ? source.value : null;
   if (!info) return null;
   const value = pr ? "__pr" : baseRef.value;
-  return <div class="task-branch"><span>Start from branch</span><ModelSelect label="Start from branch" title="Choose a branch" kind="branch" value={value} disabled={!!pr} onChange={value => { baseRef.value = value; }} options={pr ? [{ id: "__pr", label: `PR #${pr.number} · ${pr.headRefName}` }] : [
-    { id: "", label: info.current ? `Current branch · ${info.current}` : "Current HEAD", description: "Use the current checkout" },
+  return <div class="task-branch"><span>Start from branch</span><ModelSelect label="Start from branch" title="Choose a branch" kind="branch" value={value} disabled={!!pr} onChange={value => { baseRef.value = value; baseNotice.value = ""; }} options={pr ? [{ id: "__pr", label: `PR #${pr.number} · ${pr.headRefName}` }] : [
+    { id: "", label: info.current ? `Current branch · ${info.current}` : "Current HEAD", description: "Latest committed state. Uncommitted changes are not included." },
     ...(baseRef.value && !info.branches.some(branch => branch.name === baseRef.value) ? [{ id: baseRef.value, label: baseRef.value }] : []),
     ...info.branches.map(branch => ({ id: branch.name, label: branch.name, description: branch.kind === "local" ? "Local branch" : branch.kind === "remote" ? "Remote branch" : "Previous task branch" })),
-  ]} /><span class="help">New worktree</span></div>;
+  ]} /><span class="help worktree-snapshot">New worktree from the selected commit; uncommitted checkout changes are not included.</span></div>;
 }
 
 function TaskBox({ onStart, improve, controls }: { onStart: () => void; improve: ReturnType<typeof useImprove>; controls?: ComponentChildren }) {
@@ -828,7 +878,7 @@ function TaskBox({ onStart, improve, controls }: { onStart: () => void; improve:
           <button
             class="btn ghost small"
             disabled={!improve.busy && !canImprove}
-            aria-label={improve.busy ? "Stop" : "Improve"}
+            aria-label={improve.busy ? "Stop" : `Improve · ${improve.agentName}`}
             aria-description={`Prompt improvement agent: ${improve.agentName}. Mode: ${improve.mode}. Configure in Settings, Agents & models.`}
             aria-describedby={improve.disabledReason ? "improve-execution-note" : undefined}
             title={improve.busy ? "Stop rewriting" : improve.disabledReason || (!repo.value ? "Choose a repository first" : improve.mode === "repo" ? "Rewrite the task using a committed repository snapshot" : "Rewrite the task so agents can act on it")}
@@ -865,11 +915,12 @@ function ContextChips() {
     <div class="chips">
       <SourceChip />
       {[...contextPaths.value.values()].map((c) => (
-        <span key={c.path} class="chip-ctx" title={c.path}>
+        <span key={c.path} class="chip-ctx" title={c.type === "dir" && c.status === "U" ? `${c.path}: has untracked files. Folders must exist on the start branch; add individual files for local changes.` : c.path}>
           <Icon name={c.type === "dir" ? "folder" : "note"} />
           <span class="n">
             {c.path}
             {c.type === "dir" ? "/" : ""}
+            {c.type === "dir" && c.status === "U" ? " · untracked changes" : ""}
           </span>
           <button type="button" title="Remove" aria-label={`Remove ${c.path}`} onClick={() => remove(c.path)}>
             ×
@@ -893,13 +944,13 @@ function ContextChips() {
 
 export function addContext(item: ContextItem) {
   const next = new Map(contextPaths.value);
-  next.set(item.path, { path: item.path, type: item.type });
+  next.set(item.path, { path: item.path, type: item.type, status: item.status });
   contextPaths.value = next;
 }
 function toggleContext(item: ContextItem) {
   const next = new Map(contextPaths.value);
   if (next.has(item.path)) next.delete(item.path);
-  else next.set(item.path, { path: item.path, type: item.type });
+  else next.set(item.path, { path: item.path, type: item.type, status: item.status });
   contextPaths.value = next;
 }
 
@@ -966,11 +1017,11 @@ function Team({ p, roles, providers, remote }: { p: PatternInfo; roles: Record<s
                       type="button"
                       class="pill"
                       aria-pressed={on}
-                      disabled={(!a.available || !supportsRunPermissions(a.id)) && !on}
-                      title={!supportsRunPermissions(a.id) ? "Managed run permissions are not supported by this adapter yet" : a.available ? `${role.multiple ? "Toggle" : "Choose"} ${a.displayName}` : `${a.displayName} isn't installed`}
+                      disabled={!!providerProblem(a, providers ? null : health.value) && !on}
+                      title={providerProblem(a, providers ? null : health.value) || `${role.multiple ? "Toggle" : "Choose"} ${a.displayName}`}
                       onClick={() => setRoles(p.id, role.id, role.multiple ? (on ? selected.filter((x) => x !== a.id) : [...selected, a.id]) : [a.id])}
                     >
-                      <span class="provider-check" aria-hidden="true">{on ? "✓" : "+"}</span><span>{a.displayName}</span>
+                      <span class="provider-check" aria-hidden="true">{on ? "✓" : "+"}</span><span>{a.displayName}{providerProblem(a, providers ? null : health.value) ? ` · ${providerProblem(a, providers ? null : health.value).split(" — ")[0]}` : ""}</span>
                     </button>
                   );
                 })}
@@ -1020,7 +1071,7 @@ export const TRUST = {
 } as const;
 
 /** What the team will do, in one sentence; `checkpoints: false` leaves out plan approval (sweeps don't pause). */
-export function teamSentence(p: PatternInfo, roles: Record<string, RoleValue[]>, checkpoints = true): string {
+export function teamSentence(p: PatternInfo, roles: Record<string, RoleValue[]>, checkpoints = true, checkMode: CheckMode = "conversation"): string {
   const one = (r: string) => (roles[r]?.[0] ? SHORT[roles[r]![0]!] : "—");
   const many = (r: string) => {
     const n = (roles[r] ?? []).map((id) => { const count = id === "auto" ? 1 : 1 + (roleModels.value[p.id]?.[r]?.[id]?.variants?.length ?? 0); return `${SHORT[id]}${count > 1 ? ` × ${count}` : ""}`; });
@@ -1045,7 +1096,7 @@ export function teamSentence(p: PatternInfo, roles: Record<string, RoleValue[]>,
     case "council":
       return `${many("reviewers")} review on their own, read-only → ${one("chair")} merges what they found · nothing is changed or posted without you`;
     case "solo":
-      return `${one("agent")} works on it in its own branch; reply to keep going, like a chat${check ? ` · code-flow runs “${check}” after every turn` : ""}`;
+      return `${one("agent")} works on it in its own branch; reply to keep going, like a chat. ${checkExplanation(checkMode, check)}`;
     case "loop": {
       const w = roles.workers ?? [];
       const handoff = w.length > 1 ? `, handing over to ${w.slice(1).map((id) => SHORT[id]).join(", then ")} if stuck` : "";
@@ -1056,13 +1107,23 @@ export function teamSentence(p: PatternInfo, roles: Record<string, RoleValue[]>,
   }
 }
 
-function configSummary(config: Record<string, any>): string {
+/**
+ * What the repository's file sets, and which of it this draft doesn't use (Run details says what it
+ * uses instead). Read at a start branch, its permissions and copied files are still your checkout's.
+ */
+function configSummary(config: Record<string, any>, atBranch = false): string {
+  const limit = config.limits ?? {};
+  const unless = (used: boolean, text: string | false | undefined) => text && (used ? text : `${text} (overridden)`);
+  const local = atBranch ? " (from your checkout)" : "";
   const parts = [
-    config.check && `check “${config.check}”`,
-    config.setup && `setup “${config.setup}”`,
-    config.copy?.length && `copies ${config.copy.join(", ")}`,
+    unless(checkCmd.value.trim() === config.check, config.check && `check “${config.check}”`),
+    unless(setupCmd.value.trim() === config.setup, config.setup && `setup “${config.setup}”`),
+    config.copy?.length && `copies ${config.copy.join(", ")}${local}`,
     config.run?.command && `runs the app with “${config.run.command}”`,
-    config.trust && `${config.trust} permissions`,
+    unless(trust.value === config.trust, config.trust && `${config.trust} permissions${local}`),
+    unless((!limit.maxMinutes || limits.value.maxMinutes === limit.maxMinutes) && (!limit.maxSteps || limits.value.maxSteps === limit.maxSteps), (limit.maxMinutes || limit.maxSteps) && `limits ${[limit.maxMinutes && `${limit.maxMinutes} minutes`, limit.maxSteps && plural(limit.maxSteps, "step")].filter(Boolean).join(", ")}`),
+    limit.checkTimeoutMin && `checks stop after ${limit.checkTimeoutMin} minutes`,
+    Object.keys(config.models ?? {}).length && `models ${Object.entries(config.models as Record<string, { model?: string; effort?: string }>).map(([id, setting]) => `${SHORT[id as AgentId] ?? id} ${[setting?.model, setting?.effort].filter(Boolean).join(" ") || "default"}`).join(", ")}`,
   ].filter(Boolean);
   return parts.length ? `: ${parts.join(" · ")}` : "";
 }
@@ -1141,13 +1202,13 @@ function Settings({ p, roles }: { p: PatternInfo; roles: Record<string, RoleValu
   const fromPr = source.value?.kind === "pr" ? source.value : null;
   const baseLabel = fromPr ? `PR #${fromPr.number}'s branch` : baseRef.value || (info?.current ? `HEAD (${info.current})` : "HEAD");
   const opts = optionsFor(p);
-  const setLimits = (patch: Partial<typeof limits.value>) => { limits.value = { ...limits.value, ...patch }; };
+  const setLimits = (patch: Partial<typeof limits.value>) => setRunLimits(patch);
   return (
     <details class="settings">
       <summary>
         <span class="st">Branches and limits</span>
         <span class="ss">
-          from {baseLabel} · {models.length ? models.join(", ") : "default models"} · stops after {limits.value.maxMinutes} min or {limits.value.maxSteps} steps
+          from {baseLabel} · {models.length ? models.join(", ") : "default models"} · stops after {limits.value.maxMinutes} min or {plural(limits.value.maxSteps, "step")}
           {trust.value === "full" ? <span class="full-access"> · ⚠ full access</span> : null}
         </span>
       </summary>
@@ -1170,7 +1231,7 @@ function Settings({ p, roles }: { p: PatternInfo; roles: Record<string, RoleValu
               {o.type === "boolean" ? (
                 <input type="checkbox" id={`opt-${o.id}`} checked={!!opts[o.id]} onChange={(e) => setOption(p, o.id, e.currentTarget.checked)} />
               ) : (
-                <input class="field" type="number" id={`opt-${o.id}`} min={o.min} max={o.max} value={String(opts[o.id])} onInput={(e) => setOption(p, o.id, Number(e.currentTarget.value))} />
+                <NumberField id={`opt-${o.id}`} problemKey={`composer:option:${p.id}:${o.id}`} value={opts[o.id] as number} rule={{ label: o.label, min: o.min ?? 0, max: o.max ?? Number.MAX_SAFE_INTEGER, integer: true }} onChange={value => setOption(p, o.id, value!)} />
               )}
             </div>
           ))}
@@ -1182,16 +1243,16 @@ function Settings({ p, roles }: { p: PatternInfo; roles: Record<string, RoleValu
               <label class="lbl" for="maxMinutes">
                 Minutes
               </label>
-              <input class="field" type="number" id="maxMinutes" min={1} max={720} value={String(limits.value.maxMinutes)} onInput={(e) => setLimits({ maxMinutes: Number(e.currentTarget.value) || DEFAULT_EXECUTION_BUDGET.maxMinutes })} />
+              <NumberField id="maxMinutes" problemKey="composer:maxMinutes" value={limits.value.maxMinutes} rule={EXECUTION_LIMITS.maxMinutes} onChange={value => setLimits({ maxMinutes: value! })} />
             </div>
             <div>
               <label class="lbl" for="maxSteps">
                 Agent steps
               </label>
-              <input class="field" type="number" id="maxSteps" min={1} max={200} value={String(limits.value.maxSteps)} onInput={(e) => setLimits({ maxSteps: Number(e.currentTarget.value) || DEFAULT_EXECUTION_BUDGET.maxSteps })} />
+              <NumberField id="maxSteps" problemKey="composer:maxSteps" value={limits.value.maxSteps} rule={EXECUTION_LIMITS.maxSteps} onChange={value => setLimits({ maxSteps: value! })} />
             </div>
-            <div><label class="lbl" for="maxTokens">Reported token ceiling</label><input class="field" id="maxTokens" type="number" min={1} placeholder="Optional" value={limits.value.maxTokens ?? ""} onInput={(event) => setLimits({ maxTokens: Number(event.currentTarget.value) || undefined })} /></div>
-            <div><label class="lbl" for="maxCostUsd">Reported API-equivalent ceiling ($)</label><input class="field" id="maxCostUsd" type="number" min={0.001} step={0.01} placeholder="Optional" value={limits.value.maxCostUsd ?? ""} onInput={(event) => setLimits({ maxCostUsd: Number(event.currentTarget.value) || undefined })} /></div>
+            <div><label class="lbl" for="maxTokens">Reported token ceiling</label><NumberField id="maxTokens" problemKey="composer:maxTokens" value={limits.value.maxTokens} rule={EXECUTION_LIMITS.maxTokens} optional placeholder="Optional" onChange={value => setLimits({ maxTokens: value })} /></div>
+            <div><label class="lbl" for="maxCostUsd">Reported API-equivalent ceiling ($)</label><NumberField id="maxCostUsd" problemKey="composer:maxCostUsd" value={limits.value.maxCostUsd} rule={EXECUTION_LIMITS.maxCostUsd} optional placeholder="Optional" onChange={value => setLimits({ maxCostUsd: value })} /></div>
 
           </div>
           <div class="help">Ceilings use reported usage; they cannot count missing provider data and are checked between operations. API-equivalent cost is not your subscription bill. Work done before a limit is kept on its branch.</div>
@@ -1205,8 +1266,9 @@ function Settings({ p, roles }: { p: PatternInfo; roles: Record<string, RoleValu
 
 export function ModelRow({ agent, used, settings, onChange }: { agent: AgentInfo; used: boolean; settings?: { model?: string; effort?: string }; onChange?: (patch: { model?: string; effort?: string }) => void }) {
   const cat = catalogs.value[agent.id];
-  const s = settings ?? agentSettings.value[agent.id] ?? {};
-  const changeSetting = (patch: { model?: string; effort?: string }) => onChange ? onChange(patch) : setAgentSetting(agent.id, patch);
+  // Without its own settings, the row edits the saved provider defaults (Settings > Agents & models).
+  const s = settings ?? providerDefaults.value[agent.id] ?? {};
+  const changeSetting = (patch: { model?: string; effort?: string }) => onChange ? onChange(patch) : setProviderDefault(agent.id, patch);
   // Hooks before any early return; null = "derive from the saved model".
   const [customChoice, setCustom] = useState<boolean | null>(null);
   if (!cat || "error" in cat) {
@@ -1246,7 +1308,7 @@ export function ModelRow({ agent, used, settings, onChange }: { agent: AgentInfo
         ))}
       </select>
       {custom ? (
-        <input class="field custom" type="text" placeholder="model id or alias" aria-label={`${agent.displayName} custom model`} value={s.model ?? ""} onInput={(e) => changeSetting({ model: e.currentTarget.value.trim() })} />
+        <input class="field custom" type="text" placeholder="model id or alias" aria-label={`${agent.displayName} custom model`} aria-invalid={!!modelIdProblem(agent.id, s.model)} title={modelIdProblem(agent.id, s.model)} value={s.model ?? ""} onInput={(e) => changeSetting({ model: e.currentTarget.value })} onBlur={(e) => changeSetting({ model: e.currentTarget.value.trim() })} />
       ) : null}
     </div>
   );
@@ -1268,7 +1330,9 @@ export function FileTree({ root, onOpen }: { root: string; onOpen: (path: string
   const treeRequest = useLatest();
   const searchRequest = useLatest();
 
-  useEffect(() => {
+  // Reset the folder scope before it is interactive; a passive mount effect
+  // could erase a search entered immediately after opening the panel.
+  useLayoutEffect(() => {
     const current = treeRequest();
     setQuery("");
     setResults(null);
@@ -1323,7 +1387,7 @@ export function FileTree({ root, onOpen }: { root: string; onOpen: (path: string
       </div>
       {inComposer ? (
         <div class="files-foot">
-          Click a file to read it; <b>+</b> or drag adds it to the task. <b class="mark-m">M</b> changed · <b class="mark-u">U</b> new
+          Click a file to read it; double-click, <b>+</b> or drag adds it to the task. <b>−</b> removes it. <b class="mark-m">M</b> changed · <b class="mark-u">U</b> new
         </div>
       ) : null}
     </>
@@ -1335,6 +1399,9 @@ function TreeNode({ entry, depth, sub, root, onOpen, context }: { entry: TreeEnt
   const [open, setOpen] = useState(false);
   const [message, setMessage] = useState("");
   const request = useLatest();
+  const [truncated, setTruncated] = useState(false);
+  const clickTimer = useRef<ReturnType<typeof setTimeout>>();
+  useEffect(() => () => clearTimeout(clickTimer.current), []);
   const added = context && contextPaths.value.has(entry.path);
   const statusName = entry.status ? ({ M: "changed", U: "new, not committed", A: "added" } as const)[entry.status] : "";
   const isDir = entry.type === "dir";
@@ -1344,9 +1411,9 @@ function TreeNode({ entry, depth, sub, root, onOpen, context }: { entry: TreeEnt
     const current = request();
     setMessage("Loading…");
     try {
-      const d = await api<{ entries: TreeEntry[] }>(`/api/tree?repo=${enc(root)}&path=${enc(entry.path)}`);
+      const d = await api<{ entries: TreeEntry[]; truncated: boolean }>(`/api/tree?repo=${enc(root)}&path=${enc(entry.path)}`);
       if (!current()) return;
-      setChildren(d.entries);
+      setChildren(d.entries); setTruncated(d.truncated);
       setMessage(d.entries.length ? "" : "Empty folder");
     } catch (err) {
       if (current()) setMessage((err as Error).message);
@@ -1378,13 +1445,18 @@ function TreeNode({ entry, depth, sub, root, onOpen, context }: { entry: TreeEnt
         tabIndex={0}
         aria-level={depth + 1}
         aria-expanded={isDir ? open : undefined}
-        aria-label={`${entry.name}${sub ? `, in ${sub}` : ""}${statusName ? `, ${statusName}` : ""}`}
+        aria-label={`${entry.name}${sub ? `, in ${sub}` : ""}${statusName ? `, ${statusName}` : ""}${added ? ", in the task" : ""}`}
         draggable={context}
         title={`${entry.path}${statusName ? ` — ${statusName}` : ""}${context ? "\nDrag into the task, or click +" : ""}`}
         style={`padding-left:${2 + depth * 14}px`}
-        onClick={toggle}
+        onClick={event => {
+          if (!context || isDir || event.detail === 0) return toggle();
+          clearTimeout(clickTimer.current);
+          if (event.detail >= 2) { addContext(entry); onOpen(entry.path); }
+          else clickTimer.current = setTimeout(() => onOpen(entry.path), 300);
+        }}
         onKeyDown={onKey}
-        onDblClick={() => context && entry.type === "file" && addContext(entry)}
+        onDblClick={event => { event.stopPropagation(); if (context && !isDir) { clearTimeout(clickTimer.current); addContext(entry); } }}
         onDragStart={(e) => {
           e.dataTransfer!.setData(DRAG_TYPE, JSON.stringify({ path: entry.path, type: entry.type }));
           e.dataTransfer!.setData("text/plain", entry.path);
@@ -1403,14 +1475,14 @@ function TreeNode({ entry, depth, sub, root, onOpen, context }: { entry: TreeEnt
           <button
             type="button"
             class="add"
-            title={`Add ${entry.path} to the task`}
-            aria-label={`Add ${entry.path} to the task`}
+            title={added ? `Remove ${entry.path} from the task` : `Add ${entry.path} to the task`}
+            aria-label={added ? `Remove ${entry.path} from the task` : `Add ${entry.path} to the task`}
             onClick={(e) => {
               e.stopPropagation();
               toggleContext(entry);
             }}
           >
-            +
+            {added ? "−" : "+"}
           </button>
         ) : null}
       </div>
@@ -1422,6 +1494,7 @@ function TreeNode({ entry, depth, sub, root, onOpen, context }: { entry: TreeEnt
             </div>
           ) : null}
           {children?.map((c) => <TreeNode key={c.path} entry={c} depth={depth + 1} root={root} onOpen={onOpen} context={context} />)}
+          {truncated ? <div class="tree-empty" style={`padding-left:${22 + depth * 14}px`}>Showing the first 1000 — use search</div> : null}
         </div>
       ) : null}
     </div>

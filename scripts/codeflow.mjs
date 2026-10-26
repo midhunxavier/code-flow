@@ -25,8 +25,11 @@ const known = new Set(["status", "runs", "run", "readiness", "verify", "pause", 
 if (!known.has(command)) { process.stderr.write(`Unknown command: ${command}\n${usage}`); process.exit(2); }
 const token = process.env.CODEFLOW_TOKEN;
 if (!token) { process.stderr.write("Set CODEFLOW_TOKEN to the explicit token used by your server.\n"); process.exit(2); }
-const origin = new URL(process.env.CODEFLOW_URL || "http://127.0.0.1:4317");
-if (!["http:", "https:"].includes(origin.protocol) || origin.username || origin.password) throw new Error("CODEFLOW_URL must be an HTTP(S) origin without embedded credentials");
+let origin;
+try { origin = new URL(process.env.CODEFLOW_URL || "http://127.0.0.1:4317"); } catch {}
+if (!origin || !["http:", "https:"].includes(origin.protocol) || origin.username || origin.password) {
+  process.stderr.write("CODEFLOW_URL must be an HTTP(S) origin without embedded credentials, for example http://127.0.0.1:4317.\n"); process.exit(2);
+}
 const requestFile = async (path) => {
   if (!path) throw new Error("Name a JSON request file");
   const text = await readFile(path, "utf8");
@@ -52,4 +55,5 @@ try {
   const text = `${JSON.stringify(value, null, 2)}\n`;
   if (output) { await writeFile(output, text, { mode: 0o600, flag: "wx" }); process.stdout.write(`Saved ${output}\n`); }
   else process.stdout.write(text);
-} catch (error) { process.stderr.write(`${error.message}\n`); process.exitCode = 1; }
+} catch (error) { const cause = typeof error.cause?.code === "string" && /^[A-Z0-9_]+$/.test(error.cause.code) ? ` (${error.cause.code})` : "";
+  process.stderr.write(`${error.message}${cause}${error.name === "TypeError" ? ` contacting ${origin.origin}` : ""}\n`); process.exitCode = 1; }

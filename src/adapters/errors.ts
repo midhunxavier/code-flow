@@ -14,7 +14,7 @@ const PATTERNS: [ErrorKind, RegExp][] = [
   ["cli_incompatible", /unknown option|unknown flag|unrecognized (?:option|argument|subcommand)|unexpected argument|wasn't expected|invalid value for '--/i],
   [
     "auth",
-    new RegExp(String.raw`not logged in|please run /login|run \`?\w+ login\`?|invalid api key|oauth token (?:has )?expired|token (?:has )?expired|login (?:has )?expired|authentication_error|unauthenticated|unauthorized|(?:log|sign) in again|${status("401")}`, "i"),
+    new RegExp(String.raw`not (?:logged|signed) in|isn[’']t signed in|authentication(?: failed|_error)|credentials? (?:expired|missing)|please run /login|run \`?\w+ login\`?|invalid api key|oauth token (?:has )?expired|token (?:has )?expired|login (?:has )?expired|authentication_error|unauthenticated|unauthorized|(?:log|sign) in again|${status("401")}`, "i"),
   ],
   // Per-minute limits, even when worded as a quota (Google's 429s say "Quota exceeded for quota
   // metric '… requests per minute'"). Told apart before usage limits, which stop the run and keep

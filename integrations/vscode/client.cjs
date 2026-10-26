@@ -27,10 +27,11 @@ class CodeFlowClient {
   }
   async compatibility() { const report = await this.request('/api/v1/capabilities'); if (report.version !== 1) throw new Error('This server uses an unsupported Code Flow API version'); return report; }
   async runs(repo) { const page = await this.request('/api/v1/runs?limit=100'); return page.runs.filter((run) => !repo || run.repo === repo || run.worktrees?.some((tree) => tree.path === repo)); }
-  async start(repo, task, paths = []) {
+  async start(repo, task, paths = [], beforeDispatch = () => {}) {
     if (typeof repo !== 'string' || !isAbsolute(repo) || typeof task !== 'string' || !task.trim() || task.length > 24000) throw new Error('Choose a local repository and a task under 24,000 characters');
     await this.compatibility();
     const detected = await this.request(`/api/v1/check?repo=${encodeURIComponent(repo)}`);
+    beforeDispatch(); // The connection can change during compatibility/check requests.
     return this.request('/api/v1/runs', { repo, task: task.trim(), pattern: 'solo', roles: { agent: ['auto'] }, options: {}, trust: 'safe', approvals: { tools: true }, context: { paths: paths.map((path) => ({ path })) }, loop: { check: detected.command || '', maxSteps: 20, maxMinutes: 30, copy: [] } });
   }
 }

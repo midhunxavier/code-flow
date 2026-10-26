@@ -1,0 +1,78 @@
+{
+  "requirements": [
+    {
+      "id": "add-fix",
+      "description": "Change subtraction to addition in sum.mjs so sum(2,3) equals 5."
+    },
+    {
+      "id": "tests-unchanged",
+      "description": "Leave sum.test.mjs unchanged; no packages, external services, PRs or pushes."
+    },
+    {
+      "id": "mailbox-proof",
+      "description": "Worker calls codeflow_team.send_message with operationId daily-team-proof, recipient coordinator, body exactly daily-real-team-mailbox-proof before submission."
+    },
+    {
+      "id": "node-test",
+      "description": "Run node --test sum.test.mjs and report the result."
+    }
+  ],
+  "members": [
+    {
+      "id": "coordinator",
+      "name": "Coordinator",
+      "role": "coordinator",
+      "provider": "claude",
+      "model": "haiku",
+      "effort": "low",
+      "reason": "Pinned coordinator settings from the inventory, kept unchanged."
+    },
+    {
+      "id": "worker",
+      "name": "Claude Haiku worker",
+      "role": "worker",
+      "provider": "claude",
+      "model": "claude-haiku-5-5",
+      "effort": "low",
+      "reason": "Single small edit to sum.mjs with the required mailbox proof call."
+    },
+    {
+      "id": "reviewer",
+      "name": "Claude Haiku reviewer",
+      "role": "reviewer",
+      "provider": "claude",
+      "model": "claude-haiku-5-5",
+      "effort": "low",
+      "reason": "Independent read-only review of the one-line change and unchanged tests."
+    }
+  ],
+  "tasks": [
+    {
+      "id": "add",
+      "title": "Change subtraction to addition in sum.mjs",
+      "instructions": "In sum.mjs, change the subtraction so sum(2,3) returns 5. Do not edit sum.test.mjs or any other file. Run node --test sum.test.mjs. Before submitting, call codeflow_team.send_message with operationId daily-team-proof, recipient coordinator, and body exactly daily-real-team-mailbox-proof. Do not create packages, use external services, delegate natively, open a PR, or push.",
+      "kind": "implementation",
+      "owner": "worker",
+      "dependsOn": [],
+      "requirements": [
+        "add-fix",
+        "tests-unchanged",
+        "mailbox-proof",
+        "node-test"
+      ],
+      "acceptance": [
+        "sum.mjs adds its arguments and sum(2,3) equals 5",
+        "sum.test.mjs is unchanged",
+        "node --test sum.test.mjs passes",
+        "mailbox message with operationId daily-team-proof sent to coordinator before submission"
+      ],
+      "paths": [
+        "sum.mjs"
+      ],
+      "dependencyTypes": []
+    }
+  ],
+  "contracts": [],
+  "rationale": "A single-file one-line fix needs one worker and one independent reviewer, with no decomposition.",
+  "subplans": []
+}

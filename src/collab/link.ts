@@ -1,3 +1,4 @@
+import { TEAM_JOIN_SETTINGS, TEAM_MANAGE_SETTINGS } from "./settings-location.js";
 import { randomBytes } from "node:crypto";
 import { constants } from "node:fs";
 import { chmod, lstat, mkdir, open, realpath, rename, rm } from "node:fs/promises";
@@ -24,7 +25,7 @@ export type LinkConnection = "connected" | "reconnecting" | "offline";
 export interface TeamLinkUser { userId: string; username: string; displayName: string }
 export interface TeamLinkDefaults { pattern?: string; roles?: Record<string, string[]>; trust?: string }
 export type Mappings = Record<string, Record<string, string>>;
-export interface TeamLinkState { linked: boolean; url?: string; runnerId?: string; user?: TeamLinkUser; hubName?: string; machineName?: string; mappings: Mappings; defaults?: TeamLinkDefaults; connection: LinkConnection; lastEventAt?: number; lastSync?: number; error?: string }
+export interface TeamLinkState { linked: boolean; url?: string; runnerId?: string; user?: TeamLinkUser; hubName?: string; machineName?: string; mappings: Mappings; defaults?: TeamLinkDefaults; connection: LinkConnection; lastEventAt?: number; lastSync?: number; error?: string; revoked?: boolean }
 export interface ConnectInput { url: unknown; username: unknown; password: unknown; name?: unknown }
 /** `sseIdleMs` shortens the event stream's idle timeout (60 s) for tests; the hub pings every 15 s, so anything above that keeps a quiet board connected. */
 export interface TeamLinkOptions { file?: string; fetch?: typeof fetch; now?: () => number; machineName?: string; sseIdleMs?: number }
@@ -119,7 +120,7 @@ export class TeamLink implements HubTransport {
       try { this.document = validateDocument(raw); } catch (error) { await this.setAside(error instanceof Error ? error.message : String(error)); }
     })();
   }
-  private async setAside(why: string) { const aside = `${this.file}.corrupt-${new Date(this.now()).toISOString().replace(/[:.]/g, "-")}`; try { await rename(this.file, aside); logError(`${this.file} is unusable (${why}): moved it to ${aside}; connect this computer again in Settings → Team`); } catch (error) { logError(`${this.file} is unusable (${why}) and couldn't be moved aside; connect this computer again after fixing it`, error); } this.document = empty(); }
+  private async setAside(why: string) { const aside = `${this.file}.corrupt-${new Date(this.now()).toISOString().replace(/[:.]/g, "-")}`; try { await rename(this.file, aside); logError(`${this.file} is unusable (${why}): moved it to ${aside}; connect this computer again in ${TEAM_JOIN_SETTINGS}`); } catch (error) { logError(`${this.file} is unusable (${why}) and couldn't be moved aside; connect this computer again after fixing it`, error); } this.document = empty(); }
   private async save(): Promise<void> {
     validateDocument(this.document); const body = JSON.stringify(this.document, null, 2);
     await mkdir(dirname(this.file), { recursive: true, mode: 0o700 });
@@ -136,8 +137,9 @@ export class TeamLink implements HubTransport {
     if (d.defaults) config.defaults = structuredClone(d.defaults);
     const { connection: _connection, ...rest } = config; return rest;
   }
-  state(): TeamLinkState { const state: TeamLinkState = { ...this.config, connection: this.linked ? this.connection : "offline" }; if (this.lastEventAt !== undefined) { state.lastEventAt = this.lastEventAt; state.lastSync = this.lastEventAt; } if (this.connectionError && this.linked) state.error = this.connectionError; return state; }
-  private requireLink(): Required<Pick<LinkDocument, "url" | "token" | "runnerId" | "user" | "machineName">> { const d = this.document; if (!this.linked) throw new CollabError("This computer is not connected to a team server; connect it in Settings → Team", 409); return { url: d.url!, token: d.token!, runnerId: d.runnerId!, user: d.user!, machineName: d.machineName! }; }
+  private revoked = false;
+  state(): TeamLinkState { const state: TeamLinkState = { ...this.config, connection: this.linked ? this.connection : "offline" }; if (this.lastEventAt !== undefined) { state.lastEventAt = this.lastEventAt; state.lastSync = this.lastEventAt; } if (this.connectionError && this.linked) state.error = this.connectionError; if (this.revoked && this.linked) state.revoked = true; return state; }
+  private requireLink(): Required<Pick<LinkDocument, "url" | "token" | "runnerId" | "user" | "machineName">> { const d = this.document; if (!this.linked) throw new CollabError(`This computer is not connected to a team server; connect it in ${TEAM_JOIN_SETTINGS}`, 409); return { url: d.url!, token: d.token!, runnerId: d.runnerId!, user: d.user!, machineName: d.machineName! }; }
   get url(): string { return this.requireLink().url; }
   get runnerId(): string { return this.requireLink().runnerId; }
   get runnerName(): string { return this.requireLink().machineName; }
@@ -155,13 +157,13 @@ export class TeamLink implements HubTransport {
     const hubName = object(body.hub) && typeof body.hub.name === "string" && body.hub.name ? body.hub.name.slice(0, MAX.displayName) : undefined;
     const document: LinkDocument = { ...this.document, url, runnerId: body.runner.id, token: body.token, user, machineName: name }; if (hubName) document.hubName = hubName; else delete document.hubName;
     const previous = this.document; this.document = document; try { await this.save(); } catch (error) { this.document = previous; throw error; }
-    this.connection = "offline"; this.connectionError = undefined; this.lastEventAt = undefined; return this.state();
+    this.revoked = false; this.connection = "offline"; this.connectionError = undefined; this.lastEventAt = undefined; return this.state();
   }
   /** Revokes the credential on the hub when it can be reached, and forgets it here either way; mappings stay for the next link or for this instance's own board. */
   async disconnect(): Promise<void> {
     await this.load(); this.stopEvents?.(); const d = this.document;
-    if (this.linked) { try { const response = await this.rawFetch(`${d.url}/api/team/runners/${encodeURIComponent(d.runnerId!)}`, { method: "DELETE", headers: { accept: "application/json", authorization: `Bearer ${d.token}` } }, 5000); await response.body?.cancel().catch(() => undefined); } catch (error) { logError("The team server could not be told to revoke this computer's credential; revoke it there in Settings → Team", error); } }
-    this.document = { version: 1, mappings: d.mappings }; if (d.defaults) this.document.defaults = d.defaults; this.connection = "offline"; this.connectionError = undefined; this.lastEventAt = undefined;
+    if (this.linked) { try { const response = await this.rawFetch(`${d.url}/api/team/runners/${encodeURIComponent(d.runnerId!)}`, { method: "DELETE", headers: { accept: "application/json", authorization: `Bearer ${d.token}` } }, 5000); await response.body?.cancel().catch(() => undefined); } catch (error) { logError(`The team server could not be told to revoke this computer's credential; revoke it there in ${TEAM_MANAGE_SETTINGS}`, error); } }
+    this.document = { version: 1, mappings: d.mappings }; if (d.defaults) this.document.defaults = d.defaults; this.revoked = false; this.connection = "offline"; this.connectionError = undefined; this.lastEventAt = undefined;
     await this.save();
   }
   /** Maps a project's repository key to a clone on this computer; an empty path removes the mapping. */
@@ -184,7 +186,7 @@ export class TeamLink implements HubTransport {
   async request(path: string, init: HubRequestInit = {}): Promise<Response> {
     const link = this.requireLink(); const headers: Record<string, string> = { accept: "application/json", ...init.headers, authorization: `Bearer ${link.token}` }; let body = init.body;
     if (init.json !== undefined) { body = JSON.stringify(init.json); headers["content-type"] = "application/json"; }
-    try { return await this.rawFetch(`${link.url}${path}`, { method: init.method ?? "GET", headers, body: body ?? null, ...(init.duplex ? { duplex: init.duplex } : {}) }, init.timeoutMs ?? DEFAULT_TIMEOUT_MS, init.signal); } catch (error) { throw unreachable(error, link.url); }
+    try { const response = await this.rawFetch(`${link.url}${path}`, { method: init.method ?? "GET", headers, body: body ?? null, ...(init.duplex ? { duplex: init.duplex } : {}) }, init.timeoutMs ?? DEFAULT_TIMEOUT_MS, init.signal); if (response.status === 401) this.revoked = true; else if (response.ok) this.revoked = false; return response; } catch (error) { throw unreachable(error, link.url); }
   }
   async json<T>(path: string, init: HubRequestInit = {}): Promise<T> {
     const response = await this.request(path, init); if (!response.ok) throw await readError(response);
@@ -244,6 +246,7 @@ export class TeamLink implements HubTransport {
     let upstream: Response;
     try { upstream = await this.rawFetch(`${link.url}${path}`, { method, headers: { ...headers, authorization: `Bearer ${link.token}` }, body: body ?? null }, DEFAULT_TIMEOUT_MS); }
     catch (error) { const reason = unreachable(error, link.url); return send(res, 502, { error: `The team server is unreachable at ${link.url}; check the connection and try again (${reason.message})` }); }
+    if (upstream.status === 401) { this.revoked = true; const error = await readError(upstream); return send(res, 401, { error: error.message, code: error.code }); }
     const type = upstream.headers.get("content-type") ?? "";
     if (!upstream.body || type.startsWith("application/json") || upstream.status === 204 || upstream.status >= 400 && !type.startsWith("text/event-stream")) {
       let text: string; try { text = upstream.body ? await readBounded(upstream, JSON_LIMIT) : ""; } catch (error) { return send(res, 502, { error: `The team server's answer could not be read: ${error instanceof Error ? error.message : String(error)}` }); }

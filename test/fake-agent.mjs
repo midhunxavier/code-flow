@@ -8,6 +8,7 @@ import { sleepMs, work } from "./fake-work.mjs";
 import { exerciseTeamTools } from "./fake-team-tools.mjs";
 
 const [vendor, ...args] = process.argv.slice(2);
+const discoveryDelay = () => new Promise(resolve => setTimeout(resolve, Math.max(0, Math.min(10000, Number(process.env.FAKE_DISCOVERY_DELAY_MS) || 0))));
 
 // Version and sign-in status, in each CLI's real output format.
 if (args[0] === "--version") {
@@ -19,6 +20,7 @@ if (vendor === "claude" && args.includes("--input-format") && args.includes("--t
   const {createInterface} = await import("node:readline");
   for await (const line of createInterface({input:process.stdin})) {
     const msg=JSON.parse(line); if(msg.type!=="control_request")continue;
+    await discoveryDelay();
     const models=process.env.FAKE_DISCOVERY_MODELS ? JSON.parse(process.env.FAKE_DISCOVERY_MODELS) : ["sonnet","opus","haiku","fable"].map(value=>({value,resolvedModel:value,displayName:value,supportsEffort:true,supportedEffortLevels:["low","medium","high","xhigh","max"]}));
     process.stdout.write(JSON.stringify({type:"control_response",response:{subtype:"success",request_id:msg.request_id,response:{models:[{...models[0],value:"default"},...models],account:{id:"fixture"}}}})+"\n");
   }
@@ -69,6 +71,7 @@ if (vendor === "codex" && args[0] === "login" && args[1] === "status") {
 
 // Model listings, in each CLI's real output format.
 if (vendor === "codex" && args[0] === "debug" && args[1] === "models") {
+  await discoveryDelay();
   const levels = (...efforts) => efforts.map((effort) => ({ effort, description: effort }));
   process.stdout.write(JSON.stringify({
     models: [
@@ -82,6 +85,7 @@ if (vendor === "codex" && args[0] === "debug" && args[1] === "models") {
 // Antigravity accepts global flags before its subcommand; native discovery uses a private log.
 const agyCommandArgs = args.filter((arg, index) => arg !== "--log-file" && args[index - 1] !== "--log-file");
 if (vendor === "agy" && agyCommandArgs[0] === "models") {
+  await discoveryDelay();
   // FAKE_AGY_MODELS_FAIL: "network" (Google unreachable) or "signed-out".
   if (process.env.FAKE_AGY_MODELS_FAIL === "network") {
     process.stderr.write("Error: request to https://cloudcode-pa.googleapis.com failed: getaddrinfo ENOTFOUND cloudcode-pa.googleapis.com\n");

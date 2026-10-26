@@ -95,7 +95,7 @@ export async function verifyAgyVersion(binary: string): Promise<void> {
 
 export async function agyIsolationProblem(): Promise<string | undefined> {
   try { await inspectAgyIsolationRuntime(); }
-  catch { return `Isolated Antigravity requires macOS, CLI ${AGY_VERIFIED_CLI_VERSIONS.join(" or ")}, and an existing native Keychain login/security cache. No permissive fallback is available.`; }
+  catch { return `Isolated Antigravity requires macOS, CLI ${AGY_VERIFIED_CLI_VERSIONS.join(" or ")}, and an existing native Keychain login/security cache. Code Flow never switches to unrestricted execution automatically.`; }
 }
 
 export async function discoverIsolatedAgyModels(): Promise<ModelCatalog> {
@@ -141,7 +141,10 @@ export function agyIsolationProfile(paths: AgyIsolationPaths, mode: "read" | "wr
 (deny file-write* ${protectedFiles.map(p => `(literal ${q(p)})`).join(" ")}
   (subpath ${q(join(paths.home, ".gemini", "config"))}))
 (deny file-read* file-write* (require-all (subpath ${q(paths.workspace)}) (regex #"/[.](agents|gemini)(/|$)")))
-(deny file-write* (require-all (subpath ${q(paths.workspace)}) (regex #"/[.]git(/|$)")))
+; Git metadata is outside the profile, as its prompt says: its contents (the worktree's gitdir
+; pointer included) are neither readable nor writable. Metadata stays visible, so stat-based
+; repository detection still works; .gitignore and .gitattributes are ordinary files.
+(deny file-read-data file-read-xattr file-write* (require-all (subpath ${q(paths.workspace)}) (regex #"/[.]git(/|$)")))
 ; Inference and native authentication need networking. Model command/browser/MCP tools
 ; are removed and denied in protected provider policy; this is not whole-process offline mode.
 (allow network*)

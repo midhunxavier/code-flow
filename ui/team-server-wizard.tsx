@@ -3,13 +3,14 @@ import { useEffect, useRef, useState } from "preact/hooks";
 import type { Board, RepoRef } from "../src/collab/model.js";
 import type { SharedAccountState, SharedRole } from "../src/shared-accounts.js";
 import type { Project } from "./types.js";
-import { ApiError, copy, localApi, workspaceId } from "./lib.js";
-import { loadProjects, repo } from "./state.js";
+import { ApiError, copy, localApi, store, workspaceId } from "./lib.js";
+import { currentProject, loadProjects, repo } from "./state.js";
 import { teamServerAddress } from "./collab-state.js";
 import { SecureRemoteSetup, type RemoteInfo } from "./remote-access.js";
 import { selectTeamConnection } from "./team-connections.js";
 import { repositoryChoice } from "./team-repository-choice.js";
 import { ProjectInvitations } from "./project-invitations.js";
+import { rememberSetupMappings, wizardProject } from "./team-setup-state.js";
 
 const STEPS = ["Project", "Repositories", "Secure access", "Teammates", "Share"];
 const blankRepo = (): RepoRef => ({ key: "app", label: "App", defaultBranch: "main" });
@@ -93,6 +94,9 @@ function TeamServerSteps({ onClose, prefix, workspacePrefix, hostName, onBusy }:
   const [projects, setProjects] = useState<Project[]>([]), [board, setBoard] = useState<Board | null>(null);
   const [accounts, setAccounts] = useState<SharedAccountState | null>(null), [remote, setRemote] = useState<RemoteInfo | null>(null);
   const [projectId, setProjectId] = useState(""), [projectName, setProjectName] = useState(""), [folder, setFolder] = useState(prefix ? "" : repo.value);
+  const rememberedKey = `teamSetupProject:${prefix || "local"}`;
+  const chooseProject = (id: string) => { setProjectId(id); if (id) store.set(rememberedKey, id); };
+  const [mappingWarning, setMappingWarning] = useState("");
   const [ownerName, setOwnerName] = useState(""), [rows, setRows] = useState<(RepoRef & { sourcePath?: string })[]>([blankRepo()]);
   const [person, setPerson] = useState(""), [username, setUsername] = useState(""), [displayName, setDisplayName] = useState(""), [password, setPassword] = useState(""), [role, setRole] = useState<SharedRole>("contributor");
   const [notice, setNotice] = useState("");
@@ -129,7 +133,7 @@ function TeamServerSteps({ onClose, prefix, workspacePrefix, hostName, onBusy }:
   const load = () => run(async () => {
     const [nextProjects, nextBoard, nextAccounts, nextRemote] = await Promise.all([host<Project[]>("/api/projects"), host<Board>("/api/team/board"), host<SharedAccountState>("/api/accounts"), host<RemoteInfo>("/api/remote")]);
     setProjects(nextProjects); setBoard(nextBoard); setAccounts(nextAccounts); setRemote(nextRemote); setOwnerName(nextBoard.me.displayName); setTransport(nextRemote.enabled && nextRemote.lan ? nextRemote.transport : "tailscale");
-    if (!projectId && nextProjects.length) setProjectId(nextProjects[0]!.id);
+    if (!projectId && nextProjects.length) setProjectId(wizardProject(nextProjects, nextBoard, store.get(rememberedKey), prefix ? undefined : currentProject.value));
   });
   useEffect(() => { void load(); }, []);
   useEffect(() => { heading.current?.focus(); setNotice(""); }, [step]);
@@ -141,18 +145,22 @@ function TeamServerSteps({ onClose, prefix, workspacePrefix, hostName, onBusy }:
         if (!chosen) {
           if (!projectName.trim()) throw new Error("Enter a project name.");
           chosen = await host<Project>("/api/projects", { name: projectName.trim(), repos: folder.trim() ? [folder.trim()] : [] });
-          setProjects((current) => [...current, chosen!]); setProjectId(chosen.id); if (!prefix) void loadProjects();
+          setProjects((current) => [...current, chosen!]); chooseProject(chosen.id); if (!prefix) void loadProjects();
         }
         await host("/api/team/profile", { displayName: ownerName.trim() }, "PUT");
+        store.set(rememberedKey, chosen.id);
         const nextBoard = await host<Board>("/api/team/board"); setBoard(nextBoard);
         const existing = nextBoard.projects.find((entry) => entry.id === chosen!.id)?.repositories;
-        setRows(existing?.length ? existing.map((entry) => ({ ...entry })) : [blankRepo()]);
+        setRows(existing?.length ? existing.map((entry) => ({ ...entry })) : [{ ...blankRepo(), ...(chosen.repos.length === 1 ? { sourcePath: chosen.repos[0] } : {}) }]);
       }
       if (step === 1) {
         if (!rows.length || rows.some((entry) => !/^[a-z][a-z0-9-]{0,63}$/.test(entry.key.trim())) || new Set(rows.map((entry) => entry.key.trim())).size !== rows.length) throw new Error("Add at least one repository, with a unique key using lowercase letters, numbers and dashes.");
         try { await host(`/api/team/projects/${encodeURIComponent(projectId)}/repositories`, { revision: board!.revision, repositories: rows.map((entry) => ({ key: entry.key.trim(), label: entry.label.trim() || entry.key.trim(), ...(entry.remote?.trim() ? { remote: entry.remote.trim() } : {}), ...(entry.defaultBranch?.trim() ? { defaultBranch: entry.defaultBranch.trim() } : {}) })) }, "PUT"); }
         catch (err) { if (err instanceof ApiError && err.status === 409) setBoard(await host<Board>("/api/team/board")); throw err; }
         setBoard(await host<Board>("/api/team/board"));
+        const hostPaths = new Set(projects.flatMap(project => project.repos));
+        const warnings = await rememberSetupMappings(host, projectId, rows.map(row => ({ ...row, sourcePath: !prefix || row.sourcePath && hostPaths.has(row.sourcePath) ? row.sourcePath : undefined })));
+        setMappingWarning(warnings.length ? `Repositories saved, but some folders could not be remembered. Choose them in repository settings: ${warnings.join("; ")}` : "");
       }
       if (step >= 2) {
         const [nextRemote, nextAccounts, nextBoard, nextProjects] = await Promise.all([host<RemoteInfo>("/api/remote?refresh=1"), host<SharedAccountState>("/api/accounts"), host<Board>("/api/team/board"), host<Project[]>("/api/projects")]);
@@ -181,13 +189,14 @@ function TeamServerSteps({ onClose, prefix, workspacePrefix, hostName, onBusy }:
   return <section class="settings-card team-server-wizard" aria-label="Team server setup" aria-busy={busy}>
     <div class="pp-card-head"><h3>Set up team server</h3><button class="btn small" disabled={busy} onClick={onClose}>Close setup</button></div>
     <p class="help">Edit the team server on {hostName}. Choose a section below. Saved settings stay in place when you close setup.</p>
+    {mappingWarning ? <p class="msg" role="status">{mappingWarning}</p> : null}
     <ol class="team-setup-steps" aria-label="Setup progress">{STEPS.map((label, index) => <li key={label} aria-current={step === index ? "step" : undefined}><button type="button" disabled={busy || !board || (index > 0 && !project)} aria-current={step === index ? "step" : undefined} onClick={() => { if (index === 1 && step !== 1) setRows(configuredRepos.length ? configuredRepos.map(entry => ({ ...entry })) : [blankRepo()]); setStep(index); }}><span>{index + 1}</span>{label}</button></li>)}</ol>
     <h4 ref={heading} tabIndex={-1}>Step {step + 1} of 5: {STEPS[step]}</h4>
     {!board || !accounts || !remote ? <p class="help">{error ? "Setup could not load your current settings." : "Loading your current settings…"}<button class="btn small" disabled={busy} onClick={() => void load()}>Retry loading settings</button></p> : <>
       {step === 0 ? <form onSubmit={(event) => { event.preventDefault(); void next(); }}>
         <fieldset disabled={busy} class="team-setup-fields"><legend class="sr-only">Project and host</legend>
           <label>Your name on the team<input class="field" required maxLength={120} value={ownerName} onInput={(event) => setOwnerName(event.currentTarget.value)} /></label>
-          <label>Project<select aria-label="Project" class="field" value={projectId} onChange={(event) => setProjectId(event.currentTarget.value)}><option value="">Create a new project…</option>{projects.map((entry) => <option key={entry.id} value={entry.id}>{entry.name}</option>)}</select></label>
+          <label>Project<select aria-label="Project" class="field" value={projectId} onChange={(event) => chooseProject(event.currentTarget.value)}><option value="">Create a new project…</option>{projects.map((entry) => <option key={entry.id} value={entry.id}>{entry.name}</option>)}</select></label>
           {!project ? <><label>Project name<input class="field" required maxLength={60} value={projectName} onInput={(event) => setProjectName(event.currentTarget.value)} /></label><label>Local repository folder (optional)<input class="field mono" value={folder} placeholder="/path/to/repository" onInput={(event) => setFolder(event.currentTarget.value)} /></label><p class="help">A server can host the board without a local clone. Teammates map their own clones after connecting.</p></> : <p class="help">Use {project.name} and keep its existing settings and members.</p>}
           <button class="btn primary" type="submit">Save and continue</button>
         </fieldset>

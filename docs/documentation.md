@@ -18,7 +18,7 @@ npm ci
 npm run docs:preview
 ```
 
-Open [127.0.0.1:4319](http://127.0.0.1:4319). This preview intentionally behaves like GitHub Pages, so companion controls are omitted. Restart the preview after editing Markdown or site assets.
+Open [127.0.0.1:4319](http://127.0.0.1:4319), or set `DOCS_PORT=0 npm run docs:preview` to choose a free port and open the printed URL. `DOCS_PORT` accepts0–65535; it is separate from the application’s `PORT`. This preview intentionally behaves like GitHub Pages, so companion controls are omitted. Restart the preview after editing Markdown or site assets.
 
 ## Publish to GitHub Pages
 

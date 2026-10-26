@@ -42,9 +42,9 @@ export function sharedCanReadRun(identity: SharedPrincipal, run: Pick<Run, "proj
 }
 export function sharedProjectProjection(project: Project) { return { id: project.id, name: project.name, createdAt: project.createdAt }; }
 export function sharedDiffProjection(files: readonly DiffFile[]): DiffFile[] { return redactExport(files.filter((file) => !sensitiveContextPath(file.path) && (!file.oldPath || !sensitiveContextPath(file.oldPath)))); }
-export function sharedCoverageProjection(value: { head: string; files: string[]; reviewed: string[]; stale?: boolean }) {
+export function sharedCoverageProjection(value: { head: string; files: string[]; reviewed: string[]; stale?: boolean; workingChanges?: boolean }) {
   const files = value.files.filter((path) => !sensitiveContextPath(path)); const reviewed = value.reviewed.filter((path) => files.includes(path));
-  return { scope: "shared-reviewable-files" as const, omittedCount: value.files.length - files.length, head: value.head, files, reviewed, stale: !!value.stale, coverage: { changed: files.length, reviewed: reviewed.length, percent: files.length ? Math.round(reviewed.length / files.length * 100) : 100 } };
+  return { scope: "shared-reviewable-files" as const, omittedCount: value.files.length - files.length, head: value.head, files, reviewed, stale: !!value.stale, workingChanges: !!value.workingChanges, coverage: { changed: files.length, reviewed: reviewed.length, percent: files.length ? Math.round(reviewed.length / files.length * 100) : 100 } };
 }
 function pick<T extends object, K extends keyof T>(value: T, keys: readonly K[]): Pick<T, K> { return Object.fromEntries(keys.filter((key) => value[key] !== undefined).map((key) => [key, value[key]])) as Pick<T, K>; }
 function boundedText(value: string | undefined, ceiling: number) {

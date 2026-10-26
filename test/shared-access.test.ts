@@ -41,7 +41,7 @@ test("shared projections whitelist results while excluding private agent state, 
 test("shared diff and coverage projections omit credential files and private human rework notes", () => {
   const file = { status: "modified" as const, additions: 1, deletions: 1, binary: false, patch: "private arbitrary text", truncated: false };
   assert.deepEqual(sharedDiffProjection([{ ...file, path: ".env" }, { ...file, path: "renamed.txt", oldPath: ".npmrc" }, { ...file, path: "src/answer.ts" }]).map((file) => file.path), ["src/answer.ts"]);
-  assert.deepEqual(sharedCoverageProjection({ head: "a".repeat(40), files: [".env", "src/answer.ts"], reviewed: [".env", "src/answer.ts"] }), { scope: "shared-reviewable-files", omittedCount: 1, head: "a".repeat(40), files: ["src/answer.ts"], reviewed: ["src/answer.ts"], stale: false, coverage: { changed: 1, reviewed: 1, percent: 100 } });
+  assert.deepEqual(sharedCoverageProjection({ head: "a".repeat(40), files: [".env", "src/answer.ts"], reviewed: [".env", "src/answer.ts"] }), { scope: "shared-reviewable-files", omittedCount: 1, head: "a".repeat(40), files: ["src/answer.ts"], reviewed: ["src/answer.ts"], stale: false, workingChanges: false, coverage: { changed: 1, reviewed: 1, percent: 100 } });
 });
 test("shared result projections bound UTF-8 text and recent steps with explicit truncation evidence", () => {
   const step = { id: "step", kind: "agent", title: "Build", role: "agent", status: "done", startedAt: 1, finalText: "🦉".repeat(3000), error: "e".repeat(5000) };

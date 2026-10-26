@@ -187,7 +187,7 @@ test("tdd: tester writes tests, builder implements, tester verifies", async () =
   assert.equal(run.verdict, "passed");
   assert.ok(branchFiles(run.artifacts[0]!.branch).includes("spec.test.mjs"));
   const checks = run.steps.filter((s) => s.kind === "check").map((s) => [s.title, s.status]);
-  assert.deepEqual(checks[0], ["New tests (should fail)", "failed"], "red first");
+  assert.deepEqual(checks[0], ["New tests (should fail)", "done"], "the expected red check succeeded");
   assert.ok(checks.slice(1).every(([, status]) => status === "done"));
 });
 

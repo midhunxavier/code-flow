@@ -3,7 +3,8 @@ import { managedPermissionProblem } from "./managed-permissions.js";
 import { prepareAgentTools } from "./agent-tools.js";
 import { AGENT_TOOL_ALLOWLIST } from "../agent-tools.js";
 import { ClaudeStream } from "./claude-stream.js";
-import type { AgentAdapter, AgentEvent, ErrorKind, ModelCatalog, RunOptions, RunResult } from "./types.js";
+import type { AgentAdapter, AgentEvent, AgentQuestion, ErrorKind, ModelCatalog, RunOptions, RunResult } from "./types.js";
+import { approvalTimeout, isApprovalTimeout } from "../approvals.js";
 import { classifyError, cliErrorLine, resetFromText } from "./errors.js";
 import { commandExists, describeFailure, processErrorKind, startJsonlProcess, stderrTail, stringify, truncate, unknownEvents } from "./process.js";
 import { adapterTeamCapabilities, prepareTeamTools, TEAM_NESTED_DENYLIST, TEAM_TOOL_ALLOWLIST } from "./team-tools.js";
@@ -139,6 +140,9 @@ export const claudeAdapter: AgentAdapter = {
     const controls = new Map<string, AbortController>();
     const cancelControls = () => { for (const controller of controls.values()) controller.abort(); };
     opts.signal?.addEventListener("abort", cancelControls, { once: true });
+    /** Tool uses Claude asked about this turn: a denial of one of them was the user's (or its expiry), not a rule's. */
+    const asked: { id?: string; key: string }[] = [];
+    const rememberAsked = (request: any) => { if (asked.length < 1_000) asked.push({ id: request.tool_use_id, key: toolUseKey(request.tool_name, request.input) }); };
 
     const handleControl = async (msg: any) => {
       const id = msg.request_id;
@@ -147,7 +151,8 @@ export const claudeAdapter: AgentAdapter = {
       controls.set(id, controller);
       const request = msg.request ?? {};
       const isQuestion = request.tool_name === "AskUserQuestion";
-      const timer = setTimeout(() => controller.abort(), isQuestion ? 600_000 : 120_000);
+      const timeout = isQuestion ? 600_000 : 120_000;
+      const timer = setTimeout(() => controller.abort(approvalTimeout()), timeout);
       let response: any = { behavior: "deny", message: "This action was not approved. Ask the user in your response if you need help." };
       proc.pauseIdle(true);
       try {
@@ -156,19 +161,23 @@ export const claudeAdapter: AgentAdapter = {
           if (request.subtype !== "can_use_tool") return;
           const input = request.input ?? {};
           if (isQuestion && opts.onQuestion && Array.isArray(input.questions)) {
-            const questions = input.questions.map((q: any, index: number) => ({ id: String(index), question: q.question, options: q.options?.map((o: any) => o.label) }));
+            const questions = input.questions.map((q: any, index: number) => claudeQuestion(q, index));
+            rememberAsked(request);
             const answers = await opts.onQuestion(questions, controller.signal);
             if (answers) response = { behavior: "allow", updatedInput: { ...input, answers: Object.fromEntries(questions.map((q: any) => [q.question, answers[q.id]])) } };
           } else if (opts.interactiveApprovals && opts.onApproval && typeof request.tool_name === "string") {
             if (opts.mode === "read") return; // A side conversation cannot escalate a denied tool into a write.
             const encoded = JSON.stringify(input);
             if (encoded.length > 16_000) return;
+            rememberAsked(request);
             const decision = await opts.onApproval({ id, kind: "tool", toolName: request.tool_name, input: encoded, cwd: opts.cwd }, controller.signal);
             if (decision === "approve") response = { behavior: "allow", updatedInput: input };
           }
         };
         await Promise.race([work(), new Promise<void>(resolve => controller.signal.addEventListener("abort", () => resolve(), { once: true }))]);
-        if (!sawResult && !opts.signal?.aborted) proc.send({ type: "control_response", response: { subtype: "success", request_id: id, response: controller.signal.aborted ? { behavior: "deny", message: "Request expired or was cancelled" } : response } });
+        const expired = isApprovalTimeout(controller.signal.reason);
+        if (expired && !sawResult) onEvent({ kind: "status", text: `${isQuestion ? "Claude's question" : `Claude's request to use ${typeof request.tool_name === "string" ? request.tool_name : "a tool"}`} expired: nobody answered within ${timeout / 60_000} minutes, so it was declined` });
+        if (!sawResult && !opts.signal?.aborted) proc.send({ type: "control_response", response: { subtype: "success", request_id: id, response: controller.signal.aborted ? { behavior: "deny", message: expired ? "The user didn't answer this request in time, so it was declined" : "This request was cancelled" } : response } });
       } catch (error) {
         if (!sawResult) proc.send({ type: "control_response", response: { subtype: "error", request_id: id, error: String(error) } });
       } finally { clearTimeout(timer); controller.abort(); controls.delete(id); proc.pauseIdle(controls.size > 0); }
@@ -267,8 +276,15 @@ export const claudeAdapter: AgentAdapter = {
               costUsd: msg.total_cost_usd,
             });
             if (Array.isArray(msg.permission_denials) && msg.permission_denials.length) {
-              const names = msg.permission_denials.map((d: any) => d.tool_name).join(", ");
-              onEvent({ kind: "status", text: `Denied in headless mode: ${names}` });
+              const denials: any[] = msg.permission_denials.slice(0, 50);
+              if (!opts.interactiveApprovals || !opts.onApproval) onEvent({ kind: "status", text: `Denied in headless mode: ${denials.map(deniedTool).join(", ")}` });
+              else {
+                // With approvals on, only what this run's rules (its allow and deny lists) refuse outright is never asked about.
+                const ruled = denials.filter((d) => !asked.some(request => request.id && d.tool_use_id ? request.id === d.tool_use_id : request.key === toolUseKey(d.tool_name, d.tool_input)));
+                const answered = denials.filter((d) => !ruled.includes(d));
+                if (ruled.length) onEvent({ kind: "status", text: `Blocked by this run's permission rules, without an approval prompt: ${ruled.map(deniedTool).join(", ")}${limitedShell ? ". Full access lifts its shell limits." : ""}` });
+                if (answered.length) onEvent({ kind: "status", text: `Not approved: ${answered.map(deniedTool).join(", ")}` });
+              }
             }
             break;
 
@@ -307,7 +323,7 @@ export const claudeAdapter: AgentAdapter = {
     onEvent({ kind: "error", message: error });
     return {
       ok: false,
-      finalText: finalText || stream.lastText || lastAssistantText,
+      finalText: [finalText, stream.lastText, lastAssistantText].find(text => text && text.trim() !== resultError?.trim()) ?? "",
       sessionId: errorKind === "session_not_found" ? undefined : sessionId,
       error,
       errorKind,
@@ -316,6 +332,32 @@ export const claudeAdapter: AgentAdapter = {
     } finally { await teamTools?.cleanup(); await agentTools?.cleanup(); }
   },
 };
+
+/** An AskUserQuestion question with what the inbox shows of it. */
+function claudeQuestion(q: any, index: number): AgentQuestion {
+  const options = Array.isArray(q?.options) ? q.options : undefined;
+  const descriptions = options?.map((o: any) => typeof o?.description === "string" ? o.description : "");
+  return {
+    id: String(index), question: q?.question,
+    ...(typeof q?.header === "string" && q.header ? { header: q.header } : {}),
+    ...(options ? { options: options.map((o: any) => o?.label) } : {}),
+    ...(descriptions?.some(Boolean) ? { optionDescriptions: descriptions } : {}),
+    ...(q?.multiSelect === true ? { multiSelect: true } : {}),
+  };
+}
+
+/** Matches a permission denial to the request Claude asked about it: by tool use, or by tool and input. */
+function toolUseKey(toolName: unknown, input: unknown): string {
+  return `${String(toolName)}\0${stringify(input ?? {})}`;
+}
+
+/** A denied tool use for a status line: its name, and the command or file it was for. */
+function deniedTool(denial: any): string {
+  const input = denial?.tool_input ?? {};
+  const target = [input.command, input.file_path, input.path, input.url].find((value) => typeof value === "string" && value.trim());
+  const line = target?.trim().replace(/\s+/g, " ");
+  return `${String(denial?.tool_name ?? "a tool")}${line ? ` (${line.length > 120 ? `${line.slice(0, 120)}…` : line})` : ""}`;
+}
 
 /**
  * What a failed `result` event says went wrong. With `is_error`, `result` is the CLI's error

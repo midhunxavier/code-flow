@@ -29,7 +29,17 @@ export interface AgentApprovalRequest {
   questions?: AgentQuestion[];
 }
 
-export interface AgentQuestion { id: string; question: string; options?: string[] }
+export interface AgentQuestion {
+  id: string;
+  question: string;
+  /** A short label the provider puts above the question (Claude's and Codex's `header`). */
+  header?: string;
+  options?: string[];
+  /** One per option, in the same order ("" where an option has none). */
+  optionDescriptions?: string[];
+  /** Several options may be picked; the answer lists them comma-separated. */
+  multiSelect?: boolean;
+}
 
 export interface RunOptions {
   prompt: string;

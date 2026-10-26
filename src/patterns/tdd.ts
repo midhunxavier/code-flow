@@ -130,7 +130,7 @@ export const tddPattern: Pattern = {
     // is the first half of a fail-to-pass proof, so the tester gets one chance to fix it.
     const redCommand = runsTargeted() ? targeted : ctx.hasCheck ? ctx.run.loop.check : undefined;
     if (redCommand) {
-      let red = await ctx.check(wt, "New tests (should fail)", redCommand);
+      let red = await ctx.checkBeforeImplementation(wt, "New tests (should fail)", redCommand);
       if (red?.ok && ctx.run.prove !== false) {
         ctx.log("The new tests already pass before any implementation; asking the tester for tests that fail first", "warn");
         testerStep = await ctx.ask({
@@ -149,7 +149,7 @@ export const tddPattern: Pattern = {
         if (revised) {
           testsCommit = revised;
           testFiles = await testsIn(revised);
-          red = await ctx.check(wt, "Revised tests (should fail)", redCommand);
+          red = await ctx.checkBeforeImplementation(wt, "Revised tests (should fail)", redCommand);
         }
       }
       if (red?.ok) ctx.log("The new tests already pass before any implementation; they may not test the new behaviour", "warn");

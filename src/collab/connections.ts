@@ -1,3 +1,4 @@
+import { TEAM_JOIN_SETTINGS } from "./settings-location.js";
 import { randomBytes } from "node:crypto";
 import { mkdir, readdir, rename } from "node:fs/promises";
 import { join } from "node:path";
@@ -6,6 +7,7 @@ import { logError } from "../log.js";
 import { LocalHub, RemoteHub } from "./hub-client.js";
 import { TeamLink, validateHubUrl, type ConnectInput, type HubEvent, type TeamLinkOptions } from "./link.js";
 import { CollabError } from "./model.js";
+import { hubIdentity } from "./hub-identity.js";
 import { CollabRunner, type CollabRunnerOptions } from "./runner.js";
 import type { CollabStore } from "./store.js";
 
@@ -21,6 +23,7 @@ export class TeamConnections {
   private readonly busy = new Map<string, number>();
   private readonly removing = new Set<string>();
   private mutations: Promise<unknown> = Promise.resolve();
+  private fault?: string;
   constructor(private readonly options: Options) { this.home = options.home ?? CODEFLOW_HOME; }
   private serial<T>(fn: () => Promise<T>): Promise<T> {
     const next = this.mutations.catch(() => undefined).then(fn); this.mutations = next; return next;
@@ -33,13 +36,20 @@ export class TeamConnections {
     const entry = { id, link, runner }; this.entries.set(id, entry); return entry;
   }
   async load(): Promise<void> {
+    try { await this.loadSaved(); }
+    catch (error) {
+      this.fault = `Team connections are unavailable: ${error instanceof Error ? error.message : String(error)}`;
+      logError(this.fault);
+    }
+  }
+  private async loadSaved(): Promise<void> {
     const legacyFile = join(this.home, "team-link.json"), directory = join(this.home, "team-connections");
     let local = new TeamLink({ ...this.options.linkOptions, file: legacyFile }); await local.load();
     if (local.linked) {
       await mkdir(directory, { recursive: true, mode: 0o700 });
       // Atomic move, preserving credentials and existing runner identity. A restart completes discovery below.
       const names = await readdir(directory);
-      if (names.includes("legacy.json")) throw new CollabError("Both legacy team connection files exist; repair them before starting", 503);
+      if (names.includes("legacy.json")) throw new CollabError(`Both ${legacyFile} and ${join(directory, "legacy.json")} exist during legacy connection migration. Preserve the files, keep the intended connection in team-connections/legacy.json, move the other copy outside the state folder, then restart Code Flow. Neither file was changed.`, 503);
       await rename(legacyFile, join(directory, "legacy.json"));
       local = new TeamLink({ ...this.options.linkOptions, file: legacyFile }); await local.load();
     }
@@ -53,21 +63,24 @@ export class TeamConnections {
     }
   }
   all(): TeamConnection[] { return [...this.entries.values()]; }
+  private available() { if (this.fault) throw new CollabError(this.fault, 503); }
   /** Unscoped clients remain compatible when there is only one remote. Never guess between multiple teams. */
   get(id?: string | null): TeamConnection {
+    this.available();
     if (!id) {
       const remotes = this.all().filter((entry) => entry.id !== "local");
       if (remotes.length > 1) throw new CollabError("Choose a team connection before opening its board", 409);
       id = remotes[0]?.id ?? "local";
     }
-    const entry = this.entries.get(id); if (!entry) throw new CollabError("This team connection is unavailable; choose a saved team in Settings → Team", 404);
+    const entry = this.entries.get(id); if (!entry) throw new CollabError(`This team connection is unavailable; choose a saved team in ${TEAM_JOIN_SETTINGS}`, 404);
     return entry;
   }
-  inventory() { return this.all().map(({ id, link }) => ({ id, ...link.state() })); }
+  inventory() { this.available(); return this.all().map(({ id, link }) => ({ id, ...link.state() })); }
   connect(input: ConnectInput): Promise<TeamConnection> {
     return this.serial(async () => {
+      this.available();
       const url = validateHubUrl(input.url);
-      if (this.all().some(({ link }) => link.linked && link.url === url)) throw new CollabError("This team server is already saved; select it from your team connections", 409);
+      if (this.all().some(({ link }) => link.linked && hubIdentity(link.url!) === hubIdentity(url))) throw new CollabError("This team server is already saved; select it from your team connections", 409);
       if (this.entries.size >= 21) throw new CollabError("At most 20 team servers can be connected", 409);
       const id = `c-${randomBytes(8).toString("hex")}`;
       const link = new TeamLink({ ...this.options.linkOptions, file: join(this.home, "team-connections", `${id}.json`) });
@@ -101,6 +114,6 @@ export class TeamConnections {
       if (connection === "connected") void entry.runner.reconcile().catch((err) => logError("Team attempts could not be reconciled", err));
     });
   }
-  start() { for (const entry of this.all()) { this.watch(entry); void entry.runner.reconcile().catch((error) => logError("Team attempts could not be reconciled at startup", error)); } }
+  start() { if (this.fault) return; for (const entry of this.all()) { this.watch(entry); void entry.runner.reconcile().catch((error) => logError("Team attempts could not be reconciled at startup", error)); } }
   async close() { for (const entry of this.all()) entry.link.close(); await Promise.all(this.all().map((entry) => entry.runner.close())); }
 }

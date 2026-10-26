@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { canonical, hash } from "../training-worker/files.js";
 import { id, intent, MlBusyError, MlError, object, string, terminal, type Experiment } from "./model.js";
-import { cycleTerminal, gain, plannerConfig, proposal, searchLimits, type Cycle } from "./cycle-model.js";
+import { cycleTerminal, cycleLimitReason, gain, plannerConfig, proposal, searchLimits, type Cycle } from "./cycle-model.js";
 import { planExperiment, type SearchPlanner } from "./planner.js";
 import type { MlState } from "./store.js";
 import type { MlService } from "./service.js";
@@ -114,9 +114,7 @@ export class MlCycles {
       });
       c = this.get(value);
     }
-    const bestIndex = c.trials.findIndex(t => t.jobId === c.bestJobId);
-    const sinceBest = c.trials.length - (bestIndex + 1);
-    const reason = c.trials.length >= c.limits.iterations ? "Iteration limit reached" : c.reservedTrainSeconds + c.template.intent.spec!.trainSeconds > c.limits.trainSeconds ? "Training budget exhausted" : sinceBest >= c.limits.patience ? "Early stopping: no sufficient validation improvement" : this.trialDeadline(c) < Date.now() + (c.template.intent.spec!.trainSeconds + 1) * 1000 ? "Time reserved for final evaluation" : undefined;
+    const reason = cycleLimitReason(c);
     if (reason) { await this.finish(c, reason); return; }
     // A durable iteration claim precedes even an agent call. Failed proposals consume a slot.
     const number = c.trials.length + 1;
@@ -155,7 +153,7 @@ export class MlCycles {
   }
   private async finish(c: Cycle, reason: string) {
     if (!c.bestJobId || Date.now() + 1000 >= c.expiresAt) {
-      await this.service.store.change(s => { const current = s.cycles.find(v => v.id === c.id)!; if (current.state === "running") { current.state = "completed"; current.reason = `${reason}; ${c.bestJobId ? "no time for final test" : "no candidate beat the validation baseline"}`; } }); return;
+      await this.service.store.change(s => { const current = s.cycles.find(v => v.id === c.id)!; if (current.state === "running") { current.state = "completed"; current.reason = `${reason}; ${c.bestJobId ? "no time for final test" : (this.jobs(c.id).some(job => job.intent.search?.partition === "validation" && job.status.state === "succeeded" && job.status.evaluation?.partition === "validation") ? "no candidate beat the validation baseline" : c.trials.every(t => !t.jobId) ? "every iteration ended in planning; no model was trained" : "no trial produced a validation result; keep the baseline")}`; } }); return;
     }
     const best = this.jobs(c.id).find(e => e.id === c.bestJobId)!;
     const job = this.record(c, best.intent.spec!, Math.min(c.expiresAt, Date.now() + (c.template.intent.recipe ? 1800 : 600) * 1000), true);

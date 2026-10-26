@@ -225,7 +225,7 @@ test("LocalHub: a task started on this computer runs here, publishes progress an
   const runner = new CollabRunner({ manager: m, hub: () => hub, findPattern, dir }); runners.push(runner);
   const task = await newTask(store);
   await assert.rejects(runner.startAttempt(task.id, { ...solo, repo: join(root, "a", "nowhere") }), refuses(400, /not inside a Git repository/));
-  await assert.rejects(runner.startAttempt(task.id, { ...solo }), refuses(400, /Map repository app to a folder in Settings → Team/));
+  await assert.rejects(runner.startAttempt(task.id, { ...solo }), refuses(400, /Map repository app to a folder in Settings → Connections → Share access → Join a team/));
   await assert.rejects(runner.startAttempt(task.id, { ...solo, repo, pattern: "nope" }), refuses(400, /Unknown pattern/));
   const { attemptId, runId } = await runner.startAttempt(task.id, { ...solo, repo });
   assert.match(attemptId, /^[a-f0-9]{32}$/); const run = m.get(runId)!; assert.equal(run.repo, repo); assert.equal(run.baseRef, f.base); assert.equal(run.branchPrefix, `codeflow/${run.id}`);
@@ -297,7 +297,7 @@ test("handOver offers a checkpoint of this computer's work (committing on reques
   const offered = await runner.handOver(task.id, { to: "u-bob", note: "Take it from here", includeUncommitted: true });
   const handoff = offered.handoff!, checkpoint = offered.checkpoints.find((entry) => entry.id === handoff.checkpointId)!, head = git(repo, "rev-parse", `refs/heads/${worktree.branch}`);
   assert.equal(handoff.state, "offered"); assert.equal(handoff.to.userId, "u-bob"); assert.equal(handoff.note, "Take it from here"); assert.notEqual(head, f.base); assert.equal(git(repo, "log", "-1", "--format=%s", head), "Hand-over checkpoint");
-  assert.equal(checkpoint.bundle, "available"); assert.equal(checkpoint.commit, head); assert.equal(checkpoint.baseCommit, f.base); assert.equal(checkpoint.note, "Take it from here"); assert.ok(checkpoint.changedFiles.some((path) => /^claude-/.test(path))); assert.equal(offered.attempts[0]!.checkpointId, checkpoint.id);
+  assert.equal(checkpoint.bundle, "available"); assert.equal(checkpoint.commit, head); assert.equal(checkpoint.baseCommit, f.base); assert.equal(checkpoint.note, "", "the note travels with the offer, never in the checkpoint a later offer may reuse"); assert.ok(checkpoint.changedFiles.some((path) => /^claude-/.test(path))); assert.equal(offered.attempts[0]!.checkpointId, checkpoint.id);
   assert.equal((await runner.attempts())[0]!.pendingFinish, undefined, "a hand-over checkpoint leaves no pending finish behind");
   // Bob accepts from his own computer: a runner credential of his, here on the same store. A download takes a while in life and teammates keep talking: a comment during it bumps the revision but must fail neither the accept nor the start from the checkpoint that follows.
   const { runner: bobRunner } = await store.registerRunner("u-bob", "bob-laptop"), bobHub = new LocalHub(store, memberActor(members[1]!, "runner", bobRunner.id), { runnerId: bobRunner.id, runnerName: "bob-laptop" });
@@ -426,7 +426,7 @@ test("RemoteHub and TeamLink: connect, me/claim/progress/upload/download with di
   const binary = await fetch(`${frontBase}/api/team/tasks/${task.id}/comments`, { method: "POST", headers: { "content-type": "application/octet-stream" }, body: Buffer.from("x") }); assert.equal(binary.status, 415);
   const download = await fetch(`${frontBase}/api/team/checkpoints/${(await hub.task(task.id)).checkpoints[0]!.id}/bundle`); assert.equal(download.status, 200); assert.equal(download.headers.get("content-type"), "application/octet-stream"); assert.equal(sha256(Buffer.from(await download.arrayBuffer())), (await hub.task(task.id)).checkpoints[0]!.sha256);
   // A revoked credential: 401 with the action to take, and the link reports it.
-  await store.revokeRunner(owner, state.runnerId!); await assert.rejects(hub.me(), refuses(401, /reconnect in Settings → Team/)); const revoked = await fetch(`${frontBase}/api/team/me`); assert.equal(revoked.status, 401);
+  await store.revokeRunner(owner, state.runnerId!); await assert.rejects(hub.me(), refuses(401, /connect this computer again in Settings → Connections → Share access → Join a team/)); const revoked = await fetch(`${frontBase}/api/team/me`); assert.equal(revoked.status, 401);
   await link.disconnect(); assert.equal(link.linked, false); assert.equal(JSON.parse(readFileSync(linkFile, "utf8")).token, undefined); assert.deepEqual(link.state().mappings, { "p-1": { app: work } }, "mappings survive a disconnect"); assert.throws(() => hub.runnerId, refuses(409, /not connected/));
   // An unreachable hub: 502 from the client and from the proxy.
   const deadFile = join(root, "e", "dead-link.json"); writeFileSync(deadFile, JSON.stringify({ version: 1, url: "http://127.0.0.1:1", runnerId: "r-0123456789abcdef", token: `tr-${randomBytes(32).toString("base64url")}`, user: { userId: "u-alice", username: "alice", displayName: "Alice" }, machineName: "ghost", mappings: {} }));
@@ -437,10 +437,10 @@ test("RemoteHub and TeamLink: connect, me/claim/progress/upload/download with di
   writeFileSync(deadFile, JSON.stringify({ version: 1, url: "http://127.0.0.1:1", token: "nope", mappings: {} })); const corrupt = new TeamLink({ file: deadFile }); await corrupt.load(); assert.equal(corrupt.linked, false); assert.equal(existsSync(deadFile), false); assert.ok(readdirSync(join(root, "e")).some((name) => name.startsWith("dead-link.json.corrupt-")));
 });
 
-test("the link API validates start bodies, refuses linking while the local board has tasks and keeps its route table closed", async () => {
+test("the link API validates start bodies and leaves connection management to the HTTP router", async () => {
   const store = await newStore("f"), linkFile = join(root, "f", "team-link.json"), link = new TeamLink({ file: linkFile, machineName: "mx-laptop" }); await link.load();
   const m = manager(), hub = new LocalHub(store), runner = new CollabRunner({ manager: m, hub: () => hub, findPattern, dir: join(root, "f", "runner") }); runners.push(runner);
-  const changes: boolean[] = [], host = { link, runner, store, manager: m, findPattern, agents: () => ["claude" as const], hubName: "Mx", onLinkChanged: (state: { linked: boolean }) => { changes.push(state.linked); } };
+  const host = { link, runner, store, manager: m, findPattern, agents: () => ["claude" as const], hubName: "Mx" };
   const call = async (method: string, path: string, body?: unknown) => { const { response, out } = fakeResponse(); await handleTeamLinkApi(fakeRequest(method, body), response, new URL(`http://127.0.0.1${path}`), path.split("/").filter(Boolean), host); return out; };
   const info = await call("GET", "/api/team-link"); assert.equal(info.status, 200); assert.deepEqual(info.body, { linked: false, mappings: {}, machineName: "mx-laptop", connection: "offline", hubName: "Mx" });
   assert.deepEqual(await call("GET", "/api/team-link/nope"), { status: 404, body: { error: "Unknown team link operation" }, headersSent: true }); assert.equal((await call("POST", "/api/team-link/tasks/t-0123456789abcdef/explode", {})).status, 404); assert.equal((await call("GET", "/api/team-link/tasks/t-0123456789abcdef/start")).status, 404);
@@ -455,10 +455,10 @@ test("the link API validates start bodies, refuses linking while the local board
   const start = await call("POST", "/api/team-link/tasks/t-0123456789abcdef/start", { pattern: "solo", roles: { agent: ["claude"] } }); assert.deepEqual(start, { status: 404, body: { error: "Task not found" }, headersSent: true });
   assert.equal((await call("POST", "/api/team-link/tasks/t-0123456789abcdef/stop", {})).status, 409); assert.equal((await call("POST", "/api/team-link/tasks/t-0123456789abcdef/handover", { to: "u-bob", note: "x" })).status, 404);
   assert.deepEqual(await call("PUT", "/api/team-link/mappings", { projectId: "p-1", repository: "app", path: "relative" }), { status: 400, body: { error: "Enter the absolute path of your clone of this repository" }, headersSent: true });
-  // Linking is refused while this computer's own board holds tasks; the connect body is checked before the network is touched.
-  await newTask(store); const refused = await call("POST", "/api/team-link/connect", { url: "https://hub.example", username: "alice", password: "x" }); assert.equal(refused.status, 409); assert.match((refused.body as { error: string }).error, /holds 1 task; delete them/); assert.deepEqual(changes, []);
-  assert.equal((await call("POST", "/api/team-link/connect", { url: "https://hub.example", username: "alice", password: "x", extra: true })).status, 400);
-  const off = await call("DELETE", "/api/team-link"); assert.equal(off.status, 200); assert.equal((off.body as { linked: boolean }).linked, false); assert.deepEqual(changes, [false]);
+  // Connection management is tested through the real server/TeamConnections route.
+  await newTask(store);
+  assert.equal((await call("POST", "/api/team-link/connect", { url: "https://hub.example", username: "alice", password: "x" })).status, 404);
+  assert.equal((await call("DELETE", "/api/team-link")).status, 404);
 });
 
 test("local paths never leave this computer in an attempt's reason: engine messages and start failures are scrubbed before they reach the board", async () => {
@@ -490,16 +490,18 @@ test("resumeAttempt asks the hub first: a superseded attempt, a task busy with a
   const task = await newTask(store), first = await pause(task), reassigned = await store.updateTask(owner, task.id, { owner: "u-bob" }, (await store.task(owner, task.id)).revision); assert.equal(reassigned.attempts[0]!.state, "superseded");
   const resumes = stub.calls.filter((call) => call === "resume").length; await assert.rejects(runner.resumeAttempt(first.attemptId), refuses(409, /superseded by a change of owner/));
   assert.equal(stub.calls.filter((call) => call === "resume").length, resumes, "manager.resume is never called"); assert.equal(stub.runs.get(first.runId)!.status, "cancelled");
-  // Busy: another attempt of the same task is claimed.
+  // A newer claim retires the paused attempt, so it stays fenced even after the newer attempt ends.
   const task2 = await newTask(store, "owner", { title: "Second" }), second = await pause(task2), other = randomBytes(16).toString("hex");
   await store.claimAttempt(owner, task2.id, { attemptId: other, runnerId: "local", runnerName: "elsewhere", baseCommit: f.base, revision: (await store.task(owner, task2.id)).revision });
-  await assert.rejects(runner.resumeAttempt(second.attemptId), refuses(409, /Stop the attempt running on elsewhere before resuming/)); await store.finishAttempt(owner, other, { state: "failed" });
+  await assert.rejects(runner.resumeAttempt(second.attemptId), refuses(409, /superseded/)); await store.finishAttempt(owner, other, { state: "failed" });
+  await assert.rejects(runner.resumeAttempt(second.attemptId), refuses(409, /superseded/));
+  const task3 = await newTask(store, "owner", { title: "Current paused work" }), current = await pause(task3);
   // The hub refuses the reservation: the local agent must never resume.
-  refuse = true; await assert.rejects(runner.resumeAttempt(second.attemptId), refuses(409, /superseded/)); refuse = false;
-  assert.equal(stub.runs.get(second.runId)!.status, "cancelled"); assert.equal(stub.calls.filter((call) => call === "resume").length, 0);
+  refuse = true; await assert.rejects(runner.resumeAttempt(current.attemptId), refuses(409, /superseded/)); refuse = false;
+  assert.equal(stub.runs.get(current.runId)!.status, "cancelled"); assert.equal(stub.calls.filter((call) => call === "resume").length, 0);
   // With the hub agreeing, the same attempt continues.
-  assert.deepEqual(await runner.resumeAttempt(second.attemptId), { attemptId: second.attemptId, runId: second.runId }); assert.equal(stub.runs.get(second.runId)!.status, "running");
-  const resumed = await until(() => store.task(owner, task2.id), (t) => t.attempts[0]?.state === "running", "the attempt to run again"); assert.equal(resumed.attempts[0]!.id, second.attemptId); assert.equal(resumed.attempts.length, 2);
+  assert.deepEqual(await runner.resumeAttempt(current.attemptId), { attemptId: current.attemptId, runId: current.runId }); assert.equal(stub.runs.get(current.runId)!.status, "running");
+  const resumed = await until(() => store.task(owner, task3.id), (t) => t.attempts[0]?.state === "running", "the attempt to run again"); assert.equal(resumed.attempts[0]!.id, current.attemptId); assert.equal(resumed.attempts.length, 1);
 });
 
 test("a failed bundle upload is retried with the same checkpoint, a lost upload answer is checked on the hub, and a checkpoint deleted meanwhile is replaced", async () => {
@@ -561,7 +563,7 @@ test("a finish the hub refuses for good (credential gone, another runner id, att
   assert.deepEqual(await runner.reconcile(), { attached: 0, finished: 0, removed: 0, unknown: 1, retried: 0 }); let record = await recordOf(a); assert.equal(record.state, "unknown"); assert.equal(record.pendingFinish, undefined);
   assert.deepEqual(await runner.reconcile(), { attached: 0, finished: 0, removed: 0, unknown: 0, retried: 0 }); assert.equal((await store.task(owner, taskA.id)).attempts[0]!.state, "finished");
   // (b) 403 (re-linked under another runner id) and (c) 401 (credential revoked) from the finish settle the same way.
-  for (const [status, text] of [[403, "Only the runner executing this attempt may report on it"], [401, "The team server no longer accepts this computer's credential; reconnect in Settings → Team"]] as const) {
+  for (const [status, text] of [[403, "Only the runner executing this attempt may report on it"], [401, "The team server no longer accepts this computer's credential; connect this computer again in Settings → Connections → Share access → Join a team"]] as const) {
     const task = await newTask(store, "owner", { title: `Refused ${status}` }), id = await claim(task); journal(id, task.id, "running", { runId: "2501010000-deadbeef" });
     current = wrap(hub, { finish: async () => { throw new CollabError(text, status); } });
     assert.deepEqual(await runner.reconcile(), { attached: 0, finished: 0, removed: 0, unknown: 1, retried: 0 }); record = await recordOf(id); assert.equal(record.state, "unknown"); assert.equal(record.pendingFinish, undefined, `a ${status} is the hub's final word`);
@@ -575,7 +577,7 @@ test("a finish the hub refuses for good (credential gone, another runner id, att
   record = await recordOf(d); assert.equal(record.pendingFinish, undefined, "given up after the bound"); assert.equal(record.state, "unknown"); assert.deepEqual(await runner.reconcile(), { attached: 0, finished: 0, removed: 0, unknown: 0, retried: 0 }); current = hub;
   // (e) A live attempt whose reports the hub answers 401 is detached, as one it answers 409 is.
   const taskE = await newTask(store, "owner", { title: "Live" }), live = await runner.startAttempt(taskE.id, { ...solo, repo }); assert.deepEqual(await runner.heartbeat(live.attemptId), []);
-  current = wrap(hub, { progress: async () => { throw new CollabError("The team server no longer accepts this computer's credential; reconnect in Settings → Team", 401); } }); stub.touch(live.runId);
+  current = wrap(hub, { progress: async () => { throw new CollabError("The team server no longer accepts this computer's credential; connect this computer again in Settings → Connections → Share access → Join a team", 401); } }); stub.touch(live.runId);
   await until(() => runner.heartbeat(live.attemptId).then(() => false, (error: unknown) => error instanceof CollabError && error.status === 409), (detached) => detached, "the runner to detach from the attempt"); assert.equal(stub.runs.get(live.runId)!.status, "cancelled", "losing authority stops the local agent");
 });
 

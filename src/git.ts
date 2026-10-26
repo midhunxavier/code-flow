@@ -1,7 +1,9 @@
+import { stat as statRepository } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, openSync, realpathSync } from "node:fs";
 import { randomBytes } from "node:crypto";
-import { appendFile, copyFile, lstat, mkdir, readdir, readFile, realpath, rm } from "node:fs/promises";
+import { appendFile, copyFile, lstat, mkdir, mkdtemp, readdir, readFile, realpath, rm, utimes } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { envNumber, timerMs, WORKTREE_DIR } from "./config.js";
 import { childEnv } from "./env.js";
@@ -276,6 +278,13 @@ function withWorktreeLock<T>(cwd: string, fn: () => Promise<T>): Promise<T> {
 }
 
 export async function repoRoot(path: string): Promise<string> {
+  const directory = path;
+  const info = await statRepository(directory).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT" || error.code === "ENOTDIR") throw new Error(`Repository folder "${directory}" no longer exists. Choose an existing Git repository.`);
+    throw error;
+  });
+  if (!info.isDirectory()) throw new Error(`Repository path "${directory}" is not a directory. Choose a Git repository folder.`);
+
   return gitOk(["rev-parse", "--show-toplevel"], path, { discover: true });
 }
 
@@ -424,6 +433,26 @@ const IDENTITY = ["-c", "user.name=code-flow", "-c", "user.email=code-flow@local
  */
 const RAW_DIFF = ["--no-ext-diff", "--no-textconv"];
 
+/**
+ * Patch headers that name paths the way `-z` output does: `-c core.quotePath=false` (before `diff`)
+ * leaves non-ASCII names as they are, and the explicit prefixes win over a config's
+ * diff.noprefix or diff.mnemonicPrefix. Even then git quotes a name that has a control character,
+ * `"` or `\` (see quoteGitPath).
+ */
+export const PATCH_PATHS = { config: ["-c", "core.quotePath=false"], prefixes: ["--src-prefix=a/", "--dst-prefix=b/"] };
+
+const C_ESCAPES: Record<string, string> = { "\x07": "\\a", "\b": "\\b", "\t": "\\t", "\n": "\\n", "\v": "\\v", "\f": "\\f", "\r": "\\r", '"': '\\"', "\\": "\\\\" };
+
+/**
+ * A path (with its `a/` or `b/` prefix) as a PATCH_PATHS patch writes it: as it is, or in double
+ * quotes with C escapes when it has a control character, `"` or `\`. Matching a header against the
+ * known paths this way is exact, where splitting it at " b/" breaks on a path that has one.
+ */
+export function quoteGitPath(path: string): string {
+  if (!/[\x00-\x1f"\\\x7f]/.test(path)) return path;
+  return `"${path.replace(/[\x00-\x1f"\\\x7f]/g, (c) => C_ESCAPES[c] ?? `\\${c.charCodeAt(0).toString(8).padStart(3, "0")}`)}"`;
+}
+
 /** `<repo>/.worktrees` by default; see WORKTREE_DIR. */
 export function worktreeRoot(repo: string): string {
   return resolve(repo, WORKTREE_DIR);
@@ -515,7 +544,8 @@ export async function openWorktree(
     await mkdir(dirname(path), { recursive: true });
     let created = false;
     if ((await git(["show-ref", "--verify", "--quiet", `refs/heads/${branch}`], repo)).code === 0) {
-      await git(["worktree", "prune"], repo);
+      // git still lists the worktree whose folder went (archived, deleted by hand); `add` refuses until it's forgotten.
+      await forgetWorktree(repo, path, branch);
       await gitOk(["worktree", "add", path, branch], repo);
     } else {
       await gitOk(["worktree", "add", "-b", branch, path, fromRef], repo);
@@ -543,8 +573,45 @@ export async function removeDetachedWorktree(repo: string, path: string): Promis
   await withRepoLock(repo, async () => {
     if (existsSync(path)) await git(["worktree", "remove", "--force", path], repo);
     await rm(path, { recursive: true, force: true });
-    await git(["worktree", "prune"], repo);
+    await forgetWorktree(repo, path);
   });
+}
+
+/**
+ * Forget git's record of code-flow's worktree at `path` once its folder is gone (deleted by hand,
+ * or `rm`'d after git couldn't remove it), and, with `branch`, of that branch's worktree at another
+ * path that's gone (the repository or its worktree folder moved). Never `git worktree prune`: that
+ * forgets every worktree whose folder is missing just now, your own on a drive that isn't mounted
+ * or in a folder you moved too, and they stop working when it's back. Call it holding the
+ * repository's lock (withRepoLock).
+ */
+export async function forgetWorktree(repo: string, path: string, branch?: string): Promise<void> {
+  const args = ["worktree", "list", "--porcelain", "-z"];
+  const listed = await git(args, repo);
+  if (listed.code !== 0) throw new Error(gitError(args, listed));
+  const target = existingRealpath(path);
+  for (const entry of listed.stdout.split("\0\0")) {
+    const fields = entry.split("\0");
+    const at = fields.find(field => field.startsWith("worktree "))?.slice("worktree ".length);
+    if (!at || existsSync(at)) continue;
+    if (existingRealpath(at) !== target && !(branch && fields.includes(`branch refs/heads/${branch}`))) continue;
+    // By the path git has for it, so git finds it; a locked record takes --force twice.
+    const res = await git(["worktree", "remove", "--force", at], repo);
+    if (res.code !== 0 && /locked/.test(res.stderr)) await git(["worktree", "remove", "--force", "--force", at], repo);
+  }
+}
+
+/** `path` with the part of it that exists resolved (a missing folder has no realpath, but /tmp is /private/tmp on macOS). */
+function existingRealpath(path: string): string {
+  let head = resolve(path);
+  const rest: string[] = [];
+  for (;;) {
+    try { return join(realpathSync(head), ...rest); } catch { /* not there: try its parent */ }
+    const parent = dirname(head);
+    if (parent === head) return resolve(path);
+    rest.unshift(basename(head));
+    head = parent;
+  }
 }
 
 export interface BranchInfo {
@@ -554,7 +621,8 @@ export interface BranchInfo {
   updated: string;
 }
 
-export async function listBranches(repo: string): Promise<{ current: string | null; branches: BranchInfo[] }> {
+/** `results`: result branches code-flow's runs recorded, whatever prefix they were started with. */
+export async function listBranches(repo: string, results: ReadonlySet<string> = new Set()): Promise<{ current: string | null; branches: BranchInfo[] }> {
   const out = await gitOk(
     [
       "for-each-ref",
@@ -568,8 +636,8 @@ export async function listBranches(repo: string): Promise<{ current: string | nu
   const branches: BranchInfo[] = [];
   for (const line of out.split("\n").filter(Boolean)) {
     const [ref = "", name = "", updated = ""] = line.split("\t");
-    if (ref.startsWith("refs/remotes/") && ref.endsWith("/HEAD")) continue;
-    const kind = ref.startsWith("refs/remotes/") ? "remote" : ref.startsWith("refs/heads/codeflow/") ? "run" : "local";
+    if (ref.startsWith("refs/heads/codeflow/external/") || ref.startsWith("refs/remotes/") && ref.endsWith("/HEAD")) continue;
+    const kind = ref.startsWith("refs/remotes/") ? "remote" : ref.startsWith("refs/heads/codeflow/") || results.has(name) ? "run" : "local";
     branches.push({ name, kind, updated });
   }
   const head = await git(["symbolic-ref", "--short", "-q", "HEAD"], repo);
@@ -646,9 +714,32 @@ export async function diffStat(at: GitCwd, base: string): Promise<string> {
   return gitOk(["diff", "--stat", "--no-color", ...RAW_DIFF, `${base}..HEAD`], at);
 }
 
+/** Agent conversations include tracked working changes and newly created, non-ignored files. */
+export async function workingDiffStat(at: GitCwd, base: string): Promise<string> {
+  const [tracked, untracked] = await Promise.all([
+    gitOk(["diff", "--stat", "--no-color", ...RAW_DIFF, base, "--"], at),
+    git(["ls-files", "--others", "--exclude-standard", "-z"], at),
+  ]);
+  if (untracked.code) throw new Error(gitError(["ls-files", "--others", "--exclude-standard", "-z"], untracked));
+  const added = untracked.stdout.split("\0").filter(Boolean).length;
+  return [tracked, added ? `${added} new untracked file${added === 1 ? "" : "s"}` : ""].filter(Boolean).join("\n");
+}
+
 export async function changedFiles(cwd: GitCwd, from: string, to = "HEAD"): Promise<string[]> {
-  const out = await gitOk(["diff", "--name-only", ...RAW_DIFF, `${from}..${to}`], cwd);
-  return out ? out.split("\n") : [];
+  return changedPaths(cwd, `${from}..${to}`);
+}
+
+/** The tracked files a checkout's working files change since `from` (a commit or tree). */
+export async function workingChangedFiles(at: GitCwd, from: string): Promise<string[]> {
+  return changedPaths(at, from);
+}
+
+/** Raw paths: -z avoids Git quoting, and trimming would change a name with leading whitespace. */
+async function changedPaths(at: GitCwd, range: string): Promise<string[]> {
+  const args = ["diff", "--name-only", "-z", ...RAW_DIFF, range];
+  const result = await git(args, at);
+  if (result.code !== 0) throw new Error(gitError(args, result));
+  return result.stdout.split("\0").filter(Boolean);
 }
 
 export interface MergeResult {
@@ -752,9 +843,14 @@ function writeBlob(at: Checkout, id: string, path: string): Promise<void> {
 async function stashCreate(at: Checkout): Promise<string> {
   const index = resolve(at.path, await gitOk(["rev-parse", "--git-path", "index"], at));
   const copy = `${index}.codeflow-${process.pid}-${randomBytes(4).toString("hex")}`;
-  const copied = await copyFile(index, copy).then(() => true, () => false);
+  const original = await statRepository(index, { bigint: true }).catch(() => undefined);
+  const copied = !!original && await copyFile(index, copy).then(() => true, () => false);
   const env = copied ? { env: { GIT_INDEX_FILE: copy } } : undefined;
   try {
+    // A fresh copy timestamp can hide same-size edits that Git would detect as racy against
+    // the original index. Read its timestamp before copying and round down exact nanoseconds:
+    // a conservatively older timestamp may recheck extra files, but cannot hide their edits.
+    if (copied) await utimes(copy, Number(original!.atimeNs / 1_000_000_000n), Number(original!.mtimeNs / 1_000_000_000n));
     // Refreshed first: a file touched but unchanged makes `stash create` see a change, then none
     // once it refreshes, and exit 1 with nothing printed. (On the real index, the first call's
     // refresh hid that; a copy is stale every time.)
@@ -775,9 +871,11 @@ async function gitOkWhenFree(args: string[], at: Checkout): Promise<string> {
   }
 }
 
-async function uncommittedTree(at: Checkout): Promise<string> {
-  const sha = await stashCreate(at);
-  return sha ? (await gitOk(["rev-parse", `${sha}^{tree}`], at)).trim() : "";
+async function snapshotTrees(at: Checkout, changes: string, head: string): Promise<{ worktree: string; index: string }> {
+  // A stash's second parent records the index separately from the working tree. Both must
+  // come from the same capture, including when only staging changed and file contents did not.
+  const [worktree, index] = (await gitOk(["rev-parse", `${changes || head}^{tree}`, `${changes ? `${changes}^2` : head}^{tree}`], at)).split("\n");
+  return { worktree: worktree!, index: index! };
 }
 
 const untrackedFiles = async (at: Checkout) => (await gitOk(["ls-files", "--others", "--exclude-standard", "-z"], at)).split("\0").filter(Boolean);
@@ -801,7 +899,7 @@ export async function snapshot(repo: string, cwd: string): Promise<Snapshot> {
 
 /**
  * Put a worktree of `repo` back the way `snapshot` found it, undoing whatever a read-only step
- * did: commits, edits, new files. Returns what was undone (empty when nothing changed). Throws
+ * did: commits, edits, staging, new files. Returns what was undone (empty when nothing changed). Throws
  * a WorktreeMismatchError, undoing nothing, when the step broke the worktree's `.git` or moved it
  * to another branch (see assertWorktree).
  */
@@ -817,6 +915,13 @@ export async function changedSince(repo: string, wt: CheckoutRef, snap: Snapshot
   return compareSnapshot(repo, wt, snap, false);
 }
 
+/** Quote names as data and bound noisy worktrees without losing the total count. */
+export function describeChangedPaths(label: string, paths: string[]): string {
+  const unique = [...new Set(paths)].sort();
+  const names = unique.slice(0, 8).map(path => JSON.stringify(path).replace(/[\u007f-\u009f]/g, char => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`));
+  return `${label}${names.length ? `: ${names.join(", ")}${unique.length > names.length ? ` and ${unique.length - names.length} more` : ""}` : ""}`;
+}
+
 /** What changed since `snap`; with `undo`, each change is undone as it's found. */
 function compareSnapshot(repo: string, wt: CheckoutRef, snap: Snapshot, undo: boolean): Promise<string[]> {
   const cwd = wt.path;
@@ -825,20 +930,24 @@ function compareSnapshot(repo: string, wt: CheckoutRef, snap: Snapshot, undo: bo
     const at = await assertWorktree(repo, undo ? wt : { path: cwd });
     const found: string[] = [];
     const head = await resolveCommit(at);
-    const changesNow = await uncommittedTree(at);
-    const changesBefore = snap.changes ? (await gitOk(["rev-parse", `${snap.changes}^{tree}`], at)).trim() : "";
-    if (head !== snap.head) found.push("commits");
-    if (head !== snap.head || changesNow !== changesBefore) {
-      if (head === snap.head) found.push("edits");
+    const now = await snapshotTrees(at, await stashCreate(at), head);
+    const savedTrees = await snapshotTrees(at, snap.changes, snap.head);
+    const pathsBetween = async (before: string, after: string) => (await gitOk(["diff", "--name-only", "-z", before, after, "--"], at)).split("\0").filter(Boolean);
+    if (head !== snap.head) found.push(describeChangedPaths("commits", [...await pathsBetween(snap.head, head), ...await pathsBetween(savedTrees.worktree, now.worktree)]));
+    if (head !== snap.head || now.worktree !== savedTrees.worktree || now.index !== savedTrees.index) {
+      if (head === snap.head) {
+        if (now.worktree !== savedTrees.worktree) found.push(describeChangedPaths("edits", await pathsBetween(savedTrees.worktree, now.worktree)));
+        else found.push(describeChangedPaths("staging", await pathsBetween(savedTrees.index, now.index)));
+      }
       if (undo) {
         await gitOkWhenFree(["reset", "--hard", "-q", snap.head], at);
-        if (snap.changes) await gitOkWhenFree(["stash", "apply", "-q", snap.changes], at);
+        if (snap.changes) await gitOkWhenFree(["stash", "apply", "--index", "-q", snap.changes], at);
       }
     }
     const before = new Set(snap.untracked);
     const added = (await untrackedFiles(at)).filter((f) => !before.has(f));
     if (added.length) {
-      found.push(`${added.length} new file${added.length === 1 ? "" : "s"}`);
+      found.push(describeChangedPaths(`${added.length} new file${added.length === 1 ? "" : "s"}`, added));
       if (undo) for (let i = 0; i < added.length; i += 100) await gitOkWhenFree(["clean", "-fq", "--", ...added.slice(i, i + 100)], at);
     }
     // Untracked files that were there before: edited or deleted since, they get their contents back.
@@ -854,7 +963,7 @@ function compareSnapshot(repo: string, wt: CheckoutRef, snap: Snapshot, undo: bo
         await rm(join(at.path, path), { recursive: true, force: true });
         await writeBlob(at, id, path);
       }
-      if (changed.length) found.push(`${changed.length} untracked file${changed.length === 1 ? "" : "s"} ${undo ? "put back" : "changed"}`);
+      if (changed.length) found.push(describeChangedPaths(`${changed.length} untracked file${changed.length === 1 ? "" : "s"} ${undo ? "put back" : "changed"}`, changed.map(([path]) => path)));
     }
     return found;
   });
@@ -892,4 +1001,88 @@ export async function validRef(repo: string, ref: string): Promise<boolean> {
 export async function hasConflictMarkers(at: GitCwd): Promise<boolean> {
   const res = await git(["diff", "--check", ...RAW_DIFF], at);
   return /conflict marker/i.test(res.stdout + res.stderr);
+}
+
+/** git's conflict markers are this long, unless a file's `conflict-marker-size` attribute says otherwise. */
+const MARKER_SIZE = 7;
+
+/**
+ * Whether `text` holds the lines git writes around a conflict (`<<<<<<< HEAD` … `>>>>>>> theirs`),
+ * exactly `size` characters of them as git counts. Both: a lone `=======` is also a Markdown
+ * heading underline.
+ */
+function hasConflict(text: string, size = MARKER_SIZE): boolean {
+  return new RegExp(`^<{${size}}(?:\\s|$)`, "m").test(text) && new RegExp(`^>{${size}}(?:\\s|$)`, "m").test(text);
+}
+
+/**
+ * Each path's `conflict-marker-size` (git's 7 unless the attribute sets one), as the checkout's
+ * .gitattributes say, or `tree`'s own when given (read through a scratch index, so a result's
+ * attributes count for its files).
+ */
+async function markerSizes(at: GitCwd, paths: string[], tree?: string): Promise<Map<string, number>> {
+  const sizes = new Map<string, number>();
+  if (!paths.length) return sizes;
+  const scratch = tree ? await mkdtemp(join(tmpdir(), "codeflow-attributes-")) : undefined;
+  try {
+    const env = scratch ? { GIT_INDEX_FILE: join(scratch, "index") } : undefined;
+    if (tree && (await git(["read-tree", tree], at, { env })).code !== 0) return sizes;
+    const res = await git(["check-attr", "-z", ...(tree ? ["--cached"] : []), "--stdin", "conflict-marker-size"], at, { env, input: `${paths.join("\0")}\0` });
+    if (res.code !== 0) return sizes;
+    const fields = res.stdout.split("\0");
+    for (let i = 0; i + 2 < fields.length; i += 3) {
+      const size = Number(fields[i + 2]);
+      if (Number.isInteger(size) && size > 0 && size <= 2_147_483_647) sizes.set(fields[i]!, size);
+    }
+    return sizes;
+  } finally {
+    if (scratch) await rm(scratch, { recursive: true, force: true });
+  }
+}
+
+/** Which of `paths` (relative to the checkout) still hold conflict markers in its working files, staged or not. */
+export async function conflictMarkerFiles(at: GitCwd, paths: string[]): Promise<string[]> {
+  const unique = [...new Set(paths)];
+  const sizes = await markerSizes(at, unique);
+  const found: string[] = [];
+  for (const path of unique) {
+    const text = await readFile(join(folderOf(at), path), "utf8").catch(() => "");
+    if (hasConflict(text, sizes.get(path))) found.push(path);
+  }
+  return found;
+}
+
+/** Include short custom markers too; each candidate is checked against its actual attribute below. */
+const MARKER_LIKE = "^(<+|>+)([[:space:]]|$)";
+
+/**
+ * The files to which `to` adds conflict markers since it forked from `from` (a merge committed half
+ * done), counted by each file's `conflict-marker-size` in `to`. Only the files whose changed lines
+ * look like markers are read, one at a time: a result's whole patch can be more than git() reads.
+ */
+export async function addedConflictMarkers(repo: GitCwd, from: string, to: string): Promise<string[]> {
+  const range = `${from}...${to}`;
+  const listed = await gitOk(["diff", "-z", "--name-only", "--no-renames", ...RAW_DIFF, `-G${MARKER_LIKE}`, range], repo);
+  const candidates = listed.split("\0").filter(Boolean);
+  if (!candidates.length) return [];
+  const sizes = await markerSizes(repo, candidates, to);
+  const found: string[] = [];
+  for (const path of candidates) {
+    const patch = await git(["diff", "-U0", "--no-color", "--no-renames", ...RAW_DIFF, range, "--", path], repo, { env: { GIT_LITERAL_PATHSPECS: "1" } });
+    // Too big to read: its changed lines do look like markers, so it isn't passed as clean.
+    if (patch.code !== 0) found.push(path);
+    else if (hasConflict(addedLines(patch.stdout), sizes.get(path))) found.push(path);
+  }
+  return found;
+}
+
+/** The lines a one-file patch adds. */
+function addedLines(patch: string): string {
+  const added: string[] = [];
+  let inHunk = false;
+  for (const line of patch.split("\n")) {
+    if (line.startsWith("@@")) inHunk = true;
+    else if (inHunk && line.startsWith("+")) added.push(line.slice(1));
+  }
+  return added.join("\n");
 }

@@ -233,5 +233,5 @@ export function confidenceInterval(passed: number, samples: number): { low: numb
   const denominator = 1 + z * z / samples;
   const center = (p + z * z / (2 * samples)) / denominator;
   const margin = z * Math.sqrt(p * (1 - p) / samples + z * z / (4 * samples * samples)) / denominator;
-  return { low: Math.max(0, center - margin), high: Math.min(1, center + margin) };
+  return { low: p === 0 ? 0 : Math.max(0, center - margin), high: p === 1 ? 1 : Math.min(1, center + margin) };
 }

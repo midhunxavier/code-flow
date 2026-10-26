@@ -166,19 +166,19 @@ test("needs-work feedback opens branch review, survives a rejected send, and lea
   for (const width of [1440, 390]) {
     await page.setViewportSize({ width, height: 1000 });
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
-    const sendBounds = await page.getByRole("button", { name: "Send comments", exact: true }).boundingBox();
+    const sendBounds = await page.getByRole("button", { name: "Send 1 comment", exact: true }).boundingBox();
     assert.ok(sendBounds && sendBounds.x >= 0 && sendBounds.x + sendBounds.width <= width + 1, `Revision action must fit at ${width}px: ${JSON.stringify(sendBounds)}`);
     await page.screenshot({ path: join(root, `output/playwright/daily-revision-${width}.png`) });
   }
   await page.setViewportSize({ width: 1440, height: 1000 });
   const rejectOnce = async (route: import("playwright-core").Route) => route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "Temporary provider outage" }) });
   await page.route(`**/api/runs/${result.id}/followups`, rejectOnce, { times: 1 });
-  await page.getByRole("button", { name: "Send comments", exact: true }).click();
+  await page.getByRole("button", { name: "Send 1 comment", exact: true }).click();
   await page.getByText("Temporary provider outage", { exact: true }).waitFor();
   assert.equal(await page.getByLabel("Overall comment", { exact: true }).inputValue(), message);
   await page.reload();
   assert.equal(await page.getByLabel("Overall comment", { exact: true }).inputValue(), message);
-  await page.getByRole("button", { name: "Send comments", exact: true }).click();
+  await page.getByRole("button", { name: "Send 1 comment", exact: true }).click();
   await page.waitForURL(url => url.hash === `#/run/${result.id}`);
   result = await finished(result.id);
   assert.equal(result.followUps.length, 1);
@@ -328,8 +328,9 @@ test("retry preserves imported context and its source restrictions through the o
   assert.deepEqual(errors, []);
 });
 
-test("review waits for the actual writer before enabling an automatic revision recipient", { timeout: 45_000 }, async () => {
-  const started = await api("/api/runs", { repo, pattern: "solo", checkpointOnFinish: true, task: "Review a Codex result", roles: { agent: ["codex"] }, loop: { check: "true", maxMinutes: 1, maxSteps: 4 } });
+test("review waits for the actual writer before enabling an automatic revision recipient", { timeout: 60_000 }, async () => {
+  // A team run: its steps say who wrote the branch (an Agent chat's provider is known from its summary at once).
+  const started = await api("/api/runs", { repo, pattern: "pipeline", task: "Review a Codex result", roles: { planner: ["claude"], builder: ["codex"], reviewer: ["claude"] }, loop: { check: "true", maxMinutes: 1, maxSteps: 8 } });
   const saved = await finished(started.id);
   assert.equal(saved.status, "done", saved.error);
   let release!: () => void;
@@ -338,10 +339,12 @@ test("review waits for the actual writer before enabling an automatic revision r
   try {
     await page.goto(base + `/#/review/${saved.id}/${saved.artifacts[0]!.branch}`);
     await page.getByLabel("Overall comment", { exact: true }).fill("Revise the original writer's result.");
-    await page.getByText("Loading recipient…", { exact: true }).waitFor();
-    assert.equal(await page.getByRole("button", { name: "Send comments", exact: true }).isDisabled(), true);
+    const picker = page.getByRole("combobox", { name: "Agent", exact: true });
+    await until(() => picker.evaluate(select => (select as HTMLSelectElement).selectedOptions[0]?.textContent), text => text === "Loading recipient…");
+    assert.equal(await picker.inputValue(), "");
+    assert.equal(await page.getByRole("button", { name: "Send 1 comment", exact: true }).isDisabled(), true);
   } finally { release(); await page.unrouteAll({ behavior: "wait" }); }
-  const send = page.getByRole("button", { name: "Send comments", exact: true });
+  const send = page.getByRole("button", { name: "Send 1 comment", exact: true });
   await until(() => send.isEnabled(), value => value);
   await send.click();
   await page.waitForURL(url => url.hash === `#/run/${saved.id}`);

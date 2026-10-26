@@ -1,21 +1,19 @@
+import { scrollBehavior } from "./lib.js";
 import { useEffect, useState } from "preact/hooks";
 import { AgentTag, Markdown } from "./bits.js";
-import { api, enc, duration, fmtCost, fmtTokens, post } from "./lib.js";
+import { api, enc, duration, fmtCost, fmtTokens, post, SHORT } from "./lib.js";
 import { navigate } from "./state.js";
 import { dependentTaskClosure } from "../src/team-rerun-graph.js";
-import { memberProgress, requirementProgress, taskBlockers, teamAwaitingAnswer, teamNeedsResume } from "./team-state.js";
+import { memberProgress, providerChangeText, requirementProgress, taskBlockers, teamAwaitingAnswer, teamNeedsResume, teamStatusLabel } from "./team-state.js";
 import { MemoryFeedback } from "./memory.js";
 import { TeamCapabilities, TeamRunMetrics } from "./team-evaluation.js";
 import { useDialog } from "./app.js";
 import { showToast } from "./lib.js";
 import { editableTeamPlan, teamPlanPolicy, validateTeamPlanEdit, type EditableTeamTask, type PendingTeamPlanEdit } from "../src/workflow-control.js";
 import { analyzeRunTiming, analyzeWorkflow } from "../src/run-analysis.js";
-import type { Note, RunSummary, Step, TeamMessage, TeamState } from "./types.js";
+import type { AgentId, Note, RunSummary, Step, TeamMessage, TeamState } from "./types.js";
 import { readableTeamMessage } from "./team-message-text.js";
 
-const STATUS: Record<TeamState["status"], string> = {
-  planning: "Building the team", awaiting_approval: "Plan ready for approval", running: "Working", blocked: "Unresolved work", verifying: "Verifying the result", completed: "Finished",
-};
 const TASK_STATUS = { pending: "Planned", running: "Working", needs_info: "Waiting for information", submitted: "Ready for verification", completed: "Complete", failed: "Needs attention" };
 const COVERAGE = { unassigned: "Not assigned", in_progress: "In progress", awaiting_verification: "Awaiting verification", reviewed_unchecked: "Reviewed · no check ran", verified: "Verified" };
 
@@ -23,6 +21,15 @@ const COVERAGE = { unassigned: "Not assigned", in_progress: "In progress", await
 export function AutoTeam({ run, steps }: { run: RunSummary; steps?: Step[] }) {
   const [inbox, setInbox] = useState("all");
   const [editing, setEditing] = useState(false);
+  const [memoryOpen, setMemoryOpen] = useState(false);
+  const [memoryTitles, setMemoryTitles] = useState<Record<string, string>>({});
+  useEffect(() => {
+    setMemoryTitles({});
+    if (!memoryOpen || !run.project) return;
+    let active = true;
+    void api<{ id: string; title: string; status: string }[]>(`/api/projects/${enc(run.project)}/memory?repo=${enc(run.repo)}`).then(entries => { if (active) setMemoryTitles(Object.fromEntries(entries.filter(e => e.status !== "deleted").map(e => [e.id, e.title]))); }, () => {});
+    return () => { active = false; };
+  }, [memoryOpen, run.project, run.repo]);
   const team = run.team;
   if (!team) return null;
   const name = (id: string) => id === "user" ? "You" : team.members.find((member) => member.id === id)?.name ?? id;
@@ -32,15 +39,15 @@ export function AutoTeam({ run, steps }: { run: RunSummary; steps?: Step[] }) {
     <section class="auto-team" aria-label="Auto team">
       <div class="at-head">
         <div><h3>Team and workflow</h3><span class="help">Revision {team.revision} · {team.scheduler === "event" ? "Ready work starts when dependencies resolve" : team.wave ? `${team.wave} waves so far · limit ${team.maxWaves} per execution` : "Before the first wave"}</span></div>
-        <span class={`badge ${team.gaps.length || team.status === "blocked" ? "warn" : team.status === "completed" ? "ok" : ""}`}>{teamAwaitingAnswer(run) ? "Waiting for your answer" : STATUS[team.status]}</span>
+        <span class={`badge ${team.gaps.length || team.status === "blocked" ? "warn" : team.status === "completed" && run.status === "done" ? "ok" : ""}`}>{teamStatusLabel(run)}</span>
       </div>
       <LiveTeamMap run={run} />
       <TeamRunMetrics runId={run.id} running={run.status === "running"} />
       <TeamCapabilities providers={[...new Set(team.members.map((member) => member.provider))]} />
       <div class="at-metrics" role="group" aria-label="Coordination usage">
-        <span><b>{metrics.coordinatorInvocations}</b> coordinator calls (lifetime) · limit {team.coordinationLimit} per execution</span>
-        <span><b>{metrics.invocations}</b> total calls (lifetime) · limit {team.invocationLimit} per execution</span>
-        <span><b>{metrics.questionCount}</b> questions</span>
+        <span><b>{metrics.coordinatorInvocations}</b> coordinator {metrics.coordinatorInvocations === 1 ? "call" : "calls"} (lifetime) · limit {team.coordinationLimit} per execution</span>
+        <span><b>{metrics.invocations}</b> total {metrics.invocations === 1 ? "call" : "calls"} (lifetime) · limit {team.invocationLimit} per execution</span>
+        <span><b>{metrics.questionCount}</b> {metrics.questionCount === 1 ? "question" : "questions"}</span>
         {tokensKnown ? <span><b>{fmtTokens(metrics.coordinatorInputTokens! + metrics.coordinatorOutputTokens!)}</b> coordinator tokens</span> : <span>Coordinator tokens not reported</span>}
         {metrics.coordinatorMs !== undefined ? <span><b>{duration(metrics.coordinatorMs)}</b> coordinating</span> : null}
         {metrics.coordinatorCostUsd !== undefined ? <span title="Provider-reported API equivalent, not your subscription charge"><b>{fmtCost(metrics.coordinatorCostUsd)}</b> API equivalent</span> : null}
@@ -51,6 +58,7 @@ export function AutoTeam({ run, steps }: { run: RunSummary; steps?: Step[] }) {
       {run.status !== "running" && run.worktrees.some((tree) => tree.name === "integration") && !["planning", "awaiting_approval"].includes(team.status) ? <TaskRerunPanel key={run.id} run={run} /> : null}
       <WorkflowGraph run={run} steps={steps} />
       {team.reviewFallback ? <div class="at-notice">{team.reviewFallback}</div> : null}
+      {team.providerChanges?.length ? <div class="at-section"><h4>Provider changes</h4><ul>{team.providerChanges.map((change, i) => <li key={i}><b>{name(change.memberId)}</b> · {providerChangeText(change, (id) => SHORT[id as AgentId] ?? id)}<div class="help">{change.reason.replaceAll("_", " ")} · {new Date(change.at).toLocaleTimeString()}</div></li>)}</ul></div> : null}
       {team.gaps.length ? <div class="at-notice"><b>Still unresolved</b><ul>{team.gaps.map((gap, i) => <li key={i}>{gap}</li>)}</ul></div> : null}
       {teamNeedsResume(run) ? <p class="help">Resume continues this team's unfinished work with a fresh execution budget. Completed work and recorded answers are kept.</p> : null}
       <div class="at-roster" role="group" aria-label="Team members">
@@ -71,7 +79,7 @@ export function AutoTeam({ run, steps }: { run: RunSummary; steps?: Step[] }) {
           const blockers = !task.status || task.status === "pending" || task.status === "needs_info" || task.status === "failed" ? taskBlockers(team, task) : [];
           return <li key={task.id} class="at-task" tabIndex={-1} id={`team-task-${task.id}`}>
             <div class="at-row"><b>{task.title}</b><span class={`badge ${task.status === "completed" ? "ok" : task.status === "failed" ? "warn" : ""}`}>{TASK_STATUS[task.status ?? "pending"]}</span></div>
-            <div class="help">{name(task.owner)} · {task.kind} · {task.attempts ?? 0} attempts</div>
+            <div class="help">{name(task.owner)} · {task.kind} · {task.attempts ?? 0} {task.attempts === 1 ? "attempt" : "attempts"}</div>
             {task.retainedBaseline ? <p class="help">Retained baseline input from {task.retainedBaseline.sourceRunId} · <code>{task.retainedBaseline.sourceTaskHead.slice(0, 12)}</code>. This task was not executed again.</p> : null}
             {task.noNewDiff ? <p class="help">No new diff from this rerun turn. Acceptance requires a current-head check and independent review.</p> : null}
             {task.dependsOn.length ? <div class="help">Needs {task.dependsOn.map((id) => `${team.tasks.find((item) => item.id === id)?.title ?? id} (${task.dependencyTypes?.[id] ?? "completion"})`).join(", ")}</div> : null}
@@ -106,9 +114,9 @@ export function AutoTeam({ run, steps }: { run: RunSummary; steps?: Step[] }) {
       {team.contextManifests.length ? <details class="at-section"><summary>Context used by each member</summary><p class="help">Each turn receives its assignment, relevant shared information, and its own checkpoint.</p><ul class="at-context">
         {team.contextManifests.map((context, i) => <li key={`${context.memberId}-${context.taskId}-${context.attempt}-${i}`}><b>{name(context.memberId)}</b> · {context.taskId} · attempt {context.attempt}<div class="help">Plan {context.revision} · commit <code>{context.inputHead.slice(0, 12)}</code> · {context.checkpoint ? "private checkpoint included" : "no private checkpoint"}</div><div class="help">Messages: {context.messageIds.join(", ") || "none"} · Memory: {context.memoryIds.join(", ") || "none"}</div></li>)}
       </ul></details> : null}
-      {run.memoryManifest ? <details class="at-section"><summary>Why project memory was selected</summary><ul class="at-context">
-        {run.memoryManifest.included.map((item) => <li key={`included-${item.id}`}><b>Included</b> · {item.id} · revision {item.revision}<div class="help">{item.reason}</div>{run.project ? <MemoryFeedback projectId={run.project} id={item.id} revision={item.revision} runId={run.id} /> : null}</li>)}
-        {run.memoryManifest.omitted.map((item) => <li key={`omitted-${item.id}`}><b>Omitted</b> · {item.id} · revision {item.revision}<div class="help">{item.reason}</div></li>)}
+      {run.memoryManifest ? <details class="at-section" onToggle={event => setMemoryOpen(event.currentTarget.open)}><summary>Why project memory was selected</summary><p class="help">Included means at least one turn received this revision. Omitted entries were not received by any turn. See Context used by each member for assignments.</p><ul class="at-context">
+        {run.memoryManifest.included.map((item) => <li key={`included-${item.id}@${item.revision}`}><b>Included</b> · {memoryTitles[item.id] ?? item.id} · revision {item.revision}<div class="help">{item.reason}</div>{run.project ? <MemoryFeedback projectId={run.project} id={item.id} revision={item.revision} runId={run.id} /> : null}</li>)}
+        {run.memoryManifest.omitted.map((item) => <li key={`omitted-${item.id}@${item.revision}`}><b>Omitted</b> · {memoryTitles[item.id] ?? item.id} · revision {item.revision}<div class="help">{item.reason}</div></li>)}
       </ul>{!run.memoryManifest.included.length && !run.memoryManifest.omitted.length ? <p class="help">No applicable project knowledge was available for this run.</p> : null}</details> : null}
       {team.inventory?.providers.some((provider) => provider.blockedReason) ? <details class="at-section"><summary>Provider availability</summary><ul>{team.inventory.providers.filter((provider) => provider.blockedReason).map((provider) => <li key={provider.id}><AgentTag id={provider.id} />: {provider.blockedReason}</li>)}</ul></details> : null}
       {editing ? <TeamPlanEditor run={run} onClose={() => setEditing(false)} /> : null}
@@ -181,7 +189,7 @@ function WorkflowGraph({ run, steps }: { run: RunSummary; steps?: Step[] }) {
   const width = Math.max(240, graph.layers.length * 240);
   const height = Math.max(100, ...graph.layers.map((layer) => layer.length * 92 + 20));
   const timing = steps ? analyzeRunTiming(run, steps) : null;
-  return <details class="at-section workflow-graph"><summary>Workflow graph and timing · {graph.nodes.length} tasks</summary>
+  return <details class="at-section workflow-graph"><summary>Workflow graph and timing · {graph.nodes.length} {graph.nodes.length === 1 ? "task" : "tasks"}</summary>
     <p class="help">Arrows show dependencies. Highlighted tasks form the longest measured dependency chain. Untimed work, provider limits, shared files and queue delays can change the actual bottleneck.</p>
     {/* focusable: a wide graph scrolls (always on a phone), and keyboard users need to reach it to scroll it */}
     <div class="workflow-dag-scroll" tabIndex={0}><svg role="img" aria-label={`Workflow dependencies: ${graph.edges.map((edge) => `${edge.from} to ${edge.to}`).join(", ") || "independent tasks"}`} viewBox={`0 0 ${width} ${height}`} width={width} height={height}>
@@ -258,17 +266,27 @@ export function TeamQuestionCard({ run, replyChatId }: { run: RunSummary; replyC
   // Laid out like a plan approval (an attention card with a warn strip), since it's the same kind of ask.
   return <section class="awaiting-card team-question" aria-label="The team needs your answer">
     <div class="aw-head"><span class="status-pill awaiting">Waiting for you</span><b>The team needs your answer</b><span class="help">{sender?.name ?? message.sender}{task ? ` · ${task.title}` : ""}</span></div>
-    <div class="aw-body"><Markdown text={message.body} /></div>
+    <div class="aw-body" tabIndex={0} role="region" aria-label="Team question"><Markdown text={message.body} /></div>
     <div class="aw-actions"><QuestionReply key={message.id} run={run} message={message} replyChatId={replyChatId} /></div>
   </section>;
 }
 
 // A question moves from the discussion to the attention card when the scheduler
-// finishes independent work. Preserve an answer already being typed across that remount.
+// finishes independent work. Preserve an answer already being typed across that remount,
+// and, like the message box's draft, across a reload of the tab until it's sent.
 const answerDrafts = new Map<string, string>();
+function savedAnswerDraft(key: string) {
+  const draft = answerDrafts.get(key); if (draft !== undefined) return draft;
+  try { return sessionStorage.getItem(`team-answer-draft:${key}`) ?? ""; } catch { return ""; }
+}
+function saveAnswerDraft(key: string, value: string) {
+  if (value) answerDrafts.set(key, value); else answerDrafts.delete(key);
+  if (answerDrafts.size > 100) answerDrafts.delete(answerDrafts.keys().next().value!);
+  try { if (value) sessionStorage.setItem(`team-answer-draft:${key}`, value); else sessionStorage.removeItem(`team-answer-draft:${key}`); } catch {}
+}
 export function QuestionReply({ run, message, prefix = "team-answer", replyChatId }: { run: RunSummary; message: TeamMessage; prefix?: string; replyChatId?: string }) {
   const key = `${run.id}/${message.id}`;
-  const [text, setText] = useState(() => answerDrafts.get(key) ?? "");
+  const [text, setText] = useState(() => savedAnswerDraft(key));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [sent, setSent] = useState(false);
@@ -276,14 +294,14 @@ export function QuestionReply({ run, message, prefix = "team-answer", replyChatI
     if (!text.trim() || busy || sent) return;
     setBusy(true);
     setError("");
-    try { await post<Note>(`/api/runs/${replyChatId ?? run.id}/notes`, { requestId: message.id, text }); answerDrafts.delete(key); setSent(true); }
+    try { await post<Note>(`/api/runs/${replyChatId ?? run.id}/notes`, { requestId: message.id, text }); saveAnswerDraft(key, ""); setSent(true); }
     catch (err) { setError((err as Error).message); }
     finally { setBusy(false); }
   };
   if (sent) return <p class="help" role="status">Answer sent.</p>;
   if (run.status !== "running") return <p class="help">Press Resume in the header to continue the run, then answer here.</p>;
   const field = `${prefix}-${message.id}`;
-  return <div class="at-reply"><label class="lbl" for={field}>Your answer</label><textarea class="field" id={field} placeholder="Your answer…" rows={2} value={text} onInput={(event) => { const value = event.currentTarget.value; setText(value); if (value) answerDrafts.set(key, value); else answerDrafts.delete(key); if (answerDrafts.size > 100) answerDrafts.delete(answerDrafts.keys().next().value!); }} /><button class="btn primary small" disabled={!text.trim() || busy} onClick={answer}>{busy ? "Sending…" : "Send answer"}</button>{error ? <p class="msg err" role="alert">{error}</p> : null}</div>;
+  return <div class="at-reply"><label class="lbl" for={field}>Your answer</label><textarea class="field" id={field} placeholder="Your answer…" rows={2} value={text} onInput={(event) => { const value = event.currentTarget.value; setText(value); saveAnswerDraft(key, value); }} /><button class="btn primary small" disabled={!text.trim() || busy} onClick={answer}>{busy ? "Sending…" : "Send answer"}</button>{error ? <p class="msg err" role="alert">{error}</p> : null}</div>;
 }
 
 /** Task selection ties ownership, dependencies and the user's next decision together. */
@@ -296,5 +314,5 @@ function LiveTeamMap({ run }: { run: RunSummary }) {
   const blockers = taskBlockers(team, task);
   const questions = team.messages.filter(message => message.taskId === task.id && message.kind === "question" && message.status === "open");
   const prioritize = async (priority: number) => { setBusy(true); setError(""); try { await post(`/api/runs/${run.id}/task-priority`, { taskId: task.id, priority, revision: team.revision }); } catch (error) { setError((error as Error).message); } finally { setBusy(false); } };
-  return <section class="live-team-map" aria-label="Live team map"><h4>Who's doing what</h4><div class="team-map-grid">{team.tasks.map(item => <button class={`team-map-node ${item.status ?? "pending"}`} key={item.id} aria-pressed={item.id === task.id} onClick={() => setSelected(item.id)}><strong>{item.title}</strong><span>{team.members.find(member => member.id === item.owner)?.name ?? item.owner}</span><span>{TASK_STATUS[item.status ?? "pending"]}</span><small>{item.dependsOn.length ? `After: ${item.dependsOn.join(", ")}` : "Independent task"}</small></button>)}</div><article class="team-map-detail"><h4>{task.title}</h4><p>{member?.name ?? task.owner} · {member?.provider} · {TASK_STATUS[task.status ?? "pending"]}</p>{member?.assignment ? <p>{member.assignment.model} · {member.assignment.effort || "Default effort"} — {member.assignment.rationale}</p> : null}<p class="help">Files and areas: {task.paths.join(", ") || "No paths assigned"}</p>{blockers.length ? <ul>{blockers.map(reason => <li key={reason}>{reason}</li>)}</ul> : null}<div class="experience-actions">{!run.projectTeam && run.status === "running" && ["pending", "needs_info", "failed"].includes(task.status ?? "pending") ? <label>Task priority<select class="field" disabled={busy} value={run.taskPriorities?.[task.id] ?? 0} onChange={e => void prioritize(Number(e.currentTarget.value))}><option value={0}>Normal</option><option value={10}>High</option><option value={-10}>Low</option></select></label> : null}<button class="btn small" onClick={() => { const element = document.getElementById(`team-task-${task.id}`); element?.scrollIntoView({ block: "center", behavior: "smooth" }); element?.focus(); }}>Inspect assignment</button></div><p class="help">Priority affects the next dispatch; dependency, file ownership and budget checks still apply.</p>{questions.map(message => <div key={message.id}><p>{message.body}</p>{message.recipient === "user" ? <button class="btn small" onClick={() => { const field = document.getElementById(`team-answer-${message.id}`); field?.scrollIntoView({ block: "center", behavior: "smooth" }); field?.focus(); }}>Answer this question</button> : <p class="help">Waiting for {team.members.find(member => member.id === message.recipient)?.name ?? message.recipient}</p>}</div>)}{error ? <p role="alert">{error}</p> : null}</article></section>;
+  return <section class="live-team-map" aria-label="Live team map"><h4>Who's doing what</h4><div class="team-map-grid">{team.tasks.map(item => <button class={`team-map-node ${item.status ?? "pending"}`} key={item.id} aria-pressed={item.id === task.id} onClick={() => setSelected(item.id)}><strong>{item.title}</strong><span>{team.members.find(member => member.id === item.owner)?.name ?? item.owner}</span><span>{TASK_STATUS[item.status ?? "pending"]}</span><small>{item.dependsOn.length ? `After: ${item.dependsOn.join(", ")}` : "Independent task"}</small></button>)}</div><article class="team-map-detail"><h4>{task.title}</h4><p>{member?.name ?? task.owner} · {member?.provider} · {TASK_STATUS[task.status ?? "pending"]}</p>{member?.assignment ? <p>{member.assignment.model} · {member.assignment.effort || "Default effort"} — {member.assignment.rationale}</p> : null}<p class="help">Files and areas: {task.paths.join(", ") || "No paths assigned"}</p>{blockers.length ? <ul>{blockers.map(reason => <li key={reason}>{reason}</li>)}</ul> : null}<div class="experience-actions">{!run.projectTeam && run.status === "running" && ["pending", "needs_info", "failed"].includes(task.status ?? "pending") ? <label>Task priority<select class="field" disabled={busy} value={run.taskPriorities?.[task.id] ?? 0} onChange={e => void prioritize(Number(e.currentTarget.value))}><option value={0}>Normal</option><option value={10}>High</option><option value={-10}>Low</option></select></label> : null}<button class="btn small" onClick={() => { const element = document.getElementById(`team-task-${task.id}`); element?.scrollIntoView({ block: "center", behavior: scrollBehavior() }); element?.focus(); }}>Inspect assignment</button></div><p class="help">Priority affects the next dispatch; dependency, file ownership and budget checks still apply.</p>{questions.map(message => <div key={message.id}><p>{message.body}</p>{message.recipient === "user" ? <button class="btn small" onClick={() => { const field = document.getElementById(`team-answer-${message.id}`); field?.scrollIntoView({ block: "center", behavior: scrollBehavior() }); field?.focus(); }}>Answer this question</button> : <p class="help">Waiting for {team.members.find(member => member.id === message.recipient)?.name ?? message.recipient}</p>}</div>)}{error ? <p role="alert">{error}</p> : null}</article></section>;
 }

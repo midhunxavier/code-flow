@@ -103,6 +103,8 @@ The GitHub workflow can import the following repository secrets into a temporary
 
 ## Homebrew
 
+The generated formula uses Homebrew6.0.3 or newer. Before copying it to the tap, run `brew style output/releases/Formula/code-flow.rb`; after adding it to the tap, also run `brew audit --strict midhunxavier/code-flow/code-flow`.
+
 `release:prepare` generates `output/releases/Formula/code-flow.rb` from the actual npm tarball's SHA-256. After the GitHub prerelease assets are published, copy this formula into `Formula/code-flow.rb` in the `midhunxavier/homebrew-code-flow` repository, then test:
 
 ```sh

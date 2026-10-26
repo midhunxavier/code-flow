@@ -15,6 +15,17 @@ export interface ApprovalRecord extends Omit<AgentApprovalRequest, "id"> {
   answers?: Record<string, string>;
 }
 
+/**
+ * The abort reason for a request nobody answered before its deadline. An adapter whose own timer
+ * fires aborts with it, so the registry records the request as expired rather than cancelled.
+ */
+export function approvalTimeout(): DOMException {
+  return new DOMException("Nobody answered this request before it expired", "TimeoutError");
+}
+export function isApprovalTimeout(reason: unknown): boolean {
+  return (reason as { name?: unknown } | undefined)?.name === "TimeoutError";
+}
+
 interface Pending {
   resolve: (decision: ApprovalDecision) => void;
   timer: ReturnType<typeof setTimeout>;
@@ -66,7 +77,8 @@ export class ApprovalRegistry {
     const record: ApprovalRecord = { ...action, id, requestId, runId, stepId, createdAt, expiresAt: createdAt + timeoutMs, status: "pending" };
     this.records.set(id, record);
     const promise = new Promise<ApprovalDecision>((resolve) => {
-      const cancel = () => { this.finish(id, "cancelled"); };
+      // The caller's own deadline (it aborts with approvalTimeout()) is an expiry, not a cancellation.
+      const cancel = () => { this.finish(id, isApprovalTimeout(signal.reason) || Date.now() >= record.expiresAt ? "expired" : "cancelled"); };
       const timer = setTimeout(() => this.finish(id, "expired"), timeoutMs);
       this.pending.set(id, { resolve, timer, cleanup: () => signal.removeEventListener("abort", cancel) });
       signal.addEventListener("abort", cancel, { once: true });
@@ -81,6 +93,16 @@ export class ApprovalRegistry {
     this.expire();
     return [...this.records.values()].filter((record) => !runId || record.runId === runId)
       .sort((a, b) => b.createdAt - a.createdAt || a.id.localeCompare(b.id)).map((record) => structuredClone(record));
+  }
+
+  /** Attention reads never clone request payloads or expire/emit while a subscriber is running. */
+  pendingRunIds(): Set<string> {
+    const ids = new Set<string>(), now = Date.now();
+    for (const id of this.pending.keys()) {
+      const record = this.records.get(id);
+      if (record?.status === "pending" && record.expiresAt > now) ids.add(record.runId);
+    }
+    return ids;
   }
 
   async ask(runId: string, stepId: string, questions: AgentQuestion[], signal: AbortSignal): Promise<Record<string, string> | undefined> {
@@ -151,12 +173,19 @@ export class ApprovalRegistry {
 function validateRequest(raw: AgentApprovalRequest): AgentApprovalRequest | undefined {
   if (!raw || typeof raw.id !== "string" || !raw.id || raw.id.length > 240 || !["command", "file-change", "tool", "question"].includes(raw.kind)) return;
   if (raw.kind === "tool" && (typeof raw.toolName !== "string" || !raw.toolName || raw.toolName.length > 240 || typeof raw.input !== "string" || raw.input.length > 16_000)) return;
-  if (raw.kind === "question" && (!Array.isArray(raw.questions) || !raw.questions.length || raw.questions.length > 8 || new Set(raw.questions.map(q => q?.id)).size !== raw.questions.length || raw.questions.some(q => !q || typeof q.id !== "string" || !q.id || q.id.length > 240 || typeof q.question !== "string" || !q.question || q.question.length > 8000 || q.options !== undefined && (!Array.isArray(q.options) || q.options.length > 20 || q.options.some(o => typeof o !== "string" || o.length > 2000))))) return;
+  if (raw.kind === "question" && (!Array.isArray(raw.questions) || !raw.questions.length || raw.questions.length > 8 || new Set(raw.questions.map(q => q?.id)).size !== raw.questions.length || raw.questions.some(q => !q || typeof q.id !== "string" || !q.id || q.id.length > 240 || typeof q.question !== "string" || !q.question || q.question.length > 8000
+    || q.header !== undefined && typeof q.header !== "string" || q.multiSelect !== undefined && typeof q.multiSelect !== "boolean"
+    || q.options !== undefined && (!Array.isArray(q.options) || q.options.length > 20 || q.options.some(o => typeof o !== "string" || o.length > 2000))
+    || q.optionDescriptions !== undefined && (!Array.isArray(q.options) || !Array.isArray(q.optionDescriptions) || q.optionDescriptions.length !== q.options.length || q.optionDescriptions.some(d => typeof d !== "string"))))) return;
   for (const [value, limit] of [[raw.command, 16_000], [raw.cwd, 4_096], [raw.reason, 4_000]] as const) if (value !== undefined && (typeof value !== "string" || value.length > limit || value.includes("\0"))) return;
   if (raw.kind === "command" && !raw.command?.trim()) return;
   if (raw.kind === "file-change" && (!raw.paths?.length || raw.paths.length > 200)) return;
   if (raw.paths !== undefined && (!Array.isArray(raw.paths) || raw.paths.some((path) => typeof path !== "string" || !path || path.length > 4_096 || path.includes("\0")))) return;
-  return structuredClone({ id: raw.id, kind: raw.kind, ...(raw.command ? { command: raw.command } : {}), ...(raw.cwd ? { cwd: raw.cwd } : {}), ...(raw.reason ? { reason: raw.reason } : {}), ...(raw.paths ? { paths: raw.paths } : {}), ...(raw.kind === "tool" ? { toolName: raw.toolName, input: raw.input } : {}), ...(raw.kind === "question" ? { questions: raw.questions } : {}) });
+  return structuredClone({ id: raw.id, kind: raw.kind, ...(raw.command ? { command: raw.command } : {}), ...(raw.cwd ? { cwd: raw.cwd } : {}), ...(raw.reason ? { reason: raw.reason } : {}), ...(raw.paths ? { paths: raw.paths } : {}), ...(raw.kind === "tool" ? { toolName: raw.toolName, input: raw.input } : {}), ...(raw.kind === "question" ? { questions: raw.questions!.map(questionFields) } : {}) });
+}
+/** Only the fields the inbox shows; anything else a provider sent stays out of the record. */
+function questionFields(q: AgentQuestion): AgentQuestion {
+  return { id: q.id, question: q.question, ...(q.header ? { header: q.header.slice(0, 240) } : {}), ...(q.options ? { options: q.options } : {}), ...(q.optionDescriptions ? { optionDescriptions: q.optionDescriptions.map(description => description.slice(0, 2000)) } : {}), ...(q.multiSelect ? { multiSelect: true } : {}) };
 }
 function bounded(value: number | undefined, fallback: number, maximum: number): number {
   return Math.min(maximum, Number.isFinite(value) && Number(value) > 0 ? Math.max(1, Math.round(value!)) : fallback);

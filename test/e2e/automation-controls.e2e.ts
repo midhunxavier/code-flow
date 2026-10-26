@@ -87,7 +87,7 @@ test("a sweep configures single agents, team patterns and saved templates withou
     tasks: [{ id: "implement", title: "Repair the dependency update", role: "builder", kind: "implementation", instructions: "{{task}}", dependsOn: [], paths: ["*"], acceptance: ["CI passes."] }],
     preferences: { roles: { coordinator: ["codex"], pool: ["claude", "codex"] }, options: { maxMembers: 3 }, agentSettings: {}, roleSettings: {} },
   } });
-  const context = await browser.newContext({ viewport: { width: 1414, height: 785 } });
+  const context = await browser.newContext({ viewport: { width: 1414, height: 785 }, timezoneId: "America/New_York" });
   const sweepPage = await context.newPage();
   const submissions: any[] = [], errors: string[] = [];
   sweepPage.on("pageerror", error => errors.push(error.message));
@@ -151,7 +151,7 @@ test("a sweep configures single agents, team patterns and saved templates withou
       await sweepPage.setViewportSize({ width, height: 785 });
       await dialog.getByRole("combobox", { name: "Planner", exact: true }).scrollIntoViewIfNeeded();
       await sweepPage.addScriptTag({ content: axe.source });
-      const violations = await sweepPage.evaluate(async () => (window as unknown as { axe: typeof axe }).axe.run(document, { runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21aa", "wcag22aa"] } }).then(result => result.violations));
+      const violations = await sweepPage.evaluate(async () => (window as unknown as { axe: typeof axe }).axe.run(document, { runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"] } }).then(result => result.violations));
       assert.deepEqual(violations, []);
       const start = await dialog.getByRole("button", { name: "Start 1 run", exact: true }).boundingBox();
       assert.ok(start && start.y >= 0 && start.y + start.height <= 785, "Start remains in the visible footer");
@@ -207,7 +207,7 @@ test("a sweep configures single agents, team patterns and saved templates withou
         assert.equal(submitted.run.templateRef.id, template.id); assert.equal(submitted.run.templateRef.version, template.version);
         assert.equal(submitted.run.templateRef.inputs.focus, "API compatibility"); assert.match(submitted.run.templateRef.inputs.task, /Dependabot pull request/);
         assert.equal(submitted.run.agentSettings.codex.model, "template-model"); assert.equal(submitted.run.roleSettings.agent.codex.effort, "high");
-        assert.deepEqual(submitted.schedule, { at: "08:30" });
+        assert.deepEqual(submitted.schedule, { at: "08:30", timezone: "America/New_York" }, "the daily time is in the browser's zone, as the dialog says");
       }
       if (selection === "template:sweep-team") { assert.equal(submitted.run.templateRef.id, "sweep-team"); assert.deepEqual(submitted.run.roles.pool, ["claude", "codex"]); assert.equal(submitted.run.options.maxMembers, 3); }
     }
@@ -259,7 +259,7 @@ test("issue repairs use the focused workflow and keep partial failures visible f
     for (const width of [1414, 390]) {
       await repairPage.setViewportSize({ width, height: 823 });
       await repairPage.addScriptTag({ content: axe.source });
-      const violations = await repairPage.evaluate(async () => (window as unknown as { axe: typeof axe }).axe.run(document, { runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21aa", "wcag22aa"] } }).then(result => result.violations));
+      const violations = await repairPage.evaluate(async () => (window as unknown as { axe: typeof axe }).axe.run(document, { runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"] } }).then(result => result.violations));
       assert.deepEqual(violations, []);
       const button = await dialog.getByRole("button", { name: "Start 2 runs", exact: true }).boundingBox();
       assert.ok(button && button.y >= 0 && button.y + button.height <= 823);

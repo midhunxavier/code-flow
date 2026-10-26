@@ -1,8 +1,11 @@
+import { FillTemplateDialog } from "./template-parameters.js";
+import { templateParameters } from "./composer-tools.js";
 import { useEffect, useState } from "preact/hooks";
 import { useDialog } from "./app.js";
 import { api, enc } from "./lib.js";
 import { Icon } from "./icons.js";
-import { applyTemplate, ghPicker, repo, setTask, source, sweepPicker, task, templates, type SourcePick, type Template } from "./state.js";
+import { PolicyPauseNotice } from "./policy-pause.js";
+import { applyTemplate, sourceTemplatePicker, executionPaused, ghPicker, repo, setTask, source, sweepPicker, task, templates, type SourcePick, type Template } from "./state.js";
 
 interface Item {
   number: number;
@@ -23,8 +26,11 @@ export function GitHubPicker() {
   const [kind, setKind] = useState<"issue" | "pr">("issue");
   const [items, setItems] = useState<Item[] | null>(null);
   const [error, setError] = useState("");
+  const [truncated, setTruncated] = useState(false);
   const [filter, setFilter] = useState("");
   const template = open?.template;
+  // `gh` runs with your login in the repository, so a filesystem restriction anywhere refuses the listing.
+  const paused = executionPaused.value;
 
   useEffect(() => {
     if (open) {
@@ -36,17 +42,18 @@ export function GitHubPicker() {
     if (!open || !repo.value) return;
     setItems(null);
     setError("");
+    if (paused) return;
     // Only the latest list counts: opening on "Pull requests" first asks for issues (the kind
     // before the switch), and whichever answer came last used to win.
     let current = true;
-    api<Item[]>(`/api/github/${kind === "issue" ? "issues" : "prs"}?repo=${enc(repo.value)}`).then(
-      (list) => current && setItems(list),
+    const timer = setTimeout(() => api<Item[] | { items: Item[]; truncated: boolean }>(`/api/github/${kind === "issue" ? "issues" : "prs"}?repo=${enc(repo.value)}&q=${enc(filter.trim())}`).then(
+      (list) => { if (current) { setItems(Array.isArray(list) ? list : list.items); setTruncated(!Array.isArray(list) && list.truncated); } },
       (e) => current && setError(e.message),
-    );
+    ), filter.trim() ? 250 : 0);
     return () => {
-      current = false;
+      current = false; clearTimeout(timer);
     };
-  }, [open, kind, repo.value]);
+  }, [open, kind, repo.value, paused, filter]);
 
   const pick = (item: Item) => {
     const chosen: SourcePick = {
@@ -61,14 +68,16 @@ export function GitHubPicker() {
     if (template) applyTemplate(template, chosen);
     else {
       source.value = { ...chosen, ciLogs: source.value?.ciLogs };
-      if (!task.value.trim()) setTask(kind === "issue" ? `Fix issue #${item.number}: ${item.title}` : `Pull request #${item.number} (${item.title}): `);
+      if (!task.value.trim()) setTask(kind === "issue" ? `Fix issue #${item.number}` : `Pull request #${item.number}: `);
     }
     ghPicker.value = null;
   };
   const q = filter.trim().toLowerCase();
-  const shown = (items ?? []).filter((i) => !q || `#${i.number} ${i.title} ${(i.labels ?? []).join(" ")} ${i.author ?? ""}`.toLowerCase().includes(q));
+  const shown = items ?? [];
 
   return (
+    <>
+    {sourceTemplatePicker.value ? <FillTemplateDialog template={{ ...sourceTemplatePicker.value, criteria: [] }} onClose={() => { sourceTemplatePicker.value = null; }} onApply={values => { applyTemplate(sourceTemplatePicker.value!, undefined, values); sourceTemplatePicker.value = null; }} /> : null}
     <dialog class="picker gh-picker" ref={ref} aria-labelledby="github-picker-title">
       {open ? (
         <div class="picker-inner">
@@ -85,12 +94,13 @@ export function GitHubPicker() {
               </div>
             ) : null}
             <div class="row">
-              <input class="field" placeholder="Filter by number, title, label…" value={filter} onInput={(e) => setFilter(e.currentTarget.value)} autoFocus />
+              <input class="field" aria-label="Search GitHub issues or pull requests" placeholder="Search by number, title, label…" maxLength={500} value={filter} onInput={(e) => setFilter(e.currentTarget.value)} autoFocus />
             </div>
           </div>
           <div class="picker-list">
+            {paused ? <PolicyPauseNotice what="GitHub issues and pull requests can't be listed" onReview={() => (ghPicker.value = null)} /> : null}
             {error ? <div class="msg err pad">{error}</div> : null}
-            {!items && !error ? <div class="help pad">Loading from GitHub…</div> : null}
+            {!items && !error && !paused ? <div class="help pad">Loading from GitHub…</div> : null}
             {items && !shown.length ? <div class="help pad">No open {kind === "issue" ? "issues" : "pull requests"}{q ? " match" : ""}.</div> : null}
             {shown.map((i) => (
               <div key={i.number} class="dir gh-item" tabIndex={0} onClick={() => pick(i)} onKeyDown={(e) => e.key === "Enter" && pick(i)}>
@@ -112,14 +122,14 @@ export function GitHubPicker() {
             ))}
           </div>
           <div class="picker-foot">
-            <span class="ps">Listed with GitHub CLI (gh) using your own login.</span>
+            <span class="ps">{truncated && items ? `Showing the first ${items.length} matches. Search by number or refine your search to find others. ` : ""}Listed with GitHub CLI (gh) using your own login.</span>
             <button class="btn" onClick={() => (ghPicker.value = null)}>
               Cancel
             </button>
           </div>
         </div>
       ) : null}
-    </dialog>
+    </dialog></>
   );
 }
 
@@ -134,6 +144,7 @@ export function Templates({ only, onChoose, prepare, disabled = false }: { only?
     onChoose?.();
     if (t.sweep) sweepPicker.value = t;
     else if (t.needs) ghPicker.value = { kind: t.needs, template: t };
+    else if (templateParameters({ task: t.task, criteria: [] }).length) sourceTemplatePicker.value = t;
     else applyTemplate(t);
   };
   const single = templates.value.filter((t) => !t.sweep && only !== "backlog");

@@ -7,6 +7,7 @@ import { CODEFLOW_HOME } from "./config.js";
 import type { Run, RunManager, RunSummary } from "./engine.js";
 import { logError } from "./log.js";
 import { projectOf, type Project } from "./projects.js";
+import { teamStatusLabel } from "./run-status.js";
 
 /**
  * code-flow on your phone, behind a secret link. By default it's a read-only view: what's
@@ -209,7 +210,7 @@ a{color:var(--link);text-decoration:none;font-weight:500}a:hover{text-decoration
 pre{white-space:pre-wrap;word-break:break-word;font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;background:var(--sunken);border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin:8px 0}
 ul,ol{padding-left:20px}li{margin:6px 0}li b{font-weight:600}.foot{font-size:12px;color:var(--muted);margin-top:32px}
 @media (min-width:640px){h1{font-size:26px}}
-</style></head><body><main>${body}<p class="foot">Read-only view of code-flow · refreshes every 15 s</p></main></body></html>`;
+</style></head><body><main>${body}<p class="foot">Read-only view of code-flow${refresh ? " · refreshes every 15 s" : " · refresh this page for updates"}</p></main></body></html>`;
 }
 
 /**
@@ -259,7 +260,7 @@ function renderRun(run: Run, base: string, project?: Project): string {
   const team = run.team;
   const memberName = (id: string) => id === "user" ? "You" : team?.members.find((member) => member.id === id)?.name ?? id;
   const teamView = team ? [
-    `<h2>Team and workflow</h2><p>${esc(team.status)} · revision ${team.revision} · ${team.metrics.invocations} lifetime calls (${team.metrics.coordinatorInvocations} coordinating)</p>`,
+    `<h2>Team and workflow</h2><p>${esc(teamStatusLabel(run))} · revision ${team.revision} · ${team.metrics.invocations} lifetime calls (${team.metrics.coordinatorInvocations} coordinating)</p>`,
     `<ul>${team.tasks.map((task) => `<li><b>${esc(task.title)}</b> · ${esc(memberName(task.owner))} · ${esc(task.status ?? "planned")}${task.dependsOn.length ? `<br><span class="m">Needs ${task.dependsOn.map((id) => esc(team.tasks.find((item) => item.id === id)?.title ?? id)).join(", ")}</span>` : ""}</li>`).join("")}</ul>`,
     team.messages.some((message) => message.kind === "question" && message.status === "open") ? `<h2>Open questions</h2><ul>${team.messages.filter((message) => message.kind === "question" && message.status === "open").map((message) => `<li><b>${esc(memberName(message.sender))} → ${esc(memberName(message.recipient))}</b>: ${esc(message.body)}${message.recipient === "user" ? `<br><span class="m">Open the full-control app or code-flow on your computer to answer.</span>` : ""}${message.deadlineAt ? `<br><span class="m">Deadline ${esc(new Date(message.deadlineAt).toLocaleString())}</span>` : ""}</li>`).join("")}</ul>` : "",
     team.gaps.length ? `<h2>Unresolved work</h2><ul>${team.gaps.map((gap) => `<li>${esc(gap)}</li>`).join("")}</ul>` : "",

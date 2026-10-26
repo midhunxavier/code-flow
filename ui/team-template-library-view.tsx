@@ -13,7 +13,7 @@ function download(template: TeamTemplate) {
   const a = document.createElement("a"); a.href = url; a.download = `${template.id}-v${template.version}.json`; a.click(); URL.revokeObjectURL(url);
 }
 /** The same definition is edited, previewed, saved, imported, and instantiated. */
-export function TeamTemplateLibrary({ initial }: { initial?: TeamTemplate }) {
+export function TeamTemplateLibrary({ initial, focused = false, onPublished }: { initial?: TeamTemplate; focused?: boolean; onPublished?: (template: TeamTemplate) => void }) {
   const project = initial?.project ?? (composerProject.value || undefined);
   const query = project ? `?project=${encodeURIComponent(project)}` : "";
   const [templates, setTemplates] = useState<TeamTemplate[]>([]);
@@ -24,10 +24,12 @@ export function TeamTemplateLibrary({ initial }: { initial?: TeamTemplate }) {
   const [inputs, setInputs] = useState<Record<string, string>>({ task: task.value });
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [migrationNotes, setMigrationNotes] = useState<string[]>([]);
   const [history, setHistory] = useState<TeamTemplate[]>([]);
   const file = useRef<HTMLInputElement>(null);
   const reload = async () => setTemplates((await api<{ templates: TeamTemplate[] }>(`/api/team-templates${query}`)).templates);
   useEffect(() => {
+    if (focused) return;
     let live = true;
     setError(""); setTemplates([]);
     void api<{ templates: TeamTemplate[] }>(`/api/team-templates${query}`).then(r => { if (live) setTemplates(r.templates); }, e => { if (live) setError(e.message); });
@@ -43,6 +45,7 @@ export function TeamTemplateLibrary({ initial }: { initial?: TeamTemplate }) {
     setBusy(true); setError("");
     try {
       const saved = await post<TeamTemplate>("/api/team-templates", { template: { ...parsed, version: expected + 1 }, expectedVersion: expected });
+      if (focused) { onPublished?.(saved); return; }
       await reload(); edit(saved); showToast(`Saved ${saved.name} v${saved.version}`);
     } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
   };
@@ -64,14 +67,14 @@ export function TeamTemplateLibrary({ initial }: { initial?: TeamTemplate }) {
       showToast(`Using ${selected.name} v${selected.version}; run permissions retained`);
     } catch (e) { setError((e as Error).message); }
   };
-  return <section class="section team-template-library" aria-label="Reusable team templates">
-    <h3>Reusable team templates</h3>
+  return <section class={`${focused ? "" : "section "}team-template-library`} aria-label="Reusable team templates">
+    {!focused ? <><h3>Reusable team templates</h3>
     <p class="help">Auto can build its own plan or reuse enabled task graphs (up to six definitions of 16,000 characters per run, ordered by ID). Fixed workflows keep their original checks and execution behavior. All templates use the run's permissions.</p>
     <label class="lbl" for="team-template-select">Saved templates</label>
     <select class="field" id="team-template-select" value={selected?.id ?? ""} onChange={e => { const t = templates.find(t => t.id === e.currentTarget.value) ?? null; setSelected(t); setEditing(false); setHistory([]); setError(""); setInputs({ task: task.value }); }}>
       <option value="">Choose a saved template</option>{templates.map(t => <option value={t.id} key={t.id}>{t.name} · v{t.version} · {t.scope}{t.autoEnabled ? " · available to Auto" : ""}</option>)}
-    </select>
-    {selected && !editing ? <div class="section">
+    </select></> : null}
+    {!focused && selected && !editing ? <div class="section">
       <p>{selected.description}</p>
       {selected.parameters.map(p => <label class="lbl" key={p}>{p}<input class="field" value={inputs[p] ?? ""} onInput={e => setInputs({ ...inputs, [p]: e.currentTarget.value })} /></label>)}
       <p class="help">{selected.workflow ? `Workflow: ${patterns.value.find(p => p.id === selected.workflow)?.name ?? selected.workflow}` : `${selected.tasks.length} tasks · ${selected.roles.join(", ")} · independent final verification`}</p>
@@ -79,31 +82,32 @@ export function TeamTemplateLibrary({ initial }: { initial?: TeamTemplate }) {
       <button class="btn" onClick={async () => { try { const r = await api<{ templates: TeamTemplate[] }>(`/api/team-templates${query}${query ? "&" : "?"}history=1`); setHistory(r.templates.filter(t => t.id === selected.id)); } catch (e) { setError((e as Error).message); } }}>Version history</button>
       {history.map(t => <details key={t.version}><summary>Version {t.version}{t.version === selected.version ? " · selected" : ""}</summary><pre>{JSON.stringify(t, null, 2)}</pre><button class="btn" onClick={() => { setSelected(t); setInputs({ task: task.value }); }}>Use this version</button></details>)}
     </div> : null}
-    <div class="section"><button class="btn" onClick={() => edit(fresh(project), true)}>Design a template</button>{" "}
+    {!focused ? <div class="section"><button class="btn" onClick={() => edit(fresh(project), true)}>Design a template</button>{" "}
       {pattern.value && pattern.value.id !== "auto-team" ? <><button class="btn" onClick={() => {
         const p = pattern.value!;
         edit({ ...fresh(project), name: `${p.name} template`, workflow: p.id, roles: [], tasks: [], task: task.value || "{{task}}", preferences: templatePreferences({ roles: rolesFor(p), options: optionsFor(p), agentSettings: agentSettings.value, roleSettings: roleModels.value[p.id] ?? {} }) }, true);
       }}>Save current workflow as template</button>{" "}</> : null}<button class="btn" onClick={() => file.current?.click()}>Import template</button>{" "}
       <button class="btn" disabled={busy} onClick={async () => {
-        setBusy(true); setError("");
+        setBusy(true); setError(""); setMigrationNotes([]);
         try {
-          let imported = 0;
+          let imported = 0; const notes: string[] = [];
           for (const scope of [undefined, ...(project ? [project] : [])]) {
             const key = scope ? `composerLibrary:${scope}` : "composerLibrary";
             const raw = store.get(key); if (!raw) continue;
-            const result = await post<{ imported: number }>(`/api/team-templates/migrate${scope ? `?project=${encodeURIComponent(scope)}` : ""}`, JSON.parse(raw)); imported += result.imported;
+            const result = await post<{ imported: number; notes: string[] }>(`/api/team-templates/migrate${scope ? `?project=${encodeURIComponent(scope)}` : ""}`, JSON.parse(raw)); imported += result.imported; notes.push(...result.notes); setMigrationNotes([...new Set(notes)]);
           }
           await reload(); showToast(`Imported ${imported} templates. Browser originals retained; permissions were not imported.`);
         } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
       }}>Import browser library</button>
       <input hidden ref={file} type="file" accept="application/json,.json" onChange={async e => { const f = e.currentTarget.files?.[0]; if (!f) return; try { if (f.size > 150000) throw new Error("Template is too large"); const t = validateTeamTemplate(JSON.parse(await f.text())); edit({ ...t, id: `import-${Date.now().toString(36)}`, version: 1, scope: project ? "project" : "personal", project, autoEnabled: false }, true); } catch (e) { setError((e as Error).message); } }} />
-    </div>
-    {editing ? <div class="section">
+    </div> : null}
+    {migrationNotes.length ? <div class="help" role="status"><b>Browser library import</b><ul>{migrationNotes.map(note => <li key={note}>{note}</li>)}</ul></div> : null}
+    {editing ? <div class={focused ? undefined : "section"}>
       <p>Design parameters, roles, instructions, dependencies, owned paths, and acceptance criteria below. Publishing creates version {expected + 1}. The previous version stays unchanged.</p>
       {parsed ? <><label class="lbl">Name<input class="field" value={parsed.name} onInput={e => setDraft(JSON.stringify({ ...parsed, name: e.currentTarget.value }, null, 2))} /></label><label class="checkpoint"><input type="checkbox" checked={parsed.autoEnabled} disabled={!!parsed.workflow} onChange={e => setDraft(JSON.stringify({ ...parsed, autoEnabled: e.currentTarget.checked }, null, 2))} /><span>Allow Auto to reuse this strategy</span></label></> : null}
       <label class="lbl" for="team-template-definition">Template definition</label><textarea id="team-template-definition" class="field mono" rows={18} spellcheck={false} value={draft} onInput={e => setDraft(e.currentTarget.value)} />
       {validation ? <p class="err" role="alert">{validation}</p> : parsed ? <div class="help"><b>Execution preview:</b> {parsed.workflow ? `Fixed workflow ${parsed.workflow}` : <ol>{parsed.tasks.map(t => <li key={t.id}>{t.title} · {t.role} · {t.kind}{t.dependsOn.length ? ` · after ${t.dependsOn.join(", ")}` : ""}</li>)}</ol>}<p>Required task criteria and independent verification survive Auto adaptations. Permissions and spending limits come from the run.</p></div> : null}
-      <button class="btn primary" disabled={busy || !!validation} onClick={() => void publish()}>{busy ? "Saving…" : "Publish template version"}</button>{" "}<button class="btn" onClick={() => setEditing(false)}>Close editor</button>
+      <button class="btn primary" disabled={busy || !!validation} onClick={() => void publish()}>{busy ? "Saving…" : "Publish template version"}</button>{!focused ? <>{" "}<button class="btn" onClick={() => setEditing(false)}>Close editor</button></> : null}
     </div> : null}
     {error ? <p class="err" role="alert">{error}</p> : null}
   </section>;

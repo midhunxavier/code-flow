@@ -1,3 +1,5 @@
+import { groupPrTargets } from "./pr-targets.js";
+import { EXECUTION_LIMITS, MAX_COMPARE_RUNS, MAX_COMPARE_REPEAT, numberProblem } from "./start-input-validation.js";
 import { validateTaskTeam } from "./task-team.js";
 import { createReadStream } from "node:fs";
 import { pipeline } from "node:stream/promises";
@@ -8,9 +10,9 @@ import { HISTORY_STATUSES, type HistoryStatus, type ProjectSection } from "./run
 import { MlService } from "./ml/service.js";
 import { handleMlApi } from "./ml/api.js";
 import { modelCatalogStore } from "./model-catalog.js";
-import { permissionProviderProblem, createRunPermissions as catalogPermissions } from "./run-permissions.js";
+import { runProviderProblem, permissionProviderProblem, createRunPermissions as catalogPermissions } from "./run-permissions.js";
 import { inheritRunEnvironment } from "./run-environment.js";
-import { teamTemplateStore } from "./team-template-store.js";
+import { TemplateConflictError, teamTemplateStore } from "./team-template-store.js";
 import { fillTeamTemplate, validateTeamTemplate, type TemplateSelection } from "./team-templates.js";
 import { antigravityExecution, AGY_NATIVE_LIMITATION, type AntigravityExecution, createRunPermissions, narrowerTrust, resolveRunPermissions, permissionRequirements, type PermissionRequirement } from "./run-permissions.js";
 import { TeamTerminals, handleTeamTerminals } from "./collab/terminals.js";
@@ -20,13 +22,14 @@ import { sendAsset } from "./assets.js";
 import { transcriptPage, transcriptPreview, TranscriptCursorError } from "./transcript.js";
 import { createSseWriter, streamHealth } from "./sse-writer.js";
 import { PerformanceMetrics } from "./performance.js";
+import { StreamSharingIdentity } from "./stream-sharing.js";
 import { JourneyStore } from "./journey-store.js";
 import { journeyApi } from "./journey-api.js";
 import { taskIntent, outcomeMetrics, workflowRecommendations } from "./experience.js";
 import { join } from "node:path";
 import type { Socket } from "node:net";
 import { CertificateRenewal } from "./certificate-renewal.js";
-import { loadRemoteCertificate, saveRemoteCertificate, validateRemoteCertificate, certificateHostname, type CertificateInfo, type RemoteCertificate } from "./remote-tls.js";
+import { loadRemoteCertificate, saveRemoteCertificate, validateRemoteCertificate, certificateHostname, inspectEnvironmentCertificate, certificateCoversHost, certificateTimeInvalid, type CertificateInfo, type RemoteCertificate } from "./remote-tls.js";
 import { requestTailscaleCertificate } from "./tailscale.js";
 import { ProjectTeams } from "./project-teams.js";
 import { handleProjectTeams } from "./project-teams-api.js";
@@ -39,6 +42,7 @@ import { FilteredTasks, FilteredTaskError } from "./filtered-tasks.js";
 import { handleFilteredTasksApi } from "./filtered-tasks-api.js";
 import { createServer as createSecureServer } from "node:https";
 import { PhoneSessions } from "./phone-sessions.js";
+import { deviceLabel } from "./phone-device-label.js";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { createHash, randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -46,7 +50,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { brotliCompress, constants as zlib, gzip } from "node:zlib";
 import {
-  agentAvailability,
+  agentAvailability, invalidateAgentCatalogs,
   AGENT_IDS,
   registerProviderAdapters,
   replaceAcpAdapters,
@@ -59,10 +63,9 @@ import {
 } from "./adapters/index.js";
 import { listTree, readRepoFile, searchFiles } from "./repo-tree.js";
 import { checkGit, doctor } from "./doctor.js";
-import { readRepoConfig, type Trust } from "./repo-config.js";
+import { readRepoConfig, readRepoConfigAt, type Trust } from "./repo-config.js";
 import { openFolder } from "./serve.js";
 import { appCommand } from "./app-command.js";
-import { inspectFramePolicy } from "./frame-policy.js";
 import { LaunchProfiles, LaunchProfileError, readLaunchProfiles } from "./launch-profiles.js";
 import { TeamRerunError } from "./team-reruns.js";
 import { ConventionsStore, ConventionsError } from "./conventions.js";
@@ -105,18 +108,18 @@ import { analyzeProjectMemory } from "./memory-analysis.js";
 import { redactExport } from "./privacy.js";
 import { validateVerificationProfile, renderVerificationReport } from "./verification.js";
 import { CODEFLOW_HOME, autoTeamEnabled, envNumber, PORT } from "./config.js";
-import { RunManager, RunConflictError, UntrustedSourceError, type LoopSettings, type Pattern } from "./engine.js";
-import { detectCheckCommand } from "./checks.js";
+import { ConflictMarkersError, RunManager, RunConflictError, UntrustedSourceError, roleParticipants, type LoopSettings, type Pattern } from "./engine.js";
+import { detectCheck } from "./checks.js";
 import { findPattern, patterns } from "./patterns/index.js";
 import { listDirectories } from "./fs.js";
 import { git, listBranches, repoRoot, worktreeRoot, type GitCwd } from "./git.js";
 import { stat } from "node:fs/promises";
-import { folderSizes, remoteBranches, removeWorktrees } from "./ship.js";
+import { folderSizes, remoteBranches } from "./ship.js";
 import { computeStats, rankAgents } from "./stats.js";
 import { acquireLock, writeHealth, writeQueueStats, loadJournal } from "./store.js";
 import { reapOrphanGroups } from "./adapters/process.js";
-import { logError, logInfo, logWarn } from "./log.js";
-import { listIssues, listPullRequests, MERGE_METHODS, type SourceInput } from "./github.js";
+import { requestLogPath, logError, logInfo, logWarn } from "./log.js";
+import { listGitHubPicker, MERGE_METHODS, type SourceInput } from "./github.js";
 import { listSweep, runSweep, sourceKeys, type SweepKind } from "./sweeps.js";
 import { parseImproveSettings, IMPROVE_AGENTS, type ImproveAgent } from "./improve-settings.js";
 import { exhausted, resolveAuto } from "./routing.js";
@@ -124,10 +127,11 @@ import { DocsHelp, serveDocs, parseHelpRequest } from "./docs-help.js";
 import { improvePrompt, assertImproveEnvironment, ImproveError, MAX_IMPROVE_CHARS, type ImproveRequest } from "./improve.js";
 import { templates } from "./templates.js";
 import { PrWatcher } from "./watch.js";
-import { Automations, describeSchedule, readWebhook, validateSchedule, previewSchedule } from "./automation.js";
+import { AutomationStorageError, ManagedAutomationError, AutomationValidationError, AutomationConflictError, Automations, describeSchedule, readWebhook, validateSchedule, previewSchedule } from "./automation.js";
+import { canonicalTimeZone } from "./schedule-rules.js";
 import { detectTailscale, isTailscaleIPv4, type TailscaleStatus } from "./tailscale.js";
 import { changeRemote, isOwnAddress, lanAddresses, loadRemote, renderRemote, saveRemote, tokenMatches, type RemoteSettings } from "./remote.js";
-import { projectOf, Projects } from "./projects.js";
+import { projectOf, Projects, ProjectsStorageError, ProjectConflictError } from "./projects.js";
 import { memoryStore, MemoryConflictError, type MemoryAuthority, type MemoryEntry } from "./memory.js";
 import { adapterTeamCapabilities } from "./adapters/team-tools.js";
 import { createAcpAdapter, probeAcp } from "./adapters/acp.js";
@@ -213,7 +217,7 @@ const collaborationReviews = new CollaborationReviews();
 /**
  * The team board (docs/team-collaboration.md). Every instance serves its own board from CODEFLOW_HOME/team to
  * shared accounts and linked runners (hub mode), and runs tasks on this computer itself: in-process against
- * that board, or, once Settings → Team linked it to another team server, against that hub through the link.
+ * that board, or, once Connections → Share access linked it to another team server, against that hub through the link.
  */
 const teamMembers = (): MemberRecord[] => sharedAccounts.available ? sharedAccounts.snapshot().users.map((user) => ({ userId: user.id, username: user.username, displayName: user.displayName, enabled: user.enabled, roles: user.roles })) : [];
 /** What teammates see the hub owner called until the owner sets a display name (PUT /api/team/profile). */
@@ -235,16 +239,20 @@ const resolveQueuedProviders: Parameters<typeof createDeferredRuns>[1]["resolveP
     return { roles, installed: new Set(inventory.filter((entry) => entry.available).map((entry) => entry.id)) };
 });
 const deferredRuns = createDeferredRuns(manager, { build: buildStartInput, resolveProviders: resolveQueuedProviders });
+/** Set at startup: an unreadable queue file disables deferred runs only, and is kept for repair. */
+let deferredFault: string | undefined = "Deferred runs are still loading";
 const coordinatedApi = createCoordinatedApi({ manager, projects, build: buildStartInput, resolveProviders: resolveQueuedProviders });
 const launchProfiles = new LaunchProfiles(manager.devServers);
 manager.onWorkspaceStop((runId) => launchProfiles.stopMatching(`${runId}/`));
 const integrations = new Integrations();
 const codeHostsApi = createCodeHostsApi({ integrations, manager, projects, build: buildStartInput });
-const integrationsReady = await integrations.load().then(() => true, (error) => { logError("External sources disabled: invalid integration configuration", error); return false; });
+const integrationWarnings: string[] = [];
+await integrations.load().catch(error => { logError("Administrator external sources disabled: invalid integration configuration", error); integrationWarnings.push("Administrator integration configuration (CODEFLOW_INTEGRATIONS_JSON/FILE) is invalid or unreadable. Those sources are unavailable; app-managed connections remain available."); });
 const notifications = new Notifications();
-const notificationsReady = await notifications.load().then(() => true, (error) => { logError("Notifications disabled: configuration or delivery state cannot be read", error); return false; });
-const integrationConnections = new IntegrationConnections({ integrations, notifications });
-if (integrationsReady && notificationsReady) await integrationConnections.load().catch(error => logError("Integration connection storage is unavailable", error));
+const notificationsReady = await notifications.load(undefined, { allowInvalidAdministratorConfig: true }).then(() => true, (error) => { logError("Notifications disabled: delivery state cannot be read", error); integrationWarnings.push("Notification delivery storage is unavailable. Repair it and restart; other app-managed connections remain available."); return false; });
+if (notifications.configurationWarning) integrationWarnings.push(notifications.configurationWarning);
+const integrationConnections = new IntegrationConnections({ integrations, notifications, notificationsAvailable: notificationsReady, warnings: integrationWarnings });
+await integrationConnections.load().catch(error => logError("Integration connection storage is unavailable", error));
 const integrationConnectionsApi = createIntegrationConnectionsApi({ connections: integrationConnections, integrations, projects });
 /** The side panel's terminals and notes. */
 const shells = new Shells();
@@ -258,7 +266,7 @@ sharedAccounts.onChange(() => { void teamTerminals.reap().catch((error) => logEr
 const notes = new Notes();
 const watcher = new PrWatcher(manager);
 const automations = new Automations(manager, (body, extra) => trackPolicyPreparation(() => startFromBody(body, extra)), (repo, kind) => trackPolicyPreparation(async () => { assertPolicyExecution(await fileAccess.execution(repo), "Automation source discovery"); return listSweep(repo, kind, manager.list()); }));
-const projectTeams = new ProjectTeams({ manager, projects, automations, build: buildStartInput, allowed: async (repo) => assertPolicyExecution(await fileAccess.execution(repo), "Standing project teams") });
+const projectTeams = new ProjectTeams({ manager, projects, automations, build: buildStartInput, allowed: async (repo) => assertPolicyExecution(await fileAccess.execution(repo), "Project missions") });
 async function pausePolicyBackground() {
   const results = await Promise.allSettled([watcher.stop(), automations.stop(), projectTeams.stop(), deferredRuns.stop(), coordinatedApi.service.stop(), ...(notificationsReady ? [notifications.stop()] : [])]);
   // Queue deadlines do not prove a child readiness request ended. Retain the underlying work too.
@@ -266,7 +274,7 @@ async function pausePolicyBackground() {
   const failure = results.find((result) => result.status === "rejected"); if (failure?.status === "rejected") throw failure.reason;
 }
 function startPolicyBackground() {
-  projectTeams.start(); watcher.start(); automations.start(envNumber("CODEFLOW_SCHEDULER_TICK_MS", 30_000, { min: 100 })); deferredRuns.start(); coordinatedApi.service.start();
+  projectTeams.start(); watcher.start(); automations.start(envNumber("CODEFLOW_SCHEDULER_TICK_MS", 30_000, { min: 100 })); if (!deferredFault) deferredRuns.start(); coordinatedApi.service.start();
   if (notificationsReady) notifications.start();
 }
 let remote: RemoteSettings;
@@ -276,11 +284,12 @@ function changeSavedRemote(patch: Parameters<typeof changeRemote>[1]): Promise<R
   const change = changingRemote.catch(() => undefined).then(async () => {
     const before = remote;
     const next = changeRemote(before, patch);
-    if (next.control && (!phoneTls || remoteTlsIssue()) && !insecurePhoneDevelopment && patch.control === true) {
-      throw new HttpError(400, "Full phone control requires HTTPS. Choose Set up secure remote access in Settings → Remote access.");
+    if (next.lan && next.transport === "tailscale") await refreshTailscale(true);
+    if (next.control && (!phoneTls || remoteTlsIssue(next)) && !insecurePhoneDevelopment && patch.control === true) {
+      throw new HttpError(400, "Full phone control requires HTTPS. Choose Set up secure remote access in Settings → Connections → Share access → Connect my devices.");
     }
     // Tailscale encrypts transit, but HTTP cookies can leak to other ports on the same host.
-    if ((!phoneTls || remoteTlsIssue()) && !insecurePhoneDevelopment) next.control = false;
+    if ((!phoneTls || remoteTlsIssue(next)) && !insecurePhoneDevelopment) next.control = false;
     await saveRemote(next);
     remote = next;
     return before;
@@ -304,6 +313,7 @@ const sshProjects = process.env.CODEFLOW_SSH_HOST ? undefined : new SshProjects(
 const tlsConfigured = !!process.env.CODEFLOW_TLS_CERT && !!process.env.CODEFLOW_TLS_KEY;
 if (!!process.env.CODEFLOW_TLS_CERT !== !!process.env.CODEFLOW_TLS_KEY) throw new Error("Configure both CODEFLOW_TLS_CERT and CODEFLOW_TLS_KEY");
 let phoneTls: { cert: string | Buffer; key: string | Buffer } | undefined = tlsConfigured ? { cert: readFileSync(process.env.CODEFLOW_TLS_CERT!), key: readFileSync(process.env.CODEFLOW_TLS_KEY!) } : undefined;
+const environmentCertificate = tlsConfigured && phoneTls ? inspectEnvironmentCertificate(phoneTls.cert, phoneTls.key) : undefined;
 const insecurePhoneDevelopment = process.env.CODEFLOW_ALLOW_INSECURE_PHONE_CONTROL === "1";
 let phoneProtocol = phoneTls ? "https" : "http";
 const phoneSessions = new PhoneSessions();
@@ -311,8 +321,16 @@ let savedCertificate: CertificateInfo | undefined;
 let tlsLoadError: string | undefined;
 let configuringTls = false;
 const certificateRenewal = new CertificateRenewal(join(CODEFLOW_HOME, "remote-tls-renewal.json"));
-function remoteTlsIssue(): string | undefined {
-  return tlsLoadError || (savedCertificate && savedCertificate.expiresAt <= Date.now() ? "HTTPS certificate expired. Renew or import a certificate in Remote access settings." : undefined);
+function remoteTlsIssue(settings: RemoteSettings = remote): string | undefined {
+  if (tlsLoadError) return tlsLoadError;
+  if (environmentCertificate && certificateTimeInvalid(environmentCertificate)) return "The HTTPS certificate from CODEFLOW_TLS_CERT is expired or not valid yet. Replace the files and restart Code Flow.";
+  if (savedCertificate && savedCertificate.expiresAt <= Date.now()) return "HTTPS certificate expired. Renew or import a certificate in Remote access settings.";
+  if (settings?.transport === "tailscale" && tailscaleStatus.state === "connected") {
+    const hostname = tailscaleStatus.dnsName ?? tailscaleStatus.ip;
+    if (savedCertificate && savedCertificate.hostname !== hostname) return "The HTTPS certificate belongs to a different Tailscale name. Set up secure access again for this computer.";
+    if (environmentCertificate && (!hostname || !certificateCoversHost(environmentCertificate.certificate, hostname))) return "The HTTPS certificate from CODEFLOW_TLS_CERT does not cover this computer's Tailscale name. Replace the files and restart Code Flow.";
+  }
+  if (environmentCertificate && settings?.transport !== "tailscale" && !environmentCertificate.hostnames.length && !lanAddresses().some(host => certificateCoversHost(environmentCertificate.certificate, host))) return "The HTTPS certificate from CODEFLOW_TLS_CERT has no usable hostname or IP address for a remote link. Configure a certificate with the exact remote hostname and restart Code Flow.";
 }
 
 
@@ -349,12 +367,14 @@ function checkOrigin(req: IncomingMessage) {
  * Bearer header.
  */
 const auth = {
+  fixed: !!process.env.CODEFLOW_TOKEN,
   token: process.env.CODEFLOW_TOKEN || randomBytes(24).toString("hex"),
   claimable: !process.env.CODEFLOW_SSH_HOST && sharedAccounts.available && !sharedAccounts.hasUsers,
 };
 sharedAccounts.onChange(() => { auth.claimable = false; });
 manager.onActivity(() => (auth.claimable = false));
-const COOKIE = "codeflow_session";
+const COOKIE = `codeflow_session_${PORT}`;
+const LEGACY_COOKIE = "codeflow_session";
 const SHARED_COOKIE = `codeflow_shared_${PORT}`;
 /**
  * Room for a big Cookie header. Cookies ignore ports, so every app on this host name (one in the
@@ -400,7 +420,8 @@ function runnerMutation(req: IncomingMessage) { const hasBody = Number(req.heade
 /** A linked runner's request: the credential is its whole identity, and it reaches only the team routes the policy table opens to runners, as the account the credential was issued to. Like shared sessions it travels over TLS or stays on this computer. */
 async function handleRunnerRequest(req: IncomingMessage, res: ServerResponse, url: URL, parts: string[], token: string): Promise<void> {
   const transport = sharedTransport(req); if (!transport.secure && !transport.loopback) throw new HttpError(403, "Runner credentials are accepted over HTTPS or on this computer only");
-  const actor = runnerActor(token); if (!actor) throw new HttpError(401, "This runner credential is not valid; connect this computer again in Settings → Team");
+  if (!sharedAccounts.available) throw new HttpError(503, "Shared sign-in is temporarily unavailable; contact the project owner.");
+  const actor = runnerActor(token); if (!actor) throw new HttpError(401, "This runner credential is not valid (revoked, or the account was disabled)");
   const route = teamRoutePolicy(req.method ?? "GET", parts);
   if (parts[1] !== "team" || (route && !runnerAllowed(route))) throw new HttpError(403, "This credential only reaches the team API");
   await attempt(() => fileAccess.sharedGate(req));
@@ -408,7 +429,7 @@ async function handleRunnerRequest(req: IncomingMessage, res: ServerResponse, ur
 }
 
 function sessionCookie(): string {
-  return `${COOKIE}=${auth.token}; HttpOnly; SameSite=Strict; Path=/`;
+  return `${COOKIE}=${auth.token}; HttpOnly; SameSite=Strict; Path=/${auth.fixed ? "; Max-Age=2592000" : ""}`;
 }
 
 /**
@@ -425,10 +446,13 @@ function readCookies(req: IncomingMessage, name: string): string[] {
     .filter(Boolean);
 }
 
+const ownLegacyCookie = (req: IncomingMessage) => readCookies(req, LEGACY_COOKIE).some(cookie => tokenMatches(cookie, auth.token));
+const clearOwnerCookies = (req: IncomingMessage) => [clearCookie(COOKIE), ...(ownLegacyCookie(req) ? [clearCookie(LEGACY_COOKIE)] : [])];
+
 function signedIn(req: IncomingMessage): boolean {
   const bearer = String(req.headers.authorization ?? "").replace(/^Bearer\s+/i, "");
   if (bearer && tokenMatches(bearer, auth.token)) return true;
-  return readCookies(req, COOKIE).some((cookie) => tokenMatches(cookie, auth.token));
+  return [...readCookies(req, COOKIE), ...readCookies(req, LEGACY_COOKIE)].some((cookie) => tokenMatches(cookie, auth.token));
 }
 
 /**
@@ -441,7 +465,7 @@ function signedIn(req: IncomingMessage): boolean {
  */
 const PHONE_COOKIE = `codeflow_phone_${REMOTE_PORT}`;
 const PHONE_COOKIE_DAYS = 30;
-const phoneControl = (s: RemoteSettings = remote) => s.enabled && s.lan && s.control && !remoteTlsIssue() && (!!phoneTls || insecurePhoneDevelopment);
+const phoneControl = (s: RemoteSettings = remote) => s.enabled && s.lan && s.control && !remoteTlsIssue(s) && (!!phoneTls || insecurePhoneDevelopment);
 
 function phoneCookie(token: string): string {
   return `${PHONE_COOKIE}=${token}; HttpOnly; SameSite=Strict; Path=/${phoneTls ? "; Secure" : ""}; Max-Age=${PHONE_COOKIE_DAYS * 86_400}`;
@@ -462,7 +486,7 @@ function checkLanOrigin(req: IncomingMessage) {
 }
 
 const lockedPage = (title: string, body: string) => `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>code-flow — ${title}</title><style>
+<title>code-flow — ${title}</title><link rel="icon" href="data:,"><style>
 :root{--bg:#f8f7f3;--raised:#fdfcf9;--sunken:#f0efe9;--border:#e4e2da;--text:#292a26;--muted:#65675e;--link:#2d6a4b;--shadow:0 2px 6px rgba(34,35,24,.06),0 24px 64px rgba(34,35,24,.16);color-scheme:light}
 @media (prefers-color-scheme:dark){:root{--bg:#161713;--raised:#1e1f1a;--sunken:#121310;--border:#2e3029;--text:#ecebe4;--muted:#9c9d92;--link:#8fe3c4;--shadow:0 2px 6px rgba(0,0,0,.35),0 24px 64px rgba(0,0,0,.55);color-scheme:dark}}
 body{margin:0;padding:0 16px;background:var(--bg);color:var(--text);font:14px/1.55 Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;-webkit-font-smoothing:antialiased}
@@ -480,11 +504,15 @@ const LOCKED_PAGE = lockedPage(
 <p>Restarting code-flow and reloading this page also works, as long as no run has started yet.</p>`,
 );
 
+const STALE_LINK_PAGE = lockedPage("link expired", `<h1>This sign-in link expired</h1><p>That link is from an earlier code-flow session. Find the current <code>Open http://localhost:${PORT}/?token=…</code> link where code-flow was last started, and open it here.</p>`);
+const SHARED_UNAVAILABLE_PAGE = lockedPage("shared sign-in unavailable", `<h1>Shared sign-in is temporarily unavailable</h1><p>Contact the project owner so they can repair account storage. Your account has not been removed.</p>`);
+const TEAM_HANDOFF_PAGE = lockedPage("open your Code Flow", `<h1>Open your Code Flow</h1><p>Use the team connection link to open the setup form on this computer.</p><script>if (/^#\\/settings\\/connections\\/join\\?connection=[^#]+$/.test(location.hash)) location.replace("/?team=local" + location.hash);</script>`);
+
 const PHONE_LOCKED_PAGE = lockedPage(
   "scan the QR code",
   `<h1>Scan the QR code again</h1>
-<p>This phone isn't signed in to code-flow. On your computer, open code-flow's <b>Automations</b> page and scan the QR code under <b>Remote access</b>.</p>
-<p>Making a new link, or turning off full control from your phone, signs phones out.</p>`,
+<p>This device isn't signed in to code-flow. On your computer, open <b>Settings → Connections → Share access → Connect my devices</b> and scan the QR code under <b>Remote access</b>.</p>
+<p>Revoking this device, making a new link, or turning off <b>Full control from remote devices</b> signs devices out.</p>`,
 );
 
 /**
@@ -496,6 +524,13 @@ const PHONE_LOCKED_PAGE = lockedPage(
  */
 const signingInPage = (target: string) =>
   lockedPage("signing in", `<h1>Signing in…</h1><p><a href="${target}">Open code-flow</a></p><script>location.replace(${JSON.stringify(target)})</script>`);
+
+/** A plain GET is safe for preview fetchers. The browser posts from this same-origin page. */
+const pairingPage = (action: string, expired = false) => lockedPage("pair this device", `${expired ? "<h1>This pairing link expired</h1><p>Checking whether this device is already connected…</p>" : "<h1>Connecting this device…</h1><p>This device will have full control of Code Flow.</p>"}<form method="post" action="${action}"><button type="submit">Connect this device</button></form><script>document.querySelector("form").requestSubmit()</script>`);
+const PHONE_LINK_GONE_PAGE = lockedPage("link unavailable", `<h1>This link is no longer available</h1><p>It may have been replaced, or remote access may be off. On the computer, open <b>Settings → Connections → Share access → Connect my devices</b> and use the current link.</p>`);
+function phonePage(res: ServerResponse, status: number, html: string, cookie?: string) {
+  res.writeHead(status, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", ...NO_FRAMES, "referrer-policy": "no-referrer", ...(cookie ? { "set-cookie": cookie } : {}) }); res.end(html); return true;
+}
 
 /**
  * code-flow's pages are never shown inside another page: one elsewhere could lay the app under a
@@ -580,7 +615,7 @@ async function attempt<T>(fn: () => Promise<T>): Promise<T> {
   try {
     return await fn();
   } catch (err) {
-    throw err instanceof HttpError ? err : new HttpError(err instanceof CollabError || err instanceof TeamPlanEditError || err instanceof TeamRerunError || err instanceof ConventionsError || err instanceof SharedAccountError || err instanceof SharedPathError || err instanceof CollaborationReviewError || err instanceof FilePolicyError ? err.status : err instanceof MemoryConflictError || err instanceof RunConflictError || err instanceof DeferredRunConflictError || err instanceof RetentionPolicyConflictError ? 409 : 400, (err as Error).message);
+    throw err instanceof HttpError ? err : new HttpError(err instanceof AutomationStorageError || err instanceof ManagedAutomationError || err instanceof AutomationValidationError || err instanceof AutomationConflictError || err instanceof CollabError || err instanceof TeamPlanEditError || err instanceof TeamRerunError || err instanceof ConventionsError || err instanceof SharedAccountError || err instanceof SharedPathError || err instanceof CollaborationReviewError || err instanceof FilePolicyError ? err.status : err instanceof MemoryConflictError || err instanceof RunConflictError || err instanceof DeferredRunConflictError || err instanceof RetentionPolicyConflictError || err instanceof TemplateConflictError || err instanceof ProjectConflictError ? 409 : err instanceof ProjectsStorageError ? 500 : 400, (err as Error).message);
   }
 }
 
@@ -590,9 +625,7 @@ async function requestedRepo(url: URL): Promise<string> {
 
 async function validRepo(requested: string): Promise<string> {
   if (!requested.startsWith("/")) throw new HttpError(400, "Repository must be an absolute path");
-  return repoRoot(requested).catch(() => {
-    throw new HttpError(400, "Not a git repository");
-  });
+  return attempt(() => repoRoot(requested));
 }
 
 /**
@@ -621,8 +654,9 @@ function requestedRoles(pattern: Pattern, input: unknown): Record<string, string
   const requested: Record<string, string[]> = {};
   for (const spec of pattern.roles) {
     const value = raw[spec.id];
-    const list = (Array.isArray(value) ? value : value ? [value] : []).filter((v): v is string => v === "auto" || isAgentId(v));
-    requested[spec.id] = spec.multiple ? list.slice(0, 6) : list.slice(0, 1);
+    const list = [...new Set((Array.isArray(value) ? value : value ? [value] : []).filter((v): v is string => v === "auto" || isAgentId(v)))];
+    if (spec.multiple && list.length > 6) throw new HttpError(400, `${spec.label} supports at most 6 distinct agents`);
+    requested[spec.id] = spec.multiple ? list : list.slice(0, 1);
   }
   return requested;
 }
@@ -653,7 +687,8 @@ async function validateRoles(pattern: Pattern, input: unknown, repo?: string, re
   }
   const wantsAuto = Object.values(requested).some((list) => list.includes("auto"));
   const rank = wantsAuto && repo ? rankAgents(manager.list(), repo, { pattern: pattern.id }) : undefined;
-  const resolved = resolveAuto(requested, manager.quotaForWorker(remoteWorker?.workerId), eligible, rank);
+  const independence = Object.fromEntries(pattern.roles.flatMap((spec) => spec.independentOf ? [[spec.id, spec.independentOf]] : []));
+  const resolved = resolveAuto(requested, manager.quotaForWorker(remoteWorker?.workerId), eligible, rank, independence);
   const roles: Record<string, AgentId[]> = {};
   const needed = new Set<AgentId>();
   for (const spec of pattern.roles) {
@@ -696,6 +731,7 @@ async function improveTask(body: any, res: ServerResponse) {
     text,
     repo: await validRepo(typeof body.repo === "string" ? body.repo : ""),
     mode: body.mode === undefined ? preferences.defaultMode : body.mode === "repo" ? "repo" : "quick",
+    criteria: Array.isArray(body.criteria) ? body.criteria.filter((value: unknown): value is string => typeof value === "string" && !!value.trim()).slice(0, 100).map((value: string) => value.trim().slice(0, 2000)) : [],
     context: Array.isArray(body.context) ? body.context.filter((p: unknown): p is string => typeof p === "string" && !!p.trim()).slice(0, 50).map((p: string) => p.slice(0, 300)) : [],
     source:
       body.source && ["issue", "pr", "alert"].includes(body.source.kind) && Number.isInteger(body.source.number)
@@ -835,22 +871,24 @@ function validateLoop(input: unknown): Partial<LoopSettings> {
     if (/[\r\n]/.test(value)) throw new HttpError(400, `${key} command must be a single line`);
     return value || undefined;
   };
-  const number = (key: string, min: number, max: number) => {
-    const n = Number(raw[key]);
-    return raw[key] === undefined || raw[key] === "" || !Number.isFinite(n) ? undefined : Math.min(max, Math.max(min, n));
+  const number = (key: keyof typeof EXECUTION_LIMITS) => {
+    if (raw[key] === undefined) return undefined;
+    const problem = numberProblem(raw[key], EXECUTION_LIMITS[key]);
+    if (problem) throw new HttpError(400, problem);
+    return raw[key] as number;
   };
   return {
     remoteWorker,
     check: text("check"),
     setup: text("setup"),
     copy: Array.isArray(raw.copy) ? raw.copy.filter((p): p is string => typeof p === "string" && !!p.trim()).slice(0, 50) : undefined,
-    maxMinutes: number("maxMinutes", 1, 720),
-    maxSteps: number("maxSteps", 1, 200),
-    maxInvocations: number("maxInvocations", 1, 200),
-    maxTokens: number("maxTokens", 1, 1_000_000_000),
-    maxCostUsd: number("maxCostUsd", 0.001, 1_000_000),
+    maxMinutes: number("maxMinutes"),
+    maxSteps: number("maxSteps"),
+    maxInvocations: number("maxInvocations"),
+    maxTokens: number("maxTokens"),
+    maxCostUsd: number("maxCostUsd"),
     contextBudget: validateContextBudget(raw.contextBudget),
-    checkTimeoutMin: number("checkTimeoutMin", 1, 120),
+    checkTimeoutMin: number("checkTimeoutMin"),
   };
 }
 
@@ -859,13 +897,14 @@ function validateOptions(pattern: Pattern, input: unknown): Record<string, numbe
   const options: Record<string, number | boolean> = {};
   for (const spec of pattern.options) {
     const value = raw[spec.id];
+    if (value === undefined) { options[spec.id] = spec.default; continue; }
     if (spec.type === "boolean") {
-      options[spec.id] = typeof value === "boolean" ? value : (spec.default as boolean);
+      if (typeof value !== "boolean") throw new HttpError(400, `${spec.label} must be enabled or disabled`);
+      options[spec.id] = value;
     } else {
-      const n = typeof value === "number" ? value : Number(value);
-      const fallback = spec.default as number;
-      const clamped = Number.isFinite(n) ? Math.min(spec.max ?? n, Math.max(spec.min ?? n, Math.round(n))) : fallback;
-      options[spec.id] = clamped;
+      const problem = numberProblem(value, { label: spec.label, min: spec.min ?? 0, max: spec.max ?? Number.MAX_SAFE_INTEGER, integer: true });
+      if (problem) throw new HttpError(400, problem);
+      options[spec.id] = value as number;
     }
   }
   return options;
@@ -873,6 +912,10 @@ function validateOptions(pattern: Pattern, input: unknown): Record<string, numbe
 
 /** Validate a run request (from the composer or an automation) into what the engine starts. */
 async function buildStartInput(body: Record<string, any>): Promise<StartRunInput> {
+  return attempt(() => validatedStartInput(body));
+}
+
+async function validatedStartInput(body: Record<string, any>): Promise<StartRunInput> {
   if (body.taskExecution !== undefined || body.teamTurns !== undefined || body.deferred !== undefined || body.teamRerun !== undefined || body.coordination !== undefined || body.projectTeam !== undefined || body.beforeDispatch !== undefined || body.requireProjectRepo !== undefined) throw new HttpError(400, "Launch identities and selective rerun seeds are assigned by the server");
   if (body.projectSelection !== undefined && body.projectSelection !== "explicit") throw new HttpError(400, "Unknown project selection mode");
   if (body.projectSelection === "explicit" && (!projects.available || typeof body.project !== "string" || !projects.get(body.project))) throw new HttpError(409, "Choose an available project before starting");
@@ -893,11 +936,14 @@ async function buildStartInput(body: Record<string, any>): Promise<StartRunInput
     const filled = fillTeamTemplate(teamTemplate.template, teamTemplate.inputs);
     task += `\n\nSelected template: ${filled.name} v${filled.version}\n${filled.task}\n${filled.criteria.map(c => `- ${c}`).join("\n")}`;
   }
-  const repo = String(body.repo ?? "").trim();
+  let repo = String(body.repo ?? "").trim();
   if (!task) throw new HttpError(400, "Describe the task");
   if (!repo.startsWith("/")) throw new HttpError(400, "Repository must be an absolute path");
   if (body.parentRunId !== undefined && (typeof body.parentRunId !== "string" || !manager.get(body.parentRunId))) throw new HttpError(409, "The original run is no longer available. Reload before starting a continuation so its source restrictions can be retained.");
   await attempt(async () => assertPolicyExecution(await fileAccess.execution(repo), "Run preparation"));
+  repo = await validRepo(repo);
+  if (body.trust !== undefined && !["safe", "standard", "trusted", "full"].includes(body.trust)) throw new HttpError(400, "Choose Safe, Standard, Trusted or Full access");
+  for (const field of ["loop", "options", "agentSettings", "roleSettings"]) if (body[field] !== undefined && (!body[field] || typeof body[field] !== "object" || Array.isArray(body[field]))) throw new HttpError(400, `${field} must be an object`);
   if (body.projectSelection === "explicit" && !projects.get(body.project)?.repos.includes(await repoRoot(repo))) throw new HttpError(409, "This repository is no longer an explicit member of the selected project");
   if (body.externalSource !== undefined || (body.externalSourceId !== undefined && typeof body.externalSourceId !== "string")) throw new HttpError(400, "Import the external source through its configured integration first");
   if (body.externalSourceId !== undefined && body.externalSourceRef !== undefined) throw new HttpError(400, "Choose one external source reference");
@@ -928,10 +974,21 @@ async function buildStartInput(body: Record<string, any>): Promise<StartRunInput
   if (container && typeof container.image === "string" && /^[\w./:@-]{1,200}$/.test(container.image)) {
     loop.container = { image: container.image, network: container.network !== false };
   }
+  const roleSettings = validateRoleSettings(body.roleSettings);
+  const agentSettings = (() => {
+    try {
+      return validateAgentSettings(body.agentSettings);
+    } catch (err) {
+      throw new HttpError(400, (err as Error).message);
+    }
+  })();
+  const taskTeam = body.taskTeam === undefined ? undefined : validateTaskTeam(body.taskTeam);
+  // Refused before the run exists, rather than failing right after it starts.
+  for (const spec of pattern.roles) if (spec.min && roleParticipants({ roles, roleSettings, agentSettings }, spec.id).length < spec.min) throw new HttpError(400, `${pattern.name} needs at least ${spec.min} ${spec.label.toLowerCase()}: pick different agents, or model variants of one`);
   return {
     pattern,
     checkpointOnFinish: body.checkpointOnFinish ?? parent?.checkpointOnFinish,
-    taskTeam: body.taskTeam === undefined ? undefined : validateTaskTeam(body.taskTeam),
+    taskTeam: taskTeam?.enabled ? taskTeam : undefined,
     teamTemplate,
     task,
     intent: taskIntent(body.intent),
@@ -949,14 +1006,8 @@ async function buildStartInput(body: Record<string, any>): Promise<StartRunInput
     trust: ["safe", "standard", "trusted", "full"].includes(runTrust) ? runTrust : undefined,
     permissionRequirements: requiredPermissions,
     antigravityExecution: agyExecution,
-    roleSettings: validateRoleSettings(body.roleSettings),
-    agentSettings: (() => {
-      try {
-        return validateAgentSettings(body.agentSettings);
-      } catch (err) {
-        throw new HttpError(400, (err as Error).message);
-      }
-    })(),
+    roleSettings,
+    agentSettings,
     source: validateSource(body.source),
     externalSource,
     allowUntrusted: body.allowUntrusted === true,
@@ -971,15 +1022,22 @@ async function buildStartInput(body: Record<string, any>): Promise<StartRunInput
  * automation.ts), so the run is marked the way the engine marks a Dependabot PR's words.
  */
 async function startFromBody(body: Record<string, any>, extra: { trigger?: Run["trigger"]; group?: Run["group"]; untrustedText?: boolean } = {}): Promise<Run> {
-  const input = await buildStartInput(body);
+  // A deleted automation destination may fall back to the repository's project.
+  // An existing destination still requires its current membership: an unattended
+  // fire must not restore a repository the user explicitly removed from it.
+  const scheduledSelection = typeof body.project === "string" && projects.get(body.project) ? "explicit" : undefined;
+  const input = await buildStartInput(extra.trigger ? { ...body, projectSelection: scheduledSelection } : body);
   return attempt(() => manager.start({ ...input, ...extra }).catch((err: Error) => {
     if (err instanceof UntrustedSourceError) throw Object.assign(new HttpError(409, err.message), { confirm: "allowUntrusted" });
     throw err;
   }));
 }
 
+const SCHEDULED_TEAM_UNAVAILABLE = "AI team works only in a live Agent conversation, so scheduled and deferred runs cannot use it. Turn AI team off to schedule this task with one agent, or choose Team — dynamic plan in Advanced to schedule a team.";
 /** The parts of a run request an automation keeps (no attachments: they'd go stale). */
 function automationRun(body: Record<string, any>) {
+  // The engine runs an AI team only inside a live Agent conversation; never drop it silently.
+  if (body.taskTeam?.enabled === true) throw new HttpError(400, SCHEDULED_TEAM_UNAVAILABLE);
   const keep = ["templateRef", "permissionRequirements", "repo", "project", "projectSelection", "pattern", "task", "roles", "options", "baseRef", "loop", "trust", "agentSettings", "roleSettings", "source"];
   const run: Record<string, any> = Object.fromEntries(keep.filter((k) => body[k] !== undefined).map((k) => [k, body[k]]));
   if (typeof body.externalSourceId === "string") {
@@ -988,7 +1046,7 @@ function automationRun(body: Record<string, any>) {
   }
   else if (body.externalSourceRef) run.externalSourceRef = body.externalSourceRef;
   if (Array.isArray(body.context?.paths)) run.context = { paths: body.context.paths.map((p: any) => ({ path: String(p.path ?? "") })) };
-  return run as { repo: string; pattern: string; task: string };
+  return run as Record<string, any> & { repo: string; pattern: string; task: string };
 }
 
 function describeAutomation(t: ReturnType<typeof automations.list>[number]) {
@@ -1019,7 +1077,7 @@ async function handlePublic(req: IncomingMessage, res: ServerResponse, url: URL,
     } catch {
       throw new HttpError(400, "Expected a JSON body");
     }
-    const wanted = readWebhook(req.headers, payload);
+    const wanted = readWebhook(req.headers, payload, !!caller.trigger.sweep);
     if (!wanted) return send(res, 200, { ignored: "This event doesn't start a run" }), true;
     // Answered before the run starts: GitHub gives up on a delivery after 10 seconds. Whether it
     // started, waits for a running run, or why not, shows on the automation.
@@ -1029,26 +1087,41 @@ async function handlePublic(req: IncomingMessage, res: ServerResponse, url: URL,
     send(res, "ignored" in accepted ? 200 : 202, "ignored" in accepted ? accepted : { accepted: true, automation: caller.trigger.id });
     return true;
   }
-  if (parts[0] === "r" && req.method === "GET") {
-    const token = parts[1] ?? "";
-    if (!remote.enabled) throw new HttpError(404, "Not found");
-    const base = `/r/${token}`;
+  if (parts[0] === "r" && (req.method === "GET" || req.method === "POST")) {
+    const token = parts[1] ?? "", base = `/r/${token}`, path = url.pathname.slice(base.length);
+    if (!remote.enabled) return phonePage(res, 404, PHONE_LINK_GONE_PAGE);
     if (via === "lan" && phoneControl() && tokenMatches(token, remote.controlToken)) {
-      if (Date.now() >= (remote.pairingUntil ?? 0)) throw new HttpError(403, "This pairing link expired. Choose New link on this computer to pair a phone.");
-      const paired = await phoneSessions.pair(String(req.headers["user-agent"] ?? "Phone"), remote.controlToken);
-      const run = url.pathname.slice(base.length).match(/^\/run\/([\w-]+)$/)?.[1];
-      res.writeHead(200, { "content-type": "text/html; charset=utf-8", "set-cookie": phoneCookie(paired.token), "cache-control": "no-store", ...NO_FRAMES, "referrer-policy": "no-referrer" });
-      res.end(signingInPage(run ? `/#/run/${run}` : "/"));
-      return true;
+      const pairing = req.method === "POST" && path === "/pair";
+      if (!pairing && (req.method !== "GET" || !/^(?:\/|\/run\/[\w-]+)?$/.test(path))) return phonePage(res, 404, PHONE_LINK_GONE_PAGE);
+      const run = pairing ? url.searchParams.get("run") : path.match(/^\/run\/([\w-]+)$/)?.[1];
+      const target = run && /^[\w-]+$/.test(run) ? `/#/run/${run}` : "/";
+      // A no-referrer form POST may carry Origin:null. Browser-owned Fetch Metadata still proves
+      // the page and target are the same origin; opaque/cross-site forms cannot claim this value.
+      const sameOrigin = req.headers.origin === `${phoneProtocol}://${req.headers.host}` || req.headers.origin === "null" && req.headers["sec-fetch-site"] === "same-origin";
+      if (pairing && !sameOrigin) return phonePage(res, 403, lockedPage("connection refused", `<h1>Open the pairing link again</h1><p>Pair this device from the link shown on your computer.</p>`));
+      // Reopening from another app may omit Strict cookies on the GET; the same-origin POST includes them.
+      if (phoneSignedIn(req)) return phonePage(res, 200, signingInPage(target));
+      const expired = Date.now() >= (remote.pairingUntil ?? 0);
+      // Even an expired GET must allow the same-origin POST to recover an existing Strict cookie.
+      // It keeps its 403 status for non-browser clients; POST never enrolls a new expired device.
+      if (!pairing) return phonePage(res, expired ? 403 : 200, pairingPage(`${base}/pair${run ? `?run=${run}` : ""}`, expired));
+      if (expired) return phonePage(res, 403, lockedPage("pairing link expired", `<h1>This pairing link expired</h1><p>On your computer, open <b>Settings → Connections → Share access → Connect my devices</b>, choose <b>New link</b> and scan it again. Links last ten minutes. Making a new link signs out devices already paired.</p>`));
+      try {
+        const paired = await phoneSessions.pair(deviceLabel(String(req.headers["user-agent"] ?? "")), remote.controlToken);
+        return phonePage(res, 200, signingInPage(target), phoneCookie(paired.token));
+      } catch (error) {
+        const limited = error instanceof HttpError && error.status === 409;
+        if (!limited) logError("Phone pairing failed", error);
+        return phonePage(res, limited ? 409 : 503, lockedPage(limited ? "device limit reached" : "pairing unavailable", limited
+          ? `<h1>Device limit reached</h1><p>This computer already has 32 paired devices. Open <b>Settings → Connections → Share access → Connect my devices</b> on the computer and revoke an unused device, then open this link again.</p>`
+          : `<h1>Pairing is temporarily unavailable</h1><p>Your device was not connected. On the computer, repair phone session storage and restart Code Flow, then open the pairing link again.</p>`));
+      }
     }
     // The read-only link only ever shows the read-only view, whatever is turned on.
-    if (!tokenMatches(token, remote.token)) throw new HttpError(404, "Not found");
-    if (fileAccess.hasRestrictions()) throw new HttpError(403, "Phone views are unavailable under custom filesystem restrictions");
-    const html = renderRemote(manager, projects.list(), base, url.pathname.slice(base.length));
-    if (!html) throw new HttpError(404, "Not found");
-    res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", ...NO_FRAMES, "referrer-policy": "no-referrer" });
-    res.end(html);
-    return true;
+    if (req.method !== "GET" || !tokenMatches(token, remote.token)) return phonePage(res, 404, PHONE_LINK_GONE_PAGE);
+    if (fileAccess.hasRestrictions()) return phonePage(res, 403, lockedPage("phone view paused", `<h1>Phone view is paused</h1><p>This computer has custom filesystem restrictions. The owner can review them in <b>Settings → Projects → Filesystem policy</b>.</p>`));
+    const html = renderRemote(manager, projects.list(), base, path);
+    return phonePage(res, html ? 200 : 404, html ?? PHONE_LINK_GONE_PAGE);
   }
   return false;
 }
@@ -1066,14 +1139,14 @@ function remoteInfo(via: Via = "local") {
     tailscaleUrl: ready && remote.transport === "tailscale" ? `${phoneProtocol}://${tailscaleHost}:${REMOTE_PORT}${phonePath}` : undefined,
     control: phoneControl(),
     secure: !!phoneTls && !remoteTlsIssue(),
-    tls: { editable: via === "local" && !tlsConfigured && !process.env.CODEFLOW_SSH_HOST, source: tlsConfigured ? "environment" : savedCertificate?.source, hostname: savedCertificate?.hostname, expiresAt: savedCertificate?.expiresAt, error: remoteTlsIssue(), renewal: tlsConfigured ? undefined : certificateRenewal.status(savedCertificate) },
+    tls: { editable: via === "local" && !tlsConfigured && !process.env.CODEFLOW_SSH_HOST, source: tlsConfigured ? "environment" : savedCertificate?.source, hostname: savedCertificate?.hostname ?? environmentCertificate?.hostnames[0], expiresAt: savedCertificate?.expiresAt ?? environmentCertificate?.expiresAt, error: remoteTlsIssue(), renewal: tlsConfigured ? undefined : certificateRenewal.status(savedCertificate) },
     insecureDevelopment: insecurePhoneDevelopment,
     pairingUntil: remote.pairingUntil ?? 0,
     path: `/r/${remote.token}`,
     phonePath,
     local: `http://localhost:${PORT}/r/${remote.token}`,
-    lanUrls: ready && remote.transport !== "tailscale" ? (savedCertificate ? [savedCertificate.hostname] : lanAddresses()).map((ip) => `${phoneProtocol}://${ip.includes(":") ? `[${ip}]` : ip}:${REMOTE_PORT}${phonePath}`) : [],
-    lanError: remote.enabled && remote.lan ? remoteTlsIssue() || (savedCertificate && remote.transport === "tailscale" && tailscaleStatus.state === "connected" && savedCertificate.hostname !== tailscaleStatus.dnsName ? "The HTTPS certificate belongs to a different Tailscale name. Set up secure access again for this computer." : lanError) : undefined,
+    lanUrls: ready && remote.transport !== "tailscale" ? (savedCertificate ? [savedCertificate.hostname] : environmentCertificate ? [...new Set([...environmentCertificate.hostnames, ...lanAddresses().filter(host => certificateCoversHost(environmentCertificate.certificate, host))])] : lanAddresses()).map((ip) => `${phoneProtocol}://${ip.includes(":") ? `[${ip}]` : ip}:${REMOTE_PORT}${phonePath}`) : [],
+    lanError: remote.enabled && remote.lan ? remoteTlsIssue() || lanError : undefined,
   };
 }
 
@@ -1117,7 +1190,6 @@ async function refreshTailscale(force = false): Promise<void> {
 
 function networkHost(): string | undefined {
   if (process.env.CODEFLOW_SSH_HOST || remoteStopping || remoteTlsIssue() || !remote.enabled || !remote.lan) return undefined;
-  if (savedCertificate && remote.transport === "tailscale" && savedCertificate.hostname !== tailscaleStatus.dnsName) return undefined;
   if (remote.transport === "tailscale") return tailscaleStatus.state === "connected" ? tailscaleStatus.ip : undefined;
   return "0.0.0.0";
 }
@@ -1271,9 +1343,9 @@ function streamAllRuns(req: IncomingMessage, res: ServerResponse, limit?: number
     for (const e of runFeed.recent) if (e.seq > after && !fileAccess.restrictedRun(e.run)) stream.send({ type: "run", seq: e.seq, run: e.run }, e.seq);
   } else {
     // Active and attention items remain visible even when their creation is outside the recent page.
-    const attention = page ? manager.attentionPage({ limit: 100, predicate: (run) => !fileAccess.restrictedRun(run) }) : undefined;
+    const attention = page ? manager.attentionSnapshot([...page.runs, ...page.related], run => !fileAccess.restrictedRun(run)) : undefined;
     const runs = page ? [...new Map([...page.runs, ...page.related, ...attention!.runs, ...manager.relatedChats(attention!.runs, run => !fileAccess.restrictedRun(run))].map((run) => [run.id, run])).values()] : fileAccess.list();
-    stream.send({ type: "hello", epoch, seq: runFeed.seq, runs, ...(page ? { nextCursor: page.nextCursor, total: page.total, attentionTotal: attention!.total, attentionTruncated: attention!.truncated, attentionNextCursor: attention!.nextCursor } : {}) }, runFeed.seq);
+    stream.send({ type: "hello", epoch, seq: runFeed.seq, runs, ...(page ? { nextCursor: page.nextCursor, total: page.total, attentionTotal: attention!.total, attentionTruncated: attention!.truncated } : {}) }, runFeed.seq);
   }
   const client = (e: { seq: number; run: RunSummary }) => { if (!fileAccess.restrictedRun(e.run)) stream.send({ type: "run", seq: e.seq, run: e.run }, e.seq); };
   runFeed.clients.add(client);
@@ -1314,7 +1386,7 @@ const topics: Record<string, TopicSource> = {
     return stop;
   },
   "project-teams"(projectId, _after, deliver) {
-    if (fileAccess.hasRestrictions() || !projects.get(projectId)) throw new TopicError(403, "Standing team scope is unavailable");
+    if (fileAccess.hasRestrictions() || !projects.get(projectId)) throw new TopicError(403, "Project mission scope is unavailable");
     const generation = filesystemFeedRevision;
     const publish = () => { if (generation === filesystemFeedRevision && !fileAccess.hasRestrictions() && projects.get(projectId)) deliver({ type: "snapshot", teams: projectTeams.list(projectId), definitions: projectTeams.teamLibrary(), definitionFaults: Object.fromEntries(projectTeams.definitions.faults), ...projectTeams.configuration() }); };
     const off = projectTeams.store.subscribe(publish); publish(); return off;
@@ -1333,9 +1405,9 @@ const topics: Record<string, TopicSource> = {
       for (const e of runFeed.recent) if (e.seq > from && !fileAccess.restrictedRun(e.run)) deliver({ type: "run", seq: e.seq, run: e.run }, e.seq);
     } else {
       const page = fileAccess.page({ limit: 100 });
-      const attention = manager.attentionPage({ limit: 100, predicate: (run) => !fileAccess.restrictedRun(run) });
+      const attention = manager.attentionSnapshot([...page.runs, ...page.related], run => !fileAccess.restrictedRun(run));
       const runs = [...new Map([...page.runs, ...page.related, ...attention.runs, ...manager.relatedChats(attention.runs, run => !fileAccess.restrictedRun(run))].map((run) => [run.id, run])).values()];
-      deliver({ type: "hello", epoch, seq: runFeed.seq, runs, total: page.total, nextCursor: page.nextCursor, attentionTotal: attention.total, attentionTruncated: attention.truncated, attentionNextCursor: attention.nextCursor }, runFeed.seq);
+      deliver({ type: "hello", epoch, seq: runFeed.seq, runs, total: page.total, nextCursor: page.nextCursor, attentionTotal: attention.total, attentionTruncated: attention.truncated }, runFeed.seq);
     }
     const client = (e: { seq: number; run: RunSummary }) => { if (!fileAccess.restrictedRun(e.run)) deliver({ type: "run", seq: e.seq, run: e.run }, e.seq); };
     runFeed.clients.add(client);
@@ -1440,9 +1512,9 @@ const topics: Record<string, TopicSource> = {
 };
 const hub = new StreamHub(topics);
 const ownerHubStreams = new Set<ServerResponse>();
-let streamSharing = { channelKey: randomBytes(32).toString("hex"), lockId: randomBytes(16).toString("hex") };
-function closeOwnerStreams(rotate = false) {
-  if (rotate) streamSharing = { channelKey: randomBytes(32).toString("hex"), lockId: randomBytes(16).toString("hex") };
+const streamIdentity = await StreamSharingIdentity.load(join(CODEFLOW_HOME, "stream-sharing.json"), auth.token);
+async function closeOwnerStreams(rotate = false) {
+  if (rotate) await streamIdentity.rotate();
   for (const response of ownerHubStreams) response.end();
 }
 filePolicies.onChange(() => closeOwnerStreams());
@@ -1499,6 +1571,13 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
   if (parts[0] === "api") parts = await attempt(async () => canonicalSharedPath(req.url ?? "/").parts);
   if (await handlePublic(req, res, url, parts, via)) return;
   if (via === "lan") checkLanOrigin(req); else checkOrigin(req);
+  // A public local-origin bounce lets Strict cookies accompany a hub-initiated handoff.
+  // It carries only a narrowly matched hash, never a token, redirect URL or API response.
+  if (url.pathname === "/team-handoff" && req.method === "GET") {
+    if (via !== "local") throw new HttpError(404, "Not found");
+    res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "referrer-policy": "no-referrer", ...NO_FRAMES });
+    return res.end(TEAM_HANDOFF_PAGE);
+  }
   const bearer = String(req.headers.authorization ?? "").replace(/^Bearer\s+/i, "");
   // The owner token is matched first (constant-time, so no oracle), so a CODEFLOW_TOKEN the user chose that happens to look like a runner credential keeps working. Any other `tr-…` bearer (issued by the team board) is a principal of its own: it never doubles as a session, and cookies sent beside it are ignored.
   const explicitOwner = via === "local" && !!bearer && tokenMatches(bearer, auth.token);
@@ -1507,6 +1586,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
   // A revoked shared cookie must never silently fall back to an older owner cookie.
   const sharedPresent = readCookies(req, SHARED_COOKIE).length > 0;
   const owner = explicitOwner || !sharedPresent && !runnerBearer && (via === "lan" ? phoneSignedIn(req) : signedIn(req));
+  if (via === "local" && owner && !explicitOwner && ownLegacyCookie(req)) res.setHeader("set-cookie", [sessionCookie(), clearCookie(LEGACY_COOKIE)]);
 
   if (["api/auth/invitations/preview", "api/auth/invitations/accept"].includes(parts.join("/")) && req.method === "POST") {
     sharedMutation(req);
@@ -1521,25 +1601,25 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
       if (!current) throw new HttpError(410, "This project is no longer available. Ask the owner for a new invitation.");
       return save();
     })));
-    if (owner) closeOwnerStreams(true);
-    res.setHeader("set-cookie", [sharedCookie(session.token, transport.secure), clearCookie(COOKIE), clearCookie(PHONE_COOKIE)]);
-    return send(res, 200, { user: session.user, projectId: session.projectId });
+    if (owner) await closeOwnerStreams(true);
+    res.setHeader("set-cookie", [sharedCookie(session.token, transport.secure), ...clearOwnerCookies(req), clearCookie(PHONE_COOKIE)]);
+    return send(res, 200, { user: session.user, projectId: session.projectId, granted: session.granted });
   }
   if (parts.join("/") === "api/auth/login" && req.method === "POST") {
     sharedMutation(req);
     const body = await readLoginJson(req);
     const session = await attempt(() => sharedAccounts.login({ username: body.username, password: body.password, ...sharedTransport(req) }));
-    if (owner) closeOwnerStreams(true);
-    res.setHeader("set-cookie", [sharedCookie(session.token, sharedTransport(req).secure), clearCookie(COOKIE), clearCookie(PHONE_COOKIE)]);
+    if (owner) await closeOwnerStreams(true);
+    res.setHeader("set-cookie", [sharedCookie(session.token, sharedTransport(req).secure), ...clearOwnerCookies(req), clearCookie(PHONE_COOKIE)]);
     return send(res, 200, { user: session.user, expiresAt: session.expiresAt });
   }
-  if (parts.join("/") === "api/auth/self" && req.method === "GET") return send(res, 200, owner ? { kind: "owner", streamSharing } : shared?.identity ?? { kind: "anonymous" });
+  if (parts.join("/") === "api/auth/self" && req.method === "GET") return send(res, 200, owner ? { kind: "owner", streamSharing: streamIdentity.current, localOnlyApis: via === "local" } : shared?.identity ?? { kind: "anonymous" });
   if (parts.join("/") === "api/auth/logout" && req.method === "POST") {
     sharedMutation(req);
     for (const token of readCookies(req, SHARED_COOKIE)) await attempt(() => sharedAccounts.logout(token));
     auth.claimable = false;
-    if (owner) closeOwnerStreams(true);
-    res.setHeader("set-cookie", [clearCookie(SHARED_COOKIE), clearCookie(COOKIE), clearCookie(PHONE_COOKIE)]);
+    if (owner) await closeOwnerStreams(true);
+    res.setHeader("set-cookie", [clearCookie(SHARED_COOKIE), ...clearOwnerCookies(req), clearCookie(PHONE_COOKIE)]);
     return send(res, 200, { signedOut: true });
   }
   // Runner enrolment proves a shared account's password like sign-in (same transport rule and limiter) and mints a per-machine credential instead of a cookie; a browser cannot send this JSON body cross-site without a preflight, so no Origin is demanded.
@@ -1547,11 +1627,20 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
   if (req.method === "GET" && url.pathname === "/") {
     const given = url.searchParams.get("token");
     if (given) {
-      if (via === "lan") throw new HttpError(403, "Use a phone pairing link or shared-project account on this listener");
-      if (!tokenMatches(given, auth.token)) throw new HttpError(403, "That link is from an earlier code-flow session; use the one printed when it last started");
+      // Consume only the credential; retain the copied team selection and other local query state.
+      const clean = new URL(url); clean.searchParams.delete("token");
+      const destination = `${clean.pathname}${clean.search}`;
+      if (via === "lan" || !tokenMatches(given, auth.token)) {
+        if (via === "local" && owner) { res.writeHead(302, { location: destination, "cache-control": "no-store", "referrer-policy": "no-referrer" }); return res.end(); }
+        res.writeHead(403, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "referrer-policy": "no-referrer", ...NO_FRAMES });
+        return res.end(via === "lan" ? PHONE_LOCKED_PAGE : STALE_LINK_PAGE);
+      }
       auth.claimable = false;
-      res.writeHead(302, { location: "/", "set-cookie": [sessionCookie(), clearCookie(SHARED_COOKIE)], "cache-control": "no-store", "referrer-policy": "no-referrer" });
+      res.writeHead(302, { location: destination, "set-cookie": [sessionCookie(), clearCookie(SHARED_COOKIE), ...(ownLegacyCookie(req) ? [clearCookie(LEGACY_COOKIE)] : [])], "cache-control": "no-store", "referrer-policy": "no-referrer" });
       return res.end();
+    }
+    if (!owner && !shared && !sharedAccounts.available) {
+      res.writeHead(503, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "referrer-policy": "no-referrer", ...NO_FRAMES }); return res.end(SHARED_UNAVAILABLE_PAGE);
     }
     const sharedLogin = sharedAccounts.available && (sharedAccounts.hasUsers || sharedAccounts.hasInvitations) && (via === "local" || !!phoneTls);
     const claim = via === "local" && !owner && !sharedPresent && mayClaim(req);
@@ -1600,7 +1689,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
   }
   if (via === "lan" && !phoneControl()) throw new HttpError(404, "Not found");
   if (!owner) throw Object.assign(new HttpError(401, "Not signed in: use the owner link or sign in to shared projects"), { signIn: true });
-  if (parts.join("/") === "api/ssh-context" && req.method === "GET") return send(res, 200, { kind: process.env.CODEFLOW_SSH_HOST ? "host" : "local" });
+  if (parts.join("/") === "api/ssh-context" && req.method === "GET") return send(res, 200, { kind: process.env.CODEFLOW_SSH_HOST ? "host" : "local", connections: via === "local" && !!sshProjects });
   if (process.env.CODEFLOW_TEAM_HOST && parts.join("/") === "api/team-host-runtime" && req.method === "GET") return send(res, 200, { instance: process.env.CODEFLOW_TEAM_HOST });
   if (process.env.CODEFLOW_SSH_HOST && parts.join("/") === "api/ssh-runtime" && req.method === "GET") return send(res, 200, { instance: process.env.CODEFLOW_SSH_HOST });
   if (parts[1] === "projects" && parts[2] && parts[3] === "filesystem-policy") {
@@ -1613,7 +1702,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
         if (!filteredTasksReady || filteredTasks.active()) throw new FilePolicyError("Finish or explicitly cancel and reconcile filtered tasks before changing policy; unavailable task storage must be repaired first", 409);
         if (!mlReady || ml.active()) throw new FilePolicyError("Pause retraining schedules and finish training, inference, registry operations and exports before changing filesystem policy", 409);
         if (policyIsRestrictive(next) && extensions.list().length) throw new FilePolicyError("Disable configured extensions and restart before applying a restriction. Previously imported trusted JavaScript can retain background host authority, including a bundle rejected after initialization.", 409);
-        if (shells.list().length || teamTerminals.active() || manager.devServers.list().some((service) => service.status === "running")) throw new FilePolicyError("Close terminals and stop development services before changing filesystem policy", 409);
+        const terminals = shells.list().filter((shell) => shell.status === "running").length;
+        if (terminals || teamTerminals.active() || manager.devServers.list().some((service) => service.status === "running")) throw new FilePolicyError(`${terminals ? `Close the ${terminals === 1 ? "open terminal" : `${terminals} open terminals`} (side panel → Terminal)` : "Close terminals"} and stop development services before changing filesystem policy`, 409);
         try { await manager.withIdleExecution(async () => { await pausePolicyBackground(); previews.closeAll(); sshPreviews.closeAll(); await commit(); }); }
         finally { if (!fileAccess.hasRestrictions()) startPolicyBackground(); }
       })));
@@ -1761,12 +1851,19 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
       throw new HttpError(404, "Unknown invitation operation");
     }
     if (!parts[2] && req.method === "GET") return send(res, 200, await attempt(async () => sharedAccounts.snapshot()));
+    // Only these operations take a body: anything else is unknown, whatever its content type.
+    const operation = !parts[2] && req.method === "POST" ? "create" : parts.length === 3 && req.method === "PUT" ? "update" : parts.length === 3 && req.method === "DELETE" ? "remove" : parts.length === 4 && parts[3] === "revoke-sessions" && req.method === "POST" ? "revoke" : undefined;
+    if (!operation) throw new HttpError(404, "Unknown shared account operation");
     const body = await readJson(req);
     if (body.roles) for (const id of Object.keys(body.roles)) if (!projects.get(id)) throw new HttpError(400, "Choose existing projects for shared roles");
-    if (!parts[2] && req.method === "POST") return send(res, 201, await attempt(() => sharedAccounts.create(body)));
-    if (parts.length === 3 && req.method === "PUT") return send(res, 200, await attempt(() => sharedAccounts.update(parts[2]!, body)));
-    if (parts.length === 4 && parts[3] === "revoke-sessions" && req.method === "POST") return send(res, 200, await attempt(() => sharedAccounts.revokeSessions(parts[2]!, body)));
-    throw new HttpError(404, "Unknown shared account operation");
+    if (operation === "create") return send(res, 201, await attempt(() => sharedAccounts.create(body)));
+    if (operation === "update") return send(res, 200, await attempt(() => sharedAccounts.update(parts[2]!, body)));
+    if (operation === "remove") return send(res, 200, await attempt(() => sharedAccounts.remove(parts[2]!, body, async () => {
+      const id = parts[2]!, actor = ownerActor(collab.ownerName);
+      await teamTerminals.removeAccount(id); await hostExecution.removeAccount(id);
+      for (const runner of await collab.runners(actor)) if (runner.userId === id && runner.revokedAt === undefined) await collab.revokeRunner(actor, runner.id);
+    })));
+    return send(res, 200, await attempt(() => sharedAccounts.revokeSessions(parts[2]!, body)));
   }
   if (await codeHostsApi.handle(req, res, parts.slice(1))) return;
   if (parts[1] === "remote-workers") {
@@ -1778,7 +1875,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     }
     throw new HttpError(404, "Unknown remote worker operation");
   }
-  if (parts.join("/") === "api/extensions" && req.method === "GET") return send(res, 200, { api: { major: 1, minor: 0 }, extensions: extensions.list() });
+  if (parts.join("/") === "api/extensions" && req.method === "GET") return send(res, 200, { api: { major: 1, minor: 0 }, configuration: extensions.configuration(), extensions: extensions.list() });
   if (parts[1] === "acp-connections") {
     if (req.method === "GET" && parts.length === 2) return send(res, 200, acpConnections.snapshot());
     if (req.method === "POST" && parts[2] === "check" && parts.length === 3) {
@@ -1854,7 +1951,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     throw new HttpError(404, "Unknown external source operation");
   }
   if (parts[1] === "notifications") {
-    if (!notificationsReady) throw new HttpError(503, "Notifications are disabled until their configuration and storage are repaired");
+    if (!notificationsReady) throw new HttpError(503, "Notification settings and delivery history are unavailable because saved state could not be loaded. The file was preserved. Check the server log, repair the state, then restart the server.");
     if (req.method === "GET" && !parts[2]) return send(res, 200, notifications.list());
     if (req.method === "GET" && parts[2] === "deliveries") return send(res, 200, notifications.deliveries());
     if (req.method === "POST" && parts[2] === "deliveries" && parts[3] && parts[4] === "retry") return send(res, 202, await attempt(() => notifications.retry(parts[3]!)));
@@ -1891,7 +1988,11 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     const reports = await teamEvaluationStore.list();
     return send(res, 200, { reports, assessment: assessTeamRollout(reports), rollout: await teamEvaluationStore.rollout(autoTeamEnabled()) });
   }
-  if (req.method === "GET" && parts[1] === "agents") return send(res, 200, fileAccess.hasRestrictions() ? Object.values(adapters).map((adapter) => ({ id: adapter.id, displayName: adapter.displayName, binary: adapter.binary, available: false })) : await agentAvailability());
+  // Under a restriction no CLI is probed: every provider is unavailable, and says why.
+  if (req.method === "GET" && parts[1] === "agents") {
+    if (url.searchParams.get("refresh") === "1" && !fileAccess.hasRestrictions()) invalidateAgentCatalogs();
+    return send(res, 200, fileAccess.hasRestrictions() ? Object.values(adapters).map((adapter) => ({ id: adapter.id, displayName: adapter.displayName, binary: adapter.binary, available: false, unavailableReason: "filesystem-policy" })) : (await agentAvailability()).map(agent => ({ ...agent, blockedReason: runProviderProblem(agent.id, agent.displayName) })));
+  }
   if (req.method === "GET" && parts[1] === "events") {
     const limit = url.searchParams.has("limit") ? Number(url.searchParams.get("limit")) : undefined;
     if (limit !== undefined && (!Number.isInteger(limit) || limit < 1 || limit > 100)) throw new HttpError(400, "History page size must be between 1 and 100");
@@ -1928,7 +2029,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
   }
   if (req.method === "GET" && parts[1] === "branches") {
     const repo = await requestedRepo(url);
-    return send(res, 200, { repo, worktreeRoot: worktreeRoot(repo), ...(await listBranches(repo)) });
+    // A run's result branch is a run's whatever prefix it was started with: no merge target.
+    return send(res, 200, { repo, worktreeRoot: worktreeRoot(repo), ...(await listBranches(repo, manager.resultBranches(repo))) });
   }
   if (req.method === "GET" && parts[1] === "tree") {
     const repo = await requestedFolder(url);
@@ -1951,7 +2053,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
   }
   if (req.method === "GET" && parts[1] === "health") {
     // interactiveTerminal: false when there's no python3 for the Terminal's pseudo-terminal (src/shell.ts).
-    return send(res, 200, { busy: manager.busy, activity: manager.inspectRepositoryActivity(), writes: writeHealth, performance: performanceMetrics.snapshot(), disk: writeQueueStats(), delivery: streamHealth, codeIntelligence: codeIntelligenceHealth, storage: manager.inspectStorage(), runs: manager.runningCount, interactiveTerminal: !fileAccess.hasRestrictions() && await shells.interactive(), streams: hub.stats });
+    return send(res, 200, { projects: projects.status, busy: manager.busy, activity: manager.inspectRepositoryActivity(), writes: writeHealth, performance: performanceMetrics.snapshot(), disk: writeQueueStats(), delivery: streamHealth, codeIntelligence: codeIntelligenceHealth, storage: manager.inspectStorage(), runs: manager.runningCount, interactiveTerminal: !fileAccess.hasRestrictions() && await shells.interactive(), streams: hub.stats });
   }
   if (req.method === "GET" && parts[1] === "experience" && parts.length === 2) {
     const list = runsIn(url.searchParams.get("project")).filter(run => !url.searchParams.get("repo") || run.repo === url.searchParams.get("repo"));
@@ -1968,7 +2070,14 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
   }
   if (req.method === "POST" && parts[1] === "cleanup") {
     const body = await readJson(req);
-    return send(res, 200, await cleanUp(runsIn(body.project), Math.max(0, Number(body.olderThanDays ?? 7)), typeof body.repo === "string" ? body.repo : undefined));
+    // Each of these narrows what goes: a value that isn't one must not quietly widen it.
+    const days = body.olderThanDays ?? 7;
+    if (typeof days !== "number" || !Number.isFinite(days) || days < 0) throw new HttpError(400, "olderThanDays must be a number of days, 0 or more");
+    if (body.project != null && typeof body.project !== "string") throw new HttpError(400, "project must be a project id");
+    if (body.repo != null && typeof body.repo !== "string") throw new HttpError(400, "Repository must be an absolute path");
+    // As GET /api/disk has it, so the runs it measured are the ones cleaned.
+    const repo = body.repo ? await validRepo(body.repo) : undefined;
+    return send(res, 200, await cleanUp(runsIn(body.project), days, repo));
   }
   if (parts[1] === "maintenance" && parts[2] === "retention") {
     if (req.method === "GET" && !parts[3]) return send(res, 200, await attempt(() => retentionPolicy.get()));
@@ -1981,6 +2090,12 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
   }
   if (parts[1] === "deferred-runs") {
     const id = parts[2], action = parts[3];
+    // Logged once at startup; the panel and project pages would otherwise repeat it on every poll.
+    if (deferredFault) throw Object.assign(new HttpError(503, `Deferred runs are unavailable: ${deferredFault}. Repair ${deferredRuns.file} and restart code-flow.`), { logged: true });
+    if (id === "remove" && !action && req.method === "POST") {
+      const body = await readJson(req);
+      return send(res, 200, { removed: await attempt(() => deferredRuns.remove(body.jobs)) });
+    }
     if (!id && req.method === "GET") return send(res, 200, await attempt(() => deferredRuns.list()));
     if (!id && req.method === "POST") {
       const body = await readJson(req);
@@ -1995,7 +2110,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
       if (request.project && !projects.get(request.project)?.repos.includes(request.repo)) throw new HttpError(400, "Choose a repository belonging to this project");
       if (request.parentRunId && manager.get(request.parentRunId)?.repo !== request.repo) throw new HttpError(400, "Choose an existing parent run in the same repository");
       for (const spec of pattern.roles) if (!spec.optional && pattern.id !== "auto-team" && !request.roles[spec.id]?.length) throw new HttpError(400, `Pick an agent for "${spec.label}"`);
-      validateLoop(request.loop);
+      await attempt(async () => validateLoop(request.loop));
       request.options = validateOptions(pattern, request.options);
       return send(res, 201, await attempt(() => deferredRuns.enqueue({ name: body.name, run: request, notBefore: body.notBefore, waitForProviders: body.waitForProviders, maxAttempts: body.maxAttempts, operationId: body.operationId })));
     }
@@ -2014,10 +2129,18 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
   }
   if (parts[1] === "projects") {
     const id = parts[2];
-    if (!id && req.method === "GET") return send(res, 200, projects.list());
+    if (!id && req.method === "GET") {
+      // Which projects' policies pause execution everywhere, so the app can name them.
+      const restricted = new Set(fileAccess.restrictedProjects().map((project) => project.id));
+      return send(res, 200, projects.list().map((project) => restricted.has(project.id) ? { ...project, filesystemRestricted: true } : project));
+    }
     if (!id && req.method === "POST") {
       const body = await readJson(req);
       return send(res, 201, await attempt(() => projects.create({ name: body.name, repos: Array.isArray(body.repos) ? body.repos : [] })));
+    }
+    if (id === "counts" && parts.length === 3 && req.method === "GET") {
+      const inventory = projects.list();
+      return send(res, 200, manager.projectCounts(run => projectOf(run, inventory), inventory.map(project => project.id), run => !fileAccess.restrictedRun(run)));
     }
     if (id && !projects.get(id)) throw new HttpError(404, "Project not found");
     if (id && parts[3] === "summary" && req.method === "GET") {
@@ -2125,10 +2248,12 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     }
     if (id && req.method === "POST") {
       const body = await readJson(req);
-      return send(res, 200, await attempt(() => manager.updateProject(id, { name: body.name, repos: Array.isArray(body.repos) ? body.repos : undefined })));
+      return send(res, 200, await attempt(() => manager.updateProject(id, { name: body.name, repos: Array.isArray(body.repos) ? body.repos : undefined }, body.revision)));
     }
     if (id && req.method === "DELETE") {
-      await manager.removeProject(id);
+      await attempt(() => manager.removeProject(id));
+      // Its missions are archived so their repositories can take new ones; the project is gone either way.
+      await projectTeams.releaseProject(id).catch((error) => logError(`Couldn't archive the missions of deleted project ${id}`, error));
       return send(res, 200, { deleted: true });
     }
   }
@@ -2198,11 +2323,15 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     return send(res, 200, remoteInfo(via));
   }
   if (parts[1] === "automations") {
+    if (parts[2] === "storage" && !parts[3] && req.method === "GET") return send(res, 200, automations.storageStatus());
     if (parts[2] === "schedule-preview" && req.method === "POST") {
       const body = await readJson(req);
       const schedule = await attempt(async () => validateSchedule(body.schedule));
       if (!schedule) throw new HttpError(400, "Choose a schedule");
-      return send(res, 200, { times: await attempt(async () => previewSchedule(schedule, body.after, body.count)) });
+      // The zone a time of day runs in: its own, or (saved without one) this computer's.
+      let timezone: string | undefined;
+      if ("at" in schedule) { try { timezone = schedule.timezone ?? canonicalTimeZone(Intl.DateTimeFormat().resolvedOptions().timeZone); } catch { /* unnamed local zone */ } }
+      return send(res, 200, { times: await attempt(async () => previewSchedule(schedule, body.after, body.count)), ...(timezone ? { timezone } : {}) });
     }
     const id = parts[2];
     if (!id && req.method === "GET") return send(res, 200, automations.list().map(describeAutomation));
@@ -2211,21 +2340,29 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
       const name = String(body.name ?? "").trim().slice(0, 80);
       if (!name) throw new HttpError(400, "Name the automation");
       const run = automationRun(body.run ?? {});
-      await buildStartInput(run); // same checks as starting it now
+      await buildStartInput(run); // Validate the current interactive choice before saving unattended work.
+      delete run.projectSelection; // Future fires may fall back if this project is deleted.
       const schedule = await attempt(async () => validateSchedule(body.schedule));
       if (!schedule && !body.webhook) throw new HttpError(400, "Give it a schedule, a webhook, or both");
-      const trigger = await automations.create({ name, enabled: body.enabled !== false, run, schedule, webhook: !!body.webhook, isolate: !!body.isolate, image: typeof body.image === "string" ? body.image.trim() || undefined : undefined });
+      const trigger = await attempt(() => automations.create({ name, enabled: body.enabled !== false, run, schedule, webhook: !!body.webhook, isolate: !!body.isolate, image: typeof body.image === "string" ? body.image.trim() || undefined : undefined }));
       return send(res, 201, describeAutomation(trigger));
     }
     if (id && !automations.get(id)) throw new HttpError(404, "Automation not found");
     if (id && parts[3] === "events" && req.method === "GET") return send(res, 200, redactExport(automations.events(id)));
-    if (id && parts[3] === "events" && parts[4] && parts[5] === "retry" && req.method === "POST") return send(res, 200, await attempt(() => automations.retryEvent(id, parts[4]!)));
+    if (id && parts[3] === "events" && parts[4] && parts[5] === "retry" && req.method === "POST") {
+      const result = await attempt(() => automations.retryEvent(id, parts[4]!));
+      const event = automations.events(id).find(event => event.id === parts[4]);
+      const state = event?.state ?? (result.queued ? "queued" : result.deduplicated ? "deduplicated" : result.skipped ? "skipped" : "started");
+      const ids = event?.runIds ?? (result.runs ?? (result.run ? [result.run] : [])).map(run => run.id);
+      const reason = event?.reason ?? result.skipped;
+      return send(res, state === "queued" ? 202 : 200, { state, ...(ids.length ? { id: ids[0], ids } : {}), ...(reason ? { reason } : {}) });
+    }
     if (id && parts[3] === "preview" && req.method === "POST") {
       const body = await readJson(req);
       return send(res, 200, redactExport(await attempt(() => automations.dryRun(id, Object.keys(body).length ? body : undefined))));
     }
     if (id && req.method === "DELETE") {
-      await automations.remove(id);
+      await attempt(() => automations.remove(id));
       return send(res, 200, { deleted: true });
     }
     if (id && req.method === "POST" && parts[3] === "run") {
@@ -2242,9 +2379,14 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
       if (typeof body.isolate === "boolean") patch.isolate = body.isolate;
       if (typeof body.image === "string") patch.image = body.image.trim() || undefined;
       if ("schedule" in body) patch.schedule = await attempt(async () => validateSchedule(body.schedule));
-      if (body.run) { const run = automationRun(body.run); await buildStartInput(run); patch.run = run; }
+      if (body.run) { const run = automationRun(body.run); await buildStartInput(run); delete run.projectSelection; patch.run = run; }
       if (body.rotateToken) patch.rotateToken = true;
-      return send(res, 200, describeAutomation(await automations.update(id, patch)));
+      if (body.revision !== undefined) {
+        if (!Number.isSafeInteger(body.revision) || body.revision < 1) throw new HttpError(400, "Invalid automation revision");
+        patch.revision = body.revision;
+      }
+      const updated = await attempt(() => automations.update(id, patch));
+      return send(res, 200, describeAutomation(updated));
     }
   }
   if (req.method === "GET" && parts[1] === "github" && parts[2] === "sweep") {
@@ -2256,15 +2398,18 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
   if (req.method === "POST" && parts[1] === "sweeps") return send(res, 201, await startSweep(await readJson(req)));
   if (req.method === "GET" && parts[1] === "github" && (parts[2] === "issues" || parts[2] === "prs")) {
     const repo = await requestedRepo(url);
-    return send(res, 200, await attempt<unknown[]>(() => (parts[2] === "issues" ? listIssues(repo) : listPullRequests(repo))));
+    return send(res, 200, await attempt(() => listGitHubPicker(repo, parts[2] === "issues" ? "issue" : "pr", url.searchParams.get("q") ?? "")));
   }
   if (req.method === "GET" && parts[1] === "repo-config") {
-    const repo = await requestedRepo(url);
-    return send(res, 200, await readRepoConfig(repo));
+    // ?ref=: the defaults a run from that branch gets (readRepoConfigAt), as the composer shows them.
+    const repo = await requestedRepo(url), ref = url.searchParams.get("ref")?.trim();
+    return send(res, 200, ref ? await readRepoConfigAt(repo, ref) : await readRepoConfig(repo));
   }
   if (req.method === "GET" && parts[1] === "check") {
     const repo = await requestedRepo(url);
-    return send(res, 200, (await detectCheckCommand(repo)) ?? { command: null });
+    // Detection is a suggestion: what it had to skip (an invalid package.json) is a warning, not a failure.
+    const { check, warning } = await attempt(() => detectCheck(repo));
+    return send(res, 200, { ...(check ?? { command: null }), ...(warning ? { warning } : {}) });
   }
   if (req.method === "GET" && parts[1] === "search") {
     const repo = await requestedFolder(url);
@@ -2274,7 +2419,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     const repo = await requestedFolder(url);
     const content = await readRepoFile(repo, url.searchParams.get("path") ?? "").catch((err: NodeJS.ErrnoException) => {
       if (err instanceof FilePolicyError) throw new HttpError(err.status, err.message);
-      throw new HttpError(err.code === "ENOENT" ? 404 : 400, err.code === "ENOENT" ? "File not found" : err.message);
+      const missing = err.code === "ENOENT" || err.code === "ENOTDIR"; // a file used as a folder names no file either
+      throw new HttpError(missing ? 404 : 400, missing ? "File not found" : err.message);
     });
     return send(res, 200, content);
   }
@@ -2310,16 +2456,11 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     // On the host name this page was opened with (checkOrigin allows only code-flow's own), so the app is same-site with it.
     return send(res, 200, await attempt(() => previews.show(String(body.url ?? ""), req.headers.host)));
   }
-  if (parts[1] === "frame-policy" && req.method === "POST") {
-    const body = await readJson(req, 8192);
-    const scheme = (req.socket as typeof req.socket & { encrypted?: boolean }).encrypted === true ? "https" : "http";
-    return send(res, 200, await attempt(() => inspectFramePolicy(String(body.url ?? ""), `${scheme}://${req.headers.host}`)));
-  }
-  // Snapshot mode: a screenshot of any page, in a headless Chrome of its own (src/snapshot.ts). It
-  // keeps away from this computer, except a local app at the address the Browser's preview takes
-  // (http://localhost:<port>), never code-flow's own.
+  // Visual-comparison capture uses its own Chrome; local apps are allowed, Code Flow itself is not.
   if (parts[1] === "snapshot" && req.method === "POST") {
     const body = await readJson(req);
+    const requestedTarget = previewTarget(String(body.url ?? ""));
+    if (requestedTarget && [PORT, REMOTE_PORT].includes(requestedTarget.port)) throw new HttpError(403, "This address is Code Flow itself, which cannot be captured. Enter the original app address (for example http://localhost:3000).");
     const localApp = (url: URL) => {
       const target = previewTarget(url.href);
       return !!target && target.port !== PORT && target.port !== REMOTE_PORT;
@@ -2332,6 +2473,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     }
   }
   if (parts[1] === "shell") {
+    // Like the shell topic: under a restriction a terminal can't be opened, fed or listed, only closed.
+    if (fileAccess.hasRestrictions() && req.method !== "DELETE") throw new HttpError(req.method === "GET" ? 403 : 409, "Terminals are paused under filesystem restrictions");
     const id = parts[2];
     if (!id && req.method === "GET") return send(res, 200, shells.list());
     if (!id && req.method === "POST") {
@@ -2385,13 +2528,15 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
   }
   if (req.method === "POST" && parts[1] === "improve-prompt" && parts.length === 2) return improveTask(await readJson(req, 256 * 1024), res);
   if (parts[1] === "model-catalog" && parts.length === 2 && ["GET", "POST"].includes(req.method ?? "")) {
+    // Discovery runs provider CLIs and research fetches documentation: both pause like /api/models.
+    if (fileAccess.hasRestrictions()) throw new HttpError(req.method === "GET" ? 403 : 409, fileAccess.pauseMessage());
     const body = req.method === "POST" ? await readJson(req) : { antigravityExecution: url.searchParams.get("antigravityExecution") ?? undefined };
     const nativeAgy = antigravityExecution(body.antigravityExecution) === "native";
     if (Object.keys(body).some(k => !["allowResearch", "offline", "antigravityExecution"].includes(k)) || [body.allowResearch, body.offline].some(v => v !== undefined && typeof v !== "boolean")) throw new HttpError(400, "Invalid catalog refresh options");
     const settings = await modelCatalogStore.settings(body.allowResearch);
     const providers = await Promise.all((await agentAvailability()).map(async a => ({
       provider: a.id, available: a.available,
-      blockedReason: a.id === "agy" && nativeAgy ? undefined : permissionProviderProblem(a.id, catalogPermissions("standard", false, false)) ?? (a.available ? await getAdapter(a.id).managedAvailability?.() : undefined),
+      blockedReason: a.id === "agy" && nativeAgy ? undefined : permissionProviderProblem(a.id, catalogPermissions("standard", false, false), a.displayName) ?? (a.available ? await getAdapter(a.id).managedAvailability?.() : undefined),
       limitations: a.id === "agy" && nativeAgy ? [AGY_NATIVE_LIMITATION] : getAdapter(a.id).managedLimitations,
       catalog: await modelCatalogStore.get(a.id, { context: a.id === "agy" && !nativeAgy && process.platform === "darwin" ? { isolatedAgy: true } : undefined, force: req.method === "POST", offline: !a.available || body.offline }),
     })));
@@ -2415,6 +2560,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
         if (!url.searchParams.has("limit")) return send(res, 200, fileAccess.list());
         const status = url.searchParams.get("status") ?? "all";
         const section = url.searchParams.get("section") ?? undefined;
+        const archived = url.searchParams.get("archived") ?? undefined;
+        if (archived && !["include", "exclude", "only"].includes(archived)) throw new HttpError(400, "Invalid archived history filter");
         if (!HISTORY_STATUSES.includes(status as HistoryStatus)) throw new HttpError(400, "Invalid history status");
         if (section && !["waiting", "running", "results"].includes(section)) throw new HttpError(400, "Invalid project history section");
         const project = url.searchParams.get("project"), inventory = projects.list();
@@ -2422,7 +2569,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
           limit: Number(url.searchParams.get("limit")), cursor: url.searchParams.get("cursor") ?? undefined,
           before: url.searchParams.has("before") ? Number(url.searchParams.get("before")) : undefined,
           query: url.searchParams.get("q") ?? undefined, status: status === "all" ? undefined : status as HistoryStatus,
-          section: section as ProjectSection | undefined,
+          section: section as ProjectSection | undefined, archived: archived as "include" | "exclude" | "only" | undefined,
           pattern: url.searchParams.get("pattern") ?? undefined, agent: url.searchParams.get("agent") ?? undefined, repo: url.searchParams.get("repo") ?? undefined,
           predicate: project ? run => (projectOf(run, inventory) ?? "none") === project : undefined,
         })));
@@ -2548,25 +2695,27 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     }
     if (req.method === "POST" && parts[3] === "provider-chat" && parts.length === 4) {
       const body = await readJson(req, 64 * 1024);
-      const { roles } = await validateRoles(findPattern("solo")!, { agent: [body.agent] }, run.repo, run.loop.remoteWorker, run.trust);
-      const next = await attempt(() => manager.startProviderChat(run.id, { agent: roles.agent![0]!, settings: body.settings, message: body.message, kind: body.kind, attachments: body.attachments }));
+      const { roles } = await validateRoles(findPattern("solo")!, { agent: [body.agent] }, run.repo, run.loop.remoteWorker, typeof body.trust === "string" ? body.trust : run.trust);
+      const next = await attempt(() => manager.startProviderChat(run.id, { agent: roles.agent![0]!, settings: body.settings, message: body.message, kind: body.kind, attachments: body.attachments, trust: body.trust, tools: body.tools }));
       return send(res, 201, { id: next.id });
     }
     if (req.method === "POST" && parts[3] === "fork") {
       const body = await readJson(req);
       const checkpoint = typeof body.commit === "string" ? body.commit : undefined;
       if (!checkpoint || !/^[a-f0-9]{40,64}$/i.test(checkpoint)) throw new HttpError(400, "Choose an exact checkpoint commit");
+      // A run's checkpoints are where it started and the commits made after it: on one of its branches and
+      // descending from its base. Earlier history of the base branch is reachable too, but none of it is this run's.
       const owned = await Promise.all(run.worktrees.map(async (tree) => (await git(["merge-base", "--is-ancestor", checkpoint, tree.branch], run.repo)).code === 0));
       if (!owned.some(Boolean)) throw new HttpError(400, "The checkpoint is not part of this run");
+      if ((await git(["merge-base", "--is-ancestor", run.baseRef, checkpoint], run.repo)).code !== 0) throw new HttpError(400, "The checkpoint is not part of this run: it was made before the run started. Start a new run to work from it.");
       const fork = await startFromBody({ repo: run.repo, project: run.project, pattern: run.pattern, task: typeof body.task === "string" ? body.task : run.task, baseRef: checkpoint, parentRunId: run.id, roles: run.roles, options: run.options, loop: run.loop, agentSettings: run.agentSettings, roleSettings: run.roleSettings, trust: run.trust, approvals: run.approvals });
       return send(res, 201, { id: fork.id });
     }
     if (req.method === "POST" && parts[3] === "cancel") return send(res, 200, { cancelled: manager.cancel(run.id) });
     if (req.method === "POST" && parts[3] === "resume") {
       const body = req.headers["content-length"] && req.headers["content-length"] !== "0" || req.headers["transfer-encoding"] ? await readJson(req) : {};
-      await manager.resume(run.id, body.budget).catch((err: Error) => {
-        throw new HttpError(400, err.message);
-      });
+      // Conflicts (busy, finished, a workspace lease) are 409; invalid budgets and missing repositories stay 400.
+      await attempt(async () => { manager.assertResumable(run.id); return manager.resume(run.id, body.budget); });
       return send(res, 200, { resumed: true });
     }
     if (req.method === "POST" && parts[3] === "project") {
@@ -2588,7 +2737,9 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
         await attempt(async () => manager.setArchived(run.id, false));
         return send(res, 200, { archived: false });
       }
-      const result = await attempt(() => manager.archive(run.id, { cleanup: body.cleanup !== false, deleteBranches: !!body.deleteBranches }));
+      const options = { cleanup: body.cleanup !== false, deleteBranches: !!body.deleteBranches };
+      // `task`: the whole chat task this run is part of, with the workspace its chats share.
+      const result = await attempt(() => body.task === true ? manager.archiveTask(run.id, options) : manager.archive(run.id, options));
       return send(res, 200, { archived: true, ...result });
     }
     if (req.method === "GET" && parts[3] === "diff") {
@@ -2630,7 +2781,12 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
       if (parts[5] === "serve" && parts[6] === "config" && parts.length === 7 && req.method === "GET") return send(res, 200, await appCommand(wt.path, run.app) ?? null);
       if (parts[5] === "serve" && parts.length === 6) {
         if (req.method === "GET") return send(res, 200, manager.devServers.get(key) ?? null);
-        if (req.method === "DELETE") return send(res, 200, { stopped: manager.devServers.stop(key) });
+        if (req.method === "DELETE") {
+          const expected = url.searchParams.get("startedAt"), current = manager.devServers.get(key);
+          if (expected !== null && (!/^\d+$/.test(expected) || !Number.isSafeInteger(Number(expected)))) throw new HttpError(400, "Choose a valid preview start time");
+          if (expected !== null && current && current.startedAt !== Number(expected)) throw new HttpError(409, "A newer preview replaced this app. Refresh its status before stopping.");
+          return send(res, 200, { stopped: manager.devServers.stop(key) });
+        }
         if (req.method === "POST") {
           const body = await readJson(req);
           const explicit = typeof body.command === "string" && body.command.trim();
@@ -2670,9 +2826,10 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     }
     if (req.method === "POST" && parts[3] === "merge") {
       const body = await readJson(req);
-      const outcome = await attempt(() =>
-        manager.merge(run.id, { branch: String(body.branch ?? ""), into: String(body.into ?? ""), archiveAfter: !!body.archiveAfter, requireValidation: body.requireValidation === true }),
-      );
+      const outcome = await attempt(async () => {
+        try { return await manager.merge(run.id, { branch: String(body.branch ?? ""), into: String(body.into ?? ""), archiveAfter: !!body.archiveAfter, requireValidation: body.requireValidation === true, allowConflictMarkers: body.allowConflictMarkers === true }); }
+        catch (error) { if (error instanceof ConflictMarkersError) throw Object.assign(new HttpError(409, error.message), { confirm: "allowConflictMarkers" }); throw error; }
+      });
       return send(res, 200, outcome);
     }
     if (req.method === "POST" && parts[3] === "validate-merge") {
@@ -2680,7 +2837,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
       const abort = new AbortController();
       res.once("close", () => abort.abort());
       try { return send(res, 200, await manager.validateMerge(run.id, { branch: String(body.branch ?? ""), into: String(body.into ?? ""), allowUntrusted: body.allowUntrusted === true }, abort.signal)); }
-      catch (error) { if (error instanceof UntrustedSourceError) throw Object.assign(new HttpError(409, error.message), { confirm: "allowUntrusted" }); throw new HttpError(400, (error as Error).message); }
+      catch (error) { if (error instanceof UntrustedSourceError) throw Object.assign(new HttpError(409, error.message), { confirm: "allowUntrusted" }); throw new HttpError(error instanceof RunConflictError ? 409 : 400, (error as Error).message); }
     }
     if (req.method === "GET" && parts[3] === "pr-merge") {
       return send(res, 200, await attempt(() => manager.prMergeInfo(run.id, url.searchParams.get("branch") ?? "")));
@@ -2694,8 +2851,9 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     if (req.method === "GET" && parts[3] === "pr-targets") {
       // Branches on GitHub a pull request can go into, and the one it would go into by default.
       const targets = await attempt(async () => {
-        const { branches } = await remoteBranches(run.repo);
-        return { branches, initial: await manager.pullRequestTarget(run.id) };
+        const { branches, defaultBranch } = await remoteBranches(run.repo);
+        const knownRuns = new Set(manager.list().filter(item => item.repo === run.repo).flatMap(item => item.artifacts.map(artifact => artifact.branch)));
+        return groupPrTargets(branches, await manager.pullRequestTarget(run.id), defaultBranch, url.searchParams.get("branch") ?? undefined, knownRuns);
       });
       return send(res, 200, targets);
     }
@@ -2707,8 +2865,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     if (req.method === "POST" && parts[3] === "triage") {
       const body = await readJson(req);
       if (!["approve", "revise", "reject"].includes(body.decision)) throw new HttpError(400, "Unknown decision");
-      await attempt(() => manager.triage(run.id, { decision: body.decision, note: typeof body.note === "string" ? body.note : undefined, openPr: !!body.openPr, pushPr: !!body.pushPr, budget: body.budget === undefined ? undefined : { maxSteps: body.budget?.maxSteps, maxInvocations: body.budget?.maxInvocations, maxMinutes: body.budget?.maxMinutes } }));
-      return send(res, 200, { ok: true });
+      const outcome = await attempt(() => manager.triage(run.id, { decision: body.decision, note: typeof body.note === "string" ? body.note : undefined, openPr: !!body.openPr, pushPr: !!body.pushPr, budget: body.budget === undefined ? undefined : { maxSteps: body.budget?.maxSteps, maxInvocations: body.budget?.maxInvocations, maxMinutes: body.budget?.maxMinutes } }));
+      return send(res, 200, { ok: true, triage: outcome.triage, warning: outcome.triage?.warning });
     }
     if (req.method === "POST" && parts[3] === "push-pr") {
       const body = await readJson(req);
@@ -2726,7 +2884,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
       }
       if (!isAgentId(body.agent)) throw new HttpError(400, "Pick the agent that fixes problems");
       const allow = Array.isArray(body.allow) ? body.allow.filter((a: unknown): a is string => typeof a === "string").slice(0, 20) : [];
-      const watch = await attempt(async () => manager.watchPr(run.id, { branch, agent: body.agent, maxFixes: Number(body.maxFixes) || undefined, allow }));
+      const watch = await attempt(async () => manager.watchPr(run.id, { branch, agent: body.agent, maxFixes: body.maxFixes, allow }));
       void watcher.poll();
       return send(res, 200, watch);
     }
@@ -2745,14 +2903,16 @@ filteredTasksReady = await filteredTasks.load().then(() => true, (error) => { lo
 mlReady = await ml.load().then(() => true, (error) => { logError("ML storage unavailable; inspect its private records before executing more work", error); return false; });
 if (mlReady) ml.start();
 if (!fileAccess.hasRestrictions()) await extensions.load().catch((error) => logError("Extension configuration could not be loaded; built-in workflows remain available", error));
-else logWarn("Extensions deferred: custom filesystem policy cannot isolate trusted plugin initialization; clear the policy and restart to load extensions");
+else { extensions.defer("A custom filesystem policy is active. Clear it and restart to load extensions."); logWarn("Extensions deferred: custom filesystem policy cannot isolate trusted plugin initialization; clear the policy and restart to load extensions"); }
 await codeHostsApi.service.load();
 await automations.load();
 await projectTeams.load().catch((error) => { projectTeams.store.faults.set("storage", (error as Error).message); logError("Project teams disabled: their private storage cannot be read", error); });
-await deferredRuns.load();
-await coordinatedApi.service.load();
-await coordinatedApi.recover().catch((error) => logError("A coordinated launch requires manual recovery", error));
-await recoverDeferredRuns(deferredRuns, manager).catch((error) => logError("A deferred launch requires manual recovery", error));
+deferredFault = await deferredRuns.load().then(() => undefined, (error) => { logError(`Deferred runs disabled: repair ${deferredRuns.file} and restart`, error); return (error as Error).message; });
+await coordinatedApi.service.load().then(
+  () => coordinatedApi.recover().catch((error) => logError("A coordinated launch requires manual recovery", error)),
+  (error) => logError("Coordinated changes disabled: their private storage cannot be read", error),
+);
+if (!deferredFault) await recoverDeferredRuns(deferredRuns, manager).catch((error) => logError("A deferred launch requires manual recovery", error));
 remote = await loadRemote();
 if (!tlsConfigured) {
   try {
@@ -2796,9 +2956,9 @@ certificateRenewalTimer.unref();
 
 function listener(via: Via) {
   return (req: IncomingMessage, res: ServerResponse) => {
-    handle(req, res, via).catch((err: Error & { confirm?: string; signIn?: boolean }) => {
+    handle(req, res, via).catch((err: Error & { confirm?: string; signIn?: boolean; logged?: boolean }) => {
       const status = err instanceof HttpError ? err.status : 500;
-      if (status >= 500) logError(`${req.method} ${req.url?.split("?")[0]} failed`, err);
+      if (status >= 500 && !err.logged) logError(`${req.method} ${requestLogPath(req.url ?? "/")} failed`, err);
       if (res.headersSent) return res.end();
       send(res, status, { error: err.message, confirm: err.confirm, signIn: err.signIn });
     }).finally(() => fileAccess.end(req));
@@ -2809,7 +2969,7 @@ const server = createServer({ maxHeaderSize: MAX_HEADER_SIZE }, listener("local"
   const agents = fileAccess.hasRestrictions() ? [] : await trackPolicyPreparation(() => agentAvailability());
   const runs = manager.list();
   console.log(`code-flow running at http://localhost:${PORT}  (${runs.length} runs loaded from ${CODEFLOW_HOME})`);
-  console.log(`  Open http://localhost:${PORT}/?token=${auth.token}  (the first browser to open code-flow signs in without it)`);
+  console.log(`  Open http://localhost:${PORT}/?token=${auth.token}${auth.claimable ? "  (the first browser to open code-flow signs in without it)" : "  (owner recovery link)"}`);
   // The installed launcher opens the owner link only after this listener is ready.
   // Send it over a private parent/child channel; never persist the session token.
   if (process.env.CODEFLOW_LAUNCHER === "1" && process.connected)
@@ -2843,29 +3003,39 @@ server.on("error", (err: NodeJS.ErrnoException) => {
  * steps and tokens, did it touch the tests.
  */
 async function startComparison(body: Record<string, any>) {
-  const variants = Array.isArray(body.variants) ? body.variants.slice(0, 6) : [];
+  const variants = Array.isArray(body.variants) ? body.variants : [];
   if (variants.length < 2) throw new HttpError(400, "Add at least two setups to compare");
-  const repeat = Math.min(3, Math.max(1, Math.round(Number(body.repeat) || 1)));
-  if (variants.length * repeat > 9) throw new HttpError(400, "That's more than 9 runs; compare fewer setups or repeat less");
+  if (variants.some(v => !v || typeof v !== "object" || Array.isArray(v))) throw new HttpError(400, "Each comparison setup must be an object");
+  const repeat = body.repeat === undefined ? 1 : body.repeat;
+  const repeatProblem = numberProblem(repeat, { label: "Repeat count", min: 1, max: MAX_COMPARE_REPEAT, integer: true });
+  if (repeatProblem) throw new HttpError(400, repeatProblem);
+  if (variants.length * repeat > MAX_COMPARE_RUNS) throw new HttpError(400, `That's more than ${MAX_COMPARE_RUNS} runs; compare fewer setups or repeat less`);
   const base = body.run && typeof body.run === "object" ? body.run : {};
-  // Check every setup before starting any, so a typo doesn't leave half a comparison running.
-  const inputs = await Promise.all(
-    variants.map(async (v: Record<string, any>, i: number) => {
-      const label = String(v.label ?? "").trim().slice(0, 40) || `Setup ${i + 1}`;
-      return {
-        label,
-        input: await buildStartInput({ ...base, task: v.task ?? base.task, pattern: v.pattern ?? base.pattern, roles: v.roles ?? base.roles, options: v.options ?? base.options, roleSettings: v.roleSettings ?? base.roleSettings }),
-      };
-    }),
-  );
   const group = { id: `g${Date.now().toString(36)}${randomBytes(2).toString("hex")}` };
+  // Use the engine's entire admission path before any setup creates a run or invokes a provider.
+  const inputs = [];
+  for (const [i, v] of variants.entries()) {
+    const label = String(v.label ?? "").trim().slice(0, 40) || `Setup ${i + 1}`;
+    const pattern = v.pattern ?? base.pattern;
+    try {
+      const input = await buildStartInput({ ...base, taskTeam: pattern === "solo" && base.taskTeam?.enabled ? base.taskTeam : undefined, task: v.task ?? base.task, pattern, roles: v.roles ?? base.roles, options: v.options ?? base.options, roleSettings: v.roleSettings ?? base.roleSettings });
+      for (let n = 1; n <= repeat; n++) {
+        const launch = { ...input, branchPrefix: input.branchPrefix ? `${input.branchPrefix.replace(/\/+$/, "")}/${group.id}/${i + 1}-${n}` : undefined };
+        await manager.validateStart(launch);
+        inputs.push({ label: repeat > 1 ? `${label} #${n}` : label, input: launch });
+      }
+    } catch (err) { throw new HttpError(err instanceof HttpError ? err.status : 400, `${label}: ${(err as Error).message}`); }
+  }
   const started: string[] = [];
-  for (let n = 1; n <= repeat; n++) {
-    for (const { label, input } of inputs) {
-      const run = await manager.start({ ...input, group: { id: group.id, label: repeat > 1 ? `${label} #${n}` : label } }).catch((err: Error) => {
-        throw new HttpError(400, `${label}: ${err.message}`);
-      });
+  for (const { label, input } of inputs) {
+    try {
+      const run = await manager.start({ ...input, group: { id: group.id, label } });
       started.push(run.id);
+    } catch (err) {
+      const error = `${label}: ${(err as Error).message}`;
+      // A repository/provider may change after preflight. Keep every started run discoverable.
+      if (started.length) return { group: group.id, runs: started, failed: { label, error } };
+      throw new HttpError(400, error);
     }
   }
   return { group: group.id, runs: started };
@@ -2892,26 +3062,28 @@ async function diskUsage(all: ReturnType<typeof manager.list>, repo?: string) {
 
 /**
  * Remove the worktrees (not the branches) of runs that finished more than `days` ago and need
- * nothing from you: seen, not waiting in the inbox, not watching a PR. Committed work stays on
- * its branch and comes back if you resume or follow up.
+ * nothing from you: seen, not waiting in the inbox, not watching a PR. They're archived. Committed
+ * work stays on its branch and comes back if you resume or follow up; a run whose worktrees hold
+ * anything else is kept as it is, and listed with the reason (see RunManager.cleanUp).
  */
 async function cleanUp(all: ReturnType<typeof manager.list>, days: number, repo?: string) {
   const cutoff = Date.now() - days * 86_400_000;
-  const done: string[] = [];
-  let removed = 0;
+  if (!Number.isFinite(cutoff)) throw new HttpError(400, "olderThanDays must be a number of days, 0 or more");
+  const kept: { id: string; task: string; reason: string }[] = [];
+  let runs = 0, worktrees = 0, archived = 0, folders = 0;
   for (const r of all) {
     if (repo && r.repo !== repo) continue;
     if (r.status === "running" || !r.endedAt || r.endedAt > cutoff || !r.seen) continue;
     if (r.triage?.state === "pending" || Object.values(r.watches).some((w) => ["watching", "fixing", "green"].includes(w.state))) continue;
-    const result = await removeWorktrees(r.repo, r.worktrees, false).catch((err: Error) => ({ removed: [], deletedBranches: [], failed: [err.message] }));
-    if (result.failed.length) manager.log(r.id, `Clean-up couldn't remove everything: ${result.failed.join("; ")}`, "warn");
-    if (!result.removed.length) continue;
-    removed += result.removed.length;
-    done.push(r.id);
-    if (!r.archived) manager.setArchived(r.id, true);
-    manager.log(r.id, `Cleaned up: removed ${result.removed.length} worktree(s); branches kept`);
+    // One run that can't be cleaned doesn't stop the others.
+    const result = await manager.cleanUp(r.id).catch((err: Error) => ({ removed: [], archived: false, folder: false, failed: [], kept: err.message }));
+    if (result.kept) kept.push({ id: r.id, task: r.task.split("\n")[0]!.slice(0, 100), reason: result.kept });
+    if (result.removed.length) runs++;
+    worktrees += result.removed.length;
+    if (result.archived) archived++;
+    if (result.folder) folders++;
   }
-  return { runs: done.length, worktrees: removed };
+  return { runs, worktrees, archived, folders, kept };
 }
 
 // Stop cleanly: running agents are stopped and their runs marked "interrupted" (resumable).

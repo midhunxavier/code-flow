@@ -81,7 +81,7 @@ test("a server restart drops stale cached history and refreshes an active search
 });
 
 test("status, provider and repository filters have independent server cursors and discard late responses", async () => {
-  state.runFilter.value = { q: "", status: "passed", pattern: "solo", agent: "claude", thisRepo: true };
+  state.runFilter.value = { q: "", status: "passed", pattern: "solo", agent: "claude", repo: "/first" };
   state.repoInfo.value = { repo: "/first", worktreeRoot: "/trees", current: "main", branches: [] };
   const old = state.refreshRuns();
   const oldRequest = requests.find(entry => !entry.done && entry.url.searchParams.get("repo") === "/first")!;
@@ -89,6 +89,7 @@ test("status, provider and repository filters have independent server cursors an
   assert.equal(oldRequest.url.searchParams.get("pattern"), "solo");
   assert.equal(oldRequest.url.searchParams.get("agent"), "claude");
   state.repoInfo.value = { ...state.repoInfo.value, repo: "/second" };
+  state.runFilter.value = { ...state.runFilter.value, repo: "/second" };
   const fresh = state.refreshRuns();
   const freshRequest = requests.find(entry => !entry.done && entry.url.searchParams.get("repo") === "/second")!;
   freshRequest.respond({ runs: [], total: 0 }); await fresh;

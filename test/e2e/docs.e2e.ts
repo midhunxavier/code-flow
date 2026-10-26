@@ -238,7 +238,7 @@ test("desktop and mobile documentation pass accessibility checks in both themes"
       const result = await page.evaluate(
         async () =>
           await (window as any).axe.run(document, {
-            runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21aa"] },
+            runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"] },
           }),
       );
       assert.deepEqual(
@@ -268,7 +268,7 @@ test("local chat stays beside the guide on desktop and fits mobile in both theme
       assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
       await page.addScriptTag({ content: axe.source });
       const result = await page.evaluate(async () => await (window as any).axe.run(document, {
-        runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21aa"] },
+        runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"] },
       }));
       assert.deepEqual(result.violations.map((v: any) => ({ id: v.id, nodes: v.nodes.map((n: any) => n.target) })), []);
       await page.getByRole("button", { name: "Close AI companion" }).click();

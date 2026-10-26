@@ -4,7 +4,9 @@ import { join } from "node:path";
 import { repoRoot, resolveCommit, git, openDetachedWorktree, removeDetachedWorktree } from "./git.js";
 import { readRepoConfig } from "./repo-config.js";
 import { checkGit, doctor } from "./doctor.js";
-import { detectCheckCommand, runCheck } from "./checks.js";
+import { detectCheck, formatTimeout, runCheck } from "./checks.js";
+import { timerMs } from "./config.js";
+import { DEFAULT_LOOP } from "./run-projection.js";
 import { Slots } from "./slots.js";
 import { AGENT_IDS } from "./adapters/index.js";
 import { redactText } from "./privacy.js";
@@ -13,22 +15,28 @@ export interface ReadinessItem { id: string; label: string; status: "passed" | "
 export interface ReadinessInput { repo: string; baseRef?: string; setup?: string; check?: string; execute?: boolean; pattern?: string; roles?: Record<string, string | string[]>; providers?: string[]; signal?: AbortSignal }
 const validationSlots = new Slots(1);
 
-/** Commands are opt-in and run at a pinned commit in a disposable detached worktree. */
+/**
+ * Commands are opt-in and run at a pinned commit in a disposable detached worktree, with the time
+ * limit a run gives them (`limits.checkTimeoutMin`, else ten minutes): a check that passes in a
+ * run mustn't fail validation for being slow.
+ */
 export async function inspectReadiness(input: ReadinessInput) {
   const repo = await repoRoot(input.repo);
   const base = await resolveCommit(repo, input.baseRef || "HEAD");
-  const [{ config, found, error }, health, gitHealth, detection, dirty] = await Promise.all([
-    readRepoConfig(repo), doctor({}), checkGit(), detectCheckCommand(repo), git(["status", "--porcelain"], repo),
+  const [{ config, found, error }, health, gitHealth, { check: detection, warning }, dirty] = await Promise.all([
+    readRepoConfig(repo), doctor({}), checkGit(), detectCheck(repo), git(["status", "--porcelain"], repo),
   ]);
   const setup = input.setup === undefined ? config.setup ?? detection?.setup : input.setup.trim();
   const check = input.check === undefined ? config.check ?? detection?.command : input.check.trim();
+  const checkTimeoutMin = config.limits?.checkTimeoutMin ?? DEFAULT_LOOP.checkTimeoutMin;
+  const timeoutMs = timerMs(checkTimeoutMin * 60_000, 1_000);
   const items: ReadinessItem[] = [
     { id: "git", label: "Git", status: gitHealth.ok ? "passed" : "failed", detail: gitHealth.warning ?? gitHealth.version },
     { id: "repository", label: "Repository and base", status: "passed", detail: `${repo} · ${base.slice(0, 12)}` },
     { id: "configuration", label: "Repository configuration", status: error ? "failed" : "passed", detail: error ?? (found ? "Using .codeflow/config.json" : "Using detected defaults") },
     { id: "working-copy", label: "Working copy", status: dirty.stdout.trim() ? "warning" : "passed", detail: dirty.stdout.trim() ? "Uncommitted changes are not part of validation at the selected commit." : "Clean" },
     ...providerReadiness(input, health),
-    { id: "check", label: "Verification command", status: check ? "passed" : "warning", detail: check || "No check configured; completion cannot be independently verified." },
+    { id: "check", label: "Verification command", status: check ? "passed" : "warning", detail: [check || "No check configured; completion cannot be independently verified.", !input.check && !config.check && warning ? `Detection: ${warning}.` : ""].filter(Boolean).join(" · ") },
   ];
   if (input.execute && !error) {
     await inTemporaryWorktree(repo, base, async (path, opened) => {
@@ -36,13 +44,14 @@ export async function inspectReadiness(input: ReadinessInput) {
       let setupOk = true;
       for (const [id, command] of [["setup-run", setup], ["check-run", check]] as const) {
         if (!command || !setupOk) { items.push({ id, label: id === "setup-run" ? "Setup execution" : "Check execution", status: "skipped", detail: !setupOk ? "Setup failed" : "No command configured" }); continue; }
-        const result = await runCheck(path, command, { timeoutMs: 120_000, signal: input.signal });
-        items.push({ id, label: id === "setup-run" ? "Setup execution" : "Check execution", status: result.ok ? "passed" : "failed", detail: redactText(result.output.slice(-8000) || `${command}: exit ${result.exitCode}`) });
+        const result = await runCheck(path, command, { timeoutMs, signal: input.signal });
+        const timedOut = result.timedOut ? `Timed out after ${formatTimeout(timeoutMs)}, the limit a run gives it (limits.checkTimeoutMin in .codeflow/config.json).\n` : "";
+        items.push({ id, label: id === "setup-run" ? "Setup execution" : "Check execution", status: result.ok ? "passed" : "failed", detail: redactText(timedOut + (result.output.slice(-8000) || `${command}: exit ${result.exitCode}`)) });
         if (id === "setup-run") setupOk = result.ok;
       }
     }, input.signal);
   }
-  return { ok: !items.some((item) => item.status === "failed"), repo, base, setup, check, executed: input.execute === true, items, checkedAt: Date.now() };
+  return { ok: !items.some((item) => item.status === "failed"), repo, base, setup, check, checkTimeoutMin, executed: input.execute === true, items, checkedAt: Date.now() };
 }
 
 /** Pool members are alternatives; concrete role assignments are requirements. */

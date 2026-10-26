@@ -20,6 +20,7 @@ interface ConnectionState { version: 1; connections: ConnectionRecord[]; binding
 export interface ConnectionSummary {
   id: string; name: string; provider: string; scope: string; configured: boolean; administratorManaged: boolean;
   capabilities: string[]; baseUrl?: string; gitBaseUrl?: string; auth?: string; repository?: string;
+  projectIds?: string[]; unavailable?: string;
 }
 export interface ConnectionDraft {
   id?: string; name?: string; provider: ConnectionProvider; scope?: string; baseUrl?: string; gitBaseUrl?: string;
@@ -62,7 +63,7 @@ export class IntegrationConnections {
   private queue: Promise<unknown> = Promise.resolve();
   private tests = new Map<string, { record: ConnectionRecord; secrets: Record<string, string>; previous?: number; expiresAt: number }>();
   private readonly directory: string;
-  constructor(private readonly options: { integrations: Integrations; notifications: Notifications; directory?: string; fetch?: typeof fetch; githubTest?: (repository: string) => Promise<void> }) {
+  constructor(private readonly options: { integrations: Integrations; notifications: Notifications; directory?: string; fetch?: typeof fetch; githubTest?: (repository: string) => Promise<void>; notificationsAvailable?: boolean; warnings?: string[] }) {
     this.directory = options.directory ?? join(CODEFLOW_HOME, "integration-secrets");
   }
   async load() {
@@ -123,7 +124,7 @@ export class IntegrationConnections {
       else { integrations.push(config.integration); Object.assign(sourceEnvironment, config.environment); }
     }
     await this.options.integrations.applyManaged(integrations, sourceEnvironment);
-    await this.options.notifications.applyManaged(notifications, notificationEnvironment);
+    if (this.options.notificationsAvailable !== false) await this.options.notifications.applyManaged(notifications, notificationEnvironment);
   }
   private change<T>(update: (next: ConnectionState) => T): Promise<T> {
     this.assertReady();
@@ -140,13 +141,18 @@ export class IntegrationConnections {
     const managed = this.state.connections.map(c => ({ id: c.id, name: c.name, provider: c.provider, scope: c.scope, baseUrl: c.baseUrl, gitBaseUrl: c.gitBaseUrl, auth: c.auth, repository: c.repository, configured: true, administratorManaged: false, capabilities: capabilities(c.provider) }));
     const admin = this.options.integrations.list().filter(c => c.administratorManaged).map(c => ({ id: c.id, name: c.name, provider: c.provider, scope: c.project, configured: c.configured, administratorManaged: true, capabilities: capabilities(c.provider) }));
     const destinations = this.options.notifications.list().filter(c => c.administratorManaged).map(c => ({ id: `notification:${c.id}`, name: c.name, provider: c.protocol, scope: c.host ?? "", configured: c.configured, administratorManaged: true, capabilities: capabilities(c.protocol) }));
-    return [...managed, ...admin, ...destinations];
+    return [...managed, ...admin, ...destinations].map(connection => ({ ...connection,
+      projectIds: [...new Set(this.state.bindings.filter(binding => binding.connectionId === connection.id).map(binding => binding.projectId))],
+      ...(notify(connection.provider) && this.options.notificationsAvailable === false ? { unavailable: "Notification delivery storage is unavailable. Repair it and restart before testing or enabling delivery." } : {}),
+    }));
   }
+  warnings() { return [...(this.options.warnings ?? [])]; }
   bindings(projectId: string) { this.assertReady(); return structuredClone(this.state.bindings.filter(b => b.projectId === projectId)); }
   get(id: string) { const connection = this.list().find(c => c.id === id); if (!connection) throw new Error("Connection not found"); return connection; }
   async testDraft(input: ConnectionDraft) {
     this.assertReady();
     if (!input || !CONNECTION_PROVIDERS.includes(input.provider)) throw new Error("Choose a supported service");
+    if (notify(input.provider) && this.options.notificationsAvailable === false) throw new Error("Notification delivery storage is unavailable. Repair it and restart before connecting a destination.");
     const previous = input.id ? this.state.connections.find(c => c.id === input.id) : undefined;
     if (input.id && !previous) throw new Error("This connection is administrator-managed or no longer exists");
     if (previous && previous.provider !== input.provider) throw new Error("Reconnect the same service");
@@ -173,7 +179,7 @@ export class IntegrationConnections {
       record.auth = input.auth ?? ({ gitlab: "private-token", bitbucket: "bearer", linear: "api-key", jira: "basic" } as const)[input.provider];
       if (record.auth === "basic") credential("usernameRef", input.username, true, 320);
       record.baseUrl = input.baseUrl || ({ gitlab: "https://gitlab.com/api/v4/", bitbucket: "https://api.bitbucket.org/2.0/", linear: "https://api.linear.app/", jira: "" } as const)[input.provider];
-      record.baseUrl = https(record.baseUrl, "API address").href;
+      record.baseUrl = https(record.baseUrl, input.provider === "jira" ? "Jira site URL" : "API base URL").href;
       if (input.gitBaseUrl) record.gitBaseUrl = https(input.gitBaseUrl, "Git address").href;
       const config = this.configuration(record, secrets), client = new Integrations({ environment: config.environment, fetch: this.options.fetch });
       await client.load([config.integration]); await client.items(record.id, "issue");
@@ -198,6 +204,7 @@ export class IntegrationConnections {
   }
   async testExisting(id: string, repository?: string) {
     const connection = this.get(id);
+    if (connection.unavailable) throw new Error(connection.unavailable);
     if (connection.provider === "github") await this.checkGithub(repository || connection.repository!);
     else if (notify(connection.provider)) return { message: "Use Send test notification to verify this destination. Testing sends a message." };
     else await this.options.integrations.items(id, "issue");

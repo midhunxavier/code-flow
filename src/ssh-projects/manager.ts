@@ -33,7 +33,8 @@ export class SshProjects {
   }
   async list() {
     await this.load();
-    return { hosts: this.hosts.map((host) => ({ ...host, state: this.pending.has(host.id) ? "connecting" : this.sessions.has(host.id) ? this.sessions.get(host.id)!.gateway.error ? "disconnected" : "connected" : "disconnected", error: this.sessions.get(host.id)?.gateway.error })), aliases: await sshAliases(this.options.configPath) };
+    await Promise.all([...this.sessions.values()].map(session => session.gateway.checkHealth()));
+    return { hosts: this.hosts.map((host) => ({ ...host, state: this.pending.has(host.id) ? "connecting" : this.sessions.has(host.id) ? this.sessions.get(host.id)!.gateway.error ? "unavailable" : "connected" : "disconnected", error: this.sessions.get(host.id)?.gateway.error })), aliases: await sshAliases(this.options.configPath) };
   }
   private change(operation: () => void) {
     const work = this.writes.catch(() => undefined).then(async () => {
@@ -46,7 +47,7 @@ export class SshProjects {
   async add(body: { name?: unknown; sshHost?: unknown; port?: unknown; identityFile?: unknown }) {
     if (!validSshHost(body.sshHost)) throw new HttpError(400, "Enter an SSH alias or user@hostname.");
     if (!validSshOptions(body)) throw new HttpError(400, "Use a port from 1 to 65535 and an absolute or ~/ SSH key path without control characters or % tokens");
-    const name = typeof body.name === "string" ? body.name.trim() : body.sshHost;
+    const name = (typeof body.name === "string" ? body.name.trim() : "") || body.sshHost.slice(0, 80);
     if (!name || name.length > 80) throw new HttpError(400, "Name the server using at most 80 characters");
     const host: Host = { id: randomBytes(8).toString("hex"), name, sshHost: body.sshHost, ...(body.port === undefined ? {} : { port: body.port as number }), ...(body.identityFile === undefined ? {} : { identityFile: body.identityFile as string }) };
     await this.change(() => { if (this.hosts.length >= 32) throw new HttpError(409, "Remove an unused SSH connection first (32 maximum)"); if (this.hosts.some((item) => item.sshHost === host.sshHost && item.port === host.port && item.identityFile === host.identityFile)) throw new HttpError(409, "This SSH host is already saved"); this.hosts.push(host); }); return host;
@@ -73,7 +74,7 @@ export class SshProjects {
           const state: Session = { transport: initial.transport, gateway: undefined! };
           let reconnecting: Promise<typeof initial> | undefined;
           const gateway = new SshGateway(initial.transport, initial.runtime, () => reconnecting ??= (async () => {
-            const next = await this.setup(host); const previous = state.transport; state.transport = next.transport; await previous.close(); return next;
+            const next = await this.setup(host); const previous = state.transport; state.transport = next.transport; await previous.close(); this.directoryCache = undefined; return next;
           })().finally(() => { reconnecting = undefined; }));
           state.gateway = gateway;
           try { if (this.closed) throw new Error("The local app is shutting down"); this.sessions.set(id, state); this.directoryCache = undefined; return state; }
@@ -104,7 +105,7 @@ export class SshProjects {
         const state: Session = { transport: initial.transport, gateway: undefined! };
         state.gateway = new SshGateway(initial.transport, initial.runtime, async () => {
           const next = await this.setup(host, initial.runtime.remotePort ?? Number(remotePort));
-          const previous = state.transport; state.transport = next.transport; await previous.close(); return next;
+          const previous = state.transport; state.transport = next.transport; await previous.close(); this.directoryCache = undefined; return next;
         }, "/api/team-host-runtime");
         try {
           this.assertBrowse();
@@ -216,7 +217,7 @@ export class SshProjects {
     const host = this.hosts.find((host) => host.id === id);
     if (!host) throw new HttpError(404, "Computer not found");
     const session = this.sessions.get(id);
-    return { kind: "ssh" as const, id, name: host.name, connected: !!session, error: session?.gateway.error };
+    return { kind: "ssh" as const, id, name: host.name, connected: !!session && !session.gateway.error, error: session?.gateway.error };
   }
   async forward(id: string, req: IncomingMessage, res: ServerResponse, path: string, origin: string) {
     this.assertBrowse();

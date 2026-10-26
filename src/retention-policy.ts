@@ -3,7 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { lstat, mkdir, open, readdir, readlink, realpath, rename, rm, unlink } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { CODEFLOW_HOME, WORKTREE_DIR } from "./config.js";
-import { acquireLock } from "./store.js";
+import { acquireLock, acquireStateLock } from "./store.js";
 import { git } from "./git.js";
 import { readOnlyGitMetadata } from "./agent-container.js";
 import { MemoryStore, validateDocument, type MemoryMaintenanceEntry, type MemoryRef } from "./memory.js";
@@ -51,7 +51,12 @@ export class RetentionPolicyStore {
   constructor(file = join(CODEFLOW_HOME, "retention-policy.json")) { this.file = resolve(file); }
   async get(): Promise<RetentionPolicy> { await policyQueues.get(this.file); return readPolicy(this.file); }
   set(value: unknown, expectedRevision: number): Promise<RetentionPolicy> {
-    const work = (policyQueues.get(this.file) ?? Promise.resolve()).then(async () => { const previous = await readPolicy(this.file); if (!Number.isSafeInteger(expectedRevision) || expectedRevision !== previous.revision) throw new RetentionPolicyConflictError(previous); const next = validatePolicy(value, previous.revision + 1); await atomicJson(this.file, next); return structuredClone(next); });
+    const work = (policyQueues.get(this.file) ?? Promise.resolve()).then(async () => {
+      await mkdir(dirname(this.file), { recursive: true }); await safeParents(this.file);
+      const release = await acquireStateLock(`${this.file}.lock`, 5000, () => "Retention settings are being saved by another process. Retry after it finishes.");
+      try { const previous = await readPolicy(this.file); if (!Number.isSafeInteger(expectedRevision) || expectedRevision !== previous.revision) throw new RetentionPolicyConflictError(previous); const next = validatePolicy(value, previous.revision + 1); await atomicJson(this.file, next); return structuredClone(next); }
+      finally { release(); }
+    });
     const tail = work.then(() => undefined, () => undefined); policyQueues.set(this.file, tail); void tail.then(() => { if (policyQueues.get(this.file) === tail) policyQueues.delete(this.file); }); return work;
   }
 }
@@ -62,7 +67,17 @@ async function readPolicy(file: string): Promise<RetentionPolicy> {
     try { const before = await handle.stat({ bigint: true }); if (identity(before) !== identity(info)) throw new Error("Policy changed during inspection"); const bytes = await handle.readFile(); if (identity(before) !== identity(await handle.stat({ bigint: true })) || bytes.length !== Number(before.size)) throw new Error("Policy changed during inspection"); const raw = JSON.parse(bytes.toString("utf8")); if (raw.version !== 1 || !Number.isSafeInteger(raw.revision) || raw.revision < 1) throw new Error("Unsupported retention policy version"); return validatePolicy(raw, raw.revision); }
     finally { await handle.close(); }
   }
-  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return defaults(); throw new Error(`Retention policy cannot be read: ${(error as Error).message}`); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return defaults(); throw new Error(`Retention policy cannot be read: ${retentionError(error)}`); }
+}
+
+
+function retentionError(error: unknown): string {
+  switch ((error as NodeJS.ErrnoException)?.code) {
+    case "ENOENT": return "Data is no longer available. Refresh the retention preview.";
+    case "EACCES": case "EPERM": return "Code-flow cannot inspect this data with its current permissions.";
+    case "ENOTDIR": case "ELOOP": return "A data path is not a regular directory or contains a symbolic link.";
+    default: return error instanceof Error ? error.message : "Data could not be inspected.";
+  }
 }
 
 interface Budget { files: number; bytes: number }
@@ -110,11 +125,18 @@ async function runRecord(home: string, id: string, budget: Budget): Promise<RunR
   }
   if (!run) throw new Error("No authoritative run snapshot"); return { run, log: log.file, mtime: log.mtime };
 }
-async function managedRoot(run: Record<string, any>): Promise<string> {
+async function managedRoot(run: Record<string, any>): Promise<string | undefined> {
   if (!validId(run.id) || typeof run.repo !== "string" || !isAbsolute(run.repo) || typeof run.worktreeDir !== "string") throw new Error("Managed workspace ownership is unavailable");
   const repo = await realpath(run.repo), expected = resolve(repo, WORKTREE_DIR, run.id);
   if (resolve(run.worktreeDir) !== expected) throw new Error("Recorded workspace is outside its managed run directory");
-  await safeParents(join(expected, ".context")); const info = await lstat(expected); if (!info.isDirectory() || info.isSymbolicLink()) throw new Error("Managed run directory is not a regular directory"); return expected;
+  await safeParents(join(repo, WORKTREE_DIR));
+  const parent = await exists(dirname(expected));
+  if (!parent) return undefined;
+  if (!parent.isDirectory() || parent.isSymbolicLink()) throw new Error("Managed workspace parent is a symbolic link or not a directory");
+  const info = await exists(expected);
+  if (!info) return undefined;
+  if (!info.isDirectory() || info.isSymbolicLink()) throw new Error("Managed run directory is not a regular directory");
+  return expected;
 }
 function terminal(run: Record<string, any>) { return ["done", "failed", "cancelled"].includes(run.status) && run.archived === true && !run.pinned && !run.retentionPinned && !run.retention?.pinned && !run.followUps?.some((follow: any) => ["pending", "running"].includes(follow.status)) && !Object.values(run.watches ?? {}).some((watch: any) => !["closed", "stopped"].includes(watch.state)); }
 function memoryReferences(run: Record<string, any>): string[] {
@@ -130,7 +152,7 @@ export async function previewRetention(input: { home: string; now?: number }): P
   const plan: RetentionPreview = { version: 1, home, createdAt: now, expiresAt: now + RETENTION_LIMITS.planAgeMs, policyRevision: policy.revision, policy, cutoffs, targets: [], protected: [], sources: {}, truncated: false, fingerprint: "", summary: { archivedRuns: 0, attachments: 0, memory: 0, worktrees: 0, bytes: 0 } };
   const budget: Budget = { files: 0, bytes: 0 }, records = new Map<string, RunRecord>(), heldRuns = new Map<string, string>(), heldMemory = new Map<string, string>();
   const protect = (kind: RetentionKind, id: string, reason: string) => { if (plan.protected.length < 5000) plan.protected.push({ kind, id, reason: reason.slice(0, 500) }); };
-  const incomplete = (kind: RetentionKind, id: string, error: unknown) => { plan.truncated = true; protect(kind, id, (error as Error).message); };
+  const incomplete = (kind: RetentionKind, id: string, error: unknown) => { plan.truncated = true; protect(kind, id, retentionError(error)); };
   const target = (value: RetentionTarget) => { if (plan.targets.length >= RETENTION_LIMITS.targets) { plan.truncated = true; protect(value.kind, value.id, "Retention target limit reached"); } else plan.targets.push(value); };
   const runDirectory = await exists(join(home, "runs"));
   if (runDirectory) {
@@ -196,9 +218,10 @@ export async function previewRetention(input: { home: string; now?: number }): P
       } catch (error) { incomplete("archivedRuns", id, error); }
     } else protect("archivedRuns", id, "Run-log retention is disabled or the run was recently updated");
     if (cutoffs.attachments === null && cutoffs.worktrees === null) continue;
-    let managed: string;
+    let managed: string | undefined;
     try { managed = await managedRoot(run); }
-    catch (error) { protect("attachments", id, (error as Error).message); protect("worktrees", id, (error as Error).message); continue; }
+    catch (error) { protect("attachments", id, retentionError(error)); protect("worktrees", id, retentionError(error)); continue; }
+    if (!managed) continue;
     const trees = Array.isArray(run.worktrees) ? run.worktrees : [];
     if (cutoffs.worktrees !== null) for (const tree of trees) {
       try {
@@ -210,7 +233,7 @@ export async function previewRetention(input: { home: string; now?: number }): P
         if (listing.code || !record || !record.split("\0").includes(`branch refs/heads/${tree.branch}`) || record.split("\0").some((field) => /^locked|^prunable/.test(field)) || status.code || status.stdout.trim() || parentTracked.code || parentTracked.stdout.trim() || head.code || flags.code || flags.stdout.split("\0").some((file) => /^[a-zS] /.test(file))) throw new Error("Workspace is dirty, untracked, locked, nested, hides tracked changes or no longer owns its branch");
         const view = await inventory(tree.path, budget); if (Math.max(mtime, view.newest) >= cutoffs.worktrees) { protect("worktrees", tree.path, "Workspace files or run metadata were updated after the cutoff"); continue; }
         target({ id: `worktrees:${id}:${tree.name ?? tree.branch}`, kind: "worktrees", runId: id, path: tree.path, repo: run.repo, branch: tree.branch, fingerprint: sha(view.fingerprint + ":" + head.stdout.trim()), bytes: view.bytes, detail: "Remove this clean linked workspace without force; its Git branch is preserved" });
-      } catch (error) { protect("worktrees", String(tree.path ?? id), (error as Error).message); if (/limit|changed during/.test((error as Error).message)) plan.truncated = true; }
+      } catch (error) { protect("worktrees", String(tree.path ?? id), retentionError(error)); if (/limit|changed during/.test(retentionError(error))) plan.truncated = true; }
     }
     if (cutoffs.attachments !== null) {
       const folders = [join(managed, ".context", "attachments"), join(managed, ".context", "messages"), ...trees.filter((tree: any) => typeof tree.path === "string" && dirname(resolve(tree.path)) === managed).flatMap((tree: any) => [join(tree.path, ".codeflow-context", "attachments"), join(tree.path, ".codeflow-context", "messages")])];
@@ -225,7 +248,7 @@ export async function previewRetention(input: { home: string; now?: number }): P
             if (tracked.code !== 1) { protect("attachments", path, "Tracked or unverified repository material is preserved"); continue; }
             target({ id: `attachments:${id}:${relative(managed, path)}`, kind: "attachments", runId: id, path, files: [data.file], fingerprint: data.file.fingerprint, bytes: data.file.bytes, detail: "Delete this staged upload/message attachment or generated workspace copy" });
           }
-        } catch (error) { protect("attachments", folder, (error as Error).message); if (/limit|changed during/.test((error as Error).message)) plan.truncated = true; }
+        } catch (error) { protect("attachments", folder, retentionError(error)); if (/limit|changed during/.test(retentionError(error))) plan.truncated = true; }
       }
     }
   }
@@ -252,7 +275,7 @@ export async function applyRetention(input: { home: string; plan: RetentionPrevi
         if (item.kind === "worktrees") { await safeParents(item.path!); readOnlyGitMetadata(item.path!); const current = await inventory(item.path!, { files: 0, bytes: 0 }), head = await git(["rev-parse", "--verify", "HEAD"], item.path!, { timeoutMs: 5000 }); if (head.code || sha(current.fingerprint + ":" + head.stdout.trim()) !== item.fingerprint) throw new Error("Workspace changed before removal; stopped applying this plan"); const removed = await git(["worktree", "remove", "--", item.path!], item.repo!, { timeoutMs: 30_000 }); if (removed.code) throw new Error(removed.stderr.trim() || "Git refused workspace removal"); }
         else for (const file of item.files ?? []) { await safeParents(file.path); const current = await readFingerprint(file.path, { files: 0, bytes: 0 }); if (current.file.fingerprint !== file.fingerprint) throw new Error("File changed before deletion; stopped applying this plan"); await unlink(file.path); }
         applied.push(item.id);
-      } catch (error) { failed.push({ id: item.id, reason: (error as Error).message }); break; }
+      } catch (error) { failed.push({ id: item.id, reason: retentionError(error) }); break; }
     }
     return { fingerprint: plan.fingerprint, applied, failed, remaining: plan.targets.filter((item) => !applied.includes(item.id)).map((item) => item.id) };
   } finally { release(); }

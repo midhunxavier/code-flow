@@ -28,6 +28,7 @@ export const racePattern: Pattern = {
       label: "Contestants",
       description: "Each solves the whole task in its own worktree",
       multiple: true,
+      min: 2,
       default: ["claude", "codex"],
     },
     {
@@ -36,6 +37,7 @@ export const racePattern: Pattern = {
       description: "Compares the results blind; pick several for a majority vote, ideally vendors that aren't competing",
       multiple: true,
       default: ["claude"],
+      independentOf: ["contestants"],
     },
   ],
   options: [],
@@ -68,13 +70,21 @@ export const racePattern: Pattern = {
       await ctx.commit(wt, `candidate ${label}`);
       const check = result.ok ? await ctx.check(wt, `Check candidate ${label}`) : null;
       const tests = result.ok ? (await ctx.testChanges(wt)).filter((i) => i.severity === "high") : [];
-      return { label, agent, wt, result, check, tests, diff: result.ok ? await ctx.diff(wt) : "(attempt failed)" };
+      return { label, agent, settings, wt, result, check, tests, diff: result.ok ? await ctx.diff(wt) : "(attempt failed)" };
     });
+    // Who ran a candidate, model included: one provider can enter several models. Written after
+    // judging and kept out of the repo, so the judging stays blind.
+    const who = (e: (typeof entries)[number]) => {
+      const { model, effort } = e.settings;
+      const sibling = entries.some((other) => other !== e && other.agent === e.agent);
+      const name = model || (effort || sibling ? "default model" : "");
+      return name ? `${e.agent} · ${name}${effort ? ` (${effort})` : ""}` : e.agent;
+    };
 
     const changed = entries.filter((e) => e.result.ok && e.diff !== "(no changes)");
     if (changed.length === 0) throw new Error("No contestant produced a usable change");
     // Publishing a candidate proves it (fail-to-pass) when its check passes; the judge sees that too.
-    for (const e of entries) await ctx.artifact(`Candidate ${e.label} (${e.agent})`, e.wt);
+    for (const e of entries) await ctx.artifact(`Candidate ${e.label} (${who(e)})`, e.wt);
     const proofs = new Map(entries.map((e) => [e.label, ctx.proofOf(e.wt)]));
 
     // With a check configured, a candidate that fails it can't win if any candidate passes —
@@ -148,11 +158,14 @@ export const racePattern: Pattern = {
       if (judges.length > 1) ctx.log(`Votes: ${[...tally.entries()].map(([label, n]) => `${label}=${n}`).join(", ") || "none valid"}`);
     }
 
-    ctx.log(`Winner: candidate ${winner.label} (${winner.agent})`);
+    ctx.log(`Winner: candidate ${winner.label} (${who(winner)})`);
+    // The winner is the run's primary result: listed first, it is what the verdict and the result
+    // card describe. Every other candidate keeps its own check result.
+    ctx.run.artifacts = [...ctx.run.artifacts.filter((a) => a.branch === winner.wt.branch), ...ctx.run.artifacts.filter((a) => a.branch !== winner.wt.branch)];
     if (ctx.hasCheck) ctx.setVerdict(winner.check?.ok ? "passed" : "failing");
     ctx.setFacts({ winner: winner.agent, entrants: entries.map((e) => e.agent), proof: proofs.get(winner.label)?.status });
     return [
-      `**Winner: Candidate ${winner.label} — ${winner.agent}** on branch \`${winner.wt.branch}\``,
+      `**Winner: Candidate ${winner.label} — ${who(winner)}** on branch \`${winner.wt.branch}\``,
       proofLine(proofs.get(winner.label) ?? null),
       reasons.length ? section(reasons.length > 1 ? "Judges' reasoning" : "Judge's reasoning", reasons.join("\n\n")) : "",
       section(
@@ -163,7 +176,7 @@ export const racePattern: Pattern = {
             const check = e.check ? (e.check.ok ? ", check passes" : ", check fails") : "";
             const proof = proofs.get(e.label)?.status;
             const proven = proof === "proven" ? ", proven" : proof === "weak" ? ", weakly proven" : proof === "unproven" ? ", not proven" : "";
-            return `- ${e.label}: ${e.agent} — ${status}${check}${proven} — \`${e.wt.branch}\``;
+            return `- ${e.label}: ${who(e)} — ${status}${check}${proven} — \`${e.wt.branch}\``;
           })
           .join("\n"),
       ),

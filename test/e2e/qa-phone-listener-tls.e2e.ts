@@ -1,0 +1,113 @@
+import { reserveQaPorts } from "../qa-port-block.js";
+import { test, before, after, afterEach } from "node:test";
+import assert from "node:assert/strict";
+import { spawn, execFileSync, type ChildProcess } from "node:child_process";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { connect } from "node:net";
+import { request as httpsRequest } from "node:https";
+import { chromium, type Browser, type Page } from "playwright-core";
+const qaPorts = await reserveQaPorts(2, process.env.QA_PHONE_LISTENER_TLS_PORT);
+after(() => qaPorts.release());
+const root = fileURLToPath(new URL("../..", import.meta.url)), scratch = mkdtempSync("/private/tmp/cf-qa-phone-tls-ui-");
+const shots = join(root, "output/playwright/qa-phone-listener-tls"), port = qaPorts.port, remotePort = port + 1, base = `http://127.0.0.1:${port}`, token = "qa-phone-tls-token", hostname = "codeflow.tail-test.ts.net";
+const statusFile = join(scratch, "tailscale.json"), gh = join(scratch, "gh.json");
+let server: ChildProcess, browser: Browser, data: string, sequence = 0, offline = "";
+const processLogs: string[] = [], errors: string[] = [], expected: string[] = [], requestFailures: any[] = [], appLogs: any[] = [];
+const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+const connected = (name = hostname) => ({ BackendState: "Running", TUN: true, TailscaleIPs: ["100.101.102.103"], Self: { Online: true, DNSName: name + "." } });
+const setStatus = (name = hostname) => writeFileSync(statusFile, JSON.stringify(connected(name)));
+async function api(path = "/api/remote", body?: unknown) { const r = await fetch(base + path, { headers: { authorization: `Bearer ${token}`, "content-type": "application/json", origin: base }, ...(body === undefined ? {} : { method: "POST", body: JSON.stringify(body) }) }); return { status: r.status, body: await r.json() }; }
+async function ok(path = "/api/remote", body?: unknown) { const r = await api(path, body); assert.ok(r.status < 300, `${path}: ${r.status} ${JSON.stringify(r.body)}`); return r.body; }
+async function until<T>(read: () => Promise<T>, valid: (value: T) => boolean, timeout = 30000) { const end = Date.now() + timeout; let value: T; do { value = await read(); if (valid(value)) return value; await pause(100); } while (Date.now() < end); throw new Error(`Timed out: ${JSON.stringify(value)}`); }
+function certificate(name: string, dns = hostname, dates?: [string, string], san = `DNS:${dns},IP:127.0.0.1`) {
+  const folder = join(scratch, name); mkdirSync(folder); const certPath = join(folder, "cert.pem"), keyPath = join(folder, "key.pem");
+  if (dates) {
+    // `ca -startdate/-enddate` works with older OpenSSL versions too; req's
+    // date override options only appeared recently.
+    const config = join(folder, "openssl.cnf"), csr = join(folder, "request.pem");
+    writeFileSync(join(folder, "index"), ""); writeFileSync(join(folder, "serial"), "01\n");
+    writeFileSync(config, `[ca]\ndefault_ca=fixture\n[fixture]\ndatabase=${folder}/index\nserial=${folder}/serial\nnew_certs_dir=${folder}\ndefault_md=sha256\npolicy=policy\nx509_extensions=extensions\n[policy]\ncommonName=supplied\n[extensions]\nsubjectAltName=${san}\n`);
+    execFileSync("openssl", ["req", "-new", "-newkey", "rsa:2048", "-nodes", "-keyout", keyPath, "-out", csr, "-subj", `/CN=${dns}`], { stdio: "ignore" });
+    execFileSync("openssl", ["ca", "-selfsign", "-batch", "-notext", "-keyfile", keyPath, "-in", csr, "-out", certPath, "-config", config, "-startdate", dates[0], "-enddate", dates[1]], { stdio: "ignore" });
+  } else execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", keyPath, "-out", certPath, "-subj", `/CN=${dns}`, "-addext", `subjectAltName=${san}`, "-days", "60"], { stdio: "ignore" });
+  return { certPath, keyPath, cert: readFileSync(certPath, "utf8"), key: readFileSync(keyPath, "utf8"), hostname: dns };
+}
+type Pair = ReturnType<typeof certificate>;
+let valid: Pair, expired: Pair, future: Pair, wrong: Pair;
+async function start(pair?: Pair, reuse?: string) {
+  await qaPorts.release();
+  data = reuse ?? mkdtempSync(join(scratch, "data-")); const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(CODEFLOW_|FAKE_)/.test(key)));
+  server = spawn(process.execPath, ["--import", "tsx", "--import", "./test/tailscale-network-fixture.mjs", "src/server.ts"], { cwd: root, env: { ...env, HOME: join(scratch, "os-home"), CODEFLOW_HOME: data, PORT: String(port), CODEFLOW_REMOTE_PORT: String(remotePort), CODEFLOW_TOKEN: token, CODEFLOW_TLS_CERT: pair?.certPath ?? "", CODEFLOW_TLS_KEY: pair?.keyPath ?? "", CODEFLOW_LAN_ALLOW_LOCAL: "1", CODEFLOW_ALLOW_INSECURE_PHONE_CONTROL: "0", FAKE_TAILSCALE_STATUS: statusFile, FAKE_TAILSCALE_CERT: valid.certPath, FAKE_TAILSCALE_KEY: valid.keyPath, FAKE_GH_STATE: gh, FAKE_NO_APP_SERVER: "1", SHELL: join(scratch, "bash"), BASH_ENV: "", ENV: "", PATH: `${join(root, "test/fake-bin")}:${process.env.PATH}` }, stdio: ["ignore", "pipe", "pipe"] });
+  for (const stream of [server.stdout, server.stderr]) stream?.on("data", chunk => processLogs.push(String(chunk)));
+  for (let i = 0; i < 200; i++) { if (await api("/api/health").then(r => r.status === 200, () => false)) return; if (server.exitCode !== null) throw new Error(processLogs.slice(-10).join("")); await pause(100); } throw new Error("Server did not start");
+}
+async function stop() { if (!server || server.exitCode !== null || server.signalCode !== null) return; const end = new Promise<void>(resolve => server.once("exit", () => resolve())); const timer = setTimeout(() => server.kill("SIGKILL"), 5000); server.kill("SIGTERM"); await end; clearTimeout(timer); if (existsSync(join(data, "server.log"))) { const contents = readFileSync(join(data, "server.log"), "utf8"); writeFileSync(join(shots, `application-${++sequence}.log`), contents); appLogs.push(...contents.trim().split("\n").filter(Boolean).map(line => JSON.parse(line))); } }
+async function listening() { return new Promise<boolean>(resolve => { const socket = connect(remotePort, "127.0.0.1", () => { socket.destroy(); resolve(true); }); socket.on("error", () => resolve(false)); }); }
+async function remoteApi(path: string, cookie: string) { return new Promise<{ status: number; body: any }>((resolve, reject) => { const r = httpsRequest({ hostname: "127.0.0.1", port: remotePort, path, rejectUnauthorized: false, headers: { cookie } }, response => { let text = ""; response.on("data", x => text += x); response.on("end", () => resolve({ status: response.statusCode!, body: JSON.parse(text) })); }); r.on("error", reject); r.end(); }); }
+async function page(phone = false) {
+  const context = await browser.newContext({ ignoreHTTPSErrors: true, viewport: phone ? { width: 390, height: 844 } : { width: 1280, height: 720 }, ...(phone ? { isMobile: true, hasTouch: true } : {}) }); await context.addInitScript(() => localStorage.setItem("sideOpen", "0")); const p = await context.newPage(); p.setDefaultTimeout(15000);
+  p.on("pageerror", error => errors.push(error.message)); p.on("response", response => { if (response.status() >= 400) requestFailures.push({ url: response.url(), method: response.request().method(), status: response.status() }); });
+  p.on("console", message => { if (message.type() !== "error") return; const url = message.location().url, text = message.text(); const known = url === base + "/api/remote/tls" && /status of 400/.test(text) || offline && url === offline && /net::ERR_FAILED/.test(text); (known ? expected : errors).push(`${text} [${url}]`); }); return p;
+}
+async function owner() { const p = await page(); await p.goto(`${base}/?token=${token}#/settings/connections/devices`); const card = p.getByRole("region", { name: "Remote access", exact: true }); await card.getByRole("checkbox", { name: "Enable remote access", exact: true }).waitFor(); return { p, card }; }
+const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "-c", "commit.gpgsign=false", ...args], { cwd, stdio: ["ignore", "pipe", "pipe"], encoding: "utf8" }).trim();
+before(async () => {
+  mkdirSync(shots, { recursive: true }); mkdirSync(join(scratch, "os-home")); writeFileSync(join(scratch, "bash"), '#!/bin/sh\nexec /bin/bash --noprofile --norc\n', { mode: 0o755 }); writeFileSync(gh, JSON.stringify({ issues: [], prs: {} })); setStatus();
+  valid = certificate("valid"); expired = certificate("expired", hostname, ["20200101000000Z", "20200201000000Z"]); future = certificate("future", hostname, ["20500101000000Z", "20510201000000Z"]); wrong = certificate("wrong", "other.tail-test.ts.net");
+  execFileSync(process.execPath, ["scripts/build-ui.mjs"], { cwd: root, env: { ...process.env, CODEFLOW_HOME: join(scratch, "build-home") } }); browser = await chromium.launch({ channel: "chrome", headless: true, args: [`--host-resolver-rules=MAP ${hostname} 127.0.0.1, MAP codeflow-renamed.tail-test.ts.net 127.0.0.1`] });
+});
+afterEach(async t => { if ((t as { error?: unknown }).error) for (const context of browser.contexts()) for (const p of context.pages()) { const name = t.name.slice(0, 42).replace(/[^a-z0-9]/gi, "-"); await p.screenshot({ path: join(shots, `failed-${name}.png`), fullPage: true }).catch(() => {}); writeFileSync(join(shots, `failed-${name}.txt`), await p.locator("body").innerText()); } for (const context of browser.contexts()) await context.close(); await stop(); setStatus(); });
+after(async () => { await browser?.close(); await stop(); writeFileSync(join(shots, "server.log"), processLogs.join("")); writeFileSync(join(shots, "browser.json"), JSON.stringify({ errors, expected, requestFailures }, null, 2)); rmSync(scratch, { recursive: true, force: true }); });
+
+test("paired phone skips local-only connection inventories through boot, polling, reload, board and run pages", { timeout: 90000 }, async () => {
+  await start(valid); const info = await ok("/api/remote", { enabled: true, lan: true, transport: "tailscale", control: true }); const repo = mkdtempSync(join(scratch, "repo-")); git(repo, "init", "-qb", "main"); git(repo, "config", "user.name", "Fixture"); git(repo, "config", "user.email", "fixture@example.test"); writeFileSync(join(repo, "README.md"), "Phone fixture\n"); git(repo, "add", "."); git(repo, "commit", "-qm", "fixture"); const project = await ok("/api/projects", { name: "Phone project", repos: [repo] }); const created = await ok("/api/runs", { repo, project: project.id, task: "Inspect phone fixture", pattern: "solo", roles: { agent: ["claude"] }, loop: { prove: false } });
+  const p = await page(true), requests: string[] = []; p.on("request", request => requests.push(new URL(request.url()).pathname)); await p.goto(info.tailscaleUrl); await p.getByRole("button", { name: /^SSH connections:/ }).waitFor(); const identity = await p.evaluate(() => fetch("/api/auth/self").then(r => r.json())); assert.equal(identity.localOnlyApis, false); assert.equal((await p.evaluate(() => fetch("/api/ssh-context").then(r => r.json()))).connections, false);
+  await p.getByRole("button", { name: /^SSH connections:/ }).click(); await p.getByText("SSH connections are managed in CodeFlow on your computer.", { exact: true }).waitFor(); assert.equal(await p.getByRole("menuitem", { name: "Refresh connections", exact: true }).count(), 0); await p.screenshot({ path: join(shots, "phone-computer-menu.png"), fullPage: true }); await p.keyboard.press("Escape");
+  for (const hash of ["#/settings/connections/workspace", "#/settings/connections/join", "#/settings/connections/host", "#/team", `#/run/${created.id}`]) { await p.goto(`https://${hostname}:${remotePort}/${hash}`); await p.getByRole("button", { name: /^SSH connections:/ }).waitFor(); assert.equal(await p.getByText("Connected projects unavailable", { exact: true }).count(), 0); }
+  await p.goto(`https://${hostname}:${remotePort}/?team=unavailable-remote#/team`); await until(async () => new URL(p.url()).searchParams.get("team"), value => value === "local"); await p.goto(`https://${hostname}:${remotePort}/#/run/${created.id}`); await p.reload(); await p.waitForTimeout(16000); assert.deepEqual(requests.filter(path => /^\/api\/(?:ssh-hosts|workspace-projects|team-link)(?:\/|$)/.test(path)), []); await p.screenshot({ path: join(shots, "phone-run.png"), fullPage: true });
+  const cookies = await p.context().cookies(), cookie = cookies.map(c => `${c.name}=${c.value}`).join("; "); for (const [path, code] of [["/api/ssh-hosts", 403], ["/api/workspace-projects", 403], ["/api/team-link", 404]] as const) assert.equal((await remoteApi(path, cookie)).status, code);
+  const desktop = await owner(); await desktop.p.goto(`${base}/#/settings/connections/workspace`); await desktop.p.getByRole("heading", { name: "Add a remote machine" }).waitFor(); assert.equal((await ok("/api/auth/self")).localOnlyApis, true); assert.equal((await ok("/api/ssh-context")).connections, true);
+});
+
+for (const kind of ["expired", "future"] as const) test(`${kind} environment certificate exposes its expiry and cannot enable full control or open a listener`, async () => {
+  await start(kind === "expired" ? expired : future); let info = await ok(); assert.equal(info.secure, false); assert.equal(info.tls.source, "environment"); assert.ok(Number.isFinite(info.tls.expiresAt)); assert.match(info.tls.error, /expired or not valid yet/); assert.equal((await api("/api/remote", { enabled: true, lan: true, transport: "tailscale", control: true })).status, 400); await ok("/api/remote", { enabled: true, lan: true, transport: "tailscale" }); assert.equal(await listening(), false);
+  const { p, card } = await owner(); await card.getByRole("alert").filter({ hasText: /expired or not valid yet/ }).first().waitFor(); assert.equal(await card.getByRole("checkbox", { name: "Full control from remote devices" }).isDisabled(), true); assert.equal(await card.getByText("Secure remote access is set up", { exact: true }).count(), 0); await p.screenshot({ path: join(shots, `environment-${kind}.png`), fullPage: true });
+});
+
+test("environment certificate cannot cover the wrong Tailscale name or advertise unrelated LAN IPs", async () => {
+  await start(wrong); assert.equal((await api("/api/remote", { enabled: true, lan: true, transport: "tailscale", control: true })).status, 400); const info = await ok("/api/remote", { enabled: true, lan: true, transport: "tailscale" }); assert.equal(info.secure, false); assert.match(info.tls.error, /does not cover.*Tailscale/); assert.equal(info.tailscaleUrl, undefined); assert.equal(await listening(), false);
+  const lan = await ok("/api/remote", { transport: "lan" }); assert.equal(lan.secure, true); assert.ok(lan.lanUrls.length); assert.ok(lan.lanUrls.every((url: string) => ["other.tail-test.ts.net", "127.0.0.1"].includes(new URL(url).hostname))); const { p, card } = await owner(); await card.getByText("Certificate expires", { exact: false }).waitFor(); await p.screenshot({ path: join(shots, "environment-valid-names.png"), fullPage: true });
+});
+
+test("failed certificate imports stay beside the form across polls and preserve the working link", { timeout: 60000 }, async () => {
+  await start(); await ok("/api/remote", { enabled: true, lan: true, transport: "tailscale" }); const { p, card } = await owner(); const previous = await ok(); await card.getByRole("button", { name: "Set up secure remote access", exact: true }).click(); const form = card.locator("form.secure-remote-form"); await form.getByLabel("Certificate setup").selectOption("import"); await form.getByLabel("Certificate file (PEM)", { exact: true }).setInputFiles(wrong.certPath); await form.getByLabel("Private key file (PEM)", { exact: true }).setInputFiles(wrong.keyPath); await form.getByRole("button", { name: "Save and apply HTTPS" }).click(); const error = form.getByRole("alert"); await error.filter({ hasText: /does not cover/ }).waitFor(); assert.equal(await card.locator(":scope > [role=alert]").count(), 0); assert.equal(await card.locator(".phone-qr").count(), 1); assert.equal(await card.getByRole("button", { name: "Copy link", exact: true }).count(), 1); await p.waitForTimeout(11000); await error.filter({ hasText: /does not cover/ }).waitFor(); assert.equal((await ok()).tailscaleUrl, previous.tailscaleUrl); const box = await error.boundingBox(); assert.ok(box && box.y >= 0 && box.y + box.height <= 720); await p.screenshot({ path: join(shots, "import-error-persists.png"), fullPage: true });
+  await form.getByLabel("Certificate file (PEM)", { exact: true }).setInputFiles(expired.certPath); await form.getByLabel("Private key file (PEM)", { exact: true }).setInputFiles(expired.keyPath); assert.equal(await form.getByRole("alert").count(), 0); await form.getByRole("button", { name: "Save and apply HTTPS" }).click(); await error.filter({ hasText: /expired or not valid yet/ }).waitFor(); await form.getByLabel("Certificate file (PEM)", { exact: true }).setInputFiles(valid.certPath); await form.getByLabel("Private key file (PEM)", { exact: true }).setInputFiles(valid.keyPath); await form.getByRole("button", { name: "Save and apply HTTPS" }).click(); await card.getByText("Secure remote access is set up", { exact: true }).waitFor(); assert.equal(await form.count(), 0);
+});
+
+test("Tailscale rename makes saved TLS status, control and listener agree and replacement restores access", async () => {
+  await start(); await ok("/api/remote", { enabled: true, lan: true, transport: "tailscale" }); await ok("/api/remote/tls", { mode: "tailscale" }); await ok("/api/remote", { control: true }); const { p, card } = await owner(); setStatus("codeflow-renamed.tail-test.ts.net"); await card.getByRole("button", { name: "Refresh Tailscale" }).click(); await card.getByRole("alert").filter({ hasText: /different Tailscale name/ }).first().waitFor(); const info = await ok(); assert.equal(info.secure, false); assert.equal(info.control, false); assert.equal(info.tailscaleUrl, undefined); assert.equal(await listening(), false); assert.equal(await card.getByText("Secure remote access is set up", { exact: true }).count(), 0); assert.equal(await card.getByText(/Encrypted HTTPS/).count(), 0); assert.equal(await card.getByText(/No remote link until Tailscale is connected/).count(), 0); await p.screenshot({ path: join(shots, "tailscale-renamed.png"), fullPage: true });
+  const next = certificate("renamed", "codeflow-renamed.tail-test.ts.net"); await ok("/api/remote/tls", { mode: "import", hostname: next.hostname, cert: next.cert, key: next.key }); const restored = await ok("/api/remote", { control: true }); assert.equal(restored.secure, true); assert.equal(restored.control, true); assert.equal(await listening(), true);
+});
+
+test("environment expiry closes an already running listener without a settings request", { timeout: 40000 }, async () => {
+  const stamp = (ms: number) => new Date(ms).toISOString().replace(/[-:T]/g, "").slice(0, 14) + "Z"; const end = Date.now() + 14000;
+  const short = certificate("short-lived", hostname, [stamp(Date.now() - 60000), stamp(end)]); await start(short); const info = await ok("/api/remote", { enabled: true, lan: true, transport: "lan", control: true }); assert.equal(info.secure, true); assert.equal(await listening(), true);
+  await pause(Math.max(1, end - Date.now() + 50)); await until(listening, value => !value, 15000); const expired = await ok(); assert.equal(expired.secure, false); assert.equal(expired.control, false); assert.deepEqual(expired.lanUrls, []); assert.match(expired.tls.error, /expired or not valid yet/);
+  const home = data; await stop(); await start(short, home); assert.equal((await ok()).secure, false); assert.equal(await listening(), false);
+});
+
+test("mismatched environment private key fails startup without publishing key contents", async () => {
+  await assert.rejects(start({ ...valid, keyPath: wrong.keyPath }), /could not be read or do not match/); assert.equal(await listening(), false); assert.ok(!processLogs.join("").includes(wrong.key));
+});
+
+test("offline mutation and TLS import failures persist through polls and recover on resubmit", { timeout: 45000 }, async () => {
+  await start(); await ok("/api/remote", { enabled: true, lan: true, transport: "tailscale" }); const { p, card } = await owner(); offline = base + "/api/remote"; await p.route(offline, route => route.request().method() === "POST" ? route.abort("failed") : route.continue());
+  await card.getByRole("combobox", { name: "Remote connection" }).selectOption("lan"); await card.locator(":scope > [role=alert]").filter({ hasText: /Can't reach code-flow/ }).waitFor(); assert.equal(await card.getByRole("button", { name: "Retry", exact: true }).count(), 0); assert.equal(await card.locator(".phone-qr").count(), 1); await p.waitForTimeout(11000); await card.getByRole("button", { name: "Dismiss", exact: true }).waitFor(); await p.unroute(offline); offline = ""; await card.getByRole("button", { name: "Dismiss", exact: true }).click();
+  await card.getByRole("button", { name: "Set up secure remote access", exact: true }).click(); const form = card.locator(".secure-remote-form"); await form.getByLabel("Certificate setup").selectOption("import"); await form.getByLabel("Certificate file (PEM)", { exact: true }).setInputFiles(valid.certPath); await form.getByLabel("Private key file (PEM)", { exact: true }).setInputFiles(valid.keyPath);
+  offline = base + "/api/remote/tls"; await p.route(offline, route => route.abort("failed")); await form.getByRole("button", { name: "Save and apply HTTPS" }).click(); await form.getByRole("alert").filter({ hasText: /Can't reach code-flow/ }).waitFor(); await card.getByRole("button", { name: "Refresh Tailscale" }).click(); await form.getByRole("alert").waitFor(); assert.equal(await card.locator(":scope > [role=alert]").count(), 0); assert.equal(await card.locator(".phone-qr").count(), 1); await p.unroute(offline); offline = "";
+  await form.getByRole("button", { name: "Save and apply HTTPS" }).click(); await card.getByText("Secure remote access is set up", { exact: true }).waitFor(); await p.screenshot({ path: join(shots, "offline-recovery.png"), fullPage: true });
+});
+
+test("browser and application logs have no unclassified runtime failures", () => { assert.deepEqual(errors, []); assert.deepEqual(requestFailures.filter(r => !(r.method === "POST" && r.url === base + "/api/remote/tls" && r.status === 400)), []); assert.deepEqual(appLogs.filter(entry => entry.level === "error"), []); });

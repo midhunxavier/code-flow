@@ -223,17 +223,17 @@ test("new tasks expose a clear Team toggle, lead-only controls and searchable br
   const project = await api("/api/projects", { name: "Composer fixture", repos: [repo] });
   await page.goto(`${base}/?token=${token}#/project/${project.id}/new`);
   const composer = page.locator(".composer");
-  await composer.getByRole("button", { name: "Start from branch", exact: true }).click();
+  await composer.getByRole("button", { name: /^Start from branch:/ }).click();
   const search = composer.getByRole("combobox", { name: "Search Start from branch", exact: true });
   await search.fill("searchable");
   await composer.getByRole("listbox", { name: "Start from branch", exact: true }).getByRole("option").waitFor();
   assert.equal(await composer.getByRole("listbox", { name: "Start from branch", exact: true }).getByRole("option").count(), 1);
   await search.press("Enter");
-  assert.match(await composer.getByRole("button", { name: "Start from branch", exact: true }).innerText(), /feature\/searchable-branch/);
+  assert.match(await composer.getByRole("button", { name: /^Start from branch:/ }).innerText(), /feature\/searchable-branch/);
   const toggle = composer.getByRole("switch", { name: "AI team", exact: true });
   await toggle.click(); assert.equal(await toggle.getAttribute("aria-checked"), "true");
   assert.equal(await composer.locator(".task-controls .chat-controls").count(), 0);
-  await composer.getByRole("button", { name: "Lead model", exact: true }).waitFor();
+  await composer.getByRole("button", { name: /^Lead model:/ }).waitFor();
   await composer.getByRole("button", { name: "Advanced", exact: true }).click();
   const setup = page.getByRole("dialog", { name: "AI team setup" });
   assert.equal(await setup.getByRole("switch", { name: "Enable AI team" }).isChecked(), true);
@@ -241,5 +241,5 @@ test("new tasks expose a clear Team toggle, lead-only controls and searchable br
   await setup.getByRole("button", { name: "Apply team settings" }).click();
   await page.screenshot({ path: join(root, "output/playwright/composer-team-clean.png") });
   await toggle.click(); assert.equal(await toggle.getAttribute("aria-checked"), "false");
-  await composer.getByRole("button", { name: "Provider", exact: true }).waitFor();
+  await composer.getByRole("button", { name: /^Provider:/ }).waitFor();
 });

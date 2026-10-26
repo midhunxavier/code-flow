@@ -21,6 +21,17 @@ export class SshGateway {
   private previews: Previews;
   private restoring?: Promise<void>;
   error?: string;
+  private healthCheckedAt = 0;
+  private healthSequence = 0;
+  private healthPending?: Promise<void>;
+  async checkHealth() {
+    if (Date.now() - this.healthCheckedAt < 5000) return;
+    return this.healthPending ??= this.json(this.probe, "GET", undefined, 3000).then(() => {}, () => {}).finally(() => { this.healthPending = undefined; });
+  }
+  private health(transport: SshTransport, sequence: number, error?: string) {
+    if (this.closed || transport !== this.transport || sequence !== this.healthSequence) return;
+    this.error = error; this.healthCheckedAt = Date.now();
+  }
   constructor(private transport: SshTransport, private runtime: Runtime, private reconnect: () => Promise<{ transport: SshTransport; runtime: Runtime }>, private readonly probe = "/api/ssh-runtime") {
     this.previews = new Previews(() => [...this.origins], () => [this.runtime.port], (target) => this.open(target.port, target.hostname));
   }
@@ -65,8 +76,9 @@ export class SshGateway {
     const payload = body === undefined ? undefined : JSON.stringify(body);
     if (payload !== undefined) { headers["content-type"] = "application/json"; headers["content-length"] = String(Buffer.byteLength(payload)); }
     if (req.headers.origin) headers.origin = `http://${headers.host}`;
+    const transport = this.transport, sequence = ++this.healthSequence;
     const up = request({ host: "127.0.0.1", port: this.runtime.port, method: req.method, path, headers, createConnection: () => this.open(this.runtime.port) }, (incoming) => {
-      this.error = undefined;
+      this.health(transport, sequence);
       const out: Record<string, string | string[]> = {};
       for (const [key, value] of Object.entries(incoming.headers)) if (value !== undefined && !HOP.has(key) && !["set-cookie", "clear-site-data", "location", "content-security-policy", "content-security-policy-report-only"].includes(key)) out[key] = value;
       if (incoming.headers.location) { incoming.destroy(); send(res, 502, { error: "Unexpected remote API redirect" }); return; }
@@ -81,23 +93,27 @@ export class SshGateway {
     });
     up.on("error", () => {
       if (res.destroyed) return; // Navigation cancelled this request; the transport may still be healthy.
-      this.error = "Connection interrupted. Reconnect this computer; your work remains there.";
-      if (res.headersSent) res.destroy(); else send(res, 502, { error: this.error });
+      const error = "Connection interrupted. Reconnect this computer; your work remains there.";
+      this.health(transport, sequence, error);
+      if (res.headersSent) res.destroy(); else send(res, 502, { error });
     });
     res.on("close", () => { if (!res.writableFinished) up.destroy(); });
     if (payload !== undefined) up.end(payload); else req.pipe(up);
   }
   json(path: string, method = "GET", body?: unknown, timeoutMs = 30_000): Promise<any> {
     return new Promise((resolve, reject) => {
+      const transport = this.transport, sequence = ++this.healthSequence;
+      const failed = (error: Error) => { this.health(transport, sequence, "Connection interrupted. Reconnect this computer; your work remains there."); reject(error); };
       const payload = body === undefined ? undefined : JSON.stringify(body);
       const req = request({ host: "127.0.0.1", port: this.runtime.port, method, path, headers: { authorization: `Bearer ${this.runtime.token}`, ...(payload ? { "content-type": "application/json", "content-length": Buffer.byteLength(payload) } : {}) }, createConnection: () => this.open(this.runtime.port) }, (res) => {
+        this.health(transport, sequence);
         let text = ""; res.setEncoding("utf8");
         res.on("data", (data) => { text += data; if (text.length > 2 * 1024 * 1024) req.destroy(new Error("Remote response exceeds its limit")); });
-        res.on("error", reject);
+        res.on("error", failed);
         res.on("end", () => { try { const value = JSON.parse(text); if ((res.statusCode ?? 500) >= 400) reject(new HttpError(res.statusCode!, value.error ?? "Remote request failed")); else resolve(value); } catch (error) { reject(error); } });
       });
       const timer = setTimeout(() => req.destroy(new Error("Remote request timed out")), timeoutMs);
-      req.on("close", () => clearTimeout(timer)); req.on("error", reject); req.end(payload);
+      req.on("close", () => clearTimeout(timer)); req.on("error", failed); req.end(payload);
     });
   }
   async close() {

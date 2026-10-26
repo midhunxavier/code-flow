@@ -150,7 +150,7 @@ test("only a browser on this machine claims the session: not one through a tunne
   assert.equal(tunnelled.headers.get("set-cookie"), null);
   const local = await fetch(`${a.base}/`);
   assert.equal(local.status, 200);
-  assert.match(local.headers.get("set-cookie") ?? "", /^codeflow_session=/);
+  assert.match(local.headers.get("set-cookie") ?? "", /^codeflow_session_\d+=/);
 });
 
 test("a cookie of the same name a page on another port set (a narrower path, so sent first) doesn't sign you out", async () => {
@@ -388,7 +388,7 @@ test("phone: the read-only link never signs in, the sign-in link has its own sec
   assert.equal(readOnly.headers.get("set-cookie"), null);
   assert.doesNotMatch(await readOnly.text(), /<button|<form/);
 
-  const signIn = await fetch(`${PHONE}${info.phonePath}`, { redirect: "manual" });
+  const signIn = await fetch(`${PHONE}${info.phonePath}/pair`, { method: "POST", headers: { origin: PHONE }, redirect: "manual" });
   assert.equal(signIn.status, 200, "a page that moves on by itself, not a redirect (see signingInPage)");
   assert.match(await signIn.text(), /location\.replace\("\/"\)/);
   const setCookie = signIn.headers.get("set-cookie")!;
@@ -516,7 +516,7 @@ test("Improve rewrites the task in one read-only turn: Auto picks the agent, bad
   const before = status();
   const quick = await api(a, "/api/improve-prompt", { text: "add rate limit to login", repo, context: ["src/login.ts"], source: { kind: "issue", number: 6, title: "Tests are flaky" } });
   assert.equal(quick.status, 200, JSON.stringify(quick.body));
-  assert.deepEqual(quick.body, { prompt: "Goal: add rate limit to login\n\nDone when: the tests pass.", summary: "Stated the goal and when it's done (quick, claude). Context: text only; empty private repository.", agent: "claude" });
+  assert.deepEqual(quick.body, { prompt: "Goal: add rate limit to login\n\nDone when: the tests pass.", summary: "Stated the goal and when it's done (quick, claude). Context: your text only; the project was not read.", agent: "claude" });
   const deep = await api(a, "/api/improve-prompt", { text: "add rate limit to login", repo, mode: "repo", agent: "agy" });
   assert.equal(deep.status, 200, JSON.stringify(deep.body));
   assert.equal(deep.body.agent, "agy");
@@ -531,7 +531,7 @@ test("Improve rewrites the task in one read-only turn: Auto picks the agent, bad
   await refused({ text: "  ", repo }, /Write a task to improve first/);
   await refused({ text: "x".repeat(20_001), repo }, /too long to improve/);
   await refused({ text: "x", repo: "relative/path" }, /absolute path/);
-  await refused({ text: "x", repo: tmpdir() }, /Not a git repository/);
+  await refused({ text: "x", repo: tmpdir() }, /not a git repository/i);
   await refused({ text: "IMPROVE-EMPTY", repo }, /didn't return a rewritten task/, 502);
 });
 

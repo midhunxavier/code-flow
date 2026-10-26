@@ -26,14 +26,14 @@ class CodeFlow < Formula
   sha256 "${sha}"
   license "MIT"
 
-  depends_on "node@22"
   depends_on "git"
+  depends_on "node@22"
 
   def install
     libexec.install Dir["*"]
     (bin/"codeflow").write <<~SH
       #!/bin/sh
-      exec "#{Formula["node@22"].opt_bin}/node" "#{libexec}/bin/codeflow.mjs" "$@"
+      exec "#{formula_opt_bin("node@22")}/node" "#{libexec}/bin/codeflow.mjs" "$@"
     SH
     (bin/"codeflow").chmod 0755
     bin.install_symlink bin/"codeflow" => "code-flow"

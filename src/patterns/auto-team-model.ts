@@ -125,9 +125,15 @@ export function planProblem(plan: TeamPlan, policy: TeamPolicy, retainedMembers:
     const variants = m.role !== "coordinator" && "variants" in settings ? settings.variants : undefined;
     // A selected pool is an allowlist of model/effort pairs, not permission to use every catalog model.
     const choices = variants?.length ? [settings, ...variants] : [settings];
-    const matching = choices.filter(choice => variants?.length
-      ? m.model === (choice.model ?? "")
-      : choice.model ? m.model === choice.model : !m.model || !!model);
+    const matching = choices.filter(choice => {
+      if (!choice.model) return variants?.length ? !m.model : !m.model || !!model;
+      if (m.model === choice.model) return true;
+      // A provider can report a canonical model ID when the user selected its
+      // alias. Only that provider's reported identity can equate the two; keep
+      // the matching choice so its effort remains paired with this model.
+      const pinned = provider.models?.find(candidate => candidate.id === choice.model || candidate.aliases?.includes(choice.model!));
+      return !!m.model && !!pinned && !!model && pinned.id === model.id;
+    });
     if (!matching.length) return `${m.id} must preserve supplied model settings or choose a supplied supported model (empty means default)`;
     const efforts = model?.efforts ?? provider.efforts ?? [];
     if (!matching.some(choice => choice.effort ? m.effort === choice.effort : !m.effort || efforts.includes(m.effort))) return `${m.id} must preserve supplied effort settings or choose a supplied supported effort (empty means default)`;

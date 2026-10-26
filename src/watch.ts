@@ -1,7 +1,9 @@
+import { unpublishedWatchIssues } from "./watch-integrity.js";
 import type { PrWatch, Run, RunManager } from "./engine.js";
 import { git } from "./git.js";
 import { CODEFLOW_MARKER, failedLogs, GH_AUTH_ERROR, ghAuthStatus, githubUser, prChecks, prStatus, safeFence } from "./github.js";
 import { logWarn } from "./log.js";
+import { envNumber, MAX_TIMER_MS } from "./config.js";
 
 const ACTIVE = new Set<PrWatch["state"]>(["watching", "fixing", "green"]);
 /** Polls in a row that fail before a watch hands the PR back to you. */
@@ -17,6 +19,7 @@ interface Failing {
   /** Don't poll again before this. */
   nextAt: number;
   error: string;
+  startedAt: number;
 }
 
 /**
@@ -50,21 +53,21 @@ interface Quiet {
  * interval at first, then 2, 4, 8… up to MAX_QUIET_MS), and every interval again once anything
  * changes: a comment, a push, CI starting or failing.
  *
- * Line comments on the diff (review threads) aren't read yet: only PR comments and review
- * summaries are. Each watch says so once, in the run's log.
+ * Conversation comments, review summaries and inline review comments reach the agent with
+ * their file, line, side and thread context. A truncated inline history needs human review.
  */
 export class PrWatcher {
   private timer?: ReturnType<typeof setInterval>;
   private polling?: Promise<void>;
   private stopped = false;
-  /** Watches whose polls are failing, by `<run id>/<branch>`; forgotten on restart. */
+  /** Failure timers are rebuilt from each watch's persisted failure streak on restart. */
   private readonly failing = new Map<string, Failing>();
   /** Watches with nothing to do lately, by `<run id>/<branch>`; forgotten on restart. */
   private readonly quiet = new Map<string, Quiet>();
 
   constructor(
     private readonly manager: RunManager,
-    private readonly intervalMs = Number(process.env.CODEFLOW_WATCH_INTERVAL_MS) || 60_000,
+    private readonly intervalMs = envNumber("CODEFLOW_WATCH_INTERVAL_MS", 60_000, { min: 1_000, max: MAX_TIMER_MS }),
   ) {}
 
   start() {
@@ -93,7 +96,18 @@ export class PrWatcher {
       for (const watch of Object.values(run.watches)) {
         if (this.stopped) return;
         const key = `${run.id}/${watch.branch}`;
-        const failing = this.failing.get(key);
+        if (watch.lastPolled === undefined) this.quiet.delete(key);
+        // Older snapshots only persisted the generated detail, not the failure counter.
+        if (watch.pollFailures === undefined && watch.state === "needs-you") {
+          const legacy = Number(watch.detail.match(/^Couldn't check the PR (\d+) times? in a row:/)?.[1]);
+          if (Number.isSafeInteger(legacy) && legacy > 0) this.manager.updateWatch(run.id, watch.branch, { pollFailures: legacy });
+        }
+        let failing = this.failing.get(key);
+        if (failing?.startedAt !== watch.startedAt) { this.failing.delete(key); failing = undefined; }
+        if (!failing && watch.pollFailures) {
+          failing = { count: watch.pollFailures, nextAt: (watch.lastPolled ?? 0) + Math.min(MAX_BACKOFF_MS, this.intervalMs * 2 ** Math.min(watch.pollFailures - 1, 20)), error: watch.detail, startedAt: watch.startedAt };
+          this.failing.set(key, failing);
+        }
         // A watch handed back to you for failing polls is still retried, so it recovers on its own.
         const retrying = watch.state === "needs-you" && !!failing;
         if ((!ACTIVE.has(watch.state) && !retrying) || run.status === "running" || run.archived) {
@@ -106,6 +120,7 @@ export class PrWatcher {
         try {
           this.noteQuiet(key, await this.pollOne(run, watch), now);
           this.failing.delete(key);
+          if (run.watches[watch.branch] === watch && watch.pollFailures) this.manager.updateWatch(run.id, watch.branch, { pollFailures: undefined });
         } catch (err) {
           this.quiet.delete(key);
           await this.pollFailed(run, watch, key, err as Error, now);
@@ -130,7 +145,9 @@ export class PrWatcher {
 
   /** Count a failed poll and wait longer before the next; the third in a row hands the PR to you. */
   private async pollFailed(run: Run, watch: PrWatch, key: string, err: Error, now: number) {
-    const count = (this.failing.get(key)?.count ?? 0) + 1;
+    const current = () => !this.stopped && run.watches[watch.branch] === watch && watch.state !== "stopped" && watch.state !== "closed";
+    if (!current()) return;
+    const count = (this.failing.get(key)?.count ?? watch.pollFailures ?? 0) + 1;
     let error = err.message;
     // Name the likely cause once: an expired gh login looks like any other failure from here.
     if (count === 1 || GH_AUTH_ERROR.test(error)) {
@@ -138,24 +155,29 @@ export class PrWatcher {
       if (auth && !auth.ok) error = `gh isn't signed in — run \`gh auth login\`${auth.message ? ` (gh auth status: ${auth.message.slice(0, 200)})` : ""}`;
     }
     const wait = Math.min(MAX_BACKOFF_MS, this.intervalMs * 2 ** (count - 1));
-    this.failing.set(key, { count, nextAt: now + wait, error });
+    if (!current()) return;
+    this.failing.set(key, { count, nextAt: now + wait, error, startedAt: watch.startedAt });
     const detail = `Couldn't check the PR ${count} time${count === 1 ? "" : "s"} in a row: ${error}`;
     if (count >= FAILURES_BEFORE_NEEDS_YOU) {
       if (count === FAILURES_BEFORE_NEEDS_YOU) logWarn(`PR watch on ${watch.pr} keeps failing`, { run: run.id, error });
-      this.manager.updateWatch(run.id, watch.branch, { state: "needs-you", detail, lastPolled: now });
+      this.manager.updateWatch(run.id, watch.branch, { state: "needs-you", detail, lastPolled: now, pollFailures: count });
     } else {
-      this.manager.updateWatch(run.id, watch.branch, { detail, lastPolled: now });
+      this.manager.updateWatch(run.id, watch.branch, { detail, lastPolled: now, pollFailures: count });
     }
   }
 
   /** One poll. Returns what it found when there was nothing to do (green, no new comments), else undefined. */
   private async pollOne(run: Run, w: PrWatch): Promise<string | undefined> {
+    const current = () => !this.stopped && run.watches[w.branch] === w && w.state !== "stopped" && w.state !== "closed";
     const update = (patch: Partial<PrWatch>): undefined => {
+      if (!current()) return;
       this.manager.updateWatch(run.id, w.branch, { lastPolled: Date.now(), ...patch });
       return undefined;
     };
     const status = await prStatus(run.repo, w.pr);
+    if (!current()) return;
     if (status.state !== "OPEN") {
+      if (status.state === "MERGED") await this.manager.prMergeInfo(run.id, w.branch);
       return update({ state: "closed", detail: status.state === "MERGED" ? "The pull request was merged" : "The pull request was closed" });
     }
     if (status.commentsTruncated) return update({ state: "needs-you", detail: "The PR has at least 1,000 inline review comments; review its complete discussion before restarting follow-through" });
@@ -166,15 +188,20 @@ export class PrWatcher {
     const worktree = run.worktrees.find((x) => x.branch === w.branch);
     if (!worktree) return update({ state: "needs-you", detail: "The branch's worktree is gone" });
 
+    const unpublished = await unpublishedWatchIssues(run.repo, w.branch, w.remoteBranch, run.loop?.check, run.testCounts?.[w.branch]);
+    if (!current()) return;
+    if (unpublished.length) return update({ state: "needs-you", detail: `Unpublished commits need review; not pushed: ${unpublished.map(issue => `${issue.file ? `${issue.file}: ` : ""}${issue.detail}`).join("; ")}` });
+
     // Comments that were there when watching started are context, not instructions.
     const seen = new Set(w.seenComments ?? status.comments.filter((c) => Date.parse(c.createdAt) < w.startedAt).map((c) => c.id));
-    // The first poll of this watch (seenComments is set from here on): say once what isn't read.
+    // The first poll of this watch (seenComments is set from here on): say once what reaches the agent.
     if (!w.seenComments) {
-      this.manager.log(run.id, `Watching ${w.pr}: line comments on the diff (review threads) aren't read yet; only PR comments and review summaries reach the agent`);
+      this.manager.log(run.id, `Watching ${w.pr}: PR comments, review summaries and inline review comments reach the agent with file, line and thread context; only comments from you or allowed users can trigger fixes`);
     }
     const fresh = status.comments.filter((c) => !seen.has(c.id));
     const seenComments = [...seen, ...fresh.map((c) => c.id)];
     const me = await githubUser(run.repo).catch(() => "");
+    if (!current()) return;
     const allowed = new Set([me, ...(w.allow ?? [])].filter(Boolean).map((login) => login.toLowerCase()));
     const actionable = fresh.filter((c) => !c.body.includes(CODEFLOW_MARKER) && allowed.has(c.author.toLowerCase()));
     for (const c of fresh) {
@@ -190,6 +217,7 @@ export class PrWatcher {
     // Work only on top of what's on the PR: if someone else pushed, hand it back to you.
     const synced = (await git(["merge-base", "--is-ancestor", status.headRefOid, w.branch], run.repo)).code === 0;
 
+    if (!current()) return;
     if (actionable.length) {
       if (!synced) return update({ seenComments, state: "needs-you", detail: "The PR has commits code-flow doesn't have" });
       if (w.fixes >= w.maxFixes) return update({ seenComments, state: "needs-you", detail: `New comments after ${w.fixes} fixes; over to you` });
@@ -213,6 +241,7 @@ export class PrWatcher {
     }
 
     const checks = await prChecks(run.repo, w.pr);
+    if (!current()) return;
     const failing = checks.filter((c) => c.bucket === "fail");
     const counts = {
       pass: checks.filter((c) => c.bucket === "pass" || c.bucket === "skipping").length,
@@ -232,6 +261,7 @@ export class PrWatcher {
     if (!synced) return update({ seenComments, checks: counts, state: "needs-you", detail: "The PR has commits code-flow doesn't have" });
 
     const logs = await failedLogs(run.repo, checks, 8_000);
+    if (!current()) return;
     update({
       seenComments,
       checks: counts,

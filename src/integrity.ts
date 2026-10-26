@@ -1,4 +1,4 @@
-import { git, gitError, type GitCwd } from "./git.js";
+import { git, gitError, PATCH_PATHS, quoteGitPath, type GitCwd } from "./git.js";
 
 /**
  * Test integrity: the check only proves something if the tests it runs are still the tests.
@@ -158,7 +158,9 @@ export async function inspectChanges(
 
   // Added lines that skip tests, and test files that lost assertions.
   const added = new Set(changes.filter((c) => c.code === "A").map((c) => c.path));
-  const patchArgs = ["diff", "--no-ext-diff", "--no-textconv", "-U0", "--no-color", "-M", range];
+  // A file's `+++` line, matched exactly to its path (git adds a tab after a name with a space).
+  const targets = new Map(changes.map((c) => [quoteGitPath(`b/${c.path}`), c.path]));
+  const patchArgs = [...PATCH_PATHS.config, "diff", "--no-ext-diff", "--no-textconv", "-U0", "--no-color", "-M", ...PATCH_PATHS.prefixes, range];
   const patch = await git(patchArgs, cwd);
   if (patch.code !== 0) return [...issues, unverifiedIssue(gitError(patchArgs, patch))];
   let file = "";
@@ -177,7 +179,7 @@ export async function inspectChanges(
       continue;
     }
     if (header) {
-      if (line.startsWith("+++ ")) file = line.replace(/^\+\+\+ (b\/)?/, "");
+      if (line.startsWith("+++ ")) file = targets.get(line.slice(4).replace(/\t$/, "")) ?? "";
       continue;
     }
     if (line.startsWith("+")) {

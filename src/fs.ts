@@ -22,9 +22,14 @@ const MAX_ENTRIES = 500;
 
 const isRepo = (path: string) => existsSync(join(path, ".git"));
 
+export function directoryPath(path?: string, home = homedir()): string {
+  const typed = path?.trim() || home;
+  return resolve(typed === "~" ? home : typed.startsWith("~/") ? join(home, typed.slice(2)) : typed);
+}
+
 /** Subdirectories of `path` (default: home), for the UI's folder picker. Names only, never file contents. */
 export async function listDirectories(path?: string, showHidden = false): Promise<DirListing> {
-  const target = resolve(path?.trim() || homedir());
+  const target = directoryPath(path);
   if (!(await stat(target)).isDirectory()) throw new Error(`${target} is not a directory`);
 
   const dirents = await readdir(target, { withFileTypes: true });

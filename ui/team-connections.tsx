@@ -1,5 +1,5 @@
 import { useState } from "preact/hooks";
-import { api, selectedTeamConnection, usePoll } from "./lib.js";
+import { api, ownerOnLocalListener, selectedTeamConnection, usePoll } from "./lib.js";
 import type { TeamLinkInfo } from "./collab-state.js";
 
 type Connection = TeamLinkInfo & { id: string; connection: string };
@@ -12,9 +12,11 @@ export function selectTeamConnection(id: string) {
 export function TeamConnectionPicker({ hideWhenEmpty = false, compact = false }: { hideWhenEmpty?: boolean; compact?: boolean }) {
   const [connections, setConnections] = useState<Connection[]>([]), [error, setError] = useState("");
   usePoll(async (current) => {
+    if (!ownerOnLocalListener.value) return;
     try { const data = await api<{ connections: Connection[] }>("/api/team-link/connections"); if (current()) { setConnections(data.connections); setError(""); } }
     catch (err) { if (current()) setError((err as Error).message); }
   }, 15_000, []);
+  if (!ownerOnLocalListener.value) return null;
   const remotes = connections.filter((entry) => entry.id !== "local");
   const selected = selectedTeamConnection || (remotes.length === 1 ? remotes[0]!.id : remotes.length === 0 ? "local" : "");
   if (hideWhenEmpty && !remotes.length && !error) return null;

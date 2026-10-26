@@ -7,7 +7,7 @@ Open Project → More → Automation → Repeat for recurring work, Inbox for re
 
 ## Choose the right trigger
 
-Set up a run in the composer (task, team, check, settings), then choose **More run actions → Schedule… → Repeat**. It runs unattended.
+Set up a run in the composer (task, team, check, settings), then choose **More run actions → Schedule… → Repeat**. It runs unattended. **AI team** works only in a live Agent conversation, so a task with it switched on cannot be scheduled: turn it off to schedule one agent, or choose **Team — dynamic plan** in Advanced to schedule a team.
 
 Open **Scheduling** from the sidebar or press **a** to manage recurring tasks, deferred runs, backlog processing and project missions. **Inbox** is a separate sidebar destination for questions, blocked work, failures and results. Older `#/settings/automations` links open the Scheduling page.
 
@@ -21,11 +21,15 @@ Global **Scheduling → Repeat** uses the project filter beside its title. Inbox
 
 ## When it runs
 
-- at a time on chosen weekdays (e.g. weekdays at 07:00), or every *N* minutes (at least 5);
+- at a time on chosen weekdays (e.g. weekdays at 07:00), or every *N* minutes (at least 5, at most 10080: a week);
 - from a webhook;
 - or when you press **Run now** on the **Scheduling → Repeat** page.
 
-The next time is saved, so restarting code-flow doesn't move it. A time missed while code-flow was closed or the computer asleep fires once when code-flow is back, if it's at most an hour late and today is still one of the schedule's days; otherwise it's skipped and the schedule moves on to its next time. A schedule never fires on a day you left out.
+A time of day runs in the time zone you choose, your browser's by default. One saved without a zone (through the API, or by an older backlog sweep) runs in the server's local time; **Schedule and next times** keeps it that way, with its next runs in that zone, until you pick one.
+
+The next time is saved, so restarting code-flow doesn't move it. A time missed while code-flow was closed or the computer asleep fires once when code-flow is back, if it's at most an hour late then and today is still one of the schedule's days; otherwise it's skipped, the skip is listed in the automation's **Preview and events** history, and the schedule moves on to its next time. A schedule never fires on a day you left out.
+
+If another window saved the schedule after you started editing it, **Save schedule** doesn't overwrite that: the editor says so, keeps your edit, and lets you use the saved schedule or save yours over it.
 
 If the previous run is still going (or still starting), a scheduled run or **Run now** is skipped, so automations never pile up. A webhook event that arrives meanwhile waits instead, and fires once that run ends; the same event sent twice waits once.
 
@@ -35,7 +39,7 @@ In the backlog picker, **Run with** selects a single agent, a built-in team patt
 
 New issue and Dependabot sweeps default to **Fix & review**, keeping checks and independent review without a separate planner step. Existing automations keep their saved workflow; edit it to change how future runs execute.
 
-A [sweep](github.md#sweeps-many-at-once) saved with *Also check every day at…* is an automation too. Each time it fires it lists the open issues, Dependabot PRs or security alerts again and starts a run for each **new** item that would be picked by default, up to 5 at a time. It remembers which items it already started, so nothing is swept twice; alerts are remembered by number, so a new alert on a package that was swept before is new work. **Run now** does the same on demand.
+A [sweep](github.md#sweeps-many-at-once) saved with *Also check every day at…* (in your browser's time zone) is an automation too. Each time it fires it lists the open issues, Dependabot PRs or security alerts again and starts a run for each **new** item that would be picked by default, up to 5 at a time. It remembers which items it already started, so nothing is swept twice; alerts are remembered by number, so a new alert on a package that was swept before is new work. **Run now** does the same on demand.
 
 A webhook that reaches a sweep names one item, and goes through the same rules:
 
@@ -54,14 +58,19 @@ Anyone with the secret can send `details`, and programs on this computer can rea
 
 GitHub webhooks work directly through a tunnel. Use the secret as the webhook secret; code-flow checks `X-Hub-Signature-256`. These events start a run, and all others are ignored:
 
-- an opened issue starts from that issue;
-- an opened or updated pull request starts from that PR;
-- a failed workflow run starts from its PR, with the failure logs;
-- a new or reopened Dependabot alert or code scanning alert starts from that alert.
+| GitHub event | Actions that start an ordinary automation |
+|---|---|
+| `issues` | `opened` |
+| `pull_request` | `opened`, `synchronize` (new commits) |
+| `workflow_run` | `completed`, only when it failed and identifies a pull request; includes failure logs |
+| `dependabot_alert` | `created`, `reopened`, `reintroduced` |
+| `code_scanning_alert` | `created`, `reopened`, `appeared_in_branch` |
 
-Leaked-secret alerts never start a run.
+Label changes and reopened issues or PRs do not start ordinary automations. Backlog sweeps also accept issue `labeled`/`reopened` and PR `labeled`/`reopened`/`ready_for_review` so they can recheck an item's current eligibility. Their existing handled-item guard prevents repeat work. Leaked-secret alerts never start a run.
 
-code-flow answers `202` at once (GitHub gives up on a delivery after 10 seconds) and starts the run in the background. If it can't start, the reason shows on the automation (*couldn't start: …*). A delivery GitHub sends again is ignored: one with the same `X-GitHub-Delivery` id, or a signed one with the same body whatever its id says, or with none (the signature covers the body, not the id). An automation that isn't a sweep starts at most 10 runs an hour from webhooks.
+code-flow answers `202` at once (GitHub gives up on a delivery after 10 seconds) and starts the run in the background. If it can't start, the reason shows on the automation (*couldn't start: …*). A delivery GitHub sends again is ignored: one with the same `X-GitHub-Delivery` id, or a signed one with the same body whatever its id says, or with none (the signature covers the body, not the id). An automation that isn't a sweep starts at most 10 runs an hour from webhooks. Repeated webhook deliveries for the same issue or alert also collapse while its run is starting or running, and for one hour after it starts. This source guard survives restart and event-history eviction. PR updates remain eligible because a new commit is new work. An intentional new task can still be started manually.
+
+**Preview and events** shows the latest 100 deliveries and their actual outcomes. **Retry event** uses the original event with current settings and limits: it may start, queue, or be dropped again. The feedback states which happened and why. Dry-run API tasks use the same capped, fenced details and GitHub event line as execution, for ordinary automations and sweeps.
 
 ## The inbox
 
@@ -125,7 +134,7 @@ Existing `CODEFLOW_TLS_CERT` and `CODEFLOW_TLS_KEY` overrides remain supported a
 With HTTPS configured for **Tailscale** or **Wi-Fi**, you can turn on **Full control from remote devices**. The pairing link signs your phone in to the whole app: start runs, answer approvals, message agents, review diffs, merge results and manage automations. `CODEFLOW_ALLOW_INSECURE_PHONE_CONTROL=1` explicitly permits HTTP for development. Full control requires TLS even over Tailscale, so session cookies can be marked Secure and withheld from other HTTP services on the same host.
 
 - The QR code is a separate sign-in link that expires after ten minutes, including across server restarts. The read-only link never signs a phone in.
-- Scanning pairs one device with a separate 30-day session; the server stores only its token hash. The device list can revoke one phone immediately. **New link**, or disabling full control/network access, rotates the pairing generation and signs all devices out. TLS cookies are Secure. Legacy pairing links expire closed after upgrade.
+- Scanning opens a page that pairs through a same-origin POST. Plain link-preview GETs create no session, and rescanning on an already paired device reuses its session without extending its expiry. A new device gets a separate 30-day session; the server stores only its token hash. The device list refreshes while visible and shows the device/browser, a short device identifier, pairing time and expiry. It can revoke one phone immediately. Up to 32 devices may be paired at a time; revoke an unused device to free a slot. **New link**, or disabling full control/network access, rotates the pairing generation and signs all devices out. TLS cookies are Secure. Legacy pairing links expire closed after upgrade.
 - *Terminal*, *Editor* and *Folder* on a result open on your computer, not the phone. *Run app* starts the app on your computer; its link uses the computer's Wi-Fi address, so it only opens if the app listens on your network too (e.g. `vite --host`).
 - Paired devices have owner control and can run commands on the computer. This pairing does not provide separate user identities or project roles.
 

@@ -1,13 +1,15 @@
-import { useEffect, useState } from "preact/hooks";
+import { DISPATCH_LABELS, PRIORITY_OPTIONS } from "../src/run-outcome.js";
+import { useEffect, useRef, useState } from "preact/hooks";
 import type { outcomeMetrics, TaskIntent, workflowRecommendations } from "../src/experience.js";
 import { progressSummary } from "../src/experience.js";
 import { api, duration, enc, post, usePoll } from "./lib.js";
-import { navigate, openBrowserPage, draftTo, patterns, runs, setPattern } from "./state.js";
+import { navigate, openBrowserPage, cancelPreviewBrowserPage, draftTo, patterns, runs, setPattern } from "./state.js";
 import type { DevServer, RunSummary, Step } from "./types.js";
 import { ScenarioEvidence } from "./journeys.js";
 import type { Journey } from "../src/journeys.js";
-import { checksLabel, agentReviewLabel } from "./run-experience.js";
-import { continuePreviewSetup, requestPreviewSetup, startResultPreview } from "./result-preview.js";
+import { checksLabel, checksSummary, agentReviewLabel, executionLabel, integrityFor } from "./run-experience.js";
+import { IntegrityNote } from "./run-evidence.js";
+import { continuePreviewSetup, requestPreviewSetup, startResultPreview, previewSetupFailed, NO_PREVIEW_COMMAND, previewStoppedMessage, stopResultPreview } from "./result-preview.js";
 import { ResultNextStep } from "./result-next-step.js";
 
 export { intentDraft } from "./composer-draft-fields.js";
@@ -34,45 +36,53 @@ export function LiveProgress({ run, steps }: { run: RunSummary; steps: Step[] })
   return <section class={`live-progress ${run.status === "running" && !run.pauseRequested ? "is-running" : ""}`} aria-label="Current progress">
     <div class="live-progress-copy"><h3><span class="live-progress-dot" aria-hidden="true" />{status.title}</h3><p>{status.detail.slice(0, 700)}{status.detail.length > 700 ? "…" : ""}</p></div>
     {run.status === "running" ? <div class="live-progress-controls">
-      <button class="btn small" disabled={busy} onClick={() => void change("pause", { paused: !run.pauseRequested })}>{run.pauseRequested ? "Resume dispatch" : "Pause dispatch"}</button>
-      <label>Priority<select class="field" aria-label="Run priority" disabled={busy} value={run.priority ?? 0} onChange={e => void change("priority", { priority: Number(e.currentTarget.value) })}><option value={0}>Normal</option><option value={10}>High</option><option value={-10}>Low</option></select></label>
+      <button class="btn small" disabled={busy} onClick={() => void change("pause", { paused: !run.pauseRequested })}>{run.pauseRequested ? DISPATCH_LABELS.resume : DISPATCH_LABELS.pause}</button>
+      <label>Priority<select class="field" aria-label="Run priority" disabled={busy} value={run.priority ?? 0} onChange={e => void change("priority", { priority: Number(e.currentTarget.value) })}>{PRIORITY_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
     </div> : null}
     {error ? <p class="live-progress-error" role="alert">{error}</p> : null}
   </section>;
 }
-async function waitForPreview(run: RunSummary, worktree: string) {
-  for (let attempt = 0; attempt < 40; attempt++) {
-    const state = await api<{ ready: boolean; status: string }>(`/api/runs/${run.id}/worktrees/${enc(worktree)}/serve/ready`);
-    if (state.ready) return;
-    if (state.status !== "running") throw new Error("The preview process exited. Check the launch command and app logs.");
-    await new Promise(resolve => setTimeout(resolve, 250));
-  }
-  throw new Error("The preview has not opened its port yet. Check the app logs, then try again.");
-}
 export function ResultStudio({ run }: { run: RunSummary }) {
-  const choices = run.worktrees.filter(tree => run.artifacts.some(artifact => artifact.branch === tree.branch));
-  const [selected, setSelected] = useState(choices[0]?.name ?? ""), [busy, setBusy] = useState(false), [error, setError] = useState(""), [command, setCommand] = useState(run.app?.command ?? "");
-  const [server, setServer] = useState<DevServer | null>(null), [journey, setJourney] = useState<Journey>(), [head, setHead] = useState(""), [workingChanges, setWorkingChanges] = useState(false);
+  // The primary result (a race's winner) comes first and is shown by default.
+  const choices = run.artifacts.flatMap(artifact => run.worktrees.filter(tree => tree.branch === artifact.branch)).filter((tree, index, trees) => trees.findIndex(other => other.name === tree.name) === index);
+  const [previewSettings, setPreviewSettings] = useState(false);
+  const [selected, setSelected] = useState(""), [busy, setBusy] = useState(false), [error, setError] = useState(""), [command, setCommand] = useState(run.app?.command ?? "");
+  const [server, setServer] = useState<DevServer | null>(null), [journey, setJourney] = useState<Journey>(), [head, setHead] = useState(""), [workingChanges, setWorkingChanges] = useState(false), [fileCount, setFileCount] = useState<number | null>(null);
   const tree = choices.find(tree => tree.name === selected) ?? choices[0];
-  useEffect(() => { let alive = true; setHead(""); setServer(null); if (tree) { api<{ head: string; workingChanges?: boolean }>(`/api/runs/${run.id}/review-coverage?branch=${enc(tree.branch)}`).then(value => { if (alive) { setHead(value.head); setWorkingChanges(!!value.workingChanges); } }, error => alive && setError(error.message)); api<DevServer | null>(`/api/runs/${run.id}/worktrees/${enc(tree.name)}/serve`).then(value => alive && setServer(value), error => alive && setError(error.message)); } return () => { alive = false; }; }, [run.id, tree?.branch, run.endedAt]);
+  useEffect(() => { let alive = true; setHead(""); setServer(null); setFileCount(null); if (tree) { api<{ head: string; files: unknown[]; workingChanges?: boolean }>(`/api/runs/${run.id}/review-coverage?branch=${enc(tree.branch)}`).then(value => { if (alive) { setHead(value.head); setWorkingChanges(!!value.workingChanges); setFileCount(value.files.length); } }, error => alive && setError(error.message)); api<DevServer | null>(`/api/runs/${run.id}/worktrees/${enc(tree.name)}/serve`).then(value => alive && setServer(value), error => alive && setError(error.message)); } return () => { alive = false; }; }, [run.id, tree?.branch, run.endedAt]);
   useEffect(() => { let alive = true; if (run.journeyId) api<{ journey: Journey }>(`/api/journeys/${run.journeyId}`).then(value => alive && setJourney(value.journey), error => alive && setError(error.message)); return () => { alive = false; }; }, [run.journeyId]);
   useEffect(() => {
     let alive = true;
     if (tree) {
       api<{ command: string } | null>(`/api/runs/${run.id}/worktrees/${enc(tree.name)}/serve/config`).then(value => { if (alive) setCommand(value?.command ?? ""); }, () => {});
-      continuePreviewSetup(run, tree).then(app => { if (app && alive) { setServer(app); openBrowserPage(app.url, run.id); } }, error => { if (alive) setError(error.message); });
+      continuePreviewSetup(run, tree).then(app => { if (app && alive) { setServer(app); openBrowserPage(app.url, run.id, app.startedAt); } }, error => { if (alive) setError(error.message); });
     }
     return () => { alive = false; };
   }, [run.id, tree?.name, run.endedAt]);
+  usePoll(current => {
+    if (!tree) return;
+    return api<DevServer | null>(`/api/runs/${run.id}/worktrees/${enc(tree.name)}/serve`).then(value => {
+      if (!current()) return; setServer(value);
+      if (value?.status === "exited") setError(previewStoppedMessage(value));
+    }, error => current() && setError(error.message));
+  }, 2000, [run.id, tree?.name, busy], !!tree && !busy && !run.archived && (fileCount !== 0 || workingChanges));
   if (!tree || run.archived) return null;
+  // A PR can still need an update or merge when this run made no local changes.
+  // Keep its delivery controls without promising a review or preview of empty work.
+  if (fileCount === 0 && !workingChanges) return run.testRun || run.source?.kind === "pr" || run.prs[tree.branch]
+    ? <section class="result-studio result-compact" aria-label={run.testRun ? "Test run" : "Pull request status"}><ResultNextStep key={`${run.id}/${tree.branch}`} run={run} branch={tree.branch}>{null}</ResultNextStep></section>
+    : null;
   const tryResult = async () => {
     setBusy(true); setError("");
     try {
       const configured = command.trim() || (await api<{ command: string } | null>(`/api/runs/${run.id}/worktrees/${enc(tree.name)}/serve/config`))?.command;
-      if (!configured && server?.status !== "running") { await requestPreviewSetup(run, tree); return; }
+      if (!configured && server?.status !== "running") {
+        if (previewSetupFailed(run, tree)) { setPreviewSettings(true); throw new Error(NO_PREVIEW_COMMAND); }
+        await requestPreviewSetup(run, tree); return;
+      }
       const app = await startResultPreview(run, tree, configured);
-      if (app) { setServer(app); openBrowserPage(app.url, run.id); }
-    } catch (error) { setError((error as Error).message); }
+      if (app) { setServer(app); openBrowserPage(app.url, run.id, app.startedAt); }
+    } catch (error) { setError((error as Error).message); setServer(await api<DevServer | null>(`/api/runs/${run.id}/worktrees/${enc(tree.name)}/serve`).catch(() => null)); }
     finally { setBusy(false); }
   };
   const rate = async (decision: "accepted" | "needs-work") => {
@@ -80,27 +90,31 @@ export function ResultStudio({ run }: { run: RunSummary }) {
     try {
       await post(`/api/runs/${run.id}/outcome`, { decision, branch: tree.branch, expectedHead: head });
       if (decision === "needs-work" && run.status === "done") {
-        if (run.projectTeam && run.project) navigate({ view: "project", id: run.project });
+        if (run.projectTeam && run.project) navigate({ view: "project", id: run.project, section: "automation", kind: "missions" });
         else if (!run.projectTeam) navigate({ view: "review", id: run.id, branch: tree.branch });
       }
     } catch (error) { setError((error as Error).message); }
     finally { setBusy(false); }
   };
-  const checks = checksLabel(run, false, tree.branch), review = agentReviewLabel(run, tree.branch);
-  const attention = checks === "Failed" || review === "Changes requested" || review === "Review outdated";
+  const checks = checksSummary(run, false, tree.branch), review = agentReviewLabel(run, tree.branch), integrity = integrityFor(run, tree.branch);
+  // Never "Ready to review" under a "Needs attention" status, or for a pass that changed the tests.
+  const attention = checks === "Failed" || review === "Changes requested" || review === "Outdated" || integrity.length > 0 || executionLabel(run) === "Needs attention";
   return <section class={`result-studio result-compact${attention ? " needs-attention" : ""}`} aria-label="Try and assess the result">
-    <ResultNextStep key={`${run.id}/${tree.branch}`} run={run} branch={tree.branch}><div class="result-primary"><div><h3>{attention ? "Changes need attention" : "Ready to review"}</h3>
+    <ResultNextStep key={`${run.id}/${tree.branch}`} run={run} branch={tree.branch}><div class="result-primary"><div><h3>{run.status !== "done" ? "Partial work saved" : fileCount === null ? "Inspect saved work" : integrity.length ? "Check the test changes before merging" : attention ? "Changes need attention" : "Ready to review"}</h3>
       <p class="help">Checks: {checks} · Review: {review}</p></div>
-      <div class="experience-actions"><button class="btn primary" onClick={() => navigate({ view: "review", id: run.id, branch: tree.branch })}>Review changes</button>
-        <button class="btn" disabled={busy || !!run.projectTeam && !command.trim()} onClick={tryResult}>{busy ? "Preparing preview…" : server?.status === "running" ? "Open preview" : "Preview"}</button></div>
+      <div class="experience-actions"><button class={`btn${run.status === "done" && fileCount !== null ? " primary" : ""}`} onClick={() => navigate({ view: "review", id: run.id, branch: tree.branch })}>Review changes</button>
+        <button class="btn" disabled={busy || !!run.projectTeam && !command.trim()} onClick={tryResult}>{busy ? "Preparing preview…" : server?.status === "running" ? "Open preview" : previewSetupFailed(run, tree) ? "Set up preview…" : "Preview"}</button>
+        {server?.status === "running" ? <button class="btn small" disabled={busy} onClick={async () => { setBusy(true); setError(""); try { cancelPreviewBrowserPage(server.url, server.startedAt, run.id); await stopResultPreview(`/api/runs/${run.id}/worktrees/${enc(tree.name)}/serve`, server); setServer(null); } catch (error) { setError((error as Error).message); } finally { setBusy(false); } }}>Stop preview</button> : null}</div>
     </div></ResultNextStep>
+    {integrity.length ? <IntegrityNote issues={integrity} /> : null}
     <p class="result-chat-hint">{run.testRun ? "Review the test evidence or keep discussing it in chat." : "Ask for changes or a preview in chat."} <button class="link" onClick={() => draftTo(`main:${run.id}`, "")}>Continue chatting</button></p>
     {choices.length > 1 ? <label>Result branch<select class="field" disabled={busy} value={tree.name} onChange={e => setSelected(e.currentTarget.value)}>{choices.map(choice => <option key={choice.name} value={choice.name}>{choice.name}</option>)}</select></label> : null}
     {error ? <p class="msg err" role="alert">{error}</p> : null}
-    <details class="result-more"><summary>More options</summary>
+    {server ? <details class="preview-log"><summary>Preview logs</summary><p class="help">{server.status === "running" ? "Running" : `Stopped${server.exitCode == null ? "" : ` · exit ${server.exitCode}`}`} · {server.command}</p><pre class="team-prose" aria-label="Preview app output">{server.logs.join("\n") || "No output yet."}</pre></details> : null}
+    <details class="result-more" open={previewSettings}><summary>More options</summary>
       {run.testRun || run.source?.kind === "pr" || run.prs[tree.branch] ? <button class="btn small" onClick={() => navigate({ view: "review", id: run.id, branch: tree.branch })}>{run.testRun ? "Review test changes" : "Review local changes"}</button> : null}
       {!run.testRun ? <button class="link result-test-label" disabled={busy} onClick={async () => { setBusy(true); try { await post(`/api/runs/${run.id}/test-run`, { testRun: { reason: "This run was marked as a test. Keep its results as evidence and archive it when finished." } }); } catch (e) { setError((e as Error).message); } finally { setBusy(false); } }}>Mark as test run</button> : <button class="link result-test-label" disabled={busy} onClick={async () => { setBusy(true); try { await post(`/api/runs/${run.id}/test-run`, { testRun: null }); } catch (e) { setError((e as Error).message); } finally { setBusy(false); } }}>Remove test label</button>}
-      <details><summary>Preview settings</summary><p class="help">Preview detects the app's launch command. When setup is needed, the agent prepares it in chat and the preview opens when ready.</p><label>App command<input class="field" placeholder="Detected automatically" value={command} onInput={e => setCommand(e.currentTarget.value)} /></label><button class="btn small" disabled={busy} onClick={tryResult}>Start preview</button></details>
+      <details open={previewSettings}><summary>Preview settings</summary><p class="help">Preview detects the app's launch command. When setup is needed, the agent prepares it in chat. The command must listen on the allocated $PORT; a preview that never becomes ready is stopped.</p><label>App command<input class="field" placeholder="Detected automatically" value={command} onInput={e => setCommand(e.currentTarget.value)} /></label><button class="btn small" disabled={busy} onClick={tryResult}>Start preview</button>{previewSetupFailed(run, tree) ? <button class="btn small" disabled={busy} onClick={async () => { setBusy(true); setError(""); try { await requestPreviewSetup(run, tree); } catch (error) { setError((error as Error).message); } finally { setBusy(false); } }}>Ask the agent again</button> : null}</details>
       <details><summary>Record your assessment</summary><p class="help">Optional feedback on this commit. {workingChanges ? "Ask the agent to commit the working changes first. " : ""}Accepting does not publish or merge. Needs more work opens the review to write feedback for the agent.</p><div class="experience-actions"><button class="btn small" disabled={busy || !head || workingChanges} onClick={() => void rate("accepted")}>Accept result</button><button class="btn small" disabled={busy || !head || workingChanges} onClick={() => void rate("needs-work")}>Needs more work</button></div>
       {run.outcome ? <p class="help">{run.outcome.decision === "accepted" ? "Accepted" : "Needs more work"} at {run.outcome.head.slice(0, 12)}{head && (run.outcome.head !== head || run.outcome.branch !== tree.branch) ? " · previous result; assess this commit separately" : ""}.</p> : null}</details>
       {journey ? <ScenarioEvidence key={`${run.id}/${tree.branch}`} journey={journey} runId={run.id} branch={tree.branch} appUrl={server?.status === "running" ? server.url : undefined} /> : null}
@@ -109,19 +123,45 @@ export function ResultStudio({ run }: { run: RunSummary }) {
     </details>
   </section>;
 }
+const ALTERNATIVE = "\n\nExplore this alternative from the supplied result:\n";
 function Alternatives({ run, branch, head }: { run: RunSummary; branch: string; head: string }) {
   const [a, setA] = useState("Keep the layout compact and focused."), [b, setB] = useState("Make the layout spacious with clear visual hierarchy.");
-  const [busy, setBusy] = useState(false), [error, setError] = useState(""), [launched, setLaunched] = useState(false);
+  const [busy, setBusy] = useState(false), [error, setError] = useState(""), [launched, setLaunched] = useState(false), [another, setAnother] = useState(false);
+  // Opening the form for another pair starts you in its first instruction; Cancel takes you back.
+  const first = useRef<HTMLTextAreaElement>(null), again = useRef<HTMLButtonElement>(null);
+  useEffect(() => { if (another) first.current?.focus(); }, [another]);
   const siblings = [...runs.value.values()].filter(item => run.group ? item.group?.id === run.group.id : item.parentRunId === run.id && item.group).sort((a, b) => b.createdAt - a.createdAt);
   const group = run.group?.id ?? siblings[0]?.group?.id;
   const pair = siblings.filter(item => item.group?.id === group).slice(0, 2).sort((a, b) => (a.group?.label ?? "").localeCompare(b.group?.label ?? ""));
-  const launch = async () => { if (!head || busy) return; setBusy(true); setError(""); setLaunched(true); try { await post("/api/compare", { run: { repo: run.repo, project: run.project, parentRunId: run.id, baseRef: head, pattern: run.pattern, task: run.task, intent: run.intent, journeyId: run.journeyId, roles: run.roles, options: run.options, loop: run.loop, trust: run.trust, approvals: run.approvals, agentSettings: run.agentSettings, roleSettings: run.roleSettings }, variants: [{ label: "Alternative A", task: `${run.task}\n\nExplore this alternative from the supplied result:\n${a}` }, { label: "Alternative B", task: `${run.task}\n\nExplore this alternative from the supplied result:\n${b}` }] }); } catch (error) { setError(`${(error as Error).message}. Inspect recent runs before starting another comparison; a partial launch may have succeeded.`); } finally { setBusy(false); } };
-  return <details class="alternatives"><summary>Try two alternatives</summary><p class="help">Two independent runs start from <code>{head.slice(0, 12) || branch}</code>, each with this run's workflow and budget ({run.loop.maxInvocations ?? run.loop.maxSteps} calls / {run.loop.maxMinutes} minutes). Choose the result you want to continue.</p>{!run.group ? <><div class="experience-columns"><label>Alternative A<textarea class="field" value={a} maxLength={4000} onInput={e => setA(e.currentTarget.value)} /></label><label>Alternative B<textarea class="field" value={b} maxLength={4000} onInput={e => setB(e.currentTarget.value)} /></label></div><button class="btn" disabled={!head || busy || launched || !a.trim() || !b.trim()} onClick={launch}>{busy ? "Starting alternatives…" : launched ? "Comparison requested" : "Build both alternatives"}</button></> : null}{error ? <p role="alert">{error}</p> : null}<div class="experience-columns">{pair.map(item => <AlternativePreview key={item.id} run={item} />)}</div></details>;
+  // A comparison started from this run stays acknowledged after a reload: another pair is a deliberate choice.
+  const requested = launched || pair.length > 0;
+  const instruction = (label: string) => { const task = pair.find(item => item.group?.label === label)?.task; return task?.startsWith(run.task + ALTERNATIVE) ? task.slice(run.task.length + ALTERNATIVE.length) : undefined; };
+  const tryAnother = () => { setA(instruction("Alternative A") ?? a); setB(instruction("Alternative B") ?? b); setLaunched(false); setError(""); setAnother(true); };
+  const launch = async () => { if (!head || busy) return; setBusy(true); setError(""); setLaunched(true); try { await post("/api/compare", { run: { repo: run.repo, project: run.project, parentRunId: run.id, baseRef: head, pattern: run.pattern, task: run.task, intent: run.intent, journeyId: run.journeyId, roles: run.roles, options: run.options, loop: run.loop, trust: run.trust, approvals: run.approvals, agentSettings: run.agentSettings, roleSettings: run.roleSettings }, variants: [{ label: "Alternative A", task: `${run.task}${ALTERNATIVE}${a}` }, { label: "Alternative B", task: `${run.task}${ALTERNATIVE}${b}` }] }); } catch (error) { setError(`${(error as Error).message}. Inspect recent runs before starting another comparison; a partial launch may have succeeded.`); } finally { setBusy(false); setAnother(false); } };
+  const form = !run.group && (busy || !requested || another);
+  return <details class="alternatives"><summary>Try two alternatives</summary><p class="help">Two independent runs start from <code>{head.slice(0, 12) || branch}</code>, each with this run's workflow and budget ({run.loop.maxInvocations ?? run.loop.maxSteps} calls / {run.loop.maxMinutes} minutes). Choose the result you want to continue.</p>{form ? <><div class="experience-columns"><label>Alternative A<textarea ref={first} class="field" value={a} maxLength={4000} onInput={e => setA(e.currentTarget.value)} /></label><label>Alternative B<textarea class="field" value={b} maxLength={4000} onInput={e => setB(e.currentTarget.value)} /></label></div><button class="btn" disabled={!head || busy || launched || !a.trim() || !b.trim()} onClick={launch}>{busy ? "Starting alternatives…" : launched ? "Comparison requested" : "Build both alternatives"}</button>{another ? <button class="btn ghost" onClick={() => { setAnother(false); requestAnimationFrame(() => again.current?.focus()); }}>Cancel</button> : null}</> : !run.group ? <><p class="help" role="status">Comparison requested{pair[0] ? ` ${new Date(pair[0].createdAt).toLocaleString()}` : ""}. Each alternative keeps its own run and preview.</p><button ref={again} class="btn small" onClick={tryAnother}>Try another pair…</button></> : null}{error ? <p role="alert">{error}</p> : null}<div class="experience-columns">{pair.map(item => <AlternativePreview key={item.id} run={item} />)}</div></details>;
 }
 function AlternativePreview({ run }: { run: RunSummary }) {
   const [preview, setPreview] = useState(""), [busy, setBusy] = useState(false), [error, setError] = useState(""), [command, setCommand] = useState(run.app?.command ?? "");
   const tree = run.worktrees.find(tree => tree.branch === run.artifacts[0]?.branch);
-  const start = async () => { if (!tree) return; setBusy(true); setError(""); try { const server = await post<DevServer>(`/api/runs/${run.id}/worktrees/${enc(tree.name)}/serve`, { command }); await waitForPreview(run, tree.name); const value = await post<{ origin: string }>("/api/preview", { url: server.url }); setPreview(value.origin); } catch (error) { setError((error as Error).message); } finally { setBusy(false); } };
+  // After a reload, find the preview that is still running (its command with it), or the detected
+  // command. Best effort: starting the preview by hand reports what is wrong.
+  useEffect(() => {
+    let alive = true;
+    if (tree && run.status !== "running") (async () => {
+      const server = await api<DevServer | null>(`/api/runs/${run.id}/worktrees/${enc(tree.name)}/serve`);
+      if (server?.status === "running") {
+        if (alive) setCommand(server.command);
+        const value = await post<{ origin: string }>("/api/preview", { url: server.url });
+        if (alive) setPreview(value.origin);
+      } else {
+        const config = await api<{ command: string } | null>(`/api/runs/${run.id}/worktrees/${enc(tree.name)}/serve/config`);
+        if (alive && config?.command) setCommand(current => current || config.command);
+      }
+    })().catch(() => {});
+    return () => { alive = false; };
+  }, [run.id, tree?.name, run.status]);
+  const start = async () => { if (!tree) return; setBusy(true); setError(""); try { const server = await startResultPreview(run, tree, command); if (!server) return; const value = await post<{ origin: string }>("/api/preview", { url: server.url }); setPreview(value.origin); } catch (error) { setError((error as Error).message); } finally { setBusy(false); } };
   return <article class="alternative-preview"><h4>{run.group?.label}</h4><p>{run.status} · Checks: {checksLabel(run)}</p>{run.status !== "running" && tree ? <><label>Preview command<input class="field" value={command} onInput={e => setCommand(e.currentTarget.value)} /></label><button class="btn small" disabled={busy || !command.trim()} onClick={start}>{busy ? "Starting…" : "Preview alternative"}</button></> : null}{preview ? <iframe src={preview} title={`${run.group?.label} working preview`} sandbox="allow-scripts allow-same-origin allow-forms" /> : null}<a class="btn small" href={`#/run/${run.id}`}>{run.status === "running" ? "Follow progress" : "Choose and continue"}</a>{error ? <p role="alert">{error}</p> : null}</article>;
 }
 

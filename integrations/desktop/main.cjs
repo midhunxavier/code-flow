@@ -31,6 +31,7 @@ function external(url) {
   try { const parsed = new URL(url); if (['https:', 'http:'].includes(parsed.protocol) && !parsed.username && !parsed.password) void shell.openExternal(url); } catch {}
 }
 async function createWindow() {
+  if (ownerURL && !backend) { exitApproved = true; void quit(); return; }
   if (window && !window.isDestroyed()) { window.show(); window.focus(); return window; }
   let bounds = { width: 1360, height: 900 };
   try {
@@ -49,7 +50,7 @@ async function createWindow() {
   window.webContents.on('will-navigate', (event, url) => { if (origin && new URL(url).origin !== origin) { event.preventDefault(); external(url); } });
   window.webContents.on('will-redirect', (event, url) => { if (origin && new URL(url).origin !== origin) event.preventDefault(); });
   window.webContents.on('render-process-gone', async (_event, details) => {
-    if (quitting || !window || window.isDestroyed()) return;
+    if (quitting || !backend || !window || window.isDestroyed()) return;
     const result = await dialog.showMessageBox(window, { type: 'warning', message: 'The window needs to reload', detail: `Your agents are still running in the background. ${details.reason}`, buttons: ['Reload'], noLink: true });
     if (result.response === 0 && !window.isDestroyed()) void window.loadURL(ownerURL);
   });
@@ -116,14 +117,14 @@ async function startBackend() {
           if (!reachable) throw new Error('The local service is not reachable. Check that WSL localhost forwarding is enabled, then reopen Code Flow.');
         } catch (error) { clearTimeout(timer); reject(error); return; }
       }
-      ownerURL = message.url; clearTimeout(timer); resolve();
+      ownerURL = message.url; diagnostics = ''; clearTimeout(timer); resolve();
     });
     backend.once('exit', (code, signal) => { clearTimeout(timer); reject(new Error(`The local service stopped (${code ?? signal}).\n${diagnostics}`)); });
   });
-  backend.on('exit', () => {
+  backend.on('exit', (code, signal) => {
     backend = undefined;
     if (quitting || !ownerURL) return;
-    void dialog.showMessageBox(window, { type: 'error', message: 'Code Flow’s local service stopped', detail: 'Saved work is preserved. Reopen Code Flow to reconnect and resume unfinished work.\n\n' + diagnostics, buttons: ['Quit'], noLink: true }).then(() => { exitApproved = true; app.quit(); });
+    void dialog.showMessageBox(window, { type: 'error', message: 'Code Flow’s local service stopped', detail: `${signal ? `The service was stopped by ${signal}.` : `The service exited with code ${code ?? 'unknown'}.`} Saved work is preserved. Reopen Code Flow to reconnect and resume unfinished work.${diagnostics.trim() ? '\n\nLast output from the service:\n' + diagnostics : ''}`, buttons: ['Quit'], noLink: true }).then(() => { exitApproved = true; app.quit(); });
   });
   await ready;
 }
@@ -210,12 +211,14 @@ async function quit(installUpdate = false) {
     try { autoUpdater.quitAndInstall(); }
     catch (error) { quitting = false; throw error; }
   }
-  else app.quit();
+  // Electron must finish the outer, prevented before-quit dispatch before retrying.
+  else setImmediate(() => app.quit());
   return true;
 }
 async function showUpdates() {
   if (!ready) return;
   await ready;
+  if (!backend) return;
   await createWindow();
   await window.loadURL(`${origin}/#/settings/general`);
   await updates.check();

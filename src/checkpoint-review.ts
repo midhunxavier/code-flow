@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 import { assertWorktree, git, resolveCommit, withRepoLock, type GitCwd } from "./git.js";
 import { inTemporaryWorktree } from "./readiness.js";
-import { verificationIntegrity } from "./verification-integrity.js";
-import { WorkspaceConflictError } from "./workspace.js";
+import { VerificationIntegrityError, verificationIntegrity } from "./verification-integrity.js";
+import { CHECKPOINT_HEAD_MOVED, WorkspaceConflictError } from "./workspace.js";
 
 const MAX_PATCH = 2 * 1024 * 1024;
 const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
@@ -10,6 +10,11 @@ async function successful(args: string[], repo: GitCwd, signal?: AbortSignal) {
   const result = await git(args, repo, { signal, timeoutMs: 30_000 });
   if (result.code || result.aborted || result.timedOut) throw new Error(result.stderr.trim().slice(-2000) || "Could not inspect this checkpoint");
   return result.stdout;
+}
+
+async function hiddenTrackedFiles(repo: GitCwd, signal?: AbortSignal) {
+  const flags = await git(["ls-files", "-v", "-z"], repo, { signal, timeoutMs: 10_000 });
+  return flags.stdout.split("\0").some((file) => /^[a-zS] /.test(file));
 }
 
 export async function compareCheckpoint(repo: GitCwd, input: { from: string; to: string }, signal?: AbortSignal) {
@@ -29,7 +34,7 @@ export interface RevertPreview { head: string; commit: string; candidateTree: st
 export async function previewCommitRevert(repo: GitCwd, input: { commit: string; expectedHead: string }, signal?: AbortSignal, ownerRepo?: string): Promise<RevertPreview> {
   if (typeof repo !== "string" && !ownerRepo) throw new Error("Owned worktree previews require their original source repository");
   const [head, commit] = await Promise.all([resolveCommit(repo), resolveCommit(repo, input.commit)]);
-  if (head !== input.expectedHead) throw new WorkspaceConflictError(head);
+  if (head !== input.expectedHead) throw new WorkspaceConflictError(head, CHECKPOINT_HEAD_MOVED);
   const ancestry = await git(["merge-base", "--is-ancestor", commit, head], repo, { signal });
   if (ancestry.code) throw new Error("Choose a commit in this worktree's history to revert");
   const parents = (await successful(["rev-list", "--parents", "-n", "1", commit], repo, signal)).trim().split(/\s+/);
@@ -60,17 +65,20 @@ export async function applyCommitRevert(repo: GitCwd, input: { commit: string; e
 }
 async function applyReviewedRevert(repo: GitCwd, input: { commit: string; expectedHead: string; fingerprint: string }, preview: RevertPreview, signal?: AbortSignal) {
   if (typeof input.fingerprint !== "string" || !/^[a-f0-9]{64}$/.test(input.fingerprint)) throw new Error("Preview this revert before applying it");
-  const integrity = await verificationIntegrity(repo, signal);
+  // Ordinary changes first, so they get this message rather than the integrity check's verification wording.
   const status = await successful(["status", "--porcelain", "--untracked-files=all"], repo, signal);
   if (status.trim()) throw new Error("Commit or save all existing changes before reverting a commit");
-  if (preview.fingerprint !== input.fingerprint || await resolveCommit(repo) !== preview.head) throw new WorkspaceConflictError(await resolveCommit(repo));
-  await integrity.assert("revert preview");
+  const integrity = await verificationIntegrity(repo, signal).catch(async (error) => { throw error instanceof VerificationIntegrityError ? new Error(await hiddenTrackedFiles(repo, signal) ? "Git flags hid tracked files from comparison (assume-unchanged or skip-worktree). Clear them before reverting a commit." : "The worktree changed while the revert was being checked; nothing was applied. Preview the inverse commit again.") : error; });
+  const current = await resolveCommit(repo);
+  if (current !== preview.head) throw new WorkspaceConflictError(current, CHECKPOINT_HEAD_MOVED);
+  if (preview.fingerprint !== input.fingerprint) throw new WorkspaceConflictError(current, "This revert changed since you previewed it. Preview the inverse commit again before staging it.");
+  await integrity.assert("revert preview").catch((error) => { throw error instanceof VerificationIntegrityError ? new Error("The worktree changed while the revert was being checked; nothing was applied. Preview the inverse commit again.") : error; });
   const checked = await git(["apply", "--index", "--check", "--whitespace=nowarn", "-"], repo, { signal, input: preview.patch, timeoutMs: 30_000 });
   if (checked.code || checked.aborted || checked.timedOut) throw new Error(checked.stderr.trim() || "The reviewed revert no longer applies cleanly");
   // apply --index checks both the index and working files, and applies the patch atomically.
   const result = await git(["apply", "--index", "--whitespace=nowarn", "-"], repo, { signal, input: preview.patch, timeoutMs: 30_000 });
   if (result.code || result.aborted || result.timedOut) throw new Error(result.stderr.trim() || "The revert could not be applied; inspect the worktree before retrying");
   const [head, tree] = await Promise.all([resolveCommit(repo), successful(["write-tree"], repo, signal).then((text) => text.trim())]);
-  if (head !== preview.head || tree !== preview.candidateTree) throw new WorkspaceConflictError(head);
+  if (head !== preview.head || tree !== preview.candidateTree) throw new WorkspaceConflictError(head, "The worktree changed while the revert was applied. Inspect it before retrying.");
   return { head, commit: preview.commit, tree, staged: true, note: "The inverse change is staged for review. Commit it to record the revert; existing history has not been rewritten." };
 }

@@ -239,7 +239,7 @@ export class Integrations {
     let gitBaseUrl = stored.gitBaseUrl;
     if (!gitBaseUrl) { const base = new URL(stored.baseUrl); if (stored.provider === "gitlab" && base.pathname.endsWith("/api/v4/")) gitBaseUrl = new URL(base.pathname.slice(0, -"api/v4/".length), base.origin).href; else if (stored.provider === "bitbucket" && base.origin === "https://api.bitbucket.org") gitBaseUrl = "https://bitbucket.org/"; else throw new Error("Configure an explicit gitBaseUrl for this code host"); }
     const config: CodeHostSession["config"] = { ...stored, provider: stored.provider, gitBaseUrl };
-    const headers = () => { const token = this.credential(stored.credentialEnv); if (!token) throw new Error(`Credentials are unavailable for integration ${stored.id}`); const result: Record<string, string> = { accept: "application/json" }; if (stored.auth === "private-token") result["PRIVATE-TOKEN"] = token; else if (stored.auth === "basic") { const username = this.credential(stored.usernameEnv!); if (!username) throw new Error(`Credentials are unavailable for integration ${stored.id}`); result.authorization = `Basic ${Buffer.from(`${username}:${token}`).toString("base64")}`; } else result.authorization = stored.auth === "api-key" ? token : `Bearer ${token}`; return result; };
+    const headers = () => { const token = this.credential(stored.credentialEnv); if (!token) throw new Error(`Credentials are unavailable for ${stored.name}`); const result: Record<string, string> = { accept: "application/json" }; if (stored.auth === "private-token") result["PRIVATE-TOKEN"] = token; else if (stored.auth === "basic") { const username = this.credential(stored.usernameEnv!); if (!username) throw new Error(`Credentials are unavailable for ${stored.name}`); result.authorization = `Basic ${Buffer.from(`${username}:${token}`).toString("base64")}`; } else result.authorization = stored.auth === "api-key" ? token : `Bearer ${token}`; return result; };
     return {
       config: structuredClone(config),
       request: async (path, input = {}) => {
@@ -301,13 +301,13 @@ export class Integrations {
       if (url.origin !== base.origin || !url.pathname.startsWith(base.pathname) || url.username || url.password) throw new Error("Integration requests must stay within the configured API base");
       if (query && (!/^\s*query\b/.test(query.query) || /\bmutation\s*(?:\w+\s*)?[({]/.test(query.query))) throw new Error("Only read-only GraphQL queries are supported");
       const token = this.credential(c.credentialEnv);
-      if (!token) throw new Error(`Credentials are unavailable for integration ${c.id}`);
+      if (!token) throw new Error(`Credentials are unavailable for ${c.name}`);
       const headers: Record<string, string> = { accept: "application/json" };
       if (c.auth === "private-token") headers["PRIVATE-TOKEN"] = token;
       else if (c.auth === "api-key") headers.authorization = token;
       else if (c.auth === "basic") {
         const username = this.credential(c.usernameEnv!);
-        if (!username) throw new Error(`Credentials are unavailable for integration ${c.id}`);
+        if (!username) throw new Error(`Credentials are unavailable for ${c.name}`);
         headers.authorization = `Basic ${Buffer.from(`${username}:${token}`).toString("base64")}`;
       } else headers.authorization = `Bearer ${token}`;
       if (query) headers["content-type"] = "application/json";

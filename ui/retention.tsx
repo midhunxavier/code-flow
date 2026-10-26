@@ -1,3 +1,4 @@
+import { completeSentence } from "./lib.js";
 import { useEffect, useState } from "preact/hooks";
 import type { RetentionKind, RetentionPolicy, RetentionPreview } from "../src/retention-policy.js";
 import { api, post } from "./lib.js";
@@ -53,7 +54,7 @@ export function WorkbenchRetentionPanel({ endpoint = "/api/maintenance/retention
       <div class="wb-actions"><button class="btn small primary" disabled={busy} onClick={save}>Save retention settings</button><button class="btn small" disabled={busy} onClick={inspect}>{busy ? "Inspecting…" : "Preview saved retention policy"}</button><button class="btn small" disabled={busy} onClick={() => void load().catch((problem) => setError((problem as Error).message))}>Reload saved settings</button></div>
       {saved ? <p class="help" role="status">{saved}</p> : null}
     </> : <p class="help">Loading retention settings…</p>}
-    {error ? <p class="msg err" role="alert">{error} Your draft settings are preserved.</p> : null}
+    {error ? <p class="msg err" role="alert">{completeSentence(error)} Your draft settings are preserved.</p> : null}
     {preview ? <section class="wb-subsection" aria-label="Retention preview">
       <p class="help">Policy revision {preview.policyRevision} · preview {new Date(preview.createdAt).toLocaleString()} · expires {new Date(preview.expiresAt).toLocaleString()}. Known file bytes selected: {bytes(preview.summary.bytes)}. Memory bodies are counted separately.</p>
       <ul>{kinds.map((kind) => <li key={kind}>{labels[kind]}: {preview.summary[kind]} selected{preview.cutoffs[kind] === null ? " · disabled" : ` · last updated before ${new Date(preview.cutoffs[kind]!).toLocaleString()}`}</li>)}</ul>

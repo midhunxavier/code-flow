@@ -34,7 +34,7 @@ async function start(localPort: number, networkPort: number, home: string, cert:
 async function audit(page: Page) {
   await page.waitForFunction(() => [...document.querySelectorAll("dialog[open]")].every(dialog => getComputedStyle(dialog).opacity === "1"));
   await page.addScriptTag({ content: axe.source });
-  const result = await page.evaluate(async () => (window as unknown as { axe: typeof axe }).axe.run(document, { runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21aa"] } }));
+  const result = await page.evaluate(async () => (window as unknown as { axe: typeof axe }).axe.run(document, { runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"] } }));
   if (result.violations.length) await page.screenshot({ path: join(root, "output/playwright/sharing-audit-failure.png"), fullPage: true });
   assert.deepEqual(result.violations.map(item => ({ id: item.id, nodes: item.nodes.map(node => node.target) })), []);
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "page fits the viewport");

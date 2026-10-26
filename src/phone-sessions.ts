@@ -2,6 +2,8 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { mkdir, open, readFile, rename, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { CODEFLOW_HOME } from "./config.js";
+import { HttpError } from "./http.js";
+import { deviceLabel } from "./phone-device-label.js";
 
 export interface PhoneDevice { id: string; label: string; createdAt: number; expiresAt: number; revokedAt?: number }
 interface StoredDevice extends PhoneDevice { tokenHash: string; generation: string }
@@ -20,10 +22,10 @@ export class PhoneSessions {
     return this.loading ??= (async () => {
       let raw: unknown;
       try { raw = JSON.parse(await readFile(this.file, "utf8")); }
-      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new Error("Phone sessions cannot be read; pairing is disabled", { cause: error }); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new HttpError(503, "Phone sessions cannot be read; pairing is disabled"); }
       if (raw !== undefined) {
         const value = raw as { version?: number; devices?: StoredDevice[] };
-        if (!value || value.version !== 1 || !Array.isArray(value.devices) || value.devices.length > 128 || value.devices.some((device) => !device || typeof device.id !== "string" || device.id.length > 128 || !/^[a-f0-9]{64}$/.test(device.tokenHash) || !/^[a-f0-9]{64}$/.test(device.generation) || typeof device.label !== "string" || device.label.length > 120 || !Number.isFinite(device.createdAt) || !Number.isFinite(device.expiresAt) || device.expiresAt <= device.createdAt || (device.revokedAt !== undefined && (!Number.isFinite(device.revokedAt) || device.revokedAt < device.createdAt)))) throw new Error("Phone session storage is invalid; pairing is disabled");
+        if (!value || value.version !== 1 || !Array.isArray(value.devices) || value.devices.length > 128 || value.devices.some((device) => !device || typeof device.id !== "string" || device.id.length > 128 || !/^[a-f0-9]{64}$/.test(device.tokenHash) || !/^[a-f0-9]{64}$/.test(device.generation) || typeof device.label !== "string" || device.label.length > 120 || !Number.isFinite(device.createdAt) || !Number.isFinite(device.expiresAt) || device.expiresAt <= device.createdAt || (device.revokedAt !== undefined && (!Number.isFinite(device.revokedAt) || device.revokedAt < device.createdAt)))) throw new HttpError(503, "Phone session storage is invalid; pairing is disabled");
         this.records = value.devices;
       }
       this.loaded = true;
@@ -37,8 +39,9 @@ export class PhoneSessions {
   }
 
   list(generation: string, now = Date.now()): PhoneDevice[] {
+    if (!this.loaded) throw new HttpError(503, "Phone sessions cannot be read; repair their storage and restart Code Flow");
     const current = digest(generation);
-    return this.records.filter((device) => device.generation === current && !device.revokedAt && device.expiresAt > now).map(({ tokenHash: _, generation: __, ...device }) => ({ ...device }));
+    return this.records.filter((device) => device.generation === current && !device.revokedAt && device.expiresAt > now).map(({ tokenHash: _, generation: __, ...device }) => ({ ...device, label: /^Mozilla\//i.test(device.label) ? deviceLabel(device.label) : device.label }));
   }
 
   async pair(label: string, generation: string, now = Date.now()) {
@@ -47,7 +50,7 @@ export class PhoneSessions {
     const device: StoredDevice = { id: randomUUID(), label: label.replace(/[\x00-\x1f]/g, "").slice(0, 120) || "Phone", tokenHash: digest(token), generation: digest(generation), createdAt: now, expiresAt: now + THIRTY_DAYS };
     await this.change((records) => {
       const live = records.filter((record) => !record.revokedAt && record.expiresAt > now && record.generation === device.generation);
-      if (live.length >= 32) throw new Error("Too many paired devices; revoke an existing device first");
+      if (live.length >= 32) throw new HttpError(409, "Too many paired devices; revoke an existing device first");
       return [...live, device];
     });
     const { tokenHash: _, generation: __, ...publicDevice } = device;

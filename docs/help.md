@@ -10,13 +10,13 @@ Get help with setup, workflows and troubleshooting from the documentation, using
 4. Ask a question such as “Which workflow should I use to fix a failing test?”
 5. Continue with follow-up questions or open source guides without losing the conversation. Press **Enter** to send and **Shift + Enter** for a new line.
 
-The companion sits beside the guide on desktop and expands to a full-width panel on a phone. Close and reopen it to switch between reading and chatting. **New chat** clears the conversation and draft.
+The companion sits beside the guide on desktop and expands to a full-width panel on a phone. Public readers and shared/phone sessions receive an owner-only sign-in hint without invoking the CLI; **Check again** rechecks access after signing in. Close and reopen it to switch between reading and chatting. **New chat** clears the conversation and draft.
 
-The assistant supports **Claude Code, Codex and Antigravity**. It uses the provider's existing CLI authentication. Model and effort preferences saved in the local app's **Settings → Agents & models** are forwarded; when unset, the CLI's defaults apply. ACP and extension providers are not offered in this help flow. ACP currently requires Full access for normal runs.
+The assistant supports **Claude Code, Codex and Antigravity**. It uses the provider's existing CLI authentication. Model and effort preferences saved in the local app's **Settings → Agents & models** are forwarded; when unset, the CLI's defaults apply. ACP and extension providers are not offered in this help flow. ACP and extension providers cannot start managed runs yet; Full access does not enable them. Their connection checks and model discovery remain available.
 
 ## What it receives
 
-Each question includes excerpts from up to five relevant bundled guides, the page you are viewing as a retrieval hint, and up to three earlier question/answer pairs from the chat. Questions are limited to 4,000 characters; answers to 12,000. Source excerpts are capped at 10,000 characters each. Engineering records are excluded from answer retrieval so historical decisions do not substitute for current instructions.
+Each question includes excerpts from up to five relevant bundled guides, the page you are viewing as a retrieval hint, and up to three earlier question/answer pairs from the chat. Questions are limited to 4,000 characters; answers to 12,000. Source excerpts are capped at 10,000 characters each. Retrieval keeps complete matching paragraphs and bullets with their headings, prioritizes the current question, and uses earlier questions as weaker context. Engineering records are excluded from answer retrieval so historical decisions do not substitute for current instructions.
 
 The latest 12 messages, up to three completed question/answer pairs and the current draft are stored in this tab’s session storage. They survive guide navigation and reloads. **New chat** clears them; the browser manages their lifetime when the tab closes or is restored. Code Flow does not add it to run history or project memory. The selected provider processes the prompt under its own account and logging behavior. Requests consume the same CLI usage allowance as other invocations.
 
@@ -33,7 +33,7 @@ Help currently supports macOS and Linux, with absolute, nonempty PATH entries. O
 | What you see | Next step |
 | --- | --- |
 | No supported CLI found | Install a supported CLI on the application host and sign in through its terminal command. |
-| Not signed in | Open the owner app using its current terminal link, then reopen the docs. |
+| Ask code-flow is available to the app owner | Open the owner app using its current terminal link, then choose **Check again** in the companion. |
 | Provider signed out | Sign in through that provider's CLI and retry. |
 | Usage limit reached | Choose another installed provider or wait for your plan's limit to reset. |
 | CLI took too long | Ask a smaller question, or check the CLI directly in a terminal. |

@@ -8,6 +8,13 @@ import { CODEFLOW_HOME } from "./config.js";
  * processes. One line per entry, JSON, rotated to `server.log.1` past 5 MB.
  */
 export const LOG_FILE = join(CODEFLOW_HOME, "server.log");
+/** Keep phone capability paths out of request-failure logs, including encoded route names. */
+export function requestLogPath(value: string): string {
+  const path = value.split("?")[0] ?? "/";
+  const parts = path.split("/");
+  try { if (decodeURIComponent(parts[1] ?? "") === "r" && parts.length > 2) parts[2] = "[redacted]"; } catch { /* malformed paths have not been accepted as capabilities */ }
+  return parts.join("/");
+}
 const MAX_BYTES = 5 * 1024 * 1024;
 let writes = 0;
 
@@ -19,7 +26,7 @@ function write(level: "info" | "warn" | "error", message: string, detail?: Recor
       const size = statSync(LOG_FILE, { throwIfNoEntry: false })?.size ?? 0;
       if (size > MAX_BYTES) renameSync(LOG_FILE, `${LOG_FILE}.1`);
     }
-    appendFileSync(LOG_FILE, `${JSON.stringify({ at: new Date().toISOString(), level, message, ...detail })}\n`);
+    appendFileSync(LOG_FILE, `${JSON.stringify({ at: new Date().toISOString(), level, message, ...detail })}\n`, { mode: 0o600 });
   } catch {
     // the log is best effort; never let it take the server down
   }

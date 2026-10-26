@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { startJsonlProcess, commandExists, describeFailure, processErrorKind, stringify, truncate } from "./process.js";
 import type { AgentAdapter, AgentEvent, ErrorKind, ModelCatalog, RunOptions, RunResult } from "./types.js";
 import type { AcpConnection, AcpProbe } from "./acp-types.js";
+import { approvalTimeout } from "../approvals.js";
 
 const object = (value: any): value is Record<string, any> => !!value && typeof value === "object" && !Array.isArray(value);
 const string = (value: unknown): value is string => typeof value === "string" && value.length > 0 && value.length <= 4000;
@@ -115,7 +116,8 @@ class AcpClient {
     const abort = () => controller.abort();
     this.lifetime.signal.addEventListener("abort", abort, { once: true });
     if (this.lifetime.signal.aborted) controller.abort();
-    const timer = setTimeout(abort, 120_000); timer.unref();
+    // Its own deadline aborts as an expiry, so the inbox records the request as expired, not cancelled.
+    const timer = setTimeout(() => controller.abort(approvalTimeout()), 120_000); timer.unref();
     try {
       if (canAsk && once("allow_once") && this.opts.interactiveApprovals && this.opts.onApproval && !controller.signal.aborted) {
         waiting = true; this.approvalCount++; this.proc.pauseIdle(true);

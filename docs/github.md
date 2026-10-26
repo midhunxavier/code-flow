@@ -4,7 +4,7 @@ Review the result diff and its check evidence. Use the run’s publishing contro
 
 ## Review and ship
 
-**Review changes** opens a workspace containing the file list, diff and a persistent feedback box. Click a diff line for a specific comment, or describe the change in **Overall comment**. Sending comments returns to chat while the agent revises the work. **Review tools** contains commit-scoped human review coverage and impact analysis. Expand **Publish changes → Actions** to merge or update a PR without leaving review. **Refresh changes** reloads the diff and coverage after an external branch update; coverage is reset when the commit changes.
+**Review changes** opens a workspace containing the file list, diff and a persistent feedback box. Click a diff line for a specific comment, or describe the change in **Overall comment**. Sending comments returns to chat while the agent revises the work. **Review tools** contains commit-scoped human review coverage and impact analysis. Expand **Publish changes → Actions** to merge or update a PR without leaving review. **Refresh changes** reloads the diff and coverage after an external branch update; coverage is reset when the commit changes. A draft line comment follows its code to the line it is on now; one whose code changed is listed above the file's diff and sent with the line it was on. A rename without edits, an empty file, a mode change or a binary file says so in place of a diff.
 
 
 When a run finishes, **Review changes** is available beside its answer. Merge and PR controls are under **Details and publishing → Actions**, or **Publish changes** inside the review.
@@ -12,16 +12,18 @@ When a run finishes, **Review changes** is available beside its answer. Merge an
 Agent conversations show current working files, including new files that are not committed. The file list says **Working changes** when those edits are present. You can inspect and comment immediately; ask the agent to commit before publishing or recording approval against that commit. Viewing a diff does not stage files or change the branch.
 
 - **Review changes** opens a per-file diff. Click any line to comment on it, and add an overall comment if you like.
-  - **Send N comments to [agent]** queues a *follow-up* in the same run: that agent continues its own session in the worktree, addresses the comments, and code-flow commits and re-runs the check.
+  - **Send N comments to [agent]** queues a *follow-up* in the same run: that agent continues its own session in the worktree, addresses the comments, and code-flow commits and re-runs the check. Comments go to the agent that last wrote the branch: sending waits for the run's steps to say who, unless you choose, and when no step wrote it (a review council) you choose. An Agent chat's comments always go to its provider, as its replies do; open a provider tab to continue with another.
   - Follow-ups are recorded on the run, so they survive restarts. The result header and summary reflect the latest follow-up.
   - Draft comments are kept if you navigate away.
-- **Merge…** merges the result into one of your branches, and only when that's safe:
+- **Merge…** merges the result into one of your branches (never into a run's result branch, whatever its prefix), and only when that's safe:
   - If the target branch is checked out (e.g. `main` in your checkout), the merge happens there, and only when it has no uncommitted changes to tracked files (staged or not).
   - If something else stops it — untracked files the merge would overwrite, another git holding the repository's lock, a failing hook, git not knowing your name and email — you're told which (and which files), and your checkout is put back as it was.
-  - That merge runs your hooks, with up to 30 minutes for them (`CODEFLOW_MERGE_TIMEOUT_SEC`), so a post-merge `npm install` or a Git LFS download has time. If git is stopped after it made the merge commit, the merge is done, and you're warned the hook may not have finished.
+  - That merge runs your hooks, with up to 30 minutes for them (`CODEFLOW_MERGE_TIMEOUT_SEC`), so a post-merge `npm install` or a Git LFS download has time. If git is stopped after it made the merge commit, the merge is done, git's leftover merge state is cleared (so your next commit isn't a second merge), and the merge panel warns you the hook may not have finished.
   - If the target branch isn't checked out anywhere, code-flow builds the merge with `git merge-tree` and moves the branch, so no checkout is touched. That needs git 2.38 or later; with an older git, check the branch out and merge there.
   - A branch that's being rebased or bisected in one of your worktrees isn't merged into: finishing or aborting the rebase would undo the merge. You're told where, and what to run there first.
-  - On a real conflict you see the files and can **ask an agent to resolve them**: code-flow merges the target into the result branch and the agent fixes the markers. Then merge again.
+  - On a real conflict you see the files and can **ask an agent to resolve them**: code-flow merges the target into the result branch and the agent fixes the markers. Then merge again. If the agent's turn fails, leaves conflict markers, or leaves binary or modify/delete conflicts unresolved in the index, code-flow undoes that merge and commits nothing, so the next merge reports the conflicts again.
+  - A result that adds conflict markers isn't merged until you confirm: lines that only look like them (a test fixture, a documented example) can be merged anyway. Setting `conflict-marker-size` in `.gitattributes` for such files, as git suggests, keeps them from being asked about again.
+  - After a resolution, the review, file coverage and change risk retain every change since the run started. Files brought in only from the target are labelled "merged in" with their source branch: merging into another branch without those changes brings them along. They remain visible even if the original base branch advances, because a later merge can choose a different target.
   - By default the run is archived after merging (worktrees removed, branches kept).
   - Merging a branch that's already in the target says *Nothing to merge* instead of recording a second merge.
 - **Merge PR…** takes the place of **Merge…** once the branch has a pull request, and merges that pull request on GitHub (`gh pr merge`):
@@ -30,7 +32,7 @@ Agent conversations show current working files, including new files that are not
   - A draft or closed PR isn't merged; one already merged on GitHub is recorded as merged. No branch is deleted, and `origin/<base>` is fetched afterwards.
   - With a merge queue, or rules that hold the merge until required checks pass, GitHub accepts it and merges later.
   - **Merge into a local branch instead…** still offers the local merge above.
-- **Open PR…** pushes the branch to `origin` and opens a pull request with `gh`, using the task and summary as the description (cut to fit GitHub's 65,536-character limit). If the push works but `gh` then fails, or a pull request for the branch is already open, code-flow finds that pull request and records it, so trying again doesn't fail with "already exists".
+- **Open PR…** pushes the branch to `origin` and creates a pull request with `gh`. Issue repairs use the issue number and title; other runs use their source or task title. The description keeps the issue-closing line, check status and summary ahead of a collapsed task section, within GitHub's 65,536-character limit. Local file links into the checkout become repository-relative links; other `file://` links are omitted. The starting/default branches appear first, with other code-flow branches grouped separately for stacked PRs. After creation, use **View pull request** to open it. If the push works but `gh` then fails, or a pull request for the branch is already open, code-flow finds that pull request and records it, so trying again doesn't fail with "already exists".
 - **Archive…** removes a run's worktrees (optionally its branches too). Kept branches can still be merged or resumed later. A worktree git won't remove (a locked one, one with submodules) is tried again with `--force` twice; whatever still can't be removed is reported rather than left behind silently.
 - **Try it:** each result also has **Terminal**, **Editor** and **Folder** buttons and **▶ Run app**; see [Configuration](configuration.md#per-repo-config).
 
@@ -47,7 +49,7 @@ Runs can start from GitHub instead of a blank task box, using GitHub CLI (`gh`) 
 | **Fix an issue** | Fix & review | an issue; the PR you open later says `Closes #N` |
 | **Fix failing CI** | Fix & review | a PR, with its failing checks and their job logs (`gh run view --log-failed`) given to the agents |
 | **Review a PR as a council** | Review council | a PR |
-| **Upgrade a dependency** | Plan → Build → Review | the task box (replace `PACKAGE`) |
+| **Upgrade a dependency** | Plan → Build → Review | a required package field, then the task box |
 
 The task names the issue or PR by number. Its title isn't put in the task (whoever opened it wrote it, and agents read the task as instructions); it reaches them with the issue's or PR's text.
 
@@ -57,10 +59,11 @@ The task names the issue or PR by number. Its title isn't put in the task (whoev
 
 | Sweep | Lists | Picked by default | Each run |
 |---|---|---|---|
-| **Fix open issues** | open issues | all, except ones labelled *question*, *wontfix*, *duplicate*, *invalid*… | fixes the issue and adds a test; **Approve & open PR** says `Closes #N` |
+| **Fix open issues** | open issues | first 25 eligible issues, except ones labelled *question*, *wontfix*, *duplicate*, *invalid*… | fixes the issue and adds a test; **Approve & open PR** says `Closes #N` |
 | **Fix Dependabot PRs** | Dependabot's open PRs (`gh pr list --app dependabot`), with their CI | only non-draft PRs whose CI fails; passing, pending and unchecked PRs stay available to inspect on GitHub | gets the failing checks and their logs, adapts the code to the new version, with the PR's text and logs [fenced as untrusted](#untrusted-text); **Approve & push to PR #N** pushes the fix to Dependabot's branch (never forced) |
-| **Fix security alerts** | Dependabot alerts, code scanning alerts and leaked secrets | high and medium alerts that have a fix | Dependabot alerts: one run per package, upgrading past every alert on it. Code scanning: one run per alert, fixing the cause rather than suppressing it |
+| **Fix security alerts** | Dependabot alerts, code scanning alerts and leaked secrets | critical, high and medium alerts that have a fix, up to 25 | Dependabot alerts: one run per package, upgrading past every alert on it. Code scanning: one run per alert, fixing the cause rather than suppressing it |
 
+- The filter searches item numbers, titles, labels and severity. A severity word matches the alert's badge exactly; for example, `low` excludes `note` alerts.
 - **Needs work** shows the default repair queue; **All** includes questions, passing PRs and existing runs. Selecting all never starts passing, pending, unchecked or draft Dependabot PRs, or items already covered by a run. GitHub is read again before launching a manual sweep; closed or newly passing items are skipped with a reason.
 - Issue repairs reproduce the problem and add regression coverage. Ambiguous reports and external CI failures should return the evidence and the missing information instead of speculative edits. Dependency repairs preserve the upgrade, required checks and existing test coverage.
 - CI context downloads up to eight failed GitHub Actions workflows, three at a time, with an excerpt for each. Omitted logs are identified so one long log cannot hide every other failure.
@@ -68,8 +71,8 @@ The task names the issue or PR by number. Its title isn't put in the task (whoev
 - Lists read every page GitHub has, up to 1,000 items of each kind (200 Dependabot PRs), and say so when there were more.
 - Dependabot alerts that an open Dependabot PR already upgrades start unpicked, and so do alerts with no patched version yet (that run would have to mitigate instead).
 - **Leaked secrets are never handed to an agent.** They're listed so you can revoke and rotate them yourself.
-- At most 25 runs start per sweep; agents and checks still queue behind `CODEFLOW_MAX_AGENTS` and `CODEFLOW_MAX_CHECKS`. A run that can't start (an untrusted issue without Docker, say) stays in the dialog with its error. Only failed items remain selected for retry; started items link to their runs. Results wait in Inbox.
-- *Also check every day at…* saves the sweep as an [automation](automations.md#sweeps) that starts runs for new items.
+- The dialog picks the first 25 eligible items in list order. **Select shown** fills remaining slots up to 25 and keeps picks outside the filter. You can tick more items manually, but Start explains the limit until the selection is back within 25. At most 25 runs start per sweep; agents and checks still queue behind `CODEFLOW_MAX_AGENTS` and `CODEFLOW_MAX_CHECKS`. A run that can't start (an untrusted issue without Docker, say) stays in the dialog with its error. Only failed items remain selected for retry; started items link to their runs. Results wait in Inbox.
+- *Also check every day at…* saves the sweep as an [automation](automations.md#sweeps) that starts runs for new items, at that time in your browser's time zone.
 - Reading security alerts needs the `security_events` scope for private repositories: `gh auth refresh -s security_events` (and admin or security manager access). The sweep says so if it's missing, or if a feature isn't turned on for the repo.
 
 ### Visual evidence, on request
@@ -83,6 +86,8 @@ Screenshots and recordings illustrate behavior; they are not proof that tests pa
 ### Issues and pull requests
 
 **GitHub** in the task box starts from any open issue or PR:
+
+The picker shows up to 50 matches and says when more exist. Search queries run on GitHub, so older items remain reachable; enter a number or `#N` for an exact open item. GitHub Enterprise PR branch updates use the host in the PR's URL and the commit shown in the result card.
 
 - An **issue's** title, description and up to ten recent discussion excerpts go to every agent with the task. Discussion excerpts are always fenced as untrusted evidence; agents can open the issue for full context.
 - A **PR's** branch is fetched (`pull/N/head`, so forks work too) and becomes the run's base. Its description goes to the agents, and its changes are compared against the PR's target branch.
@@ -101,10 +106,10 @@ A read-only pattern: several agents review the same changes independently, and a
 
 - **Failing CI:** the failed jobs' logs go to the agent you picked, which fixes the cause. code-flow commits and pushes to the PR.
 - **New comments** from you (the account `gh` is signed in as), or from people you list under *Also act on comments from*, go to the agent in the same way. Nobody reviews these fixes before they're pushed, so anyone else's comments are logged and ignored, even an org member's. Comments that were there before you started watching are never acted on.
-  - PR comments and a review's summary are read. Line comments on the diff aren't read yet; the run's log says so when watching starts.
-- These unattended fixes never run with more than *standard* permissions, and a fix that touches the tests at all isn't pushed: a deleted, skipped or weakened test, a changed test config or CI workflow, the runner's settings in `package.json` or `pyproject.toml`, or fewer tests running than before the fix. It's handed back to you instead.
+  - PR comments, review summaries and inline review comments are read, including file, line, side, thread and outdated-diff context. Only comments from you or explicitly allowed users can trigger a fix. A PR with at least 1,000 inline comments is handed back for a complete review. The watcher reads REST comments, so a new reply may trigger a fix even if its thread was resolved on GitHub.
+- These unattended fixes never run with more than *standard* permissions, and all unpublished commits are checked before an unattended push, including changes blocked during earlier turns. Test changes are not pushed: a deleted, skipped or weakened test, a changed test config or CI workflow, the runner's settings in `package.json` or `pyproject.toml`, or fewer tests running than before the fix. It's handed back to you instead.
 - **Stops:** after the number of fixes you allow, if someone else pushed to the PR, or when the PR is merged or closed. It then shows under *Needs you* with a notification.
-- **Can't check:** when checking the PR fails (`gh` signed out, rate-limited, offline), code-flow waits longer before each retry. After three failures in a row the watch shows under *Needs you* with the reason, e.g. *gh isn't signed in — run `gh auth login`* (it asks `gh auth status` to tell). It keeps retrying, and goes back to watching once `gh` answers again.
+- **Can't check:** when checking the PR fails (`gh` signed out, rate-limited, offline), code-flow waits longer before each retry. After three failures in a row the watch shows under *Needs you* with the reason, e.g. *gh isn't signed in — run `gh auth login`* (it asks `gh auth status` to tell). The failure streak survives a server restart. It keeps retrying, and goes back to watching once `gh` answers again.
 - It **never merges**.
 
 ### Untrusted text
@@ -119,7 +124,7 @@ Text from outside the repo is untrusted. Issue and PR titles and descriptions, c
 
 **A code scanning alert's message is fenced too.** It quotes the code it flags (names, strings), which whoever wrote that code chose. The rule's own description and help aren't fenced.
 
-Without Docker, code-flow asks before running that person's tests on your machine; automations never do. **▶ Run app** on a locked-down run asks first too: the app is that code, running on your machine outside any container. The text itself — title, branch name and description — is quoted in a fence it can't break out of, marked as information rather than instructions. Conventions files are read from where the PR started, not from the PR.
+Without Docker installed and running, code-flow asks before running that person's tests on your machine; automations never do. **▶ Run app** on a locked-down run asks first too: the app is that code, running on your machine outside any container. The text itself — title, branch name and description — is quoted in a fence it can't break out of, marked as information rather than instructions. Conventions files are read from where the PR started, not from the PR.
 
 To run these jobs on a schedule or from webhooks, see [Automations](automations.md).
 

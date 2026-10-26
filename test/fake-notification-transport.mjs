@@ -4,7 +4,7 @@ const originalFetch = globalThis.fetch;
 globalThis.fetch = async (input, options) => {
   const url = new URL(input instanceof Request ? input.url : String(input));
   if (url.hostname !== "notifications-fixture.invalid") return originalFetch(input, options);
-  if (url.protocol !== "https:" || options?.method !== "POST" || options.redirect !== "error") throw new Error("Invalid fixture request");
+  if (url.protocol !== "https:" || options?.method !== "POST" || options.redirect !== "manual") throw new Error("Invalid fixture request");
   if (new Headers(options.headers).get("authorization") !== `Bearer ${process.env.NOTIFICATION_FIXTURE_CREDENTIAL}`) return new Response("forbidden", { status: 403 });
   const mode = await readFile(process.env.NOTIFICATION_FIXTURE_MODE, "utf8").catch(() => "200");
   const status = Number(mode.trim());

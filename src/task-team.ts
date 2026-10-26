@@ -1,3 +1,4 @@
+import { taskTeamLimitsProblem } from "./start-input-validation.js";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -34,19 +35,28 @@ export interface TaskTeamTurn {
   resumeRequested?: boolean;
   reviewStale?: boolean;
   resolutionReview?: { executionId: string; checkpoint: string; approved?: boolean; issues?: import("./patterns/findings.js").ReviewIssue[]; error?: string };
+  /**
+   * A clean apply put exactly the team's result into the conversation workspace (tree `tree`): the
+   * check and independent review the execution recorded for that commit describe it. Dropped once
+   * the workspace changes; a reconciled apply is checked again instead (resolutionCheck).
+   */
+  teamEvidence?: { tree: string; check?: { ok: boolean; command: string; at: number }; review?: { approved: boolean } };
   executionStatus?: "running" | "done" | "failed" | "cancelled" | "stopped" | "interrupted";
 }
 export interface TaskReconciliation { current: string; result: string; merged: string; conflicts: string[] }
 export class TaskTeamConflict extends Error {
   constructor(readonly reconciliation: TaskReconciliation) { super("Your edits overlap the team's changes. Review the conflicting files; both versions are preserved."); }
 }
+/** The workspace moved on since the comparison was made: refresh it (a conflict, not a bad request). */
+export class TaskReconciliationStale extends Error {}
 const normalizedRequest = (request: string) => request.trim().toLowerCase().replace(/[’‘]/g, "'").replace(/^(?:(?:please|can you|could you|would you)\s+)+/, "");
 
 /** Explicit conversation controls take precedence over pending questions. File or
- * worker-specific instructions remain steering, not a global cancellation. */
+ * worker-specific instructions remain steering, not a global cancellation. Only a whole
+ * message is a control: "Wait. Also add tests" carries an instruction a stop would drop. */
 export function taskTeamControl(request: string): "stop" | "pause" | undefined {
   const text = normalizedRequest(request);
-  const match = /^(stop|cancel|pause|wait|hold on)(?:\s+(?:(?:the|this|all|current)\s+)?(?:team|task|run|work|execution|everything|working))?(?=\s*(?:[.!?]|$|(?:and|for now|please)\b))/.exec(text);
+  const match = /^(stop|cancel|pause|wait|hold on)(?:\s+(?:(?:the|this|all|current)\s+)?(?:team|task|run|work|execution|everything|working))?(?:[\s,.!]*\b(?:(?:and\s+)?(?:wait|pause|hold on|stop)|for now|please|now|right now|thanks|thank you|(?:for\s+)?an?\s+(?:moment|minute|second|sec|bit)))*[\s.!?]*$/.exec(text);
   return match ? /^(pause|wait|hold on)$/.test(match[1]!) ? "pause" : "stop" : undefined;
 }
 /** A pending question must not swallow an explicit correction or a question to the lead. */
@@ -78,13 +88,21 @@ export function taskTeamRoute(request: string, active = false): "direct" | "team
   return "team";
 }
 
+/** AI team setup chooses a model and effort per teammate. With automatic model routing, only a
+ * pool pin holds a worker or reviewer to it; "Default" leaves the choice to the team. */
+export function taskTeamRoleSettings(config: Pick<TaskTeamConfig, "providers" | "settings">): Record<string, AgentSettings> {
+  const pool: AgentSettings = Object.fromEntries(config.providers.flatMap(id => config.settings[id] ? [[id, { ...config.settings[id] }]] : []));
+  return Object.keys(pool).length ? { pool } : {};
+}
+
 export function validateTaskTeam(raw: unknown): TaskTeamConfig {
   const v = raw as TaskTeamConfig;
   if (!v || typeof v !== "object" || typeof v.enabled !== "boolean") throw new Error("Choose whether Team is enabled");
   const supported = (id: unknown): id is AgentId => ["claude", "codex", "agy"].includes(String(id));
   if (!supported(v.coordinator) || !Array.isArray(v.providers) || !v.providers.length || v.providers.length > 3 || !v.providers.every(supported) || new Set(v.providers).size !== v.providers.length) throw new Error("Choose a coordinator and at least one available team provider");
   if (!["adaptive", "build-review", "investigate"].includes(v.preset)) throw new Error("Choose a team template");
-  for (const [name, min, max] of [["maxMembers", 3, 6], ["maxCalls", 4, 200], ["maxMinutes", 1, 720]] as const) if (!Number.isInteger(v[name]) || v[name] < min || v[name] > max) throw new Error(`${name} must be between ${min} and ${max}`);
+  const limitProblem = taskTeamLimitsProblem(v as unknown as Record<string, unknown>);
+  if (limitProblem) throw new Error(limitProblem);
   if (typeof v.approvePlan !== "boolean") throw new Error("Choose a plan approval preference");
   const settings = validateAgentSettings(v.settings ?? {});
   let template: TaskTeamConfig["template"];
@@ -159,19 +177,19 @@ export async function reconciliationFile(repo: string, path: string, ref: string
   const entry = await checked(at, ["ls-tree", "-z", ref, "--", file]);
   if (!entry) return { exists: false, text: "", mode: "" };
   const [mode, kind, object] = entry.split(/\s/);
-  if (kind !== "blob" || !object) return { exists: true, binary: true, text: "", mode };
+  if (kind !== "blob" || !object) return { exists: true, binary: true, text: "", mode, object };
   const size = Number(await checked(at, ["cat-file", "-s", object]));
-  if (size > 256 * 1024 || mode === "120000") return { exists: true, binary: true, text: "", mode };
+  if (size > 256 * 1024 || mode === "120000") return { exists: true, binary: true, text: "", mode, object };
   const value = await git(["cat-file", "blob", object], at);
   if (value.code) throw new Error("Could not read conflict version");
-  return { exists: true, binary: value.stdout.includes("\0") || value.stdout.includes("\uFFFD"), text: value.stdout, mode };
+  return { exists: true, binary: value.stdout.includes("\0") || value.stdout.includes("\uFFFD"), text: value.stdout, mode, object };
 }
 
 export type ConflictChoice = { path: string; choice: "current" | "team" | "edited"; text?: string };
 export async function resolveTaskReconciliation(repo: string, path: string, merge: TaskReconciliation, choices: ConflictChoice[]) {
   if (!Array.isArray(choices) || choices.length !== merge.conflicts.length || new Set(choices.map(choice => choice.path)).size !== choices.length || choices.some(choice => !merge.conflicts.includes(choice.path) || !["current", "team", "edited"].includes(choice.choice))) throw new Error("Choose a resolution for each conflicting file");
   const at = await worktreeGit(repo, path), current = await taskCheckpoint(repo, path);
-  if (await checked(at, ["rev-parse", `${current}^{tree}`]) !== await checked(at, ["rev-parse", `${merge.current}^{tree}`])) throw new Error("Your workspace changed since this comparison. Refresh the comparison before applying.");
+  if (await checked(at, ["rev-parse", `${current}^{tree}`]) !== await checked(at, ["rev-parse", `${merge.current}^{tree}`])) throw new TaskReconciliationStale("Your workspace changed since this comparison. Refresh the comparison before applying.");
   const temp = await mkdtemp(join(tmpdir(), "codeflow-resolution-"));
   try {
     const env = { GIT_INDEX_FILE: join(temp, "index") };

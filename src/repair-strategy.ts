@@ -1,6 +1,6 @@
 /** Trusted task framing; source titles, descriptions and logs remain separate evidence. */
 export function issueRepairTask(reference: string): string {
-  return `Fix ${reference}. ` +
+  return `Fix ${reference}.\n\n` +
     "First confirm the expected behavior and reproduce the reported problem with a focused test. " +
     "Implement the smallest complete change and add a regression test that fails without it. " +
     "For a feature request, use the issue's acceptance criteria; do not invent extra scope. " +
@@ -9,7 +9,7 @@ export function issueRepairTask(reference: string): string {
 }
 
 export function ciRepairTask(reference: string, dependabot = false): string {
-  return `Make CI pass on ${reference}. The failing checks and their logs are below. ` +
+  return `Make CI pass on ${reference}.\n\nThe failing checks and their logs are below. ` +
     "Start with the first actionable failure and the relevant workflow, dependency diff and call sites. " +
     "Distinguish a code incompatibility from a flaky test, missing credential, runner or network failure; report external blockers rather than changing unrelated code. " +
     (dependabot ? "Keep the dependency upgrade: adapt the code to the new version; don't pin it back. " : "") +

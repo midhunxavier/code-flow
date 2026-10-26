@@ -9,14 +9,12 @@ import { childEnv } from "./env.js";
 import { redactText } from "./privacy.js";
 import { validateContextBudget, type ContextBudget } from "./context-budget.js";
 export { validateContextBudget, type ContextBudget } from "./context-budget.js";
+import { sensitiveContextPath } from "./sensitive-paths.js";
+export { sensitiveContextPath, sensitiveDirectoryPath } from "./sensitive-paths.js";
 export const CONTEXT_INSPECTION_LIMITS = { selections: 50, files: 200, scanned: 5000, fileBytes: 512 * 1024, totalBytes: 8 * 1024 * 1024, previewCharacters: 3000 };
 const hash = (text: string | Buffer) => createHash("sha256").update(text).digest("hex");
 export class ContextInspectionError extends Error { constructor(message: string, readonly status = 400) { super(message); } }
 
-export function sensitiveContextPath(path: string): boolean {
-  const parts = path.replace(/\\/g, "/").toLowerCase().split("/");
-  return parts.some((part) => [".git", ".ssh", ".aws", ".gnupg", ".azure", ".kube"].includes(part)) || /^(?:\.env(?:\..*)?|\.npmrc|\.netrc|\.pypirc|credentials(?:\.json)?|secrets?(?:\.json|\.ya?ml)?|id_(?:rsa|dsa|ecdsa|ed25519)(?:\.pub)?|.*\.(?:pem|key|p12|pfx|kdbx))$/.test(parts.at(-1) ?? "");
-}
 /** Shared by preview and actual context preparation; credential selections are never staged. */
 export function assertContextPathAllowed(raw: string): string {
   if (typeof raw !== "string" || isAbsolute(raw) || /^[a-z]:/i.test(raw) || /[\x00-\x1f]/.test(raw) || raw.length > 1000) throw new ContextInspectionError("Context paths must stay inside the repository.");

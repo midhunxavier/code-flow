@@ -1,3 +1,4 @@
+import { completeSentence } from "./lib.js";
 import { useEffect, useState } from "preact/hooks";
 import { Markdown } from "./bits.js";
 import { api, ApiError, post, showToast } from "./lib.js";
@@ -35,7 +36,7 @@ export function ProjectMemory({ projectId, repo, refreshKey = "" }: { projectId:
   const visible = (entries ?? []).filter((entry) => entry.status !== "deleted");
   const proposals = visible.filter((entry) => entry.status === "proposed").length;
   return <details class="project-memory" onToggle={(event) => setOpen(event.currentTarget.open)}>
-    <summary>Project memory{entries ? ` · ${visible.length} entries${proposals ? ` · ${proposals} to review` : ""}` : ""}</summary>
+    <summary>Project memory{entries ? ` · ${visible.length} ${visible.length === 1 ? "entry" : "entries"}${proposals ? ` · ${proposals} to review` : ""}` : ""}</summary>
     <p class="help">Accepted knowledge can be used in future runs in this repository. Proposals need review before they become project guidance.</p>
     <p class="help">Deleting erases this entry's text and removes it from future retrieval. Entries written with it in context retain their own text and the source reference; review and delete those separately. Source run transcripts remain under normal run retention.</p>
     <div class="at-row"><button class="btn small" disabled={loading} onClick={load}>{loading ? "Loading…" : "Refresh"}</button><button class="btn small" onClick={() => setCreating(!creating)}>{creating ? "Cancel new entry" : "Add project knowledge"}</button></div>
@@ -172,6 +173,6 @@ function MemoryEditor({ entry, endpoint, repo, onSaved, onCancel }: { entry?: Me
     </section> : null}
     {asNew ? <p class="help">This draft will be saved as a new entry.</p> : null}
     <div class="memory-actions"><button type="submit" class="btn small primary" disabled={busy || !!conflict || !title.trim() || !body.trim() || (scope === "branch" && !branch.trim())}>{busy ? "Saving…" : "Save knowledge"}</button><button type="button" class="btn small" disabled={busy} onClick={onCancel}>Cancel</button></div>
-    {error ? <p class="msg err" role="alert">{error} Your draft is still here.</p> : null}
+    {error && !conflict ? <p class="msg err" role="alert">{completeSentence(error)} Your draft is still here.</p> : null}
   </form>;
 }

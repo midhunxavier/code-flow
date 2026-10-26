@@ -1,10 +1,13 @@
+import { quotaReason } from "../src/quota-status.js";
+import { RunNavigation } from "./keyboard-navigation.js";
+import { runTitle } from "../src/run-title.js";
 import { checksLabel } from "../src/run-status.js";
-import { ActivityView } from "./activity.js";
+const ActivityView = lazyView(() => import("./activity.js").then(module => module.ActivityView));
 import { ConfirmationHost } from "./confirm-dialog.js";
 import { lazyView } from "./lazy-view.js";
 const SettingsView = lazyView(() => import("./settings.js").then((module) => module.SettingsView));
-import { SETTINGS_SECTIONS } from "./settings-sections.js";
-import { canNotify, setDesktopNotifications } from "./preferences.js";
+import { SETTINGS_SECTIONS, settingsSection } from "./settings-sections.js";
+import { canNotify } from "./preferences.js";
 import { HostControl, executionHost } from "./ssh-projects.js";
 import { useLayoutEffect, useEffect, useRef, useState } from "preact/hooks";
 import { ApprovalInbox } from "./approval-inbox.js";
@@ -12,21 +15,25 @@ import { Composer } from "./composer.js";
 import { CommandPalette } from "./command-palette.js";
 import { SidePanel } from "./side.js";
 import { RunView } from "./run.js";
-import { Review } from "./review.js";
+import { DeletedRunRecovery } from "./deleted-run.js";
+// The Review page loads when you open it, as the side panel's Changes tab does (it shares its diff view).
+const Review = lazyView(() => import("./review.js").then((module) => module.Review));
 import { GitHubPicker } from "./github.js";
 import { SweepDialog } from "./sweeps.js";
 import { ProjectsDialog, RepositoryChoiceDialog } from "./projects.js";
-import { ProjectView } from "./project.js";
+const ProjectView = lazyView(() => import("./project.js").then(module => module.ProjectView));
 import { TeamPeopleView } from "./collab-people.js";
 import { TeamBoardView } from "./collab-board.js";
-import { TeamTaskView } from "./collab-task.js";
+// A team task opens on demand, like Review: it keeps the startup bundle within its budget (test/assets.test.ts).
+const TeamTaskView = lazyView(() => import("./collab-task.js").then((module) => module.TeamTaskView));
 import { board as teamBoard, openTask, watchTeam } from "./collab-state.js";
 import { Rail } from "./rail.js";
 import { Icon } from "./icons.js";
-import { api, showToast, store, toast } from "./lib.js";
+import { api, dismissToast, showToast, store, toast } from "./lib.js";
 import { theme, toggleTheme } from "./theme.js";
 import {
   composerProject,
+  deletedRunNotice, isRunDeleted,
   composerLoading,
   draftsReady,
   draftError,
@@ -48,15 +55,17 @@ import {
   sideDisplayWidth,
   sideExpanded,
   sideFullWidth,
+  executionPaused,
   gitHealth,
   health,
+  healthError,
   healthOpen,
-  loadHealth,
+  loadHealth, healthChecking, providersRefreshing, refreshProviders,
   pickerOpen,
   railOpen,
-  railCollapsed,
-  setRailCollapsed,
+  peekRail, railPeek, railIsCollapsed,
   recentRepos,
+  runFilter, railView,
   repo,
   route,
   runs,
@@ -69,6 +78,7 @@ import {
 } from "./state.js";
 import type { DirListing, RepoInfo, RunSummary } from "./types.js";
 import { teamNeedsResume, teamAwaitingAnswer } from "./team-state.js";
+import { PolicyPauseNotice } from "./policy-pause.js";
 
 export function App() {
   return <>{route.value.view === "side" ? <PoppedSide tab={route.value.tab} /> : <MainApp />}<ConfirmationHost /></>;
@@ -95,13 +105,14 @@ function PoppedSide({ tab }: { tab: SideTab }) {
       <div class="sr-only" role="status" aria-live="polite">
         {announcement.value}
       </div>
-      {toast.value ? (
-        <div class="toast" role="status" key={toast.value.id}>
-          {toast.value.text}
-        </div>
-      ) : null}
+      <ToastMessage />
     </div>
   );
+}
+
+function ToastMessage() {
+  const message = toast.value;
+  return message ? <div class={`toast ${message.kind}`} role={message.kind === "error" ? "alert" : "status"} key={message.id}><span>{message.text}</span>{message.kind === "error" ? <button class="toast-dismiss" type="button" aria-label="Dismiss error" onClick={() => dismissToast(message.id)}><Icon name="close" /></button> : null}</div> : null;
 }
 
 /** A link to one of the app's pages, clicked in a popped-out panel: the main window shows the page. */
@@ -120,27 +131,31 @@ function MainApp() {
     document.title = `${waitingCount.value ? `(${waitingCount.value}) ` : ""}code-flow${host.kind === "ssh" ? ` · SSH ${host.name}` : ""}`;
   }, [waitingCount.value, executionHost.value]);
   useEffect(() => {
+    const resetTraversal = () => runNavigation.reset();
     window.addEventListener("keydown", onShortcut);
-    return () => window.removeEventListener("keydown", onShortcut);
+    window.addEventListener("pointerdown", resetTraversal);
+    return () => { window.removeEventListener("keydown", onShortcut); window.removeEventListener("pointerdown", resetTraversal); };
   }, []);
   // The team board's live updates (and the Team entry's unread count) for as long as the app is open.
   useEffect(() => { watchTeam(); }, []);
   // On phones the runs list is a drawer: going anywhere closes it.
   useEffect(() => {
     railOpen.value = false;
+    railPeek.value = false;
   }, [route.value]);
 
   return (
     <>
       <a class="skip-link" href={`#${skipTarget}`} onClick={(event) => { event.preventDefault(); document.getElementById(skipTarget)?.focus(); }}>{sideFullWidth.value ? "Skip to side panel" : "Skip to main content"}</a>
       <ApprovalInbox />
-      <div class={`app ${sideOpen.value ? "with-side" : ""} ${sideOpen.value && sideExpanded.value ? "side-expanded" : ""} ${railCollapsed.value ? "rail-collapsed" : ""}`} style={`--side-w:${sideDisplayWidth.value}px`}>
+      <div class={`app ${sideOpen.value ? "with-side" : ""} ${sideOpen.value && sideExpanded.value ? "side-expanded" : ""} ${railIsCollapsed.value ? "rail-collapsed" : ""}`} style={`--side-w:${sideDisplayWidth.value}px`}>
         <Rail />
         {railOpen.value ? <div class="rail-scrim" aria-hidden="true" onClick={() => (railOpen.value = false)} /> : null}
         <div class="main-col">
           <TopBar />
           <main id="main-content" tabIndex={-1}>
-            {route.value.view === "run" ? (
+            {route.value.view === "composer" && deletedRunNotice.value ? <DeletedRunRecovery {...deletedRunNotice.value} /> : null}
+            {(route.value.view === "run" || route.value.view === "review") && isRunDeleted(route.value.id) ? <DeletedRunRecovery id={route.value.id} /> : route.value.view === "run" ? (
               <RunView key={route.value.id} id={route.value.id} />
             ) : route.value.view === "review" ? (
               <Review key={`${route.value.id}:${route.value.branch}`} id={route.value.id} branch={route.value.branch} />
@@ -149,7 +164,7 @@ function MainApp() {
             ) : route.value.view === "workspace" && route.value.project ? (
               <ProjectView key={route.value.project} id={route.value.project} section="repositories" />
             ) : ["inbox", "automations", "workspace", "insights"].includes(route.value.view) ? (
-              <ActivityView key={route.value.view === "workspace" ? `workspace:${route.value.project ?? ""}` : route.value.view} current={route.value} />
+              <ActivityView key={route.value.view} current={route.value} />
             ) : route.value.view === "settings" ? (
               <SettingsView section={route.value.section} group={route.value.group} connection={route.value.connection} />
             ) : route.value.view === "team" ? (
@@ -182,11 +197,7 @@ function MainApp() {
       <div class="sr-only" role="status" aria-live="polite">
         {announcement.value}
       </div>
-      {toast.value ? (
-        <div class="toast" role="status" key={toast.value.id}>
-          {toast.value.text}
-        </div>
-      ) : null}
+      <ToastMessage />
     </>
   );
 }
@@ -205,12 +216,12 @@ function TopBar() {
       </button>
       <HostControl />
       <Crumbs />
-      <span class={`connection-status ${connection.value.state}`} role="status" title={connection.value.state === "connected" ? "Live updates are connected" : "Live updates are unavailable; displayed run information may be out of date"}>
+      <span class={`connection-status ${connection.value.state}`} role="status" title={connection.value.state === "connected" ? "Live updates are connected" : connection.value.detail ?? "Live updates are unavailable; displayed run information may be out of date"}>
         <span class="cs-dot" aria-hidden="true" />
         <span class="cs-label">{connection.value.state === "connected" ? "Connected" : connection.value.state === "offline" ? "Offline" : connection.value.state === "reconnecting" ? "Reconnecting…" : "Connecting…"}</span>
       </span>
       {/* a search glass and the shortcut as a key; a phone shows only the glass */}
-      <button class="btn ghost command-btn" aria-label="Open command palette" title={`Commands and navigation (${MOD_KEY}K)`} onClick={() => (commandPaletteOpen.value = true)}>
+      <button class="btn ghost command-btn" aria-label={`Open command palette · ${MOD_KEY}K`} aria-keyshortcuts="Meta+K Control+K" title={`Commands and navigation (${MOD_KEY}K)`} onClick={() => (commandPaletteOpen.value = true)}>
         <Icon name="search" />
         <kbd class="kbd-key" aria-hidden="true">{MOD_KEY}K</kbd>
       </button>
@@ -255,7 +266,7 @@ function Crumbs() {
         )}
         {sep}
         <span class={`crumb title ${r.view === "run" ? "here" : ""}`} title={run.task} aria-current={r.view === "run" ? "page" : undefined}>
-          {run.task.split("\n")[0] || "(no task)"}
+          {runTitle(run)}
         </span>
         {r.view === "review" ? (
           <>
@@ -301,9 +312,9 @@ function Crumbs() {
       </span>
     );
   } else if (r.view === "inbox" || r.view === "automations" || r.view === "workspace" || r.view === "insights") {
-    trail = <>{r.view === "workspace" && r.project ? <><a class="crumb" href={`#/project/${encodeURIComponent(r.project)}`}>{projects.value.find(p => p.id === r.project)?.name ?? "Project"}</a>{sep}</> : null}<span class="crumb here" aria-current="page">{{ inbox: "Inbox", automations: "Scheduling", workspace: "Repositories", insights: "Insights" }[r.view]}</span></>;
+    trail = <>{r.view === "workspace" && r.project ? <><a class="crumb" href={`#/project/${encodeURIComponent(r.project)}`}>{projects.value.find(p => p.id === r.project)?.name ?? "Project"}</a>{sep}</> : null}<span class="crumb here" aria-current="page">{{ inbox: "Inbox", automations: "Scheduling", workspace: r.view === "workspace" && r.project ? "Repositories" : "Repository tools", insights: "Insights" }[r.view]}</span></>;
   } else if (r.view === "settings") {
-    const section = r.section ? SETTINGS_SECTIONS.find((item) => item.id === r.section) : undefined;
+    const section = SETTINGS_SECTIONS.find((item) => item.id === settingsSection(r.section));
     trail = section ? (
       <>
         <a class="crumb" href="#/settings">
@@ -335,21 +346,6 @@ function Crumbs() {
 }
 
 // ---------------------------------------------------------------- notifications
-export function Bell() {
-  const on = canNotify();
-  return (
-    <button
-      class="btn ghost foot-btn bell"
-      aria-label="Notifications"
-      aria-pressed={on}
-      title={on ? "Notifications on — click to turn off" : "Notify me when a run finishes or needs me"}
-      onClick={() => void setDesktopNotifications(!on)}
-    >
-      <Icon name="bell" />
-    </button>
-  );
-}
-
 export function notifyFinished(run: RunSummary) {
   if (route.value.view === "side") return; // a popped-out panel: the main window says it
   const viewing = (route.value.view === "run" || route.value.view === "review") && route.value.id === run.id;
@@ -387,7 +383,7 @@ const SHORTCUTS: [string, string][] = [
   ["⌘K / Ctrl+K", "Commands, projects and runs"],
   ["/", "Search runs"],
   ["j / k", "Next / previous run in the list"],
-  ["[ / ]", "Previous / next step of the open run"],
+  ["[ / ]", "Previous / next step or agent turn"],
   ["n", "New run"],
   ["p", "Pick the project for new runs, Insights and Scheduling"],
   ["i", "Insights"],
@@ -398,12 +394,15 @@ const SHORTCUTS: [string, string][] = [
   ["?", "This list"],
 ];
 
+const runNavigation = new RunNavigation();
+let keyboardRoute = "";
 function onShortcut(e: KeyboardEvent) {
   if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key === "," && !e.defaultPrevented && !document.querySelector("dialog[open]")) {
     e.preventDefault(); navigate({ view: "settings" }); return;
   }
   if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === "k") {
-    e.preventDefault();
+    const handled = e.defaultPrevented; e.preventDefault();
+    if (handled || document.querySelector("dialog[open]:not(.command-palette)")) return;
     commandPaletteOpen.value = !commandPaletteOpen.value;
     return;
   }
@@ -417,7 +416,7 @@ function onShortcut(e: KeyboardEvent) {
   switch (e.key) {
     case "/": {
       e.preventDefault();
-      setRailCollapsed(false);
+      peekRail();
       railOpen.value = true;
       const search = () => document.getElementById("run-search") as HTMLInputElement | null;
       search()?.focus();
@@ -450,10 +449,11 @@ function onShortcut(e: KeyboardEvent) {
       const items = [...document.querySelectorAll<HTMLButtonElement>(".rail .run-item")];
       if (!items.length) return;
       e.preventDefault();
-      const at = items.findIndex((b) => b.classList.contains("active"));
-      const next = items[at < 0 ? 0 : Math.min(items.length - 1, Math.max(0, at + (e.key === "j" ? 1 : -1)))]!;
-      next.click();
-      next.scrollIntoView({ block: "nearest" });
+      if (keyboardRoute !== JSON.stringify(route.value)) runNavigation.reset();
+      const id = runNavigation.next(items.map(item => item.dataset.task!), items.find(item => item.classList.contains("active"))?.dataset.task, JSON.stringify([runFilter.value, railView.value]), e.key === "j" ? 1 : -1);
+      const next = items.find(item => item.dataset.task === id);
+      next?.click(); keyboardRoute = JSON.stringify(route.value);
+      requestAnimationFrame(() => document.querySelector<HTMLElement>(`.rail .run-item[data-task="${CSS.escape(id ?? "")}"]`)?.scrollIntoView({ block: "nearest" }));
       return;
     }
   }
@@ -467,7 +467,7 @@ function ShortcutsDialog() {
         <div class="picker-head">
           <h3 id="shortcuts-title">Keyboard shortcuts</h3>
         </div>
-        <div class="dialog-body">
+        <div class="dialog-body" tabIndex={0} role="region" aria-label="Shortcut list">
           <table class="shortcuts">
             <tbody>
               {SHORTCUTS.map(([keys, what]) => (
@@ -494,6 +494,8 @@ function ShortcutsDialog() {
 
 // ---------------------------------------------------------------- health
 function HealthDialog() {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => { const timer = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(timer); }, []);
   const ref = useDialog(true, () => (healthOpen.value = false));
   useEffect(() => {
     void loadHealth();
@@ -508,33 +510,34 @@ function HealthDialog() {
           <div class="help">What code-flow can see about each CLI — it uses the CLIs' own commands and never reads their credentials.</div>
         </div>
         <div class="dialog-body">
-          {!health.value ? <div class="help">Checking…</div> : null}
+          <PolicyPauseNotice what="Provider health checks are paused" />
+          {healthChecking.value || providersRefreshing.value ? <p role="status">Checking providers…</p> : null}
+          {executionPaused.value ? null : healthError.value ? <div class="msg err" role="alert">{healthError.value}</div> : !health.value ? <div class="help">Checking…</div> : null}
           {health.value?.map((h) => (
             <div key={h.id} class="health-row">
               <div class="hr-title">
                 <span class={`agent ${h.id}`}>{h.name}</span>
-                <span class={`badge ${h.installed && h.signedIn !== false ? "ok" : ""}`}>
-                  {!h.installed ? "Not installed" : h.signedIn === false ? "Signed out" : h.signedIn ? `Signed in · ${h.account ?? ""}` : "Installed"}
+                <span class={`badge ${h.installed && h.signedIn !== false && quotaReason(h.quota, now) !== "hit its usage limit" ? "ok" : ""}`}>
+                  {!h.installed ? "Not installed" : quotaReason(h.quota, now) === "hit its usage limit" ? "Usage limit" : h.signedIn === false ? "Signed out" : h.signedIn ? `Signed in · ${h.account ?? ""}` : "Installed"}
                 </span>
                 <span class="help">{h.version}</span>
               </div>
+              {quotaReason(h.quota, now) === "hit its usage limit" ? <div class="msg warn">Hit its usage limit.{Object.values(h.quota!.windows).some(w => w.resetsAt) ? ` Resets ${when(Math.max(...Object.values(h.quota!.windows).map(w => w.resetsAt ?? 0)))}.` : " Check again later."}</div> : null}
               {h.quota && Object.keys(h.quota.windows).length ? (
                 <div class="quota">
                   {Object.entries(h.quota.windows).map(([name, w]) => (
-                    <div key={name} class="q">
+                    <div key={name} class={`q${w.utilization === undefined ? " quota-unknown" : ""}`}>
                       <span>{name.replace("_", "-")} window</span>
-                      <span class="bar">
+                      {w.utilization !== undefined ? <span class="bar">
                         <span style={`width:${Math.min(100, Math.round((w.utilization ?? 0) * 100))}%`} />
-                      </span>
+                      </span> : null}
                       <span>
-                        {pct(w.utilization)} used{w.resetsAt ? ` · resets ${when(w.resetsAt)}` : ""}
+                        {w.utilization === undefined ? "Utilization not reported" : `${pct(w.utilization)} used`}{w.resetsAt ? ` · resets ${when(w.resetsAt)}` : ""}
                       </span>
                     </div>
                   ))}
                 </div>
-              ) : h.quota?.status === "limited" ? (
-                <div class="msg warn">Hit a usage limit recently.</div>
-              ) : h.installed ? (
+              ) : h.installed && quotaReason(h.quota, now) !== "hit its usage limit" ? (
                 <div class="help">{h.id === "claude" ? "Quota shows after the next Claude step." : "This CLI doesn't report remaining quota."}</div>
               ) : null}
               {h.warnings?.map((w) => (
@@ -558,8 +561,8 @@ function HealthDialog() {
         </div>
         <div class="picker-foot">
           <span class="ps" />
-          <button class="btn" onClick={() => loadHealth()}>
-            Check again
+          <button class="btn" disabled={healthChecking.value || providersRefreshing.value || executionPaused.value} aria-busy={healthChecking.value || providersRefreshing.value} onClick={() => void refreshProviders()}>
+            {healthChecking.value || providersRefreshing.value ? "Checking…" : "Check again"}
           </button>
           <button class="btn primary" onClick={() => (healthOpen.value = false)}>
             Done
@@ -593,7 +596,7 @@ function FolderPicker() {
   // You typed in the path field since the latest listing was requested: it lists, but keeps your text.
   const typed = useRef(false);
 
-  const browse = async (target?: string, showHidden = hidden) => {
+  const browse = async (target?: string, showHidden = hidden, explicit = true) => {
     if (!pickerOpen.value) return;
     opened.current = true;
     const request = ++latest.current;
@@ -608,18 +611,18 @@ function FolderPicker() {
       setDir(d);
       // Focus can precede the first input event (select-all/paste). Do not
       // replace the field during that window, or pasted paths can be appended.
-      if (!typed.current && document.activeElement !== pathInput.current) setPath(d.path);
+      if (!typed.current && (explicit || document.activeElement !== pathInput.current)) setPath(d.path);
       setStatus(typed.current ? "Press Enter or Go to check this path" : d.isRepo ? "✓ This folder is a git repository" : "Open a folder marked Git, or type a path");
     } catch (err) {
       if (request !== latest.current || !pickerOpen.value) return;
       setStatus((err as Error).message);
-      if (!dir && target) void browse(undefined, showHidden);
+      if (!dir && target) void browse(undefined, showHidden, false);
     }
   };
   useLayoutEffect(() => {
     // A paste + Enter can precede this effect. Its explicit browse already owns this opening;
     // a delayed default listing must never supersede it (or erase text typed before the effect).
-    if (pickerOpen.value && !opened.current) void browse(repo.value || undefined);
+    if (pickerOpen.value && !opened.current) void browse(repo.value || undefined, hidden, false);
     if (!pickerOpen.value) opened.current = false;
   }, [pickerOpen.value]);
 
@@ -633,9 +636,11 @@ function FolderPicker() {
       // Resolve through Git: a subfolder inside a checkout is also a valid selection.
       const info = await api<RepoInfo>(`/api/branches?repo=${encodeURIComponent(p)}`);
       if (request !== latest.current || !pickerOpen.value) return;
+      // Keep the modal over the composer until its destination is ready, so typing
+      // cannot race a delayed repository lookup and be replaced by draft restoration.
+      if (adding) await adding.choose(info.repo);
+      else await pickRepo(info.repo);
       closePicker();
-      if (adding) adding.choose(info.repo);
-      else void pickRepo(info.repo);
     } catch (err) {
       if (request === latest.current && pickerOpen.value) setStatus((err as Error).message);
     } finally {
@@ -740,7 +745,7 @@ function FolderPicker() {
             const entered = (pathInput.current?.value ?? path).trim();
             if (dir && entered === dir.path && status !== "Loading…") void choose(dir.path);
           }}>
-            {adding?.title === "Open repository" ? "Open this repository" : adding ? "Add this folder" : "Use this folder"}
+            {adding?.title === "Open repository" ? "Open this repository" : adding?.title === "Add repository" ? "Add this repository" : adding ? "Add this folder" : "Use this folder"}
           </button>
         </div>
       </div>
@@ -748,26 +753,47 @@ function FolderPicker() {
   );
 }
 
-/** Open/close a <dialog> from state, and report Esc/backdrop closes back. */
-export function useDialog(open: boolean, onClose: () => void) {
+/** Open/close a native modal, keep busy guards current, and restore keyboard focus. */
+export function useDialog(open: boolean, onClose: () => void, canClose: () => boolean = () => true) {
   const [el, setEl] = useState<HTMLDialogElement | null>(null);
-  // close() queues a native event. It may arrive after the same dialog has reopened, so it
-  // acknowledges the controlled transition rather than requesting another state change.
+  const latest = useRef({ onClose, canClose }); latest.current = { onClose, canClose };
+  const opener = useRef<HTMLElement | null>(null);
   const controlledCloses = useRef(new WeakMap<HTMLDialogElement, number>());
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!el) return;
-    if (open && !el.open) el.showModal();
-    if (!open && el.open) {
-      controlledCloses.current.set(el, (controlledCloses.current.get(el) ?? 0) + 1);
-      el.close();
-    }
-    const handler = () => {
+    const cancel = (event: Event) => { if (!latest.current.canClose()) event.preventDefault(); };
+    const closed = () => {
       const pending = controlledCloses.current.get(el) ?? 0;
       if (pending) { controlledCloses.current.set(el, pending - 1); return; }
-      onClose();
+      // CloseWatcher can force a close after repeated Escape. Keep the operation's
+      // error surface visible even when the browser bypasses cancel.preventDefault().
+      if (!latest.current.canClose()) { if (el.isConnected && !el.open) el.showModal(); return; }
+      latest.current.onClose();
     };
-    el.addEventListener("close", handler);
-    return () => el.removeEventListener("close", handler);
+    el.addEventListener("cancel", cancel); el.addEventListener("close", closed);
+    return () => {
+      el.removeEventListener("cancel", cancel); el.removeEventListener("close", closed);
+      if (el.open) el.close();
+      const previous = opener.current;
+      const restore = () => {
+        if (document.querySelector("dialog[open]")) return;
+        if (document.activeElement === document.body || el.contains(document.activeElement)) {
+          if (previous?.isConnected && !previous.closest("[inert]") && previous.getClientRects().length) previous.focus();
+          else document.getElementById("main-content")?.focus();
+        }
+      };
+      restore();
+      // Deleting a run removes its opener later in this same render commit. Check
+      // again after removal without stealing focus from any newly opened dialog.
+      queueMicrotask(restore);
+    };
+  }, [el]);
+  useLayoutEffect(() => {
+    if (!el) return;
+    if (open && !el.open) { opener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null; el.showModal(); }
+    if (!open && el.open) {
+      controlledCloses.current.set(el, (controlledCloses.current.get(el) ?? 0) + 1); el.close();
+    }
   }, [el, open]);
   return setEl;
 }

@@ -57,8 +57,8 @@ async function settled(f: Awaited<ReturnType<typeof fixture>>) {
 }
 
 test("mission validation rejects ACP, unvalidated plugins, unsafe paths and unverified automatic builds", () => {
-  assert.throws(() => validateMission(mission({ coordinator: "acp:one" })), /ACP/);
-  assert.throws(() => validateMission(mission({ pool: ["plugin:test"] })), /validated/);
+  assert.throws(() => validateMission(mission({ coordinator: "acp:one" })), /acp:one is unavailable for runs:.*native-delegation/);
+  assert.throws(() => validateMission(mission({ pool: ["plugin:test"] })), /plugin:test is unavailable for runs:.*native-delegation/);
   assert.throws(() => validateMission(mission({ paths: ["../outside"] })), /paths/);
   assert.throws(() => validateMission(mission({ check: "" })), /verification/);
   assert.throws(() => validateMission(mission({ baseBranch: "HEAD" })), /branch/);
@@ -85,7 +85,7 @@ test("complete cycle uses existing Auto teams, preserves read-only discovery, ve
   assert.equal(f.manager.get(child.id)?.archived, true);
   await assert.rejects(f.manager.deleteRun(child.id), /Archive this run instead/);
   assert.equal(f.store.get(f.team.id).opportunities[0]?.status, "ready", "archiving preserves the result awaiting approval");
-  await assert.rejects(f.manager.resume(child.id), /project team/);
+  await assert.rejects(f.manager.resume(child.id), /project mission/);
   await assert.rejects(f.manager.merge(child.id, { branch: o.result!.branch, into: "main" }), /Approve/);
   const accepted = await f.service.decide(t.id, o.id, { operationId: "approve", revision: t.revision, opportunityRevision: o.revision, action: "approve" });
   assert.equal(accepted.opportunities[0]!.status, "accepted"); assert.equal(f.git("rev-parse", "main"), base);
@@ -125,7 +125,7 @@ test("operation IDs, revisions, one repository ownership and weekly reservations
   await assert.rejects(f.service.create({ operationId: "different", projectId: f.project.id, repo: f.repo, name: "Duplicate", mission: mission() }), /already has/);
   await assert.rejects(f.service.update(f.team.id, { operationId: "activate", revision: blocked.revision, status: "paused" }), /reused/);
   assert.equal((await f.automations.dryRun(`t-${f.team.id}`)).ready, false);
-  await assert.rejects(f.automations.update(`t-${f.team.id}`, { enabled: false }), /standing project team/);
+  await assert.rejects(f.automations.update(`t-${f.team.id}`, { enabled: false }), /project mission/);
 });
 
 test("scope catches committed renames, binary/untracked changes and line growth", async () => {
@@ -310,7 +310,7 @@ test("pause prevents the implementation stage and removed project membership can
   const f = await fixture(); const launched = await f.service.cycle(f.team.id, "first");
   await f.service.update(f.team.id, { operationId: "pause", revision: launched.revision, status: "paused" });
   const t = await settled(f); assert.equal(t.cycles[0]!.launches.length, 1); assert.equal(t.opportunities[0]!.status, "proposed");
-  await f.projects.remove(f.project.id); await f.service.reconcile(); assert.match(f.store.get(t.id).error!, /project/);
+  await f.projects.remove(f.project.id); await f.service.reconcile(); assert.match(f.store.get(t.id).recoveryError!, /project/);
   await assert.rejects(f.service.cycle(t.id, "after-removal"), /project/);
 });
 
@@ -422,7 +422,7 @@ test("Standing teams settings persist, reject stale writes and gate dispatch wit
   await f.service.setEnabled({ enabled: false, revision: 0 });
   assert.equal(f.service.enabled(), false);
   assert.equal(f.store.get(f.team.id).status, "active", "the host switch preserves individual team activation");
-  await assert.rejects(f.service.cycle(f.team.id, "disabled-cycle"), /Enable Standing teams/);
+  await assert.rejects(f.service.cycle(f.team.id, "disabled-cycle"), /Enable project missions/);
   await assert.rejects(f.service.setEnabled({ enabled: true, revision: 0 }), /settings changed/);
   const restored = new ProjectTeamStore(f.store.directory); await restored.load();
   assert.deepEqual(restored.configuration(true), { enabled: false, revision: 1, source: "saved" }, "saved choice overrides the environment default");

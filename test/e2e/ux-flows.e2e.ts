@@ -155,7 +155,7 @@ test("project tools retain repository context and new screens fit mobile and pas
         if (hash.startsWith("/review")) await page.locator(".review-diff .diff-file-head").waitFor();
         if (hash.startsWith("/run")) await page.locator(".result-compact").waitFor();
         await page.addScriptTag({ content: axe.source });
-        const violations = await page.evaluate(async () => (await (window as any).axe.run(document, { runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21aa"] } })).violations);
+        const violations = await page.evaluate(async () => (await (window as any).axe.run(document, { runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"] } })).violations);
         assert.deepEqual(violations.map((v: any) => `${v.id}: ${v.nodes.map((n: any) => n.target.join(" ")).join(", ")}`), [], `${hash}, ${width}, ${colorScheme}`);
         assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, `${hash} overflows at ${width}`);
       }

@@ -1,7 +1,7 @@
 import { CODEFLOW_HOME } from "../src/config.js";
-import { compactRunLog, createEncryptedBackup, restoreEncryptedBackup, retainArchivedRuns } from "../src/maintenance.js";
+import { compactRunLog, createEncryptedBackup, restoreEncryptedBackup, retainArchivedRuns, offline, newMaintenanceOutput, readMaintenanceInput } from "../src/maintenance.js";
 import { RetentionPolicyStore, applyRetention, previewRetention, type RetentionPreview } from "../src/retention-policy.js";
-import { readFile, writeFile } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 const args = process.argv.slice(2);
@@ -38,25 +38,30 @@ try {
     else if (command === "retention") {
       if (args.includes("--apply")) {
         if (!value("plan")) throw new Error("Age-only retention cannot delete data. Save a retention policy and review retention-policy --output PLAN.json, then use retention-policy --plan PLAN.json --apply.");
-        result = await applyRetention({ home, plan: JSON.parse(await readFile(required("plan"), "utf8")) as RetentionPreview });
+        result = await applyRetention({ home, plan: JSON.parse(await readMaintenanceInput(required("plan"), "Retention plan")) as RetentionPreview });
         if (result.failed.length) process.exitCode = 1;
       } else result = await retainArchivedRuns({ home, days: Number(required("days")) });
     }
     else if (command === "compact") result = await compactRunLog({ home, runId: required("id"), apply: args.includes("--apply") });
     else if (command === "retention-policy") {
       if (args.includes("--apply")) {
-        const planFile = required("plan"); const plan = JSON.parse(await readFile(planFile, "utf8")) as RetentionPreview;
+        const planFile = required("plan"); const plan = JSON.parse(await readMaintenanceInput(planFile, "Retention plan")) as RetentionPreview;
         result = await applyRetention({ home, plan });
         if (result.failed.length) process.exitCode = 1;
       } else {
-        result = await previewRetention({ home }); const output = value("output");
-        if (output) await writeFile(output, JSON.stringify(result, null, 2), { flag: "wx", mode: 0o600 });
+        const requestedOutput = value("output");
+        const output = requestedOutput ? await newMaintenanceOutput(requestedOutput, "Plan") : undefined;
+        result = await offline(home, path => previewRetention({ home: path }));
+        if (output) await writeFile(output, JSON.stringify(result, null, 2), { flag: "wx", mode: 0o600 }).catch((error: NodeJS.ErrnoException) => { if (error.code === "EEXIST") throw new Error("Plan file already exists. Choose a new path."); throw error; });
       }
     }
     else if (command === "retention-settings") {
-      const store = new RetentionPolicyStore(join(home, "retention-policy.json"));
-      const previous = await store.get();
-      result = await store.set(JSON.parse(await readFile(required("input"), "utf8")), previous.revision);
+      const input = required("input");
+      result = await offline(home, async path => {
+        const store = new RetentionPolicyStore(join(path, "retention-policy.json"));
+        const previous = await store.get();
+        return store.set(JSON.parse(await readMaintenanceInput(input, "Retention settings")), previous.revision);
+      });
     }
     else throw new Error(`Unknown command: ${command}. Use --help.`);
     console.log(JSON.stringify(result, null, 2));

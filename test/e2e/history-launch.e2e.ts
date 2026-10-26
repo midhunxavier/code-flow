@@ -16,7 +16,7 @@ const repo = join(fixture, "repo"); const home = join(fixture, "data"); const wo
 const records = join(fixture, "agent-records");
 const token = "history-launch-ui-token"; const headers = { authorization: `Bearer ${token}` };
 const port = await new Promise<number>((resolve) => { const probe = createServer().listen(0, "127.0.0.1", () => { const port = (probe.address() as AddressInfo).port; probe.close(() => resolve(port)); }); });
-const base = `http://localhost:${port}`;
+const base = `http://127.0.0.1:${port}`;
 let server: ChildProcess; let browser: Browser; let page: Page;
 before(async () => {
   mkdirSync(join(repo, ".codeflow"), { recursive: true }); mkdirSync(join(home, "runs"), { recursive: true }); mkdirSync(records);
@@ -248,7 +248,7 @@ test("guided onboarding inspects required and optional dependencies through actu
   await panel.getByRole("heading", { name: "Optional tools", exact: true }).waitFor();
   assert.equal(report.providers.length, 3); assert.equal(report.optional.length, 3);
   for (const dependency of report.optional) await panel.getByText(dependency.name, { exact: false }).first().waitFor();
-  assert.match(await panel.innerText(), /Interactive terminal/); assert.match(await panel.innerText(), /Browser snapshots/); assert.match(await panel.innerText(), /Optional Docker isolation/);
+  assert.match(await panel.innerText(), /Interactive terminal/); assert.match(await panel.innerText(), /Browser and snapshots/); assert.match(await panel.innerText(), /Optional Docker isolation/);
   assert.equal(await panel.getByRole("button", { name: "Check dependencies again", exact: true }).isEnabled(), true);
 });
 
@@ -305,7 +305,7 @@ test("context directories preview committed sources and explicit budgets block a
   assert.deepEqual(blocked.loop.contextBudget, { maxPromptBytes: 1, policy: "block" }, "the chosen budget reaches persisted run settings");
   const blockedStep = blocked.steps.find((step) => step.contextInput?.policy === "block")!;
   assert.equal(blocked.status, "stopped"); assert.match(blocked.stopReason ?? "", /explicit invocation context budget/);
-  assert.equal(blockedStep.status, "stopped"); assert.match(blockedStep.error ?? "", /context exceeds its configured budget/); assert.equal(readdirSync(records).length, before, "blocking context budgets launch no provider CLI");
+  assert.equal(blockedStep.status, "stopped"); assert.match(blockedStep.error ?? "", /Stopped at the explicit invocation context budget/); assert.equal(readdirSync(records).length, before, "blocking context budgets launch no provider CLI");
   assert.equal(blocked.steps.some((step) => step.contextInput?.exceeded && step.contextInput.policy === "block" && !step.invocations), true);
   const sensitive = await fetch(`${base}/api/runs`, { method: "POST", headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify({ repo, pattern: "solo", task: "Reject credential context", roles: { agent: ["claude"] }, context: { paths: [{ path: ".env" }] } }) });
   assert.equal(sensitive.status, 400); assert.match((await sensitive.json()).error, /credential/);
@@ -329,7 +329,9 @@ test("filesystem policy enforces scoped app reads/writes and globally blocks exe
   let applied: import("playwright-core").Response | undefined;
   for (const deadline = Date.now() + 10_000; Date.now() < deadline;) {
     const applying = page.waitForResponse((response) => response.url().endsWith("/filesystem-policy") && response.request().method() === "PUT");
-    await panel.getByRole("button", { name: "Stop execution and apply policy", exact: true }).click();
+    await panel.getByRole("button", { name: "Apply policy", exact: true }).click();
+    // A first restriction pauses every project, so it is confirmed first.
+    await page.locator("dialog.confirmation-dialog").getByRole("button", { name: "Apply restriction", exact: true }).click();
     applied = await applying;
     if (applied.status() === 200) break;
     assert.equal(applied.status(), 409, await applied.text());
@@ -361,7 +363,7 @@ test("filesystem policy enforces scoped app reads/writes and globally blocks exe
   await page.setViewportSize({ width: 390, height: 844 }); assert.equal(await panel.evaluate((element) => element.scrollWidth <= element.clientWidth + 1), true);
   if (process.env.CODEFLOW_UI_SCREENSHOTS) await page.screenshot({ path: join(root, "output/playwright/filesystem-policy-mobile.png") });
   await page.setViewportSize({ width: 1440, height: 1000 });
-  await panel.getByLabel("Read deny paths", { exact: true }).fill(""); await panel.getByLabel("Write allow paths", { exact: true }).fill("."); await panel.getByRole("button", { name: "Stop execution and apply policy", exact: true }).click(); await panel.getByRole("status").getByText("Filesystem policy revision 2 applied.", { exact: true }).waitFor();
+  await panel.getByLabel("Read deny paths", { exact: true }).fill(""); await panel.getByLabel("Write allow paths", { exact: true }).fill("."); await panel.getByRole("button", { name: "Apply policy", exact: true }).click(); await panel.getByRole("status").getByText("Filesystem policy revision 2 applied.", { exact: true }).waitFor();
   const started = await request("/api/runs", { repo: otherRepo, pattern: "solo", task: "Exercise the deliberate policy execution restart", roles: { agent: ["claude"] }, loop: { check: `"${process.execPath}" -e 'setTimeout(()=>{},5000)'` } }); assert.equal(started.status, 201); const id = (await started.json()).id;
   assert.equal((await request(`/api/runs/${id}`).then((response) => response.json())).status, "running", "the activation race exercises an actually live run");
   const busy = await request(`/api/projects/${project.id}/filesystem-policy`, { revision: 2, read: { allow: ["."], deny: ["private"] }, write: { allow: ["."], deny: [] } }, "PUT"); assert.equal(busy.status, 409, "policy cannot activate while another project's host agent is active");

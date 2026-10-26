@@ -160,7 +160,7 @@ test("wizard installs an isolated team server over connected SSH, configures HTT
     await page.waitForFunction(() => document.documentElement.scrollWidth <= innerWidth, undefined, { timeout: 5000 });
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
     await page.addScriptTag({ content: axe.source });
-    const audit = await page.evaluate(async () => (window as any).axe.run(document, { runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21aa"] } }));
+    const audit = await page.evaluate(async () => (window as any).axe.run(document, { runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"] } }));
     assert.deepEqual(audit.violations.map((v: any) => v.id), []);
     await call(`/api/ssh-hosts/${connection.id}/disconnect`, {});
     assert.equal((await fetch(`http://127.0.0.1:${runtime.port}/api/team-host-runtime`, { headers: { authorization: `Bearer ${runtime.token}` } })).status, 200, "team server outlives SSH disconnect");

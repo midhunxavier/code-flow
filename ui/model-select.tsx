@@ -5,9 +5,9 @@ import { isFreeModel } from "./model-order.js";
 export type ModelOption = { id: string; label: string; description?: string };
 
 /** Search stays local to the open picker; choosing a model preserves the caller's settings logic. */
-export function ModelSelect({ label, title, value, options, onChange, placeholder = "Choose model", compact = false, disabled = false, class: cls = "", kind = "model" }: {
+export function ModelSelect({ label, title, value, options, onChange, placeholder = "Choose model", compact = false, disabled = false, class: cls = "", kind = "model", note }: {
   label: string; title?: string; value: string; options: ModelOption[]; onChange: (value: string) => void;
-  placeholder?: string; compact?: boolean; disabled?: boolean; class?: string; kind?: "model" | "branch";
+  placeholder?: string; compact?: boolean; disabled?: boolean; class?: string; kind?: "model" | "branch"; note?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -53,7 +53,7 @@ export function ModelSelect({ label, title, value, options, onChange, placeholde
     if (open) document.getElementById(`${listId}-${index}`)?.scrollIntoView({ block: "nearest" });
   }, [open, index, query, freeOnly]);
   return <div class={`model-select ${compact ? "compact" : ""} ${cls}`} ref={root}>
-    <button type="button" class="model-select-trigger" ref={trigger} disabled={disabled} aria-label={label} aria-haspopup="listbox" aria-expanded={open} aria-controls={open ? listId : undefined} title={selected?.label ?? placeholder} onClick={() => {
+    <button type="button" class="model-select-trigger" ref={trigger} disabled={disabled} aria-label={`${label}: ${selected?.label ?? (value || placeholder)}`} aria-haspopup="listbox" aria-expanded={open} aria-controls={open ? listId : undefined} title={selected?.label ?? placeholder} onClick={() => {
       setQuery(""); setActive(Math.max(0, filtered.findIndex(option => option.id === value))); setOpen(!open);
     }}><span>{selected?.label ?? (value || placeholder)}</span><Icon name="chevron" /></button>
     {open ? <div class="model-select-popup" ref={popup} onKeyDown={event => {
@@ -70,6 +70,7 @@ export function ModelSelect({ label, title, value, options, onChange, placeholde
           } else if (event.key === "Enter" && !event.isComposing) { event.preventDefault(); if (matches[index]) choose(matches[index]!.id); }
         }} />
       </div>
+      {note ? <p class="help" role="status">{note}</p> : null}
       <div class="model-select-results" role="listbox" id={listId} aria-label={label}>
         {matches.map((option, i) => <button key={option.id} id={`${listId}-${i}`} type="button" role="option" aria-selected={option.id === value} tabIndex={-1} class={`model-select-option ${i === index ? "active" : ""}`} onClick={() => choose(option.id)}>
           <span><span class="model-option-name">{option.label}</span>{option.description ? <span class="model-option-description">{option.description}</span> : null}</span>

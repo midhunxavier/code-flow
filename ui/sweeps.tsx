@@ -2,12 +2,15 @@ import { useEffect, useState } from "preact/hooks";
 import { useDialog } from "./app.js";
 import { RoleModels, startProblem } from "./composer.js";
 import { Icon } from "./icons.js";
-import { supportsRunPermissions } from "../src/run-permissions.js";
+import { runProviderProblem, supportsRunPermissions } from "../src/run-permissions.js";
 import { fillTeamTemplate, type TeamTemplate } from "../src/team-templates.js";
 import { api, enc, post, showToast } from "./lib.js";
+import { localTimezone } from "./schedule-draft.js";
+import { PolicyPauseNotice } from "./policy-pause.js";
 import {
   agentSettings,
   agents,
+  executionPaused,
   baseRef,
   checkCmd,
   limits,
@@ -30,11 +33,9 @@ import {
   target,
   trust,
 } from "./state.js";
-import type { AgentId, SweepItem, SweepList } from "./types.js";
+import type { AgentId, SweepList } from "./types.js";
 import type { RoleValue } from "./roles.js";
-
-/** Most runs one sweep starts (the server holds the same limit). */
-const MAX_SWEEP = 25;
+import { MAX_SWEEP, defaultSweepPicks, matchesSweepFilter, pickableSweepItem as pickable, selectSweepItems } from "./sweep-selection.js";
 
 interface SweepOutcome {
   started: { key: string; id: string }[];
@@ -69,6 +70,8 @@ export function SweepDialog() {
   const [templateError, setTemplateError] = useState("");
   const [templateLoading, setTemplateLoading] = useState(false);
   const [templateInputs, setTemplateInputs] = useState<Record<string, string>>({});
+  // The sweep lists with `gh`, which a filesystem restriction in any project refuses.
+  const paused = executionPaused.value;
 
   useEffect(() => {
     if (!t) return;
@@ -92,16 +95,16 @@ export function SweepDialog() {
       result => { if (active) setTemplates(result.templates); },
       error => { if (active) setTemplateError(error.message); },
     ).finally(() => { if (active) setTemplateLoading(false); });
-    api<SweepList>(`/api/github/sweep?repo=${enc(captured.repo)}&kind=${t.sweep}`).then(
+    if (!paused) api<SweepList>(`/api/github/sweep?repo=${enc(captured.repo)}&kind=${t.sweep}`).then(
       (l) => {
         if (!active) return;
         setList(l);
-        setPicked(new Set(l.items.filter((i) => i.selected).map((i) => i.key)));
+        setPicked(defaultSweepPicks(l.items));
       },
       (e) => { if (active) setError(e.message); },
     );
     return () => { active = false; };
-  }, [t]);
+  }, [t, paused]);
 
   const template = templates.find(entry => `template:${entry.id}` === workflow);
   const p = t ? patterns.value.find(x => x.id === (template ? template.workflow ?? "auto-team" : workflow || t.pattern)) : undefined;
@@ -112,13 +115,12 @@ export function SweepDialog() {
   let inputProblem = "";
   if (template) { try { fillTeamTemplate(template, inputs); } catch (error) { inputProblem = (error as Error).message; } }
   const items = list?.items ?? [];
-  const pickable = (i: SweepItem) => !i.manual && !i.blockedReason && !i.existingRun && !!i.source && !!i.task;
   const ready = items.filter(i => i.selected && pickable(i));
   const chosen = items.filter((i) => picked.has(i.key) && pickable(i));
   const unsupportedRoles = p?.roles.filter(role => (roles[role.id] ?? []).some(id => id !== "auto" && !supportsRunPermissions(id))) ?? [];
   useEffect(() => { if (unsupportedRoles.length) setConfigOpen(true); }, [unsupportedRoles.length]);
   const q = filter.trim().toLowerCase();
-  const shown = items.filter((i) => (scope === "all" || ready.includes(i)) && (!q || `${i.ref} ${i.title} ${i.detail} ${i.note ?? ""}`.toLowerCase().includes(q)));
+  const shown = items.filter((i) => (scope === "all" || ready.includes(i)) && matchesSweepFilter(i, q));
   const problem = inputProblem || (unsupportedRoles.length ? `Choose a supported provider for ${unsupportedRoles.map(role => role.label.toLowerCase()).join(", ")}.` : startProblem(p, roles, false)) || (chosen.length > MAX_SWEEP ? `Pick at most ${MAX_SWEEP}; the rest can go in a later sweep` : "");
   const chooseWorkflow = (value: string) => {
     setWorkflow(value); setTemplateInputs({});
@@ -144,9 +146,7 @@ export function SweepDialog() {
     setPicked(next);
   };
   const pickShown = (on: boolean) => {
-    const next = new Set(picked);
-    for (const i of shown) if (pickable(i)) on ? next.add(i.key) : next.delete(i.key);
-    setPicked(next);
+    setPicked(selectSweepItems(picked, shown, on));
   };
 
   const start = async () => {
@@ -159,7 +159,8 @@ export function SweepDialog() {
         kind: t.sweep,
         name: t.name,
         max: 5,
-        schedule: repeat ? { at } : undefined,
+        // In this browser's time zone, as the dialog says, like every other schedule you pick.
+        schedule: repeat ? { at, timezone: localTimezone() } : undefined,
         run: {
           repo: destination.repo,
           project: destination.project,
@@ -242,6 +243,7 @@ export function SweepDialog() {
               </div>
             ) : null}
           </div>
+          {ready.length > MAX_SWEEP ? <p class="help pad" role="status">Up to {MAX_SWEEP} items are picked in list order. The rest can go in a later sweep.</p> : null}
           <div class="sweep-body">
           {outcome ? <div class="sweep-outcome" role="status">
             <b>{outcome.started.length} started · {outcome.skipped.length} skipped · {outcome.failed.length} could not start</b>
@@ -250,13 +252,14 @@ export function SweepDialog() {
             {outcome.failed.length ? <p>Failed items stay selected. Adjust the setup, then retry.</p> : null}
           </div> : null}
           <div class="picker-list sweep-list">
+            {paused ? <PolicyPauseNotice what="GitHub items can't be listed for a sweep" onReview={() => (sweepPicker.value = null)} /> : null}
             {error ? <div class="msg err pad">{error}</div> : null}
             {list?.notices.map((n) => (
               <div key={n} class="config-note bad">
                 {n}
               </div>
             ))}
-            {!list && !error ? <div class="help pad">Loading from GitHub…</div> : null}
+            {!list && !error && !paused ? <div class="help pad">Loading from GitHub…</div> : null}
             {list && !items.length ? <div class="help pad">Nothing open — all clear.</div> : null}
             {list && items.length && !shown.length ? <div class="help pad">{q ? "Nothing matches your filter." : "No items need a new repair. Open All to see passing checks, existing runs and items needing attention."}</div> : null}
             {shown.map((i) => (
@@ -310,7 +313,7 @@ export function SweepDialog() {
                 const selected = roles[role.id] ?? [];
                 return role.multiple ? <div key={role.id} id={`sweep-role-${role.id}`} class="sweep-multiple-role">
                   <span class="sweep-role-label">{role.label}</span><div class="pills" role="group" aria-label={`${role.label} providers`}>
-                    {agents.value.map(agent => <button key={agent.id} type="button" class="pill" aria-pressed={selected.includes(agent.id)} disabled={(!agent.available || !supportsRunPermissions(agent.id)) && !selected.includes(agent.id)} onClick={() => setRoles(p.id, role.id, selected.includes(agent.id) ? selected.filter(id => id !== agent.id) : [...selected, agent.id])}>{agent.displayName}</button>)}
+                    {agents.value.map(agent => <button key={agent.id} type="button" class="pill" title={runProviderProblem(agent.id, agent.displayName)} aria-pressed={selected.includes(agent.id)} disabled={(!agent.available || !supportsRunPermissions(agent.id)) && !selected.includes(agent.id)} onClick={() => setRoles(p.id, role.id, selected.includes(agent.id) ? selected.filter(id => id !== agent.id) : [...selected, agent.id])}>{agent.displayName}</button>)}
                     {p.id !== "auto-team" || role.id !== "pool" ? <button type="button" class="pill" aria-pressed={selected.includes("auto")} onClick={() => setRoles(p.id, role.id, selected.includes("auto") ? selected.filter(id => id !== "auto") : [...selected, "auto"])}>Auto</button> : null}
                   </div>
                 </div> : <label key={role.id} id={`sweep-role-${role.id}`}>{role.label}<select class="field" value={selected[0] ?? ""} onChange={event => setRoles(p.id, role.id, [event.currentTarget.value].filter(Boolean) as typeof selected)}>
@@ -328,7 +331,7 @@ export function SweepDialog() {
             </fieldset>
             <label class="check">
               <input type="checkbox" checked={repeat} onChange={(e) => setRepeat(e.currentTarget.checked)} /> Also check every day at{" "}
-              <input class="field inline" type="time" value={at} aria-label="Time of day" disabled={!repeat} onInput={(e) => setAt(e.currentTarget.value || "07:00")} /> and start runs for new ones (up to 5 each time)
+              <input class="field inline" type="time" value={at} aria-label="Time of day" disabled={!repeat} onInput={(e) => setAt(e.currentTarget.value || "07:00")} /> ({localTimezone()}) and start runs for new ones (up to 5 each time)
             </label>
           </div>
           </div>

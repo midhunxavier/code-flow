@@ -61,14 +61,14 @@ async function audit(target: Page, screen: string) {
   // The reduced-motion rule gives every element an `all .01ms` transition, so a theme or viewport change settles only on the next frame; axe caches styles per node and would mix old and new colors.
   await target.evaluate(async () => { for (;;) { document.documentElement.getBoundingClientRect(); const running = document.getAnimations().filter((animation) => animation.playState === "running" && animation.effect?.getComputedTiming().endTime !== Infinity); if (!running.length) break; await Promise.all(running.map((animation) => animation.finished.catch(() => undefined))); } });
   await target.addScriptTag({ content: axe.source });
-  const result = await target.evaluate(async () => (window as unknown as { axe: typeof axe }).axe.run(document, { runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21aa", "wcag22aa"] } }));
+  const result = await target.evaluate(async () => (window as unknown as { axe: typeof axe }).axe.run(document, { runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"] } }));
   for (const violation of result.violations) violations.push(`${screen}: ${violation.id} (${violation.impact}) ${violation.nodes.map((node) => `${node.target.join(" ")} — ${(node.failureSummary ?? "").replace(/\s+/g, " ")}`).join("; ")}`);
 }
 const fits = (target: Page) => target.evaluate(() => { const main = document.getElementById("main-content") ?? document.querySelector("main"); return document.documentElement.scrollWidth <= innerWidth && (!main || main.scrollWidth <= main.clientWidth + 1); });
 
 test("the People entry opens a useful empty board with a workflow summary", async () => {
   await page.evaluate(() => localStorage.setItem("peopleEnabled", "1")); await page.reload();
-  await page.getByRole("button", { name: "Application menu", exact: true }).click();
+  await page.getByRole("button", { name: /^Application menu:/ }).click();
   await page.getByRole("menuitem", { name: "Board", exact: true }).click();
   await page.waitForURL(/#\/team$/);
   await page.getByRole("heading", { level: 1, name: "Board", exact: true }).waitFor();
@@ -152,8 +152,8 @@ test("the task page takes a comment, a decision and a blocker, and comes back to
 test("the board, task creation, the task page and Settings → Team pass axe in light, dark and phone layouts", async () => {
   mkdirSync(join(root, "output/playwright"), { recursive: true });
   const screens: [string, string, () => Promise<void>][] = [
-    ["/team", "board", () => page.getByRole("region", { name: /^Planned/ }).getByRole("button", { name: new RegExp(TITLE) }).waitFor()],
-    ["/team", "new task", async () => { await page.getByRole("button", { name: "New task", exact: true }).click(); await page.getByRole("form", { name: "New task", exact: true }).waitFor(); }],
+    ["/team", "board", async () => { await page.getByRole("region", { name: /^Planned/ }).getByRole("button", { name: new RegExp(TITLE) }).waitFor(); const form = page.getByRole("form", { name: "New task", exact: true }); if (await form.isVisible()) await form.getByRole("button", { name: "Cancel", exact: true }).click(); await form.waitFor({ state: "hidden" }); }],
+    ["/team", "new task", async () => { const form = page.getByRole("form", { name: "New task", exact: true }); const trigger = page.getByRole("button", { name: "New task", exact: true }); await trigger.waitFor(); if (!await form.isVisible()) await trigger.click(); await form.waitFor(); assert.equal(await trigger.isDisabled(), true); assert.equal(await trigger.getAttribute("aria-expanded"), "true"); }],
     [`/team/task/${taskId}`, "task", () => page.locator(".team-comment-text").filter({ hasText: OWNER_COMMENT }).waitFor()],
     ["/settings/team", "settings team", () => page.getByRole("button", { name: "Save repositories", exact: true }).waitFor()],
   ];
@@ -316,7 +316,7 @@ test("the rail's Team badge counts the inbox from the first paint, and marking i
   // A fresh load lands on the composer: the badge must not wait for a Team page to load the board.
   await page.goto(`${base}/#/`); await page.reload(); await page.getByRole("button", { name: "New run", exact: true }).waitFor();
   await page.locator(".rail-menu-count", { hasText: "1" }).waitFor({ timeout: 10_000 });
-  await page.getByRole("button", { name: "Application menu", exact: true }).click();
+  await page.getByRole("button", { name: /^Application menu:/ }).click();
   await page.getByRole("menuitem", { name: /^Board 1 unread$/ }).click(); await page.waitForURL(/#\/team$/);
   const card = page.getByRole("region", { name: /^Planned/ }).getByRole("button", { name: new RegExp(TITLE) }); await card.waitFor();
   await page.locator(".team-card.needs-you").filter({ hasText: TITLE }).waitFor(); await card.getByText("Needs you", { exact: true }).waitFor();
@@ -360,6 +360,8 @@ test("a save that lost to a teammate keeps every draft: the title and blocker ed
     await release();
     assert.equal(await goal.inputValue(), "My draft goal that I typed for a while", "the reload keeps the draft"); assert.equal(await saveGoal.count(), 1, "unsaved text never looks saved"); assert.equal(await unsaved.count(), 1);
     assert.equal((await task()).goal, "Goal changed by a teammate", "nothing was saved over the teammate's text");
+    assert.equal(await saveGoal.isDisabled(), true, "a field conflict requires an explicit replace or discard, not another ordinary Save");
+    await page.getByRole("alert").filter({ hasText: "Goal changed by a teammate" }).waitFor();
     await page.getByRole("button", { name: "Discard", exact: true }).click(); assert.equal(await goal.inputValue(), "Goal changed by a teammate"); await saveGoal.waitFor({ state: "hidden" });
     // The blocker.
     const status = page.getByRole("combobox", { name: /^Status\b/ }), pill = page.locator(".team-task-head .status-pill"), blocker = page.getByLabel("What blocks the task?");
@@ -509,6 +511,12 @@ test("the hosting wizard configures the local board even from another team and h
 test("Draft with agent prepares editable fields without creating a task; Build with agents uses the existing attempt flow", async () => {
   const before = (await api<{ tasks: unknown[] }>("/api/team/board")).tasks.length;
   await page.goto(`${base}/#/team`);
+  // The accessibility matrix intentionally typed a persistent task draft. Cancel that
+  // fixture draft before starting a separate agent-assisted drafting scenario.
+  await page.getByRole("button", { name: "New task", exact: true }).waitFor();
+  const existing = page.getByRole("form", { name: "New task", exact: true });
+  if (await existing.isVisible()) await existing.getByRole("button", { name: "Cancel", exact: true }).click();
+  await existing.waitFor({ state: "hidden" });
   await page.getByRole("button", { name: "Draft with agent", exact: true }).click();
   const form = page.getByRole("form", { name: "New task", exact: true });
   const draft = form.getByRole("region", { name: "Draft with agent", exact: true });

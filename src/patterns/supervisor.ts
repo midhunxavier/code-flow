@@ -57,6 +57,7 @@ export const supervisorPattern: Pattern = {
       description: "Reviews the integrated result; leave empty to let the supervisor review its own work",
       optional: true,
       default: ["codex"],
+      independentOf: ["supervisor"],
     },
   ],
   options: [{ id: "maxSubtasks", label: "Max subtasks", type: "number", default: 3, min: 2, max: 6 }],

@@ -1,4 +1,4 @@
-import { constants } from "node:fs";
+import { constants, existsSync } from "node:fs";
 import { open, realpath } from "node:fs/promises";
 import { join } from "node:path";
 import type { Run, RunManager, StartRunInput } from "./engine.js";
@@ -9,11 +9,12 @@ import { git, repoRoot, resolveCommit } from "./git.js";
 import { readRepoConfig } from "./repo-config.js";
 import { RUNS_DIR, flushWrites } from "./store.js";
 import { ProjectTeamConflict, ProjectTeamStore } from "./project-team-store.js";
-import { ACTIVE_CYCLES, PT_LIMITS, allowance, candidateProblem, closed, digest, missionPolicy, missionSchedule, projectTeamsEnabled, score, teamConfiguration, text, validateMission, validateReport, type AgentTeamSnapshot, type Category, type ProjectOpportunity, type ProjectTeam, type ProjectTeamCycle, type ProjectTeamLaunch } from "./project-team-model.js";
+import { ACTIVE_CYCLES, PT_LIMITS, RESTORED_TEAM_ERROR, allowance, closed, digest, missionPolicy, missionSchedule, projectTeamsEnabled, score, teamConfiguration, text, validateMission, validateReport, type AgentTeamSnapshot, type Category, type ProjectOpportunity, type ProjectTeam, type ProjectTeamCycle, type ProjectTeamLaunch } from "./project-team-model.js";
 import { assertProjectTeamChanges } from "./project-team-policy.js";
 import { repositoryIdentity } from "./repository-identity.js";
+import { activeCycle, buildRefusal, candidateProblem, openOpportunities, pendingResults, taskAdmissionProblem } from "./project-team-admission.js";
 import { AgentTeamDefinitions } from "./agent-team-definitions.js";
-import { persistProjectTeamUsage } from "./project-team-usage.js";
+import { persistProjectTeamUsage, projectTeamUsageProvable } from "./project-team-usage.js";
 
 /** Read and fsync the authoritative initial identity before allowing the engine to dispatch. */
 export async function persistProjectTeamReceipt(run: Run, directory = RUNS_DIR) {
@@ -30,11 +31,20 @@ export async function persistProjectTeamReceipt(run: Run, directory = RUNS_DIR) 
   } finally { await file.close(); }
   if (process.platform !== "win32") { const dir = await open(directory, "r"); try { await dir.sync(); } finally { await dir.close(); } }
 }
-const active = (t: ProjectTeam) => t.cycles.find((c) => ACTIVE_CYCLES.includes(c.status));
-const pending = (t: ProjectTeam) => t.opportunities.filter((o) => ["ready", "accepted", "implementing"].includes(o.status)).length;
-const openOpportunities = (t: ProjectTeam) => t.opportunities.filter((o) => !["shipped", "rejected", "expired"].includes(o.status)).length;
+const active = activeCycle, pending = pendingResults;
 const operation = (id: unknown, content: unknown) => ({ id: text(id, 150, "operation ID"), hash: digest(content) });
+const ARCHIVED = "This mission is archived and read-only; create a new mission for this repository";
 const finish = (c: ProjectTeamCycle, status: ProjectTeamCycle["status"], reason?: string) => { c.status = status; c.reason = reason; c.endedAt = Date.now(); };
+/** Reasons are saved in the bounded aggregate; the run keeps the full text. */
+const bounded = (reason: string) => reason.length > 400 ? `${reason.slice(0, 399)}…` : reason;
+/** Why a managed run left no usable result, in the run's own words rather than one generic sentence. */
+function runFailure(run: Run, phase: ProjectTeamLaunch["phase"]): string {
+  const what = phase === "discovery" ? "Discovery" : "The implementation";
+  const detail = (run.team?.gaps.length ? run.team.gaps.join("; ") : run.error || run.stopReason)?.trim();
+  if (run.status === "interrupted") return `${what} was interrupted because Code Flow stopped while it ran. Its full reservation stays charged; start a new cycle to continue.`;
+  if (run.status === "cancelled") return `${what} run was stopped before it finished`;
+  return bounded(`${what} ${run.status === "failed" ? "run failed" : "is incomplete"}${detail ? `: ${detail}` : ""}`);
+}
 type Host = Pick<RunManager, "get" | "list" | "start" | "cancel" | "subscribeAll" | "reviewCoverage" | "setProjectTeamGuard" | "setProjectTeamShippingGuard" | "setProjectTeamDeletionGuard">;
 export interface ProjectTeamsOptions {
   manager: Host; projects: Pick<Projects, "get">; automations: Automations;
@@ -66,8 +76,14 @@ export class ProjectTeams {
       const launch = cycle?.launches.find(launch => launch.runId === run.id && launch.claimId === ref.claimId && launch.inputHash === ref.inputHash && launch.phase === ref.phase && launch.attempt === ref.attempt);
       // Once the cycle and its usage receipt are durable, its chat is no longer needed
       // for recovery. Keep the receipts themselves, including blocked discovery attempts.
-      if (!cycle?.endedAt || ACTIVE_CYCLES.includes(cycle.status) || launch?.state !== "settled" || !launch.usage) {
+      if (!cycle?.endedAt || ACTIVE_CYCLES.includes(cycle.status) || !launch) {
         throw new ProjectTeamConflict("This mission cycle still needs its run history for recovery or budget accounting. Finish or stop the mission cycle, then try again. You can archive the run meanwhile.");
+      }
+      // A run that can never prove its usage (one interrupted by a restart) has nothing left to
+      // record: its launch is charged in full, which deleting the run doesn't change.
+      const unprovable = !launch.usage && !projectTeamUsageProvable(run) && launch.state === "settled" && launch.usedCalls === launch.calls && (run.status === "interrupted" || run.steps.some((step) => step.kind === "agent" && step.status === "interrupted"));
+      if (!unprovable && (launch.state !== "settled" || !launch.usage)) {
+        throw new ProjectTeamConflict("This run's usage receipt isn't saved yet, so it's still needed for recovery or budget accounting. Try again shortly, or archive the run meanwhile.");
       }
       if (team.opportunities.some(opportunity => opportunity.result?.runId === run.id && ["ready", "accepted"].includes(opportunity.status))) {
         throw new ProjectTeamConflict("This mission result is awaiting approval or shipping. Archive this run instead, or reject the result in the mission before deleting it.");
@@ -80,14 +96,53 @@ export class ProjectTeams {
   async stop() { this.stopped = true; this.off?.(); this.off = undefined; await this.queue; await this.store.flush(); await this.definitions.flush(); }
   configuration() { return { ...this.store.configuration(projectTeamsEnabled()), autoTeamEnabled: autoTeamEnabled() }; }
   enabled() { return this.configuration().enabled; }
+  /** Missions can start work on this host: the feature and Auto team are both permitted. */
+  private dispatchable() { return this.enabled() && autoTeamEnabled(); }
+  /**
+   * Arm the managed schedule only while it can fire. A host that can't dispatch disarms it
+   * rather than refusing every occurrence; arming again starts from the next time, not a missed one.
+   */
+  private sync(team: ProjectTeam) { return this.options.automations.syncProjectTeam(team, this.dispatchable()); }
   setEnabled(raw: unknown) { return this.serialize(async () => {
-    const body = closed(raw, ["enabled", "revision"], "Standing teams settings");
+    const body = closed(raw, ["enabled", "revision"], "project mission settings");
     if (typeof body.enabled !== "boolean" || !Number.isSafeInteger(body.revision) || body.revision < 0) throw new Error("Include enabled and the current settings revision");
-    if (!body.enabled && this.store.list().some(active)) throw new ProjectTeamConflict("Stop active or unresolved standing-team cycles before disabling Standing teams");
+    if (!body.enabled && this.store.list().some(active)) throw new ProjectTeamConflict("Stop active or unresolved mission cycles before disabling project missions");
     await this.store.setEnabled(body.enabled, body.revision);
+    // The next recovery pass retries a projection that couldn't be saved now (and reports it).
+    for (const team of this.store.list()) await this.sync(team).catch(() => undefined);
     return this.configuration();
   }); }
-  list(project?: string) { return this.store.list().filter((t) => !project || t.projectId === project); }
+  /**
+   * A project's missions. Missions left behind by a deleted project are listed with the project
+   * that now contains their repository, so the owner can archive them and release it.
+   */
+  list(project?: string) {
+    const repos = project ? this.options.projects.get(project)?.repos ?? [] : [];
+    return this.store.list().filter((t) => !project || t.projectId === project || t.status !== "archived" && repos.includes(t.repo) && !this.options.projects.get(t.projectId));
+  }
+  /** A deleted project's missions stop and are archived, releasing their repositories. History, receipts and budgets stay. */
+  releaseProject(projectId: string) { return this.serialize(async () => {
+    for (const t of this.store.list().filter((t) => t.projectId === projectId && t.status !== "archived")) {
+      const stopped: string[] = [];
+      const team = await this.store.change(t.id, undefined, undefined, (v) => {
+        for (const c of v.cycles.filter((c) => ACTIVE_CYCLES.includes(c.status))) { stopped.push(c.id); finish(c, "cancelled", "Project was deleted; unknown and unfinished launch reservations remain charged"); const o = v.opportunities.find((o) => o.id === c.opportunityId); if (o) { o.status = "blocked"; o.reason = c.reason; o.revision++; } }
+        v.status = "archived"; v.error = undefined; v.recoveryError = undefined;
+      });
+      for (const c of team.cycles.filter((c) => stopped.includes(c.id))) for (const l of c.launches) if (l.runId && l.state !== "settled") this.options.manager.cancel(l.runId);
+      await this.sync(team);
+    }
+  }); }
+  /** A project's repositories that a mission in any project already owns, including linked worktrees and missions awaiting repair. */
+  async repositoryOwners(projectId: string) {
+    const owners: Record<string, { name: string; projectId: string; repair?: true }> = {};
+    const teams = [...this.store.list().filter((t) => t.status !== "archived"), ...this.store.quarantined().map((t) => ({ ...t, repair: true as const }))];
+    for (const repo of this.options.projects.get(projectId)?.repos ?? []) {
+      const identity = await repositoryIdentity(repo).catch(() => undefined);
+      const owner = teams.find((t) => t.repo === repo || !!identity && t.repositoryId === identity);
+      if (owner) owners[repo] = { name: owner.name, projectId: owner.projectId, ...("repair" in owner ? { repair: true as const } : {}) };
+    }
+    return owners;
+  }
   teamLibrary(): AgentTeamSnapshot[] { return this.definitions.list().map(({ id, revision, name, configuration }) => ({ id, revision, name, configuration })); }
   private definition(value: unknown): AgentTeamSnapshot {
     const ref = closed(value, ["id", "revision"], "reusable team reference");
@@ -101,21 +156,33 @@ export class ProjectTeams {
     return this.definitions.save({ id, revision: r.revision, operationId: r.operationId, name: r.name, configuration });
   }); }
   private async permitted(t: Pick<ProjectTeam, "repo" | "projectId" | "repositoryId">, dispatch = true) {
-    if (dispatch && !this.enabled()) throw new Error("Enable Standing teams on a project page before running a cycle");
+    if (dispatch && !this.enabled()) throw new Error("Project missions are off on this host. Enable project missions on a project's Missions page first.");
     if (dispatch && !autoTeamEnabled()) throw new Error("Auto team execution is disabled by this host’s configuration");
-    if (this.stopped) throw new Error("Project team dispatch is paused");
+    if (this.stopped) throw new Error("Project mission dispatch is paused");
     if (!this.options.projects.get(t.projectId)?.repos.includes(t.repo)) throw new ProjectTeamConflict("The project no longer explicitly contains this repository");
     await this.options.allowed?.(t.repo);
     if (t.repositoryId && await repositoryIdentity(t.repo) !== t.repositoryId) throw new ProjectTeamConflict("Repository metadata was replaced; inspect ownership before dispatch");
   }
+  /** Stopping, pausing or archiving gives up authority, so it needs no project membership or intact repository. */
+  private async releasable(t: Pick<ProjectTeam, "repo">) {
+    if (this.stopped) throw new Error("Project mission dispatch is paused");
+    await this.options.allowed?.(t.repo);
+  }
+  /** A missing branch is a mission setting to correct, not a Git failure to read. */
+  private async baseCommit(repo: string, branch: string) {
+    return resolveCommit(repo, `refs/heads/${branch}`).catch(async (error) => {
+      if ((await git(["show-ref", "--verify", "--quiet", `refs/heads/${branch}`], repo)).code === 1) throw new Error(`Base branch "${branch}" doesn't exist in ${repo}. Create it there, or edit the mission's base branch.`);
+      throw error;
+    });
+  }
   private async pin(t: Pick<ProjectTeam, "repo" | "projectId" | "mission">) {
     await this.permitted(t);
-    const base = await resolveCommit(t.repo, `refs/heads/${t.mission.baseBranch}`);
+    const base = await this.baseCommit(t.repo, t.mission.baseBranch);
     const config = await readRepoConfig(t.repo); if (config.error) throw new Error(config.error);
     return { base, source: digest(config.config) };
   }
   create(raw: unknown) { return this.serialize(async () => {
-    const r = closed(raw, ["operationId", "projectId", "repo", "name", "mission", "definition", "scheduleEnabled"], "standing team");
+    const r = closed(raw, ["operationId", "projectId", "repo", "name", "mission", "definition", "scheduleEnabled"], "project mission");
     const projectId = text(r.projectId, 100, "project"), repo = await realpath(await repoRoot(text(r.repo, 4000, "repository")));
     await this.permitted({ projectId, repo });
     const definition = r.definition === undefined ? undefined : this.definition(r.definition);
@@ -125,14 +192,17 @@ export class ProjectTeams {
     await this.pin({ projectId, repo, mission });
     const now = Date.now(), id = `pt-${digest([projectId, op.id]).slice(0, 24)}`;
     const team = await this.store.create({ version: 1, id, revision: 1, projectId, repo, name, status: "draft", triggerId: `t-${id}`, ...(definition ? { definition } : {}), ...(r.scheduleEnabled !== undefined ? { scheduleEnabled: r.scheduleEnabled } : {}), missionRevision: 1, mission, missions: [{ revision: 1, value: mission }], createdAt: now, updatedAt: now, cycles: [], opportunities: [], decisions: [], operations: [{ ...op, at: now }] });
-    await this.options.automations.syncProjectTeam(team); return team;
+    await this.sync(team); return team;
   }); }
   update(id: string, raw: unknown) { return this.serialize(async () => {
     const r = closed(raw, ["operationId", "revision", "mission", "status", "name", "schedule", "scheduleEnabled", "definition"], "team update"), op = operation(r.operationId, r);
-    const before = this.store.get(id); await this.permitted(before, false);
+    // Pausing or archiving alone stays possible after the project or its repository membership is gone.
+    const release = ["paused", "archived"].includes(r.status) && Object.keys(r).every((key) => ["operationId", "revision", "status"].includes(key));
+    const before = this.store.get(id); await (release ? this.releasable(before) : this.permitted(before, false));
     if (r.status === "active") await this.permitted(before);
     const definition = r.definition == null ? undefined : this.definition(r.definition);
     const mission = r.mission === undefined && !definition ? undefined : validateMission(definition ? { ...r.mission ?? before.mission, roleSettings: undefined, ...definition.configuration } : r.mission);
+    if (mission && mission.baseBranch !== before.mission.baseBranch) await this.baseCommit(before.repo, mission.baseBranch);
     const schedule = r.schedule === undefined ? r.mission === undefined ? undefined : mission?.schedule : r.schedule === null ? undefined : missionSchedule(r.schedule);
     if (r.scheduleEnabled !== undefined && typeof r.scheduleEnabled !== "boolean") throw new Error("Choose whether recurring discovery is enabled");
     if (r.schedule === null && r.scheduleEnabled === true) throw new Error("Choose a schedule before enabling recurring discovery");
@@ -149,24 +219,27 @@ export class ProjectTeams {
       if (schedule) t.schedule = schedule;
       if (r.schedule === null) t.scheduleEnabled = false;
       else if (r.scheduleEnabled !== undefined) t.scheduleEnabled = r.scheduleEnabled;
-      if (r.status) { t.status = r.status; t.error = undefined; } if (r.name !== undefined) t.name = text(r.name, 80, "name");
+      if (r.status) { t.status = r.status; t.error = undefined; t.recoveryError = undefined; } if (r.name !== undefined) t.name = text(r.name, 80, "name");
     });
-    await this.options.automations.syncProjectTeam(team); return team;
+    await this.sync(team); return team;
   }); }
   private revision(value: unknown) { if (!Number.isSafeInteger(value) || Number(value) < 1) throw new Error("Include the current team revision"); return Number(value); }
   async preview(id: string): Promise<AutomationPreview> {
     const t = this.store.get(id), warnings: string[] = [], a = allowance(t), busy = active(t);
     try { await this.pin(t); } catch (e) { warnings.push((e as Error).message); }
-    if (t.status !== "active") warnings.push("Activate this team before starting a cycle");
+    if (t.status !== "active") warnings.push(t.status === "archived" ? ARCHIVED : "Activate this team before starting a cycle");
     if (pending(t) >= PT_LIMITS.pending) warnings.push("Review pending results before starting more work");
     if (a.calls < t.mission.budget.discoveryCalls || a.minutes < t.mission.budget.discoveryMinutes) warnings.push("Rolling weekly allowance is exhausted");
-    return { automation: `t-${id}`, ready: !warnings.length && !busy, busy: busy?.id, wouldQueue: false, nextTimes: t.scheduleEnabled === false ? [] : previewSchedule(t.schedule ?? t.mission.schedule), selected: [{ key: id, task: t.mission.mission }], skipped: [], warnings, permissions: { trust: t.mission.trust, isolate: false }, commands: { check: t.mission.check, setup: t.mission.setup }, limits: { maxInvocations: t.mission.budget.discoveryCalls, maxMinutes: t.mission.budget.discoveryMinutes, startsPerHour: 1, startsUsed: busy ? 1 : 0 } };
+    // Times the schedule will actually fire: none while the mission or this host can't run it.
+    const scheduled = this.dispatchable() && t.status === "active" && t.scheduleEnabled !== false;
+    return { automation: `t-${id}`, ready: !warnings.length && !busy, busy: busy?.id, wouldQueue: false, nextTimes: scheduled ? previewSchedule(t.schedule ?? t.mission.schedule) : [], selected: [{ key: id, task: t.mission.mission }], skipped: [], warnings, permissions: { trust: t.mission.trust, isolate: false }, commands: { check: t.mission.check, setup: t.mission.setup }, limits: { maxInvocations: t.mission.budget.discoveryCalls, maxMinutes: t.mission.budget.discoveryMinutes, startsPerHour: 1, startsUsed: busy ? 1 : 0 } };
   }
   cycle(id: string, operationId: string) { return this.serialize(async () => {
     let t = this.store.get(id); await this.permitted(t);
     const op = operation(operationId, { action: "cycle" });
     const previous = t.operations.find((o) => o.id === op.id); if (previous) { if (previous.hash !== op.hash) throw new ProjectTeamConflict("Operation ID changed"); return t; }
     if (operationId.startsWith("schedule:") && t.scheduleEnabled === false) throw new Error("Recurring discovery is disabled for this assignment");
+    if (t.status === "archived") throw new Error(ARCHIVED);
     if (t.status !== "active") throw new Error("Activate this team before starting a cycle");
     if (active(t)) throw new ProjectTeamConflict("A cycle is already active; inspect or stop it first");
     const { base, source } = await this.pin(t);
@@ -231,19 +304,41 @@ export class ProjectTeams {
     if (digest(run.loop.verification ?? null) !== ref.verificationHash) throw new Error("Pinned verification profile changed");
   }
   private async verified(run: Run): Promise<ProjectOpportunity["result"]> {
-    const v = run.verification, profile = run.loop.verification;
-    if (run.status !== "done" || !run.endedAt || run.verdict === "failing" || !v || v.state !== "verified" || !v.head || !v.branch || !run.team?.verification?.approved || !run.team.verification.reviewed || run.team.verification.head !== v.head || !profile?.checks.some((g) => g.required) || digest(profile) !== run.projectTeam?.verificationHash || profile.checks.some((g) => g.required && !v.checks.some((e) => e.check.id === g.id && e.check.command === g.command && e.diagnosis === "passed" && e.attempts.length && e.attempts.every((a) => a.ok && !a.timedOut && a.exitCode === 0))) || v.skipped.some((g) => g.check.required) || v.requirements?.some((r) => !r.covered)) throw new Error("The implementation lacks required checks and independent review at its final commit");
-    const worktree = run.worktrees.find((w) => w.branch === v.branch); if (!worktree || !run.artifacts.some((a) => a.branch === v.branch)) throw new Error("The verified result branch is missing");
-    await assertProjectTeamChanges(worktree.path, run);
+    const v = run.verification, profile = run.loop.verification, review = run.team?.verification;
+    // Each requirement names what is missing; the run keeps the full evidence.
+    if (run.status !== "done" || !run.endedAt) throw new Error(runFailure(run, "implementation"));
+    if (!profile?.checks.some((g) => g.required)) throw new Error("No required check is configured for this mission's results");
+    if (digest(profile) !== run.projectTeam?.verificationHash) throw new Error("The verification profile changed after this implementation started");
+    if (!v || !v.head || !v.branch) throw new Error("The final commit has no verification record");
+    const unpassed = profile.checks.find((g) => g.required && !v.checks.some((e) => e.check.id === g.id && e.check.command === g.command && e.diagnosis === "passed" && e.attempts.length && e.attempts.every((a) => a.ok && !a.timedOut && a.exitCode === 0)));
+    if (unpassed) throw new Error(bounded(`The required check \`${unpassed.command}\` did not pass at the final commit`));
+    if (v.skipped.some((g) => g.check.required)) throw new Error("A required check was skipped at the final commit");
+    if (run.verdict === "failing" || v.state !== "verified") throw new Error(bounded(`Verification did not pass at the final commit${run.team?.gaps.length ? `: ${run.team.gaps.join("; ")}` : ""}`));
+    if (v.requirements?.some((r) => !r.covered)) throw new Error("The final verification doesn't cover every acceptance requirement");
+    if (!review?.reviewed) throw new Error("No independent review covers the final commit");
+    if (!review.approved) throw new Error("The independent reviewer did not approve the final commit");
+    if (review.head !== v.head) throw new Error("The independent review covers an earlier commit, not the final one");
+    const worktree = run.worktrees.find((w) => w.branch === v.branch), head = await resolveCommit(run.repo, `refs/heads/${v.branch}`).catch(() => undefined);
+    if (!worktree || !head || !run.artifacts.some((a) => a.branch === v.branch)) throw new Error("The verified result branch is missing");
+    // Archiving can remove the worktree but keeps the branch, so check the committed result then.
+    if (existsSync(join(worktree.path, ".git"))) {
+      try { await assertProjectTeamChanges(worktree.path, run); }
+      catch (error) {
+        // Archive cleanup can finish between the existence check and the asynchronous Git calls.
+        // An intact worktree still fails closed on real scope or verification errors.
+        if (existsSync(join(worktree.path, ".git"))) throw error;
+        await assertProjectTeamChanges(run.repo, run, v.head);
+      }
+    } else await assertProjectTeamChanges(run.repo, run, v.head);
     const coverage = await this.options.manager.reviewCoverage(run.id, v.branch);
-    if (coverage.stale || coverage.head !== v.head || await resolveCommit(run.repo, `refs/heads/${v.branch}`) !== v.head) throw new Error("The result changed after independent verification");
+    if (coverage.stale || coverage.head !== v.head || head !== v.head) throw new Error("The result changed after independent verification");
     return { runId: run.id, head: v.head, branch: v.branch, reportHash: digest(v) };
   }
   private async shippingGuard(run: Run, branch: string) {
     const t = this.store.get(run.projectTeam!.teamId); await this.permitted(t, false);
     if (t.status === "archived") throw new Error("Archived team history is immutable");
     const o = t.opportunities.find((o) => o.id === run.projectTeam!.opportunityId);
-    if (!o || o.status !== "accepted" || o.result?.runId !== run.id || o.result.branch !== branch) throw new Error("Approve this exact result in its standing team before publishing or merging");
+    if (!o || o.status !== "accepted" || o.result?.runId !== run.id || o.result.branch !== branch) throw new Error("Approve this exact result in its project mission before publishing or merging");
     const current = await this.verified(run); if (digest(current) !== digest(o.result)) throw new Error("Approved result is stale; review it again");
   }
   reconcile(): Promise<void> {
@@ -252,39 +347,53 @@ export class ProjectTeams {
     if (this.stopped) return;
     for (const snapshot of this.store.list()) {
       try {
-        await this.reconcileUsage(snapshot);
-        if (!this.enabled()) continue;
-        if (snapshot.status === "archived") { await this.options.automations.syncProjectTeam(snapshot); continue; }
-        await this.permitted(snapshot); await this.options.automations.syncProjectTeam(snapshot);
-        let t = this.store.get(snapshot.id), c = active(t);
-        if (!c) { await this.refreshResults(t); continue; }
-        if (!c.launches.length) { await this.launch(t, c.id, c.opportunityId ? "implementation" : "discovery", c.opportunityId); continue; }
-        if (c.status === "selecting" && c.launches.every((l) => l.state === "settled")) { await this.select(t, c); continue; }
-        const l = c.launches[c.launches.length - 1]!;
-        let run = l.runId ? this.options.manager.get(l.runId) : undefined;
-        if (!run) {
-          const matches = this.options.manager.list().filter((r) => r.projectTeam?.teamId === t.id && r.projectTeam.cycleId === c!.id && r.projectTeam.claimId === l.claimId && r.projectTeam.inputHash === l.inputHash && r.projectTeam.attempt === l.attempt);
-          if (matches.length === 1) run = this.options.manager.get(matches[0]!.id);
-        }
-        if (!run) { if (l.state !== "unknown") await this.store.change(t.id, undefined, undefined, (t) => { const v = t.cycles.find((v) => v.id === c!.id)!; v.status = "unknown"; v.reason = "No exact durable launch receipt; the reservation is retained and will not be replayed"; v.launches.at(-1)!.state = "unknown"; }); continue; }
-        if (digest([run.repo, run.project, run.baseRef, run.projectTeam?.inputHash, run.projectTeam?.claimId]) !== digest([t.repo, t.projectId, c.baseCommit, l.inputHash, l.claimId])) throw new Error("Recovered run identity mismatch");
-        await (this.options.persist ?? persistProjectTeamReceipt)(run);
-        if (!l.runId || l.state === "unknown") t = await this.store.change(t.id, undefined, undefined, (t) => { const v = t.cycles.find((v) => v.id === c!.id)!; v.status = l.phase === "discovery" ? "discovering" : "building"; v.launches.at(-1)!.runId = run!.id; v.launches.at(-1)!.state = "running"; });
-        if (!run.endedAt || run.status === "running") continue;
-        await this.settle(t, c.id, run);
-        t = this.store.get(t.id); c = t.cycles.find((v) => v.id === c!.id)!;
-        if (c.status === "selecting") await this.select(t, c);
+        if (await this.reconcileTeam(snapshot)) await this.clearRecoveryError(snapshot.id);
       } catch (error) {
         const t = this.store.get(snapshot.id);
         if (t.status === "archived") continue;
         if (!this.options.projects.get(t.projectId)?.repos.includes(t.repo)) for (const c of t.cycles.filter((c) => ACTIVE_CYCLES.includes(c.status))) for (const l of c.launches) if (l.runId) this.options.manager.cancel(l.runId);
-        if (t.error !== (error as Error).message) await this.store.change(t.id, undefined, undefined, (v) => { v.error = (error as Error).message; if (!this.options.projects.get(v.projectId)?.repos.includes(v.repo)) { v.status = "paused"; for (const c of v.cycles.filter((c) => ACTIVE_CYCLES.includes(c.status))) { finish(c, "cancelled", "Project membership was removed; reservations retained"); const o = v.opportunities.find((o) => o.id === c.opportunityId); if (o) { o.status = "blocked"; o.reason = c.reason; o.revision++; } } } });
+        if (t.recoveryError !== (error as Error).message) await this.store.change(t.id, undefined, undefined, (v) => { v.recoveryError = (error as Error).message; if (!this.options.projects.get(v.projectId)?.repos.includes(v.repo)) { v.status = "paused"; for (const c of v.cycles.filter((c) => ACTIVE_CYCLES.includes(c.status))) { finish(c, "cancelled", "Project membership was removed; reservations retained"); const o = v.opportunities.find((o) => o.id === c.opportunityId); if (o) { o.status = "blocked"; o.reason = c.reason; o.revision++; } } } });
       }
     }
     });
     this.reconciling = work;
     void work.finally(() => { if (this.reconciling === work) this.reconciling = undefined; }).catch(() => undefined);
     return work;
+  }
+  /** One team's recovery pass. True when the team passed its dispatch checks and every step succeeded. */
+  private async reconcileTeam(snapshot: ProjectTeam): Promise<boolean> {
+    await this.reconcileUsage(snapshot);
+    // A host that can't dispatch keeps schedules disarmed instead of refusing every occurrence.
+    if (snapshot.status === "archived" || !this.dispatchable()) { await this.sync(snapshot); return false; }
+    await this.permitted(snapshot); await this.sync(snapshot);
+    let t = this.store.get(snapshot.id), c = active(t);
+    if (!c) { await this.refreshResults(t); return true; }
+    if (!c.launches.length) { await this.launch(t, c.id, c.opportunityId ? "implementation" : "discovery", c.opportunityId); return true; }
+    if (c.status === "selecting" && c.launches.every((l) => l.state === "settled")) { await this.select(t, c); return true; }
+    const l = c.launches[c.launches.length - 1]!;
+    let run = l.runId ? this.options.manager.get(l.runId) : undefined;
+    if (!run) {
+      const matches = this.options.manager.list().filter((r) => r.projectTeam?.teamId === t.id && r.projectTeam.cycleId === c!.id && r.projectTeam.claimId === l.claimId && r.projectTeam.inputHash === l.inputHash && r.projectTeam.attempt === l.attempt);
+      if (matches.length === 1) run = this.options.manager.get(matches[0]!.id);
+    }
+    if (!run) { if (l.state !== "unknown") await this.store.change(t.id, undefined, undefined, (t) => { const v = t.cycles.find((v) => v.id === c!.id)!; v.status = "unknown"; v.reason = "No exact durable launch receipt; the reservation is retained and will not be replayed"; v.launches.at(-1)!.state = "unknown"; }); return true; }
+    if (digest([run.repo, run.project, run.baseRef, run.projectTeam?.inputHash, run.projectTeam?.claimId]) !== digest([t.repo, t.projectId, c.baseCommit, l.inputHash, l.claimId])) throw new Error("Recovered run identity mismatch");
+    await (this.options.persist ?? persistProjectTeamReceipt)(run);
+    if (!l.runId || l.state === "unknown") t = await this.store.change(t.id, undefined, undefined, (t) => { const v = t.cycles.find((v) => v.id === c!.id)!; v.status = l.phase === "discovery" ? "discovering" : "building"; v.launches.at(-1)!.runId = run!.id; v.launches.at(-1)!.state = "running"; });
+    if (!run.endedAt || run.status === "running") return true;
+    await this.settle(t, c.id, run);
+    t = this.store.get(t.id); c = t.cycles.find((v) => v.id === c!.id)!;
+    if (c.status === "selecting") await this.select(t, c);
+    return true;
+  }
+  /**
+   * A recovery error describes the current state, so a pass that succeeds clears it. The restore
+   * advisory is the owner's to dismiss: it stays until the mission's status changes.
+   */
+  private async clearRecoveryError(id: string) {
+    const saved = this.store.get(id);
+    // `error` held recovery failures before recoveryError existed; preserve the restore advisory.
+    if (saved.recoveryError || saved.error && saved.error !== RESTORED_TEAM_ERROR) await this.store.change(id, undefined, undefined, (t) => { t.recoveryError = undefined; if (t.error !== RESTORED_TEAM_ERROR) t.error = undefined; });
   }
   private async reconcileUsage(team: ProjectTeam) {
     for (const cycle of team.cycles) for (const launch of cycle.launches) {
@@ -308,7 +417,11 @@ export class ProjectTeams {
     let reason: string | undefined, result: ProjectOpportunity["result"], candidates: ProjectOpportunity[] = [];
     if (run.projectTeam!.phase === "discovery") {
       const r = run.projectDiscovery;
-      if (run.status !== "done" || !r?.approved || r.head !== c.baseCommit || r.sourceDigest !== c.sourceDigest || r.digest !== digest(r.report)) reason = "Discovery did not produce an independently approved report at the pinned base";
+      if (run.status !== "done") reason = runFailure(run, "discovery");
+      else if (!r) reason = "Discovery finished without a report";
+      else if (!r.approved) reason = bounded(`The independent reviewer did not approve the discovery report${run.team?.gaps.length ? `: ${run.team.gaps.join("; ")}` : ""}`);
+      else if (r.head !== c.baseCommit || r.sourceDigest !== c.sourceDigest) reason = "The base branch or repository configuration changed during discovery; run a new cycle";
+      else if (r.digest !== digest(r.report)) reason = "The discovery report failed its integrity check";
       else {
         const report = validateReport(r.report);
         for (const candidate of report.candidates) {
@@ -357,9 +470,11 @@ export class ProjectTeams {
     if (action === "revise" && !note) throw new Error("Describe the requested revision");
     if (action === "defer" && (!Number.isFinite(r.deferUntil) || r.deferUntil <= Date.now() || r.deferUntil > Date.now() + 90 * 86400_000)) throw new Error("Choose a defer date within 90 days");
     const build = action === "build" || action === "revise";
-    if (build && (active(t) || t.status !== "active" || pending(t) >= PT_LIMITS.pending && !o.result)) throw new Error("Activate the team and finish active or pending work before building");
+    const refusal = build ? buildRefusal(t, o) : undefined; if (refusal) throw new Error(refusal);
     const pin = build ? await this.pin(t) : undefined;
-    if (build && (o.baseCommit !== pin!.base || candidateProblem(o, t.mission))) throw new Error("Opportunity is stale or outside policy. Update the mission if needed and discover again.");
+    // Owner tasks claim no code evidence, so a rebuild re-pins them to the current base like a new task.
+    const owner = o.origin === "owner";
+    if (build && !owner && o.baseCommit !== pin!.base) throw new Error("The base branch moved after this was discovered. Run a new discovery cycle.");
     const cycleId = `pc-${digest([id, op.id]).slice(0, 24)}`;
     t = await this.store.change(id, this.revision(r.revision), op, (t) => {
       const v = t.opportunities.find((v) => v.id === o.id)!; v.revision++; v.reason = note || undefined;
@@ -367,7 +482,7 @@ export class ProjectTeams {
       if (action === "approve") v.status = "accepted";
       if (action === "reject") v.status = "rejected";
       if (action === "defer") { v.status = "deferred"; v.deferUntil = r.deferUntil; }
-      if (build) { v.status = "selected"; v.result = undefined; t.cycles.push({ id: cycleId, operationId: op.id, missionRevision: t.missionRevision, mission: t.mission, ...(t.definition ? { definition: t.definition } : {}), baseCommit: pin!.base, sourceDigest: pin!.source, fingerprint: digest([pin, op.id]), at: Date.now(), status: "selecting", launches: [], opportunityId, context: JSON.stringify({ ownerRevision: note, previousResult: o.result }) }); }
+      if (build) { v.status = "selected"; v.result = undefined; if (owner) v.baseCommit = pin!.base; t.cycles.push({ id: cycleId, operationId: op.id, missionRevision: t.missionRevision, mission: t.mission, ...(t.definition ? { definition: t.definition } : {}), baseCommit: pin!.base, sourceDigest: pin!.source, fingerprint: digest([pin, op.id]), at: Date.now(), status: "selecting", launches: [], opportunityId, context: JSON.stringify({ ownerRevision: note, previousResult: o.result }) }); }
     });
     if (build) await this.launch(t, cycleId, "implementation", opportunityId);
     return this.store.get(id);
@@ -377,8 +492,8 @@ export class ProjectTeams {
     const t = this.store.get(id); await this.permitted(t);
     const previous = t.operations.find((v) => v.id === op.id);
     if (previous) { if (previous.hash !== op.hash) throw new ProjectTeamConflict("Operation ID was reused with different content"); return t; }
-    if (t.status !== "active" || active(t)) throw new ProjectTeamConflict("Activate the assignment and finish or stop its active cycle before giving it a task");
-    if (pending(t) >= PT_LIMITS.pending || openOpportunities(t) >= PT_LIMITS.open) throw new Error("Review pending work before assigning another task");
+    const refusal = taskAdmissionProblem(t);
+    if (refusal) throw t.status !== "active" || active(t) ? new ProjectTeamConflict(refusal) : new Error(refusal);
     const title = text(r.title, 180, "task title"), instructions = text(r.instructions, 3000, "task instructions");
     if (!Array.isArray(r.acceptance) || !r.acceptance.length || r.acceptance.length > 12) throw new Error("Provide one to twelve acceptance criteria");
     const acceptance = r.acceptance.map((v: unknown) => text(v, 1000, "acceptance criterion"));
@@ -387,8 +502,6 @@ export class ProjectTeams {
     const { base, source } = await this.pin(t), now = Date.now(), cycleId = `pc-${digest([id, op.id]).slice(0, 24)}`, opportunityId = `po-${digest([id, op.id]).slice(0, 24)}`;
     const task: ProjectOpportunity = { id: opportunityId, revision: 1, cycleId, baseCommit: base, status: "selected", createdAt: now, origin: "owner", evidenceVerified: false, key: `owner:${op.id}`.slice(0, 150).toLowerCase(), title, category: category as Category, problem: instructions, users: t.mission.users.slice(0, 1000), proposal: instructions, benefit: "Complete the project owner's requested task", evidence: [], paths: [...t.mission.paths], acceptance, kind: "observed", risk: "low", alignment: 3, impact: 1, confidence: 3, effort: 1, rationale: "Explicit owner assignment; no discovery evidence or impact estimate is claimed" };
     const problem = candidateProblem(task, t.mission); if (problem) throw new Error(problem);
-    const available = allowance(t);
-    if (available.calls < t.mission.budget.buildCalls || available.minutes < t.mission.budget.buildMinutes) throw new Error("Insufficient rolling weekly allowance for this entire phase");
     const next = await this.store.change(id, this.revision(r.revision), op, (value) => {
       value.opportunities.push(task);
       value.cycles.push({ id: cycleId, operationId: op.id, missionRevision: value.missionRevision, mission: value.mission, ...(value.definition ? { definition: value.definition } : {}), baseCommit: base, sourceDigest: source, fingerprint: digest([base, source, op.id]), at: now, status: "selecting", launches: [], opportunityId, context: JSON.stringify({ ownerTask: { title, instructions, acceptance } }) });
@@ -397,10 +510,15 @@ export class ProjectTeams {
     return this.store.get(id);
   }); }
   stopCycle(id: string, raw: unknown) { return this.serialize(async () => {
-    const r = closed(raw, ["operationId", "revision"], "stop cycle"), t = this.store.get(id); await this.permitted(t, false);
+    const r = closed(raw, ["operationId", "revision"], "stop cycle"), op = operation(r.operationId, { action: "stop" }), t = this.store.get(id); await this.releasable(t);
     if (t.status === "archived") throw new Error("Archived team history is immutable");
-    const next = await this.store.change(id, this.revision(r.revision), operation(r.operationId, { action: "stop" }), (t) => { const c = active(t); if (c) { finish(c, "cancelled", "Stopped by owner; unknown and unfinished launch reservations remain charged"); const o = t.opportunities.find((o) => o.id === c.opportunityId); if (o) { o.status = "blocked"; o.reason = "Implementation stopped by owner; request a new bounded revision to continue"; o.revision++; } } });
-    for (const c of next.cycles.filter((c) => c.status === "cancelled")) for (const l of c.launches) if (l.runId && l.state !== "settled") this.options.manager.cancel(l.runId);
+    const previous = t.operations.find((v) => v.id === op.id); if (previous) { if (previous.hash !== op.hash) throw new ProjectTeamConflict("Operation ID changed"); return t; }
+    // Refuse rather than record a stop that stopped nothing (and bump the revision other tabs hold).
+    const idle = () => new ProjectTeamConflict("No cycle is running, so there is nothing to stop");
+    const stopping = active(t); if (!stopping) throw idle();
+    const next = await this.store.change(id, this.revision(r.revision), op, (t) => { const c = t.cycles.find((c) => c.id === stopping.id); if (!c || !ACTIVE_CYCLES.includes(c.status)) throw idle(); finish(c, "cancelled", "Stopped by owner; unknown and unfinished launch reservations remain charged"); const o = t.opportunities.find((o) => o.id === c.opportunityId); if (o) { o.status = "blocked"; o.reason = "Implementation stopped by owner; request a new bounded revision to continue"; o.revision++; } });
+    // Only this cycle's runs: earlier cancelled cycles were stopped by their own request.
+    for (const l of next.cycles.find((c) => c.id === stopping.id)!.launches) if (l.runId && l.state !== "settled") this.options.manager.cancel(l.runId);
     return next;
   }); }
 }

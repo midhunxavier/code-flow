@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer } from "node:net";
-import { chromium, type Browser, type Page } from "playwright-core";
+import { chromium, type Browser, type Page, type Locator } from "playwright-core";
 const root = fileURLToPath(new URL("../..", import.meta.url));
 const live = process.env.CODEFLOW_TEST_LIVE_AGENTS === "1";
 const port = await new Promise<number>(resolve => { const server = createServer().listen(0, "127.0.0.1", () => { const p = (server.address() as {port:number}).port; server.close(() => resolve(p)); }); });
@@ -16,6 +16,12 @@ let server: ChildProcess, browser: Browser, page: Page;
 const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
 async function api(path: string, body?: unknown) { const response = await fetch(`${base}${path}`, { method: body === undefined ? "GET" : "POST", headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }); const value = await response.json() as any; assert.ok(response.ok, JSON.stringify(value)); return value; }
 async function done(id: string) { const deadline = Date.now() + (live ? 300000 : 30000); while (Date.now() < deadline) { const run = await api(`/api/runs/${id}`); if (run.status !== "running") { assert.equal(run.status, "done", run.error); return run; } await new Promise(resolve => setTimeout(resolve, 200)); } throw new Error("Agent chat did not finish"); }
+// Durable drafts hydrate asynchronously; visibility alone does not mean the reply is ready.
+async function draftText(input: Locator) {
+  await input.waitFor();
+  await input.page().waitForFunction(node => !(node as HTMLTextAreaElement).disabled, await input.elementHandle());
+  return input.inputValue();
+}
 before(async () => {
   if (live) console.log("Live UI: starting isolated server");
   mkdirSync(repo); const git = (...args: string[]) => execFileSync("git", args, { cwd: repo });
@@ -52,16 +58,16 @@ test("Agent UI renders replies, keeps drafts and files across provider tabs, res
   writeFileSync(join(run.worktrees[0].path,"unsaved.txt"),"Shared unsaved file\n");
   await page.getByRole("textbox", {name:"Message agent",exact:true}).fill("Keep this draft");
   assert.equal(await page.getByRole("button", {name:"Chat actions",exact:true}).count(), 0);
-  await page.getByRole("button", {name:"Provider",exact:true}).click();
+  await page.getByRole("button", {name:/^Provider:/}).click();
   await page.getByRole("menuitem",{name:"Codex",exact:true}).click();
   const dialog=page.getByRole("dialog",{name:"Fork chat",exact:true});
   assert.equal(await dialog.getByPlaceholder("What should the new chat do?").inputValue(), "Keep this draft");
-  assert.match(await dialog.getByRole("button",{name:"Provider",exact:true}).innerText(), /Codex/);
+  assert.match(await dialog.getByRole("button",{name:/^Provider:/}).innerText(), /Codex/);
   assert.equal((await api(`/api/runs/${first.id}/chats`)).length, 1, "choosing a provider does not fork");
   await dialog.getByRole("button",{name:"Cancel",exact:true}).click();
-  assert.equal(await page.getByRole("textbox",{name:"Message agent",exact:true}).inputValue(), "Keep this draft");
+  assert.equal(await draftText(page.getByRole("textbox",{name:"Message agent",exact:true})), "Keep this draft");
   assert.equal((await api(`/api/runs/${first.id}/chats`)).length, 1, "cancelling keeps the original chat");
-  await page.getByRole("button", {name:"Provider",exact:true}).click();
+  await page.getByRole("button", {name:/^Provider:/}).click();
   await page.getByRole("menuitem",{name:"Codex",exact:true}).click();
   await dialog.getByPlaceholder("What should the new chat do?").fill("   ");
   assert.equal(await dialog.getByRole("button",{name:"Send",exact:true}).isEnabled(), false, "a fork needs a message");
@@ -70,9 +76,9 @@ test("Agent UI renders replies, keeps drafts and files across provider tabs, res
     const catalog = (await api("/api/models")).codex;
     const model = catalog.models.find((entry:any) => entry.efforts?.includes("high"));
     assert.ok(model);
-    await dialog.getByRole("button",{name:"Model",exact:true}).click();
+    await dialog.getByRole("button",{name:/^Model:/}).click();
     await dialog.getByRole("option",{name:model.label,exact:true}).click();
-    await dialog.getByRole("button",{name:"Effort",exact:true}).click();
+    await dialog.getByRole("button",{name:/^Effort:/}).click();
     await dialog.getByRole("menuitem",{name:"high",exact:true}).click();
     forkSettings = {model:model.id,effort:"high"};
     assert.equal((await api(`/api/runs/${first.id}/chats`)).length, 1, "model and effort choices do not fork");
@@ -98,14 +104,14 @@ test("Agent UI renders replies, keeps drafts and files across provider tabs, res
   await search.fill("");
   const tabs=page.getByRole("group",{name:"Agent chats"});
   await tabs.getByRole("button").filter({hasText:"Claude"}).click();
-  await page.getByRole("textbox",{name:"Message agent",exact:true}).waitFor(); assert.equal(await page.getByRole("textbox",{name:"Message agent",exact:true}).inputValue(),"Keep this draft");
-  await page.reload(); assert.equal(await page.getByRole("textbox",{name:"Message agent",exact:true}).inputValue(),"Keep this draft"); await tabs.getByRole("button").filter({hasText:"Codex"}).waitFor();
+  await page.getByRole("textbox",{name:"Message agent",exact:true}).waitFor(); assert.equal(await draftText(page.getByRole("textbox",{name:"Message agent",exact:true})),"Keep this draft");
+  await page.reload(); assert.equal(await draftText(page.getByRole("textbox",{name:"Message agent",exact:true})),"Keep this draft"); await tabs.getByRole("button").filter({hasText:"Codex"}).waitFor();
   const toggle = page.getByRole("button", { name: "Side panel", exact: true });
   if (await toggle.getAttribute("aria-pressed") !== "true") await toggle.click();
   const panel = page.getByRole("complementary", { name: "Side panel" });
   await panel.getByRole("tab", { name: "Chat", exact: true }).click();
   await panel.getByRole("button", { name: "New chat", exact: true }).click();
-  await panel.getByRole("button", { name: "Provider", exact: true }).click();
+  await panel.getByRole("button", { name: /^Provider:/ }).click();
   await panel.getByRole("menuitem", { name: "Codex", exact: true }).click();
   const sideResponse = page.waitForResponse(response => response.url().endsWith(`/api/runs/${first.id}/provider-chat`) && response.request().method() === "POST");
   await panel.getByRole("textbox", { name: "Message", exact: true }).fill(live ? "Read the carried context and state the remembered token. Do not edit files." : "Independent side answer");
@@ -125,10 +131,10 @@ test("Agent UI renders replies, keeps drafts and files across provider tabs, res
   await tabs.getByRole("button").filter({hasText:"Codex"}).click();
   await page.waitForURL(new RegExp(second.id));
   await panel.getByRole("textbox", {name:"Message agent",exact:true}).waitFor();
-  assert.equal(await panel.getByRole("textbox", {name:"Message agent",exact:true}).inputValue(), "Keep side draft");
+  assert.equal(await draftText(panel.getByRole("textbox", {name:"Message agent",exact:true})), "Keep side draft");
   await page.reload();
   await panel.getByRole("textbox", {name:"Message agent",exact:true}).waitFor();
-  assert.equal(await panel.getByRole("textbox", {name:"Message agent",exact:true}).inputValue(), "Keep side draft");
+  assert.equal(await draftText(panel.getByRole("textbox", {name:"Message agent",exact:true})), "Keep side draft");
   await panel.getByRole("button", {name:"All chats",exact:true}).click();
   await panel.getByText("Side chats on this task", {exact:true}).waitFor();
   assert.equal(await panel.getByRole("menuitem", {name:/Provider tab follow-up/}).count(), 0);
@@ -141,7 +147,7 @@ test("Agent UI renders replies, keeps drafts and files across provider tabs, res
   await page.waitForURL(new RegExp(second.id));
   assert.equal(await rail.locator(".run-item").count(), 2);
   await panel.getByRole("textbox", {name:"Message agent",exact:true}).waitFor();
-  assert.equal(await panel.getByRole("textbox", {name:"Message agent",exact:true}).inputValue(), "Keep side draft");
+  assert.equal(await draftText(panel.getByRole("textbox", {name:"Message agent",exact:true})), "Keep side draft");
   // The root can be beyond the first filtered history page.
   const familyPage = await api(`/api/runs?limit=1&q=${encodeURIComponent(child.task)}`);
   assert.equal(familyPage.runs[0].id, second.id);
@@ -156,14 +162,14 @@ test("Agent UI renders replies, keeps drafts and files across provider tabs, res
   await page.reload();
   await main.getByRole("textbox", {name:"Message agent",exact:true}).waitFor();
   assert.equal(await tabs.locator(".sess-pick").count(), 1, "closed tabs stay closed after reload");
-  assert.equal(await panel.getByRole("textbox", {name:"Message agent",exact:true}).inputValue(), "Keep side draft");
+  assert.equal(await draftText(panel.getByRole("textbox", {name:"Message agent",exact:true})), "Keep side draft");
   await tabs.getByRole("button", {name:/^Close Codex/}).click();
   await page.getByRole("switch", {name:"AI team",exact:true}).waitFor();
   assert.equal(await rail.locator(".run-item").count(), 2, "closing the last tab keeps the sidebar task");
   await rail.locator(".run-item").filter({hasText:first.task ?? (live ? "Remember cobalt-731" : "Agent UI first message")}).click();
   await page.waitForURL(new RegExp(second.id));
   await main.getByRole("textbox", {name:"Message agent",exact:true}).waitFor();
-  assert.equal(await main.getByRole("textbox", {name:"Message agent",exact:true}).inputValue(), "Keep closed tab draft");
+  assert.equal(await draftText(main.getByRole("textbox", {name:"Message agent",exact:true})), "Keep closed tab draft");
   assert.equal(await tabs.locator(".sess-pick").count(), 1);
   await strip.getByRole("button", {name:"All chats",exact:true}).click();
   const closedRoot = strip.getByRole("menuitem").filter({hasText:live ? "Remember cobalt-731" : "Agent UI first message"});
@@ -171,14 +177,14 @@ test("Agent UI renders replies, keeps drafts and files across provider tabs, res
   assert.equal(await strip.getByRole("menuitem").count(), 2, "side chats stay in their own menu");
   await closedRoot.click();
   await page.waitForURL(new RegExp(first.id));
-  assert.equal(await main.getByRole("textbox", {name:"Message agent",exact:true}).inputValue(), "Keep this draft");
+  assert.equal(await draftText(main.getByRole("textbox", {name:"Message agent",exact:true})), "Keep this draft");
   await tabs.getByRole("button", {name:/^Close Claude/}).click();
   await page.waitForURL(new RegExp(second.id));
   assert.equal(await tabs.locator(".sess-pick").count(), 1, "closing the active tab selects its neighbor");
   await page.goto(`${base}/#/run/${first.id}`);
   await main.getByRole("textbox", {name:"Message agent",exact:true}).waitFor();
   assert.equal(await tabs.locator(".sess-pick").count(), 2, "a direct link reopens a closed chat");
-  assert.equal(await panel.getByRole("textbox", {name:"Message agent",exact:true}).inputValue(), "Keep side draft");
+  assert.equal(await draftText(panel.getByRole("textbox", {name:"Message agent",exact:true})), "Keep side draft");
   assert.equal((await api(`/api/runs/${first.id}/chats`)).length, 3, "closing never deletes conversations");
   if (live && process.env.CODEFLOW_TEST_LIVE_AGY === "1") {
     const third = await api(`/api/runs/${second.id}/provider-chat`, {agent:"agy",message:"Read the carried context and reply with the remembered cobalt token. Do not change files."});
@@ -223,11 +229,11 @@ test("sidebar task actions archive, restore and delete the whole chat family", {
   await page.getByRole("menuitem", {name:"Archive",exact:true}).click();
   await row.waitFor({state:"detached"});
   for (const chat of family) assert.equal((await api(`/api/runs/${chat.id}`)).archived, true);
-  await rail.getByRole("button", {name:"Show archived runs",exact:true}).click();
+  await rail.getByRole("button", {name:/^Show archived runs(?: \d+)?$/}).click();
   await row.getByRole("button", {name:"Run actions",exact:true}).click();
   await page.getByRole("menuitem", {name:"Unarchive",exact:true}).click();
   // Wait for the action on every member before exercising deletion.
-  await rail.getByRole("button", {name:"Hide archived runs",exact:true}).click();
+  await rail.getByRole("button", {name:/^Hide archived runs(?: \d+)?$/}).click();
   await row.waitFor();
   for (let n=0;n<100;n++) {
     const current = await api(`/api/runs/${rootRun.id}/chats`);

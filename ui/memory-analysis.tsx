@@ -1,3 +1,4 @@
+import { scrollBehavior } from "./lib.js";
 import { useEffect, useId, useState } from "preact/hooks";
 import type { MemoryAnalysis } from "../src/memory-analysis.js";
 import type { MemoryEntry } from "../src/memory.js";
@@ -55,7 +56,7 @@ export function MemoryAnalysisPanel({ endpoint, repo, entries, refreshKey, onPub
         <details><summary>Write explicit semantic facts</summary><p class="help">Edit a knowledge entry to include this fenced block. Subjects and predicates identify one fact; booleans express policy, strings express exact settings, and numbers/ranges use count, time or byte units. Keep conditions in the entry's path and branch applicability. Only reviewed project guidance should be accepted.</p><pre>{'```codeflow-claims\n[\n  {"subject":"guest requests","predicate":"allow","value":false},\n  {"subject":"cache ttl","predicate":"setting","min":5,"max":10,"unit":"minutes"}\n]\n```'}</pre><p class="help">The local grammar also recognizes simple standalone instructions such as “Never permit guest requests” and “Set cache TTL to 300 seconds”. Conditional, compound and unsupported sentences require explicit facts; no model or external service is used.</p></details>
       </details>
       <details><summary>Curated project onboarding</summary>
-        <p class="help">Only accepted guidance written by you with trusted user origins is included. Entries needing review, imported material, private material and earlier onboarding summaries are excluded.</p>
+        <p class="help">Only accepted guidance written by you with trusted user origins is included. Both sides of potential contradictions, repeated exact text, entries needing review, imported material, private material and earlier onboarding summaries are excluded. Review the omission reasons below.</p>
         {data.onboarding.body ? <><Markdown text={data.onboarding.body} /><p class="help">Sources: {data.onboarding.sourceRefs.map((source) => `${title(source.id)} (revision ${source.revision})`).join(", ")}. {data.onboarding.omitted} entries omitted.</p><button class="btn small primary" disabled={publishing || loading} onClick={publish}>{publishing ? "Saving…" : "Save onboarding as project knowledge"}</button><p class="help">Saving is your explicit publication of the reviewed summary. Source revisions are rechecked before it is saved.</p></> : <p class="help">No eligible guidance to publish. Add or review user-authored repository guidance first.</p>}
         {data.onboarding.reasons.length ? <details><summary>Why entries were omitted</summary><ul>{data.onboarding.reasons.map((item) => <li key={item.id}>{title(item.id)}: {item.reason}</li>)}</ul></details> : null}
       </details>
@@ -80,12 +81,12 @@ function MemoryProvenanceGraph({ graph }: { graph: MemoryAnalysis["graph"] }) {
   return <>
     <p class="help">Arrows go from a source revision to a derived entry. Older or deleted revisions are shown as references without restored text.{nodes.length < graph.nodes.length ? ` Showing ${nodes.length} of ${graph.nodes.length} nodes.` : ""}</p>
     {/* Colours and lines come from the stylesheet (.memory-graph), so the graph follows the theme. The scroller
-        takes focus itself: axe doesn't count the SVG node buttons as focusable content for keyboard scrolling. */}
-    {nodes.length ? <div class="memory-graph" tabIndex={0}>
+        takes focus for keyboard scrolling; each SVG node also takes focus for selection. */}
+    {nodes.length ? <div class="memory-graph" tabIndex={0} role="region" aria-label="Memory graph canvas">
       <svg width={width} height={height} role="group" aria-label="Memory provenance graph">
         <defs><marker id={marker} markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8" /></marker></defs>
         {edges.map((edge) => { const from = positions.get(edge.from)!, to = positions.get(edge.to)!; return <path key={`${edge.from}:${edge.to}`} class="mem-edge" d={`M${from.x + 190},${from.y + 24} C${from.x + 215},${from.y + 24} ${to.x - 25},${to.y + 24} ${to.x},${to.y + 24}`} marker-end={`url(#${marker})`} />; })}
-        {nodes.map((node) => { const point = positions.get(node.key)!; const label = node.title ?? node.id; return <g key={node.key} class={`mem-node${node.available ? "" : " ref"}${selected === node.key ? " on" : ""}`} transform={`translate(${point.x},${point.y})`} role="button" tabIndex={0} aria-label={`${label}, revision ${node.revision}${node.available ? "" : ", reference only"}`} onClick={() => setSelected(node.key)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setSelected(node.key); } }}><title>{label} · revision {node.revision}</title><rect width="190" height="48" rx="8" /><text x="10" y="20" class="mem-title">{label.length > 25 ? label.slice(0, 24) + "…" : label}</text><text x="10" y="37">Revision {node.revision}{node.available ? ` · ${node.status}` : " · reference only"}</text></g>; })}
+        {nodes.map((node) => { const point = positions.get(node.key)!; const label = node.title ?? node.id; return <g key={node.key} class={`mem-node${node.available ? "" : " ref"}${selected === node.key ? " on" : ""}`} transform={`translate(${point.x},${point.y})`} role="button" tabindex={0} aria-label={`${label.length > 25 ? label.slice(0, 24) + "…" : label} Revision ${node.revision} · ${node.available ? node.status : "reference only"}${label.length > 25 ? ` (${label})` : ""}`} onClick={() => setSelected(node.key)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setSelected(node.key); } }}><title>{label} · revision {node.revision}</title><rect width="190" height="48" rx="8" /><text x="10" y="20" class="mem-title">{label.length > 25 ? label.slice(0, 24) + "…" : label}{" "}</text><text x="10" y="37">Revision {node.revision}{node.available ? ` · ${node.status}` : " · reference only"}</text></g>; })}
       </svg>
     </div> : <p class="help">No entries to draw yet.</p>}
     {current ? <p class="help" role="status">{current.title ?? current.id} · revision {current.revision}. {graph.edges.filter((edge) => edge.to === current.key).length} source references; {graph.edges.filter((edge) => edge.from === current.key).length} derived references.{current.available ? "" : " The text of this revision is unavailable and has not been recovered."}</p> : null}
@@ -111,5 +112,5 @@ export function MemoryDeleteImpact({ endpoint, repo, entryId, onReady }: { endpo
 }
 
 function MemoryEntryLink({ id, children }: { id: string; children: string }) {
-  return <button type="button" class="mem-link" onClick={() => { const target = document.getElementById(`memory-${id}`); target?.scrollIntoView({ behavior: "smooth", block: "center" }); target?.focus({ preventScroll: true }); }}>{children}</button>;
+  return <button type="button" class="mem-link" onClick={() => { const target = document.getElementById(`memory-${id}`); target?.scrollIntoView({ behavior: scrollBehavior(), block: "center" }); target?.focus({ preventScroll: true }); }}>{children}</button>;
 }

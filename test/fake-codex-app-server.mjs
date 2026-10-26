@@ -8,14 +8,23 @@
 //   FAKE_CODEX_INIT_CRASH=<message>    print this to stderr and exit 1 when asked to initialize
 //   FAKE_CODEX_HANG_METHOD=<method>    never answer this request (e.g. turn/start)
 //   FAKE_CODEX_SERVER_REQUEST=<method> ask code-flow this mid-turn; the agent says what came back
+//   FAKE_CODEX_APPROVAL_OVERRIDES=<json> merged into an approval request (ASK-APPROVAL, ASK-FILE-APPROVAL)
+//   FAKE_CODEX_THREAD_ENVIRONMENTS=<json> the thread's `environments` instead of its own "local" one
 //   FAKE_CRASH_VENDOR=codex            die mid-turn, after some output
 //   FAKE_HANG_AFTER_RESULT_VENDOR=codex  stay running (and ignore SIGTERM) once stdin closes
 //   FAKE_DRIFT_VENDOR=codex            send a notification and an item type code-flow doesn't know (the answer)
 //   FAKE_CODEX_RESUME_REJECTS_PARAMS=1 reject thread/resume's parameters (-32602), like an older Codex
+//
+// Like codex-cli 0.164, a thread reports its environments ("local", rooted at its cwd) and a
+// command approval names the one it runs in. ASK-APPROVAL asks to run `rm -rf build` (with
+// OUTSIDE-WORKTREE, in a folder outside the worktree). A prompt containing ASK-QUESTION asks a
+// question with options (item/tool/requestUserInput, FAKE_CODEX_QUESTION_PARAMS overrides it) and
+// says the answer.
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { createInterface } from "node:readline";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { sleepMs, work } from "./fake-work.mjs";
 import { exerciseTeamTools } from "./fake-team-tools.mjs";
 
@@ -65,7 +74,8 @@ export async function serve(args) {
       }
     });
 
-  const threadInfo = () => ({ id: thread.id, sessionId: thread.id, preview: "", ephemeral: false, modelProvider: "openai", model: thread.params.model ?? "gpt-a", cwd: thread.params.cwd ?? process.cwd(), status: { type: "idle" }, turns: [] });
+  const environments = () => process.env.FAKE_CODEX_THREAD_ENVIRONMENTS ? JSON.parse(process.env.FAKE_CODEX_THREAD_ENVIRONMENTS) : [{ environmentId: "local", cwd: thread.params.cwd ?? process.cwd(), runtimeWorkspaceRoots: [thread.params.cwd ?? process.cwd()] }];
+  const threadInfo = () => ({ id: thread.id, sessionId: thread.id, environments: environments(), preview: "", ephemeral: false, modelProvider: "openai", model: thread.params.model ?? "gpt-a", cwd: thread.params.cwd ?? process.cwd(), status: { type: "idle" }, turns: [] });
   const startThread = (params, existing) => {
     thread = { id: existing?.id ?? randomUUID(), params, totals: existing?.totals ?? { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 }, fresh: !existing };
     writeFileSync(threadFile(thread.id), JSON.stringify({ id: thread.id, totals: thread.totals }));
@@ -110,7 +120,7 @@ export async function serve(args) {
       if (prompt.includes("ASK-APPROVAL")) {
         const cmd = { ...ls, id: "i3", command: "rm -rf build" };
         notify("item/started", { ...base, item: cmd, startedAtMs: Date.now() });
-        const { decision } = await ask("item/commandExecution/requestApproval", { ...base, itemId: "i3", command: cmd.command, cwd: process.cwd(), reason: "outside the sandbox", ...JSON.parse(process.env.FAKE_CODEX_APPROVAL_OVERRIDES || "{}") });
+        const { decision } = await ask("item/commandExecution/requestApproval", { kind: "command", ...base, itemId: "i3", environmentId: "local", command: cmd.command, cwd: prompt.includes("OUTSIDE-WORKTREE") ? tmpdir() : process.cwd(), reason: "outside the sandbox", proposedExecpolicyAmendment: ["rm", "-rf", "build"], availableDecisions: ["accept", { acceptWithExecpolicyAmendment: { execpolicy_amendment: ["rm", "-rf", "build"] } }, "cancel"], ...JSON.parse(process.env.FAKE_CODEX_APPROVAL_OVERRIDES || "{}") });
         const ran = decision === "accept" || decision === "acceptForSession";
         notify("item/completed", { ...base, item: { ...cmd, status: ran ? "completed" : "declined", exitCode: ran ? 0 : null, aggregatedOutput: "" }, completedAtMs: Date.now() });
       }
@@ -120,6 +130,13 @@ export async function serve(args) {
         notify("item/started", { ...base, item: patch, startedAtMs: Date.now() });
         const { decision } = await ask("item/fileChange/requestApproval", { ...base, itemId: patch.id, reason: "Review this patch", ...JSON.parse(process.env.FAKE_CODEX_APPROVAL_OVERRIDES || "{}") });
         notify("item/completed", { ...base, item: { ...patch, status: decision === "accept" ? "completed" : "declined" }, completedAtMs: Date.now() });
+      }
+      if (prompt.includes("ASK-QUESTION")) {
+        const questions = JSON.parse(process.env.FAKE_CODEX_QUESTION_PARAMS || "null")?.questions ?? [
+          { id: "color", header: "Badge color", question: "Which color should the badge use?", isOther: true, isSecret: false, options: [{ label: "Red", description: "Warm, stands out on the header" }, { label: "Blue", description: "Cool, matches the link palette" }] },
+        ];
+        const { answers, error } = await ask("item/tool/requestUserInput", { ...base, itemId: "i5", questions });
+        item({ type: "agentMessage", id: "i5", text: error ? `The question failed: ${error.message}` : `You answered ${JSON.stringify(answers ?? {})}`, phase: "commentary", memoryCitation: null, delivery: null, questions: null });
       }
       if (process.env.FAKE_CODEX_SERVER_REQUEST) {
         const method = process.env.FAKE_CODEX_SERVER_REQUEST;

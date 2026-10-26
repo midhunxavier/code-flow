@@ -1,12 +1,16 @@
+import { acceptsGithubAction } from "./github-webhook-events.js";
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { mkdir, open, readFile, rename } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { CODEFLOW_HOME } from "./config.js";
 import type { Run, RunManager, RunSummary } from "./engine.js";
 import { untrustedBlock, type SourceInput } from "./github.js";
 import { logError, logInfo, logWarn } from "./log.js";
 import { readRepoConfig } from "./repo-config.js";
 import { findSweepItem, nextSweepItems, sourceKeys, sweepTakes, upgradeLegacyKeys, type SweepKind, type SweepList } from "./sweeps.js";
+import { validateSchedule, type Schedule } from "./schedule-rules.js";
+
+export { validateSchedule, type Schedule };
 
 /**
  * Automations: a saved run (repo, pattern, task, team, settings) that starts on a schedule, from
@@ -14,13 +18,16 @@ import { findSweepItem, nextSweepItems, sourceKeys, sweepTakes, upgradeLegacyKey
  * revise or reject — nothing is merged automatically.
  */
 
-export type Schedule = { every: number } | { at: string; days?: number[]; timezone?: string };
-
 export interface Trigger {
   id: string;
   target?: { kind: "project-team"; teamId: string };
   name: string;
   enabled: boolean;
+  /**
+   * Counts your changes (1 when it was made). A change sent with the revision it was based on is
+   * refused if another window changed the automation since (AutomationConflictError).
+   */
+  revision: number;
   /** The run to start: the same fields as a run request from the composer. */
   run: Record<string, any> & { repo: string; pattern: string; task: string };
   schedule?: Schedule;
@@ -54,6 +61,8 @@ export interface Trigger {
   eventHistory?: AutomationEvent[];
   /** When webhooks started runs, over the last hour (they're capped per hour). */
   webhookStarts?: number[];
+  /** Recent issue/alert admissions, independent of the bounded event audit. PR updates stay eligible. */
+  webhookSources?: { key: string; at: number; runId: string }[];
 }
 
 /** What a webhook or schedule adds to the saved run. */
@@ -100,6 +109,32 @@ export interface AutomationPreview {
   commands: { setup?: string; check?: string };
 }
 
+export interface AutomationStorageStatus {
+  state: "ready" | "recovered" | "unavailable";
+  source: string;
+  backup?: string;
+  reason?: string;
+}
+export class AutomationStorageError extends Error {
+  readonly status = 503;
+  constructor() { super("Automations can't be changed: storage is unavailable. Fix access to triggers.json, then restart CodeFlow; existing records have been preserved."); }
+}
+export class ManagedAutomationError extends Error {
+  readonly status = 409;
+}
+export class AutomationValidationError extends Error {
+  readonly status = 400;
+}
+function requireTrigger(trigger: Pick<Trigger, "schedule" | "webhook">) {
+  if (!trigger.schedule && !trigger.webhook) throw new AutomationValidationError("Give it a schedule, a webhook, or both");
+}
+
+/** A change based on an older revision: another window changed the automation first. */
+export class AutomationConflictError extends Error {
+  readonly status = 409;
+  constructor() { super("This automation was changed in another window, so your change wasn't saved"); }
+}
+
 /** How a webhook call proved it may fire the automation. */
 export interface Caller {
   trigger: Trigger;
@@ -113,6 +148,7 @@ export interface FireResult {
   skipped?: string;
   /** The event waits for the running run to end, then fires. */
   queued?: boolean;
+  deduplicated?: boolean;
 }
 
 /** A sweep remembers this many handled items; the oldest are forgotten first. */
@@ -127,33 +163,11 @@ const WEBHOOK_RUNS_PER_HOUR = 10;
 const HOUR = 3_600_000;
 /** A scheduled time missed while code-flow was closed or asleep still fires if it's at most this late. */
 export const MISSED_GRACE_MS = HOUR;
+/** A mission occurrence whose admission was refused is tried again at most this often, within the grace. */
+const ADMISSION_RETRY_MS = 5 * 60_000;
 
 const FILE = join(CODEFLOW_HOME, "triggers.json");
-const MIN_EVERY_MINUTES = 5;
 const SWEEP_KINDS: SweepKind[] = ["issues", "dependabot", "alerts"];
-
-export function validateSchedule(input: unknown): Schedule | undefined {
-  if (!input || typeof input !== "object") return undefined;
-  const raw = input as Record<string, unknown>;
-  if (raw.every !== undefined) {
-    const every = Math.round(Number(raw.every));
-    if (!Number.isFinite(every) || every < MIN_EVERY_MINUTES) throw new Error(`Repeat at most every ${MIN_EVERY_MINUTES} minutes`);
-    return { every: Math.min(every, 7 * 24 * 60) };
-  }
-  if (typeof raw.at === "string") {
-    if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(raw.at)) throw new Error('Time must look like "07:30"');
-    if (raw.days !== undefined && (!Array.isArray(raw.days) || raw.days.length > 7 || !raw.days.length || raw.days.some((d) => !Number.isInteger(d) || d < 0 || d > 6))) throw new Error("Choose at least one valid day of the week");
-    const days = Array.isArray(raw.days) ? [...new Set<number>(raw.days)].sort() : undefined;
-    let timezone: string | undefined;
-    if (raw.timezone !== undefined) {
-      if (typeof raw.timezone !== "string" || !raw.timezone.trim() || raw.timezone.length > 100) throw new Error("Choose a valid IANA time zone, such as Europe/Stockholm");
-      try { timezone = new Intl.DateTimeFormat("en", { timeZone: raw.timezone.trim() }).resolvedOptions().timeZone; }
-      catch { throw new Error("Choose a valid IANA time zone, such as Europe/Stockholm"); }
-    }
-    return { at: raw.at, days: days?.length && days.length < 7 ? days : undefined, ...(timezone ? { timezone } : {}) };
-  }
-  throw new Error("A schedule needs every (minutes) or at (HH:MM)");
-}
 
 const zoneFormats = new Map<string, Intl.DateTimeFormat>();
 function zonedParts(at: number, timezone: string) {
@@ -240,8 +254,8 @@ export function stillDue(schedule: Schedule, due: number, now: number): boolean 
 
 /**
  * The saved next time, kept across a restart. A time that passed while code-flow was closed
- * stays if it can still fire (see `stillDue`), so the next tick fires it once; otherwise the
- * schedule moves on to its next time.
+ * stays if it can still fire when code-flow is back (see `stillDue`), so the next tick fires it
+ * once; otherwise the schedule moves on to its next time.
  */
 export function resumeSchedule(schedule: Schedule, saved: number | undefined, now: number): number {
   if (!saved || !Number.isFinite(saved)) return nextFire(schedule, now);
@@ -263,13 +277,17 @@ export class Automations {
   private triggers: Trigger[] = [];
   private managed?: { fire: (teamId: string, operationId: string) => Promise<FireResult>; preview: (teamId: string) => Promise<AutomationPreview>; tick: () => Promise<void> };
   setProjectTeams(hooks: NonNullable<Automations["managed"]>) { this.managed = hooks; }
-  /** Internal projection: execution settings remain owned by the team's versioned mission. */
-  async syncProjectTeam(team: { id: string; name: string; repo: string; projectId: string; status: string; mission: { schedule: Schedule }; schedule?: Schedule; scheduleEnabled?: boolean }) {
+  /**
+   * Internal projection: execution settings remain owned by the team's versioned mission.
+   * `hostEnabled`: this host permits missions to run; when it doesn't, the schedule is disarmed.
+   */
+  async syncProjectTeam(team: { id: string; name: string; repo: string; projectId: string; status: string; mission: { schedule: Schedule }; schedule?: Schedule; scheduleEnabled?: boolean }, hostEnabled = true) {
     this.requireWritable();
     const id = `t-${team.id}`, previous = this.get(id);
     if (previous && previous.target?.teamId !== team.id) throw new Error("Managed automation identity collision");
-    const enabled = team.status === "active" && team.scheduleEnabled !== false, schedule = team.schedule ?? team.mission.schedule;
-    const next: Trigger = { ...previous, id, target: { kind: "project-team", teamId: team.id }, name: team.name, run: { repo: team.repo, project: team.projectId, pattern: "auto-team", task: `Standing team: ${team.name}` }, schedule, enabled, webhook: false, isolate: false, token: previous?.token ?? randomBytes(24).toString("hex"), createdAt: previous?.createdAt ?? Date.now(), nextAt: enabled ? previous?.enabled && JSON.stringify(previous.schedule) === JSON.stringify(schedule) ? previous.nextAt : nextFire(schedule, Date.now()) : undefined };
+    // Saved as the server saves any schedule (current zone names), so a restart reads back the same one.
+    const enabled = hostEnabled && team.status === "active" && team.scheduleEnabled !== false, schedule = validateSchedule(team.schedule ?? team.mission.schedule)!;
+    const next: Trigger = { ...previous, id, revision: previous?.revision ?? 1, target: { kind: "project-team", teamId: team.id }, name: team.name, run: { repo: team.repo, project: team.projectId, pattern: "auto-team", task: `Project mission: ${team.name}` }, schedule, enabled, webhook: false, isolate: false, token: previous?.token ?? randomBytes(24).toString("hex"), createdAt: previous?.createdAt ?? Date.now(), nextAt: enabled ? previous?.enabled && JSON.stringify(previous.schedule) === JSON.stringify(schedule) ? previous.nextAt : nextFire(schedule, Date.now()) : undefined };
     if (previous && JSON.stringify(previous) === JSON.stringify(next)) return id;
     this.triggers = [...this.triggers.filter((t) => t.id !== id), next];
     try { await this.save(true); } catch (error) { this.triggers = this.triggers.filter((t) => t.id !== id); if (previous) this.triggers.push(previous); throw error; }
@@ -285,12 +303,22 @@ export class Automations {
    * or set aside is never written over: that would lose every automation and webhook secret.
    */
   private writable = false;
+  private storage: AutomationStorageStatus = { state: "unavailable", source: "triggers.json", reason: "Storage has not been loaded" };
+  storageStatus(): AutomationStorageStatus { return { ...this.storage }; }
   /** Automations starting their run right now; a second fire meanwhile doesn't start another. */
   private readonly starting = new Set<string>();
+  private readonly startingSources = new Map<string, string>();
   /** Sweeps listing their work right now. */
   private readonly sweeping = new Set<string>();
   /** Per sweep: the items a run is being started for right now. */
   private readonly claimed = new Map<string, Set<string>>();
+  /**
+   * Past times load() kept because they could still fire when code-flow came back (`at`). The
+   * first tick fires them even if it comes after the hour's grace ran out meanwhile.
+   */
+  private readonly resumed = new Map<string, { due: number; at: number }>();
+  /** Per mission automation: the occurrence whose admission was refused, its event, and when to try again. */
+  private readonly admissionRetries = new Map<string, { due: number; eventId: string; at: number }>();
 
   constructor(
     private readonly manager: RunManager,
@@ -311,12 +339,14 @@ export class Automations {
    */
   async load(now = Date.now()) {
     this.writable = false;
+    this.storage = { state: "ready", source: basename(this.file) };
     this.triggers = [];
     let text: string | undefined;
     try {
       text = await readFile(this.file, "utf8");
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+        this.storage = { state: "unavailable", source: basename(this.file), reason: "The automation file could not be read" };
         logError(`Couldn't read ${this.file}; automations are off and it won't be written over until it can be read`, err);
         return;
       }
@@ -328,7 +358,7 @@ export class Automations {
       try {
         parsed = JSON.parse(text);
       } catch (err) {
-        why = `isn't valid JSON (${(err as Error).message})`;
+        why = "isn't valid JSON";
       }
       if (Array.isArray(parsed)) entries.push(...parsed);
       else if (!(await this.setAside(why))) return;
@@ -344,8 +374,16 @@ export class Automations {
       return;
     }
     this.writable = true;
-    for (const t of this.triggers) t.nextAt = t.enabled && t.schedule ? resumeSchedule(t.schedule, t.nextAt, now) : undefined;
-    if (rejected) await this.save();
+    this.resumed.clear();
+    let missed = false;
+    for (const t of this.triggers) {
+      const saved = t.nextAt;
+      t.nextAt = t.enabled && t.schedule ? resumeSchedule(t.schedule, saved, now) : undefined;
+      if (!t.enabled || !t.schedule || saved === undefined || saved > now) continue;
+      if (t.nextAt === saved) this.resumed.set(t.id, { due: saved, at: now });
+      else { this.recordMissed(t, saved); missed = true; }
+    }
+    if (rejected || missed) await this.save();
   }
 
   /** Move triggers.json aside so it isn't lost when the usable automations are saved. */
@@ -353,9 +391,11 @@ export class Automations {
     const aside = `${this.file}.corrupt-${new Date().toISOString().replace(/[:.]/g, "-")}`;
     try {
       await rename(this.file, aside);
+      this.storage = { state: "recovered", source: basename(this.file), backup: basename(aside), reason: why };
       logError(`${this.file} ${why}: moved it to ${aside}`);
       return true;
     } catch (err) {
+      this.storage = { state: "unavailable", source: basename(this.file), reason: "The unreadable automation file could not be preserved in a backup" };
       logError(`${this.file} ${why}, and it couldn't be moved aside; automations are off until it's fixed`, err);
       return false;
     }
@@ -370,25 +410,32 @@ export class Automations {
   }
 
   async create(
-    input: Omit<Trigger, "id" | "token" | "createdAt" | "nextAt" | "handled" | "deliveries" | "queued" | "webhookStarts" | "eventHistory"> & { handled?: string[] },
+    input: Omit<Trigger, "id" | "revision" | "token" | "createdAt" | "nextAt" | "handled" | "deliveries" | "queued" | "webhookStarts" | "webhookSources" | "eventHistory"> & { handled?: string[] },
   ): Promise<Trigger> {
     this.requireWritable();
-    const trigger: Trigger = { ...input, id: `t-${randomBytes(4).toString("hex")}`, token: randomBytes(24).toString("hex"), createdAt: Date.now() };
+    const trigger: Trigger = { ...input, id: `t-${randomBytes(4).toString("hex")}`, revision: 1, token: randomBytes(24).toString("hex"), createdAt: Date.now() };
     trigger.nextAt = trigger.enabled && trigger.schedule ? nextFire(trigger.schedule, Date.now()) : undefined;
     this.triggers.push(trigger);
     await this.save();
     return { ...trigger };
   }
 
-  async update(id: string, patch: Partial<Pick<Trigger, "name" | "enabled" | "schedule" | "webhook" | "isolate" | "image" | "run">> & { rotateToken?: boolean }) {
+  /** `revision`: the one this change was based on; refused when the automation changed since. */
+  async update(id: string, patch: Partial<Pick<Trigger, "name" | "enabled" | "schedule" | "webhook" | "isolate" | "image" | "run" | "revision">> & { rotateToken?: boolean }) {
     this.requireWritable();
     const t = this.require(id);
-    if (t.target) throw new Error("Edit this automation through its standing project team");
-    const { rotateToken, ...rest } = patch;
+    if (t.target) throw new ManagedAutomationError("Edit this automation from its project mission");
+    const { rotateToken, revision, ...rest } = patch;
+    if (revision !== undefined && revision !== t.revision) throw new AutomationConflictError();
+    requireTrigger({ ...t, ...rest });
+    t.revision++;
     const timing = JSON.stringify([t.enabled, t.schedule]);
     Object.assign(t, rest);
     if ("schedule" in patch && !patch.schedule) t.schedule = undefined;
     if (rotateToken) t.token = randomBytes(24).toString("hex");
+    // A repaired load-time schedule warning is not a failed run. Never erase a real start error
+    // (or a sweep warning whose settings cannot be repaired by this editor).
+    if (t.lastError?.startsWith("Turned off: ") && !t.lastError.includes("sweep") && ("schedule" in rest || "webhook" in rest || rest.enabled === true)) t.lastError = undefined;
     // Renaming it doesn't move its next time; changing when it runs (or turning it on) does.
     if (JSON.stringify([t.enabled, t.schedule]) !== timing || (t.enabled && t.schedule && !t.nextAt)) {
       t.nextAt = t.enabled && t.schedule ? nextFire(t.schedule, Date.now()) : undefined;
@@ -410,7 +457,7 @@ export class Automations {
 
   async remove(id: string) {
     this.requireWritable();
-    if (this.require(id).target) throw new Error("Archive this automation through its standing project team");
+    if (this.require(id).target) throw new ManagedAutomationError("Archive this automation from its project mission");
     this.triggers = this.triggers.filter((t) => t.id !== id);
     await this.save();
   }
@@ -455,17 +502,34 @@ export class Automations {
       }
       if (t.nextAt > now) continue;
       const due = t.nextAt;
+      // A time load() kept was judged when code-flow came back, not up to a tick later (unless
+      // the computer slept again for the hour since).
+      const kept = this.resumed.get(t.id);
+      const judgedAt = kept?.due === due && now - kept.at <= MISSED_GRACE_MS ? kept.at : now;
       if (t.target) {
-        if (stillDue(t.schedule, due, now)) {
-          try { await this.fire(t.id, { via: "schedule", occurrence: `schedule:${due}` }); }
-          catch (error) { logWarn("Managed cycle admission failed; retaining the scheduled occurrence", { error: (error as Error).message }); continue; }
+        // A refused admission keeps its occurrence for a later try (the same operation ID can't
+        // start two cycles), but with one warning and one event, not one per tick.
+        const retry = this.admissionRetries.get(t.id)?.due === due ? this.admissionRetries.get(t.id) : undefined;
+        if (retry && now < retry.at && stillDue(t.schedule, due, judgedAt)) continue;
+        if (stillDue(t.schedule, due, judgedAt)) {
+          const eventId = retry?.eventId ?? this.recordEvent(t, { via: "schedule" }).id;
+          try { await this.fire(t.id, { via: "schedule", occurrence: `schedule:${due}`, eventId }); }
+          catch (error) {
+            if (!retry) logWarn(`Project mission "${t.name}" couldn't start its scheduled cycle; trying again every few minutes for up to an hour`, { automation: t.id, error: (error as Error).message });
+            this.admissionRetries.set(t.id, { due, eventId, at: now + ADMISSION_RETRY_MS });
+            continue;
+          }
         }
+        else this.recordMissed(t, due);
+        this.resumed.delete(t.id);
+        this.admissionRetries.delete(t.id);
         t.nextAt = nextFire(t.schedule, now); await this.save(true); continue;
       }
+      this.resumed.delete(t.id);
       t.nextAt = nextFire(t.schedule, now);
       changed = true;
-      if (!stillDue(t.schedule, due, now)) {
-        logInfo(`Automation "${t.name}" skipped its ${new Date(due).toLocaleString()} run: code-flow was closed or asleep then`);
+      if (!stillDue(t.schedule, due, judgedAt)) {
+        this.recordMissed(t, due);
         continue;
       }
       // The next time is on disk before the run starts (which takes seconds): stopping code-flow
@@ -531,7 +595,7 @@ export class Automations {
       const result = await this.fireOne(t, { ...validated, occurrence: input.occurrence, eventId: tracked.id });
       const runs = result.runs ?? (result.run ? [result.run] : []);
       tracked.runIds = runs.map((run) => run.id);
-      const state = result.queued ? "queued" : result.skipped ? /already started \d+ runs from webhooks/.test(result.skipped) ? "dropped" : "skipped" : "started";
+      const state = result.queued ? "queued" : result.deduplicated ? "deduplicated" : result.skipped ? /already started \d+ runs from webhooks/.test(result.skipped) ? "dropped" : "skipped" : "started";
       // A newer event can supersede this queued event while its disk save is pending.
       if (!(result.queued && (tracked.state === "deduplicated" || tracked.state === "dropped"))) this.updateEvent(t, tracked.id, state, result.skipped);
       return result;
@@ -563,7 +627,7 @@ export class Automations {
   /** List the same candidates and execution settings without claiming items or starting agents. */
   async dryRun(id: string, raw: FireInput = { via: "manual" }): Promise<AutomationPreview> {
     const t = this.require(id);
-    if (t.target) { if (!this.managed) throw new Error("Project teams are unavailable"); return this.managed.preview(t.target.teamId); }
+    if (t.target) { if (!this.managed) throw new Error("Project missions are unavailable on this host"); return this.managed.preview(t.target.teamId); }
     const input = validateFireInput(raw);
     const { config, error: configError } = await readRepoConfig(t.run.repo);
     const busy = this.busy(t);
@@ -580,24 +644,36 @@ export class Automations {
       const claims = this.claimed.get(t.id) ?? new Set<string>();
       const items = input.source ? (sweepTakes(t.sweep.kind, input.source) ? [findSweepItem(list, input.source)].filter((i) => i !== undefined) : []) : nextSweepItems(list, new Set([...handled, ...claims]), t.sweep.max);
       for (const item of items) {
-        if (item.source && item.task && (!("selected" in item) || item.selected) && (!("manual" in item) || !item.manual) && !sourceKeys(item.source).every((k) => handled.has(k)) && !sourceKeys(item.source).some((k) => claims.has(k))) selected.push({ key: item.key, task: item.task, source: item.source });
+        if (item.source && item.task && (!("selected" in item) || item.selected) && (!("manual" in item) || !item.manual) && !sourceKeys(item.source).every((k) => handled.has(k)) && !sourceKeys(item.source).some((k) => claims.has(k))) selected.push({ key: item.key, task: withDetails(item.task, input), source: item.source });
       }
       for (const item of list.items.slice(0, 100)) if (!selected.some((chosen) => chosen.key === item.key)) skipped.push({ key: item.key, reason: item.note ?? (item.manual ? "Requires manual action" : handled.has(item.key) ? "Already handled" : "Outside the current selection or limit") });
       if (input.source && !items.length) warnings.push("The event's source is absent from the sweep's current list");
-    } else selected.push({ key: "saved-task", task: input.details?.trim() ? `${t.run.task}\n\n## Details from the ${input.via}\n${input.details}` : t.run.task, source: input.source ?? t.run.source });
+    } else selected.push({ key: "saved-task", task: withDetails(t.run.task, input), source: input.source ?? t.run.source });
     const startsPerHour = t.sweep?.max ?? WEBHOOK_RUNS_PER_HOUR;
     const startsUsed = (t.webhookStarts ?? []).filter((at) => Date.now() - at < HOUR).length;
     if (!t.enabled && input.via !== "manual") warnings.push("This automation is disabled");
     if (input.via === "webhook" && startsUsed >= startsPerHour) warnings.push("The webhook run limit has been reached for this hour");
     if (!(t.run.loop?.check ?? config.check) && !t.run.loop?.verification && !t.run.verificationProfile) warnings.push("No independent verification command or profile is configured");
     if (selected.some((item) => item.source)) warnings.push("Source permissions and isolation are rechecked against current GitHub authorship when the run starts");
+    const duplicate = t.sweep ? undefined : this.duplicateSource(t, input);
+    if (duplicate) warnings.push(duplicate);
     const configuredTrust = t.run.trust ?? config.trust ?? "standard";
     const effectiveTrust = configuredTrust === "full" ? "trusted" : configuredTrust;
-    return { automation: id, ready: !!selected.length && (t.enabled || input.via === "manual") && !(busy && input.via !== "webhook") && !(input.via === "webhook" && startsUsed >= startsPerHour), busy, wouldQueue: !!busy && input.via === "webhook" && !t.sweep,
+    return { automation: id, ready: !duplicate && !!selected.length && (t.enabled || input.via === "manual") && !(busy && input.via !== "webhook") && !(input.via === "webhook" && startsUsed >= startsPerHour), busy, wouldQueue: !duplicate && !!busy && input.via === "webhook" && !t.sweep,
       nextTimes: t.schedule ? previewSchedule(t.schedule) : [], selected, skipped, warnings,
       permissions: { trust: effectiveTrust, isolate: t.isolate, ...(t.isolate ? { image: t.image || "node:22" } : {}) },
       limits: { maxSteps: t.run.loop?.maxSteps ?? config.limits?.maxSteps ?? 40, maxInvocations: t.run.loop?.maxInvocations ?? t.run.loop?.maxSteps ?? config.limits?.maxSteps ?? 40, maxMinutes: t.run.loop?.maxMinutes ?? config.limits?.maxMinutes ?? 60, startsPerHour, startsUsed },
       commands: { setup: t.run.loop?.setup ?? config.setup, check: t.run.loop?.check ?? config.check } };
+  }
+
+  /** A scheduled time that passed without its run: logged, and kept in the event history where you look. */
+  private recordMissed(t: Trigger, due: number) {
+    const timeZone = t.schedule && "at" in t.schedule ? t.schedule.timezone : undefined;
+    const when = new Date(due).toLocaleString("en-GB", { timeZone, weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", timeZoneName: "short" });
+    const reason = `Missed the ${when} run: code-flow was closed or the computer asleep then, and it's only caught up within an hour`;
+    logInfo(`Automation "${t.name}": ${reason}`);
+    const event = this.recordEvent(t, { via: "schedule" });
+    this.updateEvent(t, event.id, "skipped", reason);
   }
 
   private recordEvent(t: Trigger, input: FireInput, delivery?: string): AutomationEvent {
@@ -625,12 +701,14 @@ export class Automations {
   private async fireOne(t: Trigger, input: FireInput): Promise<FireResult> {
     if (!t.enabled && input.via !== "manual") return { skipped: "This automation is disabled" };
     if (t.target) {
-      if (!this.managed || input.via === "webhook") throw new Error("Project team automations require the project team service");
+      if (!this.managed || input.via === "webhook") throw new Error("A project mission automation runs only through its mission, never from a webhook");
       const result = await this.managed.fire(t.target.teamId, input.occurrence ?? `manual:${input.eventId}`);
       t.lastFiredAt = Date.now(); t.lastRunId = result.run?.id ?? t.lastRunId; t.lastError = result.skipped;
       return result;
     }
     if (t.sweep) return this.fireSweep(t, input);
+    const duplicate = this.duplicateSource(t, input);
+    if (duplicate) return { skipped: duplicate, deduplicated: true };
     // Everything up to `starting.add` is synchronous: two webhooks at once can't both get past it.
     const busy = this.busy(t);
     if (busy) return input.via === "webhook" ? this.enqueue(t, input, busy) : { skipped: busy };
@@ -640,6 +718,8 @@ export class Automations {
       return { skipped: t.lastError };
     }
     this.starting.add(t.id);
+    const sourceKey = input.via === "webhook" && input.source && input.source.kind !== "pr" ? sourceAdmissionKey(t, input) : undefined;
+    if (sourceKey) this.startingSources.set(t.id, sourceKey);
     const body: Record<string, any> = {
       ...t.run,
       task: withDetails(t.run.task, input),
@@ -651,6 +731,7 @@ export class Automations {
       const run = await this.startRun(body, { trigger: { id: t.id, name: t.name, via: input.via }, ...(hasDetails(input) && { untrustedText: true }) });
       t.lastRunId = run.id;
       t.lastError = undefined;
+      if (sourceKey) t.webhookSources = [...(t.webhookSources ?? []).filter(receipt => receipt.key !== sourceKey && (startedAt - receipt.at < HOUR || this.manager.get(receipt.runId)?.status === "running")), { key: sourceKey, at: startedAt, runId: run.id }].slice(-MAX_HANDLED);
       return { run };
     } catch (err) {
       t.lastError = (err as Error).message;
@@ -658,8 +739,18 @@ export class Automations {
       throw err;
     } finally {
       this.starting.delete(t.id);
+      this.startingSources.delete(t.id);
       await this.save();
     }
+  }
+
+  /** Webhook issue/alert repeats collapse while starting/running and for one hour after admission. */
+  private duplicateSource(t: Trigger, input: FireInput): string | undefined {
+    if (input.via !== "webhook" || !input.source || input.source.kind === "pr") return;
+    const key = sourceAdmissionKey(t, input);
+    if (this.startingSources.get(t.id) === key) return "A run for this source is already starting";
+    const receipt = t.webhookSources?.find(value => value.key === key && (Date.now() - value.at < HOUR || this.manager.get(value.runId)?.status === "running"));
+    if (receipt) return `A run for this source already started (${receipt.runId}); automatic repeats wait until it finishes and at least one hour has passed. Start a task manually for an intentional new run.`;
   }
 
   /** Why the automation can't start a run right now, if it can't. */
@@ -786,7 +877,7 @@ export class Automations {
    */
   private async fireSweepItem(t: Trigger, input: FireInput, source: SourceInput): Promise<FireResult & { runs: Run[] }> {
     const sweep = t.sweep!;
-    if (!sweepTakes(sweep.kind, source)) return { runs: [], skipped: `a ${sweep.kind} sweep doesn't start from ${source.kind === "pr" ? "a pull request" : `an ${source.kind}`}` };
+    if (!sweepTakes(sweep.kind, source)) return { runs: [], skipped: `${({ issues: "an issues sweep", alerts: "a security alerts sweep", dependabot: "a Dependabot sweep" })[sweep.kind]} doesn't start from ${source.kind === "pr" ? "a pull request" : `an ${source.kind}`}` };
     const claimed = this.claims(t);
     const keys = sourceKeys(source);
     if (keys.every((k) => (t.handled ?? []).includes(k) || claimed.has(k))) return { runs: [], skipped: "nothing new to sweep" };
@@ -862,7 +953,7 @@ export class Automations {
    * refuse them while triggers.json couldn't be read (and so isn't written).
    */
   private requireWritable() {
-    if (!this.writable) throw new Error(`Automations can't be changed: ${this.file} couldn't be read when code-flow started (see server.log). Fix or remove it, then restart code-flow.`);
+    if (!this.writable) throw new AutomationStorageError();
   }
 
   private require(id: string): Trigger {
@@ -872,7 +963,7 @@ export class Automations {
   }
 
   private save(strict = false) {
-    if (!this.writable) { if (strict) return Promise.reject(new Error("Automations storage is unavailable")); return this.saving; }
+    if (!this.writable) { if (strict) return Promise.reject(new AutomationStorageError()); return this.saving; }
     const snapshot = JSON.stringify(this.triggers, null, 2);
     const saving = this.saving.then(async () => {
       await mkdir(dirname(this.file), { recursive: true });
@@ -907,8 +998,11 @@ export function validateFireInput(raw: unknown): FireInput {
 
 /** Two webhook events that would start the same run. */
 function eventKey(event: Omit<FireInput, "via">): string {
-  return event.source ? sourceKeys(event.source).join(",") : `details:${event.details ?? ""}`;
+  return event.source ? sourceKeys(event.source).sort().join(",") : `details:${event.details ?? ""}`;
 }
+
+// Changing an automation to another repository must not suppress that repository's same-numbered issue.
+const sourceAdmissionKey = (trigger: Trigger, input: FireInput) => JSON.stringify([trigger.run.repo, eventKey(input)]);
 
 const hasDetails = (input: Omit<FireInput, "via">) => !!input.details?.trim();
 
@@ -969,6 +1063,7 @@ function readTrigger(raw: any): Trigger | undefined {
     target: raw.target,
     name: typeof raw.name === "string" && raw.name.trim() ? raw.name.slice(0, 80) : "Automation",
     enabled: raw.enabled === true && !problems.length,
+    revision: Number.isSafeInteger(raw.revision) && raw.revision > 0 ? raw.revision : 1,
     run,
     schedule,
     webhook: raw.webhook === true,
@@ -985,6 +1080,7 @@ function readTrigger(raw: any): Trigger | undefined {
     deliveries: strings(raw.deliveries)?.slice(-MAX_DELIVERIES),
     queued: queued?.length ? queued : undefined,
     eventHistory,
+    webhookSources: Array.isArray(raw.webhookSources) ? raw.webhookSources.filter((value: any) => value && typeof value.key === "string" && value.key.length <= 8192 && typeof value.runId === "string" && value.runId.length <= 200 && typeof value.at === "number" && Number.isFinite(value.at) && value.at > 0).slice(-MAX_HANDLED).map((value: any) => ({ key: value.key, at: value.at, runId: value.runId })) : undefined,
     webhookStarts: Array.isArray(raw.webhookStarts) ? raw.webhookStarts.filter((n: unknown) => time(n) !== undefined) : undefined,
   };
 }
@@ -996,7 +1092,7 @@ function readTrigger(raw: any): Trigger | undefined {
  * event's line for the task is code-flow's own words (`event`), built from fields it checked;
  * none of the payload's free text goes in as `details`.
  */
-export function readWebhook(headers: Record<string, string | string[] | undefined>, payload: any): Omit<FireInput, "via"> | null {
+export function readWebhook(headers: Record<string, string | string[] | undefined>, payload: any, sweep = false): Omit<FireInput, "via"> | null {
   const event = String(headers["x-github-event"] ?? "");
   if (!event) {
     const source = payload?.source;
@@ -1008,20 +1104,21 @@ export function readWebhook(headers: Record<string, string | string[] | undefine
       source: valid ? (source.kind === "alert" ? { kind: "alert", tool, number } : { kind: source.kind, number, ciLogs: source.ciLogs === true }) : undefined,
     };
   }
+  if (!acceptsGithubAction(event, payload?.action, sweep)) return null;
   const number = (n: unknown) => (Number.isInteger(n) && (n as number) > 0 ? (n as number) : undefined);
   // GitHub logins are letters, digits and dashes; anything else in one isn't passed on.
   const login = (u: any) => (typeof u?.login === "string" && /^[\w-]{1,39}(\[bot\])?$/.test(u.login) ? `@${u.login}` : "someone");
   // A new or reopened security alert: Dependabot's (a vulnerable dependency) or code scanning's.
-  if (event === "dependabot_alert" && ["created", "reopened", "reintroduced"].includes(payload?.action) && number(payload.alert?.number)) {
+  if (event === "dependabot_alert" && number(payload.alert?.number)) {
     return { source: { kind: "alert", tool: "dependabot", number: payload.alert.number }, event: `GitHub: Dependabot alert ${payload.action}` };
   }
-  if (event === "code_scanning_alert" && ["created", "reopened", "appeared_in_branch"].includes(payload?.action) && number(payload.alert?.number)) {
+  if (event === "code_scanning_alert" && number(payload.alert?.number)) {
     return { source: { kind: "alert", tool: "code-scanning", number: payload.alert.number }, event: `GitHub: code scanning alert ${payload.action}` };
   }
-  if (event === "issues" && ["opened", "labeled", "reopened"].includes(payload?.action) && number(payload.issue?.number)) {
+  if (event === "issues" && number(payload.issue?.number)) {
     return { source: { kind: "issue", number: payload.issue.number }, event: `GitHub: issue ${payload.action} by ${login(payload.sender)}` };
   }
-  if (event === "pull_request" && ["opened", "synchronize", "reopened", "ready_for_review", "labeled"].includes(payload?.action) && number(payload.pull_request?.number)) {
+  if (event === "pull_request" && number(payload.pull_request?.number)) {
     return { source: { kind: "pr", number: payload.pull_request.number }, event: `GitHub: pull request ${payload.action}` };
   }
   if (event === "workflow_run" && payload?.action === "completed" && payload.workflow_run?.conclusion === "failure") {

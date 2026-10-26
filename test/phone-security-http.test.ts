@@ -27,7 +27,7 @@ async function start(tls: boolean, home?: string, extra: Record<string, string> 
   const cert = join(directory, "cert.pem"), key = join(directory, "key.pem");
   if (tls) {
     try { await readFile(cert); }
-    catch { execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", key, "-out", cert, "-days", "1", "-subj", "/CN=localhost"], { stdio: "ignore" }); }
+    catch { execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", key, "-out", cert, "-days", "1", "-subj", "/CN=localhost", "-addext", "subjectAltName=DNS:localhost,IP:127.0.0.1"], { stdio: "ignore" }); }
   }
   const child = spawn(process.execPath, ["--import", "tsx", "src/server.ts"], { cwd: root, env: { ...process.env, ...extra, CODEFLOW_HOME: home, PORT: String(port), CODEFLOW_REMOTE_PORT: String(remotePort), CODEFLOW_TOKEN: "phone-security-test", CODEFLOW_LAN_ALLOW_LOCAL: "1", CODEFLOW_ALLOW_INSECURE_PHONE_CONTROL: "0", CODEFLOW_TLS_CERT: tls ? cert : "", CODEFLOW_TLS_KEY: tls ? key : "", PATH: `${join(root, "test/fake-bin")}:${process.env.PATH}` }, stdio: "pipe" });
   children.add(child);
@@ -43,14 +43,15 @@ async function local(instance: Instance, path: string, body?: unknown, method = 
   const response = await fetch(`http://127.0.0.1:${instance.port}${path}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
   return { status: response.status, body: await response.json() as any };
 }
-function phone(instance: Instance, path: string, cookie?: string, origin?: string) {
+function phone(instance: Instance, path: string, cookie?: string, origin?: string, method = "GET") {
   return new Promise<{ status: number; cookie?: string; body: string }>((resolve, reject) => {
-    const request = httpsRequest({ host: "127.0.0.1", port: instance.remotePort, path, rejectUnauthorized: false, agent: false, headers: { ...(cookie ? { cookie } : {}), ...(origin ? { origin } : {}) } }, (response) => {
+    const request = httpsRequest({ host: "127.0.0.1", port: instance.remotePort, path, method, rejectUnauthorized: false, agent: false, headers: { ...(cookie ? { cookie } : {}), ...(origin ? { origin } : {}) } }, (response) => {
       let body = ""; response.setEncoding("utf8"); response.on("data", (chunk) => { body += chunk; }); response.on("end", () => resolve({ status: response.statusCode!, cookie: response.headers["set-cookie"]?.[0], body }));
     });
     request.on("error", reject); request.end();
   });
 }
+const pairPhone = (instance: Instance, path: string) => phone(instance, `${path}/pair`, undefined, `https://127.0.0.1:${instance.remotePort}`, "POST");
 after(async () => { for (const child of children) { child.kill("SIGKILL"); } await rm(directory, { recursive: true, force: true }); });
 
 test("phone control requires TLS and secure device sessions remain independently revocable", async () => {
@@ -63,7 +64,7 @@ test("phone control requires TLS and secure device sessions remain independently
     const info = (await local(secure, "/api/remote", { enabled: true, lan: true, control: true })).body;
     assert.equal(info.secure, true);
     assert.ok(info.pairingUntil > Date.now());
-    const one = await phone(secure, info.phonePath), two = await phone(secure, info.phonePath);
+    const one = await pairPhone(secure, info.phonePath), two = await pairPhone(secure, info.phonePath);
     assert.equal(one.status, 200);
     assert.match(one.cookie!, /HttpOnly.*SameSite=Strict.*Secure.*Max-Age=2592000/);
     const first = one.cookie!.split(";")[0]!, second = two.cookie!.split(";")[0]!;
@@ -84,7 +85,7 @@ test("expired pairing links stay expired after restart while existing device ses
   let instance = await start(true);
   try {
     const info = (await local(instance, "/api/remote", { enabled: true, lan: true, control: true })).body;
-    const paired = await phone(instance, info.phonePath);
+    const paired = await pairPhone(instance, info.phonePath);
     const cookie = paired.cookie!.split(";")[0]!;
     const devices = (await local(instance, "/api/remote/devices")).body;
     const expiresAt = devices[0].expiresAt;
@@ -114,7 +115,7 @@ test("concurrent remote settings requests save complete generations and never re
   const instance = await start(true);
   try {
     const info = (await local(instance, "/api/remote", { enabled: true, lan: true, control: true })).body;
-    const paired = await phone(instance, info.phonePath);
+    const paired = await pairPhone(instance, info.phonePath);
     const cookie = paired.cookie!.split(";")[0]!;
     const results = await Promise.all(Array.from({ length: 8 }, (_, index) => local(instance, "/api/remote", index % 2 ? { enabled: true } : { rotate: true })));
     assert.ok(results.every((result) => result.status === 200), JSON.stringify(results));
@@ -180,7 +181,7 @@ test("Settings installs HTTPS live, persists it and refuses invalid replacements
     assert.equal(applied.body.tls.hostname, "localhost");
     assert.ok(!JSON.stringify(applied.body).includes("PRIVATE KEY"));
     const enabled = (await local(instance, "/api/remote", { control: true })).body;
-    const paired = await phone(instance, enabled.phonePath);
+    const paired = await pairPhone(instance, enabled.phonePath);
     assert.match(paired.cookie!, /; Secure/);
     const cookie = paired.cookie!.split(";")[0]!;
     assert.equal((await phone(instance, "/api/remote/tls", cookie)).status, 403);

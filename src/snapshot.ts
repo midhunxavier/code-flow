@@ -11,22 +11,9 @@ import type { Readable, Writable } from "node:stream";
 import { killGroup, trackGroup, untrackGroup } from "./adapters/process.js";
 import { childEnv } from "./env.js";
 
-/**
- * Snapshot mode for the side panel's Browser: a screenshot of any web page, to draw boxes on and
- * send to an agent, for sites the preview can't annotate (anything that isn't on this computer).
- *
- * The page is loaded in a headless Chrome (or Chromium, Edge or Brave) with a fresh, empty profile, so
- * it's what a signed-out visitor sees, at the width you pick. code-flow drives it over Chrome's
- * DevTools pipe (--remote-debugging-pipe): no extra packages, no debugging port anyone else could
- * reach. One snapshot at a time; each Chrome is gone when its snapshot is done.
- *
- * That Chrome runs on this computer, so it keeps away from addresses only this computer can reach:
- * loopback (this computer itself) and link-local ones (where cloud machines keep their metadata
- * service, with its credentials). Otherwise a page, or an address someone handed you, could have
- * it show what's on a port here (a database's console, a dev tool) or those credentials, and the
- * picture could go on to an agent. Private network addresses are fine: people snapshot staging
- * sites on their network. A local app the Browser tab shows may be snapshotted at its localhost
- * address, as the Browser shows it (see `SnapshotPolicy`).
+/** Visual-comparison captures use a fresh headless Chrome profile, isolated from the live Browser.
+ * Requests are checked before loading; loopback requires an explicitly allowed local application.
+ * Capture uses the DevTools pipe, one Chrome at a time, and removes its profile afterward.
  */
 
 export interface Snapshot {
@@ -60,7 +47,7 @@ export class SnapshotError extends Error {
 export interface SnapshotPolicy {
   documentOrigin?: string;
   /**
-   * A local app the Browser tab shows through its preview: an http://localhost:<port> address
+   * An explicitly allowed local app: an http://localhost:<port> address
    * (127.0.0.1, [::1]) that isn't code-flow's own. A snapshot may start at one, and that page may
    * then load from local apps too. A snapshot that starts anywhere else never reaches this
    * computer, whatever it's redirected to or loads. Without it, no loopback address is opened.
@@ -137,7 +124,7 @@ export async function refusal(url: URL, localApp?: (url: URL) => boolean, resolv
 }
 
 const what = (r: Refused) => (r.kind === "loopback" ? "this computer" : "a link-local address (where cloud machines keep their metadata service)");
-const LOCAL_APPS = "For an app running here, open its http://localhost address in the Browser tab: it shows local apps through the preview, and Snapshot works there.";
+const LOCAL_APPS = "Only a running local app at an allowed http://localhost:<port> address can be captured.";
 
 const MIN_WIDTH = 240;
 const MAX_WIDTH = 3840;
@@ -182,10 +169,11 @@ const isFile = (path: string) => {
   }
 };
 
-/** The browser snapshots use: CODEFLOW_CHROME, else the first Chrome-like browser installed. */
+/** Shared browser discovery for the live Browser and visual-comparison captures. */
 export function findChrome(env: NodeJS.ProcessEnv = process.env, platform: string = process.platform): string | undefined {
   // A folder (the .app bundle, say) exists but can't be run.
-  if (env.CODEFLOW_CHROME) return isFile(env.CODEFLOW_CHROME) ? env.CODEFLOW_CHROME : undefined;
+  const configured = env.CODEFLOW_CHROME || env.CODEFLOW_CHROME_PATH; // Legacy alias; the documented setting wins.
+  if (configured) return isFile(configured) ? configured : undefined;
   for (const candidate of chromes(env, platform)) {
     if (candidate.includes("/") || candidate.includes("\\")) {
       if (isFile(candidate)) return candidate;

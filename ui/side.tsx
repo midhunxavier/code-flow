@@ -6,6 +6,7 @@ const CodeBrowser = lazyView(() => import("./code-browser.js").then((module) => 
 import { Icon, type IconName } from "./icons.js";
 import { ago, api, baseName, enc, post, showToast, store } from "./lib.js";
 import { placesFor, PlacePicker, usePlace } from "./panel-bits.js";
+import { readNoteDraft, writeNoteDraft, noteDraftConflicts, sentence, type NoteDraft, type NoteBase } from "./notes-draft.js";
 import { ChatTab } from "./side-chat.js";
 import {
   closeSide,
@@ -112,7 +113,9 @@ export function SidePanel({ popped = false }: { popped?: boolean }) {
         ))}
       </div>
       <div class="side-body">
-        {sideScope.value.waiting ? (
+        {sideScope.value.missing ? (
+          <div class="side-empty help">{sideScope.value.kind === "run" ? "This run no longer exists." : "Project not found."}</div>
+        ) : sideScope.value.waiting ? (
           <div class="side-empty help">Loading…</div>
         ) : (
           tabs.filter((t) => visited.has(t) || t === tab).map((t) => (
@@ -141,7 +144,7 @@ function ScopeHeader({ popped }: { popped: boolean }) {
         {popped ? "Own window" : s.pinned ? "Pinned" : "Following"}
       </span>
       <span class="scope-crumbs" title={[where, s.repo, task].filter(Boolean).join("\n")}>
-        {where ? <span class="sc-where">{where}</span> : s.waiting ? null : <span class="help">No repository chosen</span>}
+        {where ? <span class="sc-where">{where}</span> : s.waiting ? null : <span class="help">{s.missing ? s.kind === "run" ? "This run no longer exists" : "Project not found" : "No repository chosen"}</span>}
         {!s.run && s.project && s.project.repos.length > 1 ? (
           <>
             <span class="sep" aria-hidden="true">›</span>
@@ -161,7 +164,7 @@ function ScopeHeader({ popped }: { popped: boolean }) {
           </>
         ) : null}
       </span>
-      {popped ? null : s.pinned ? (
+      {popped ? <a class="btn ghost small" href="#/" target="_self">Open code-flow</a> : s.pinned ? (
         <button type="button" class="btn ghost small" title="Follow what you open again" onClick={() => pinSide(false)}>
           Follow
         </button>
@@ -248,59 +251,91 @@ function NotesTab() {
   const [saved, setSaved] = useState<{ at: number; text: string; revision: number } | null>(null);
   const [history, setHistory] = useState<{ text: string; updatedAt: number; revision: number }[]>([]);
   const [latest, setLatest] = useState<{ text: string; updatedAt: number; revision: number } | null>(null);
-  const bases = useRef(new Map<string, { text: string; revision: number }>());
+  const bases = useRef(new Map<string, NoteBase>());
+  const drafts = useRef(new Map<string, NoteDraft>());
+  const blocked = useRef(new Set<string>());
   const saving = useRef(Promise.resolve());
+  const timers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
   const activeKey = useRef(key);
   activeKey.current = key;
+  const loadedKey = useRef<string>();
   const [status, setStatus] = useState("");
-  /** The note for `key` has loaded: until then the box is off, so typing can't be overwritten by the load. */
   const [ready, setReady] = useState(false);
+  const flush = (scopeKey: string) => {
+    clearTimeout(timers.current.get(scopeKey)); timers.current.delete(scopeKey);
+    saving.current = saving.current.catch(() => undefined).then(async () => {
+      const draft = drafts.current.get(scopeKey), base = bases.current.get(scopeKey);
+      if (!draft || !base || blocked.current.has(scopeKey)) return;
+      if (draft.text === base.text) {
+        drafts.current.delete(scopeKey);
+        if (readNoteDraft(scopeKey)?.text === draft.text) store.remove(`notes-draft:${scopeKey}`);
+        if (activeKey.current === scopeKey) setStatus("");
+        return;
+      }
+      const value = draft.text;
+      try {
+        const note = await post<{ updatedAt: number; revision: number }>("/api/notes", { key: scopeKey, text: value, expectedRevision: base.revision });
+        const next = { text: value, revision: note.revision };
+        bases.current.set(scopeKey, next);
+        const pending = drafts.current.get(scopeKey);
+        if (pending?.text === value) drafts.current.delete(scopeKey);
+        else if (pending) drafts.current.set(scopeKey, writeNoteDraft(scopeKey, pending.text, next));
+        // A different window can write the same storage key while this request is in flight.
+        const stored = readNoteDraft(scopeKey);
+        if (stored?.text === value) store.remove(`notes-draft:${scopeKey}`);
+        if (activeKey.current === scopeKey) { setSaved({ at: note.updatedAt, ...next }); setStatus(pending?.text === value ? "" : "Saving…"); }
+      } catch (error) {
+        if (activeKey.current === scopeKey) setStatus(`Couldn't save: ${sentence((error as Error).message)} Your draft is kept in this browser.`);
+        const current = await api<{ text: string; updatedAt: number; revision: number }>(`/api/notes?key=${enc(scopeKey)}`).catch(() => null);
+        if (current && current.revision !== base.revision) {
+          blocked.current.add(scopeKey);
+          if (activeKey.current === scopeKey) setLatest(current);
+        }
+      }
+    });
+  };
+  const queue = (scopeKey: string, value: string, base = bases.current.get(scopeKey)) => {
+    drafts.current.set(scopeKey, writeNoteDraft(scopeKey, value, base));
+    clearTimeout(timers.current.get(scopeKey)); timers.current.delete(scopeKey);
+    if (!blocked.current.has(scopeKey)) {
+      setStatus("Saving…");
+      timers.current.set(scopeKey, setTimeout(() => flush(scopeKey), 600));
+    }
+  };
   useEffect(() => {
-    setReady(false);
+    setReady(false); loadedKey.current = undefined;
     setStatus("Loading…");
     let current = true;
-    api<{ text: string; updatedAt: number; revision: number }>(`/api/notes?key=${enc(key)}`).then(
+    // A departing scope is flushed before loading it again, so its acknowledged base cannot regress.
+    void saving.current.then(() => api<{ text: string; updatedAt: number; revision: number }>(`/api/notes?key=${enc(key)}`)).then(
       (n) => {
         if (!current) return;
-        let draft: string | null = null;
-        try { draft = store.get(`notes-draft:${key}`); } catch {}
-        setText(draft ?? n.text);
-        bases.current.set(key, { text: n.text, revision: n.revision });
+        const draft = drafts.current.get(key) ?? readNoteDraft(key);
+        const conflict = !!draft && noteDraftConflicts(draft, n);
+        bases.current.set(key, n);
+        setText(draft?.text ?? n.text);
         setSaved({ at: n.updatedAt, text: n.text, revision: n.revision });
-        setLatest(null); setHistory([]);
-        setStatus(draft !== null && draft !== n.text ? "Recovered your unsaved draft" : "");
-        setReady(true);
+        setLatest(conflict ? n : null); setHistory([]);
+        blocked.current.delete(key);
+        if (conflict) blocked.current.add(key);
+        setStatus(draft && draft.text !== n.text ? "Recovered your unsaved draft" : "");
+        loadedKey.current = key; setReady(true);
+        if (draft && draft.text !== n.text) {
+          drafts.current.set(key, draft);
+          if (!conflict) queue(key, draft.text, n);
+        } else { drafts.current.delete(key); store.remove(`notes-draft:${key}`); }
       },
       (err) => current && setStatus((err as Error).message),
     );
-    return () => {
-      current = false;
-    };
+    return () => { current = false; flush(key); };
   }, [key]);
-  // Queue writes so the next save uses the revision returned by the preceding one.
-  // Browser drafts survive navigation and an unavailable server.
   useEffect(() => {
-    if (!ready || saved?.text === text || latest) return;
-    setStatus("Saving…");
-    const timer = setTimeout(() => {
-      saving.current = saving.current.catch(() => undefined).then(async () => {
-        const base = bases.current.get(key);
-        if (!base || base.text === text) return;
-        try {
-          const note = await post<{ updatedAt: number; revision: number }>("/api/notes", { key, text, expectedRevision: base.revision });
-          bases.current.set(key, { text, revision: note.revision });
-          try { if (store.get(`notes-draft:${key}`) === text) store.remove(`notes-draft:${key}`); } catch {}
-          if (activeKey.current === key) { setSaved({ at: note.updatedAt, text, revision: note.revision }); setStatus(""); }
-        } catch (error) {
-          if (activeKey.current !== key) return;
-          setStatus(`Couldn't save: ${(error as Error).message}. Your draft is kept in this browser.`);
-          const current = await api<{ text: string; updatedAt: number; revision: number }>(`/api/notes?key=${enc(key)}`).catch(() => null);
-          if (current && current.revision !== base.revision && activeKey.current === key) setLatest(current);
-        }
-      });
-    }, 600);
-    return () => clearTimeout(timer);
-  }, [text, key, ready, saved?.revision, latest]);
+    const flushAll = () => { for (const k of timers.current.keys()) flush(k); };
+    const hidden = () => { if (document.visibilityState === "hidden") flushAll(); };
+    window.addEventListener("pagehide", flushAll);
+    document.addEventListener("visibilitychange", hidden);
+    return () => { window.removeEventListener("pagehide", flushAll); document.removeEventListener("visibilitychange", hidden); flushAll(); };
+  }, []);
   const selection = () => {
     const el = document.getElementById("side-notes") as HTMLTextAreaElement | null;
     const picked = el && el.selectionStart !== el.selectionEnd ? el.value.slice(el.selectionStart, el.selectionEnd) : "";
@@ -357,9 +392,9 @@ function NotesTab() {
       </div>
       {searching ? <div id="notes-search" class="notes-search"><form class="notes-search-row" onSubmit={async (event) => { event.preventDefault(); try { setMatches(await api(`/api/notes/search?q=${enc(search)}`)); } catch (error) { setStatus((error as Error).message); } }}><input class="field" aria-label="Search saved notes" placeholder="Words or repository path" value={search} onInput={(event) => setSearch(event.currentTarget.value)} /><button class="btn small">Search notes</button></form>{matches ? <>{matches.hits.length ? matches.hits.map((match) => <div class="notes-hit" key={match.key}><button type="button" class="notes-hit-key" onClick={() => { setPickedNote(match.key); setMatches(null); }}>{match.key} · revision {match.revision}</button><span class="help">{match.excerpt}</span></div>) : <p class="help">No saved notes match.</p>}{matches.truncated ? <p class="help">Results are limited; narrow the query.</p> : null}</> : null}</div> : null}
       {pickedNote ? <div class="notes-picked"><span class="help">Editing <code>{pickedNote}</code></span><button class="btn small" onClick={() => setPickedNote(null)}>Return to current notes</button></div> : null}
-      {latest ? <div class="notes-conflict" role="alert"><p>This note changed in another window. Your draft is preserved.</p><details><summary>Compare saved version</summary><pre>{latest.text}</pre></details><div class="row"><button class="btn small" onClick={() => { bases.current.set(key, latest); setText(latest.text); setSaved({ at: latest.updatedAt, text: latest.text, revision: latest.revision }); setLatest(null); store.remove(`notes-draft:${key}`); }}>Use saved version</button><button class="btn small" onClick={() => { bases.current.set(key, latest); setSaved({ at: latest.updatedAt, text: latest.text, revision: latest.revision }); setLatest(null); }}>Save my draft over this version</button></div></div> : null}
+      {latest ? <div class="notes-conflict" role="alert"><p>This note changed in another window. Your draft is preserved.</p><details><summary>Compare saved version</summary><pre>{latest.text}</pre></details><div class="row"><button class="btn small" onClick={() => { bases.current.set(key, latest); setText(latest.text); setSaved({ at: latest.updatedAt, text: latest.text, revision: latest.revision }); setLatest(null); blocked.current.delete(key); drafts.current.delete(key); setStatus(""); store.remove(`notes-draft:${key}`); }}>Use saved version</button><button class="btn small" onClick={() => { bases.current.set(key, latest); setSaved({ at: latest.updatedAt, text: latest.text, revision: latest.revision }); setLatest(null); blocked.current.delete(key); queue(key, text, latest); }}>Save my draft over this version</button></div></div> : null}
       {history.length ? <details open class="notes-history"><summary>{history.length} saved revisions</summary>{history.map((note) => <div key={note.revision}><details><summary>Revision {note.revision} · {new Date(note.updatedAt).toLocaleString()}</summary><pre>{note.text || "(empty)"}</pre><button class="btn small" disabled={note.revision === saved?.revision || saved?.text !== text} onClick={async () => { try { const restored = await post<{ text: string; updatedAt: number; revision: number }>("/api/notes/restore", { key, revision: note.revision, expectedRevision: saved?.revision }); bases.current.set(key, restored); setSaved({ at: restored.updatedAt, text: restored.text, revision: restored.revision }); setText(restored.text); setHistory([]); setStatus("Restored as a new revision"); } catch (error) { setStatus((error as Error).message); } }}>Restore as new revision</button></details></div>)}</details> : null}
-      <textarea id="side-notes" class="notes-area" aria-label="Notes" placeholder="Notes to yourself: what to check, ideas, commands… Saved as you type." spellcheck={false} disabled={!ready} value={text} onInput={(e) => { setText(e.currentTarget.value); store.set(`notes-draft:${key}`, e.currentTarget.value); }} />
+      <textarea id="side-notes" class="notes-area" aria-label="Notes" placeholder="Notes to yourself: what to check, ideas, commands… Saved as you type." spellcheck={false} disabled={!ready || loadedKey.current !== key} value={text} onInput={(e) => { setText(e.currentTarget.value); queue(key, e.currentTarget.value); }} />
       <div class="notes-foot">
         <span>{status || (saved?.at ? `Saved ${ago(saved.at)}` : "")}</span>
         <span class="spacer" />

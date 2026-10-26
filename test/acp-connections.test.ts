@@ -49,7 +49,7 @@ test("new engine runs reject ACP when managed delegation cannot be enforced", as
   const { RunManager } = await import("../src/engine.js"), { findPattern } = await import("../src/patterns/index.js");
   const manager = new RunManager(findPattern), input = { pattern: findPattern("solo")!, repo, task: "Create the fixture result", roles: { agent: [connection.id] }, options: {}, trust: "full" as const };
   try {
-    await assert.rejects(manager.start({ ...input, trust: "standard" }), /Full access/);
+    await assert.rejects(manager.start({ ...input, trust: "standard" }), /native-delegation restriction/);
     await assert.rejects(manager.start(input), /native-delegation restriction/);
     assert.equal(manager.list().length, 0, "provider rejection happens before creating a run");
   } finally { await manager.shutdown(); }

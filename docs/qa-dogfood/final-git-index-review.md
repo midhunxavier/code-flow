@@ -1,0 +1,23 @@
+# Independent Git snapshot/index review
+
+Outcome: the candidate passes independent scratch probes and source review. Timestamp commit `cb2692f412ef66640759d5f668cda40b295aa1dd` and staging commit `20b70da24631477e0ad61c7132edc500a77a22bd` in `/private/tmp/codeflow-qa-final-snapshot-index-fix` was reviewed at `src/git.ts` SHA256 `eba800b399c29050233cf887d241d4c0a70eb40804a351a93a3f0af9a5149b41`. Base: `18615234897819c143de0bce809eca3b6183a08b`. The final committed source fingerprint matches the independently probed candidate. No reviewer production edits.
+
+Inspected `src/git.ts` command/environment setup, trusted checkout resolution, stashCreate, snapshot, snapshotTrees, compareSnapshot, changedSince, restoreSnapshot and untracked restoration; also `src/env.ts`, relevant original Git reliability tests, and the new five-case `test/qa-final-snapshot-index.test.ts`.
+
+## Findings addressed
+
+1. Copied indexes receive a new filesystem mtime. Git uses the index timestamp to decide when stat matches still require content inspection, so a same-size edit can disappear from CodeFlow's comparison while native Git sees it. Independently reproduced in a scratch linked worktree with the original production source: native diff named README.md, changedSince returned empty. Candidate returns `edits: "README.md"`. Exact original index SHA256 and mtime stayed unchanged during snapshot and inspection.
+2. Proposed millisecond truncation was not strictly conservative: a real APFS timestamp1793030000999999999ns became floating Stats.mtimeMs1793030001000 and copied forward1ns into the next second. The author adopted bigint nanoseconds divided to whole seconds before numeric conversion. The timestamp is read before copying, only the copy is touched, and its cleanup remains in finally. Exact probe: `final-git-index-precision-probe.json`. Git's documented racy-index fallback supports this design: https://git-scm.com/docs/racy-git .
+3. Existing stash apply omitted --index, so restoration discarded the saved staged/unstaged split. Independent baseline failed to preserve cached and uncached binary diffs. Candidate restores them exactly, including partially staged files, while recovering old untracked contents and deleting newly introduced untracked files.
+4. Existing comparison ignored staging-only changes. Independently reproduced existing unstaged change → git add → changedSince[] and restoreSnapshot[] with README still staged. Candidate compares both index and worktree trees from one stash capture, normalizes clean captures to the HEAD tree, emits an explicit staging warning only when working content/HEAD did not change, and restores with --index after reset. Stage-only, unstage-only and a staged alternate version whose worktree still equals HEAD all pass; unchanged control leaves index bytes and mtime intact.
+
+## Independent receipts
+
+- `final-git-index-independent-probe.mjs` is the shared baseline/candidate probe.
+- `final-git-index-baseline-probe.json` and `.log`: real linked-worktree baseline, source SHA256 `b8ad8f74c8a9c9610059b8b92830ca3cfe2a37fca7ea8865a9694a574522c5e3`; racy false negative and lost index split confirmed.
+- `final-git-index-candidate-probe.json` and `.log`: same probe, candidate succeeds. Parent checkout's preexisting dirty README remains unchanged. User index bytes/mtime remain unchanged during snapshot/changedSince; snapshot's index parent and working tree preserve different partially staged contents. Restore recovers cached/uncached binary diffs and prior untracked data, removes new untracked file.
+- `final-git-index-staging-only-baseline.json`: independent staging-only original failure.
+- `final-git-index-staging-candidate.json`: three staging-only candidate scenarios plus unchanged controls, all passed. No temporary `.codeflow-` index files left behind.
+- `final-git-index-precision-probe.json`: real nanosecond filesystem conversion receipts including the forward-rounding edge.
+
+All execution commands used explicit unique scratch CODEFLOW_HOME and HOME, Git system/global configs disabled for the independent Git probes, and only synthetic repositories. No real provider, remote, live app or user repository was used. The candidate probe ran actual `/usr/bin/git` on macOS; deterministic coarse timestamp configuration exercises the racy boundary without relying on a lucky wall-clock second. Windows/Linux runtime behavior was not separately executed; bigint whole-second precision and path handling were source-reviewed. Existing non-atomic interaction with an external concurrent Git writer and the preexisting no-index/copy-failure fallback are unchanged by this focused fix. No new blocker remains in the reviewed delta.

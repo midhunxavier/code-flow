@@ -37,20 +37,6 @@ interface Pin {
   tried?: Record<string, string>;
   /** Picked in an earlier load of the page: its element is gone, so Adjust can't reach it. */
   gone?: boolean;
-  /** A box drawn on a snapshot (its rect is in the snapshot's pixels), not on the live page. */
-  source?: "snapshot";
-}
-/** A screenshot of the page from a headless Chrome (snapshot mode), to draw boxes on. */
-interface Snap {
-  /** The address it was taken of (where it ended up is `url`). */
-  asked: string;
-  /** PNG data URL. */
-  image: string;
-  width: number;
-  height: number;
-  url: string;
-  title: string;
-  full: boolean;
 }
 interface ConsoleLine {
   level: "error" | "warn" | "network";
@@ -63,7 +49,8 @@ interface PageState {
   capturing: number;
   ready?: boolean;
   document?: string;
-  snap?: Snap;
+  mode?: "off" | "pick" | "box";
+  consoleDropped?: number;
 }
 /** Per page (scope|page id): pins and console survive switching tabs and pages. */
 const pages = signal<Record<string, PageState>>({});
@@ -94,93 +81,59 @@ export function appAddress(reported: unknown, preview: string, app: string): str
 /** Annotation tools use the same Chrome page as human input and provider tools. */
 export function receiveBrowserOverlay(pageKey: string, m: any) {
   if (m.type === "ready") setPage(pageKey, p => ({...p,ready:true,document:m.document,capturing:0,pins:p.document===m.document?p.pins:p.pins.map(pin=>({...pin,gone:true}))}));
+  else if (m.type === "mode" && ["off","pick","box"].includes(m.mode)) setPage(pageKey,p=>({...p,mode:m.mode}));
+  else if (m.type === "console-history") setPage(pageKey,p=>({...p,console:m.lines,consoleDropped:m.dropped}));
   else if (m.type === "record-action") recordAction(pageKey,m.action);
   else if (m.type === "recording-warning" && recording.value?.page === pageKey) recording.value={...recording.value,warning:String(m.text).slice(0,200)};
-  else if (m.type === "console") setPage(pageKey,p=>({...p,console:[...p.console.slice(-299),{level:m.level,text:String(m.text).slice(0,2000),at:m.at}]}));
+  else if (m.type === "console") setPage(pageKey,p=>({...p,consoleDropped:(p.consoleDropped??0)+(p.console.length>=300?1:0),console:[...p.console.slice(-299),{level:m.level,text:String(m.text).slice(0,2000),at:m.at}]}));
   else if (m.type === "pin-start") setPage(pageKey,p=>({...p,capturing:p.capturing+1}));
   else if (m.type === "pin") setPage(pageKey,p=>({...p,capturing:Math.max(0,p.capturing-1),pins:[...p.pins,{...m.pin,n:(p.pins.at(-1)?.n ?? 0)+1,comment:""}]}));
 }
-export function LiveBrowserTools({pageKey,url,width,send}: {pageKey:string;url:string;width:number;send:(message:Record<string,unknown>)=>Promise<unknown>}) {
-  const [mode,setMode]=useState<"off"|"pick"|"box">("off");
+export function LiveBrowserTools({pageKey,url,width,send,clearConsole,visible}: {pageKey:string;url:string;width:number;visible:boolean;clearConsole:()=>Promise<unknown>;send:(message:Record<string,unknown>)=>Promise<unknown>}) {
+  const state=pageState(pageKey), mode=state.mode??"off";
+  const setMode=(mode:"off"|"pick"|"box")=>setPage(pageKey,p=>({...p,mode}));
   const [showConsole,setShowConsole]=useState(false);
   // Enqueue mode changes in the click handler, before a fast click on the live page.
   const changeMode = (next: "off" | "pick" | "box") => { setMode(next); void send({type:"mode",mode:next}).catch(()=>{}); };
-  const state=pageState(pageKey), errors=state.console.filter(line=>line.level!=="warn").length;
+  const errors=state.console.filter(line=>line.level!=="warn").length;
   const sendRef=useRef(send);sendRef.current=send;
   useEffect(()=>{
     const command=(message:Record<string,unknown>)=>{void sendRef.current(message).catch(()=>{});};
     overlays.set(pageKey,command); command({type:"hello"});
-    return()=>{command({type:"mode",mode:"off"});command({type:"recording",active:false});if(overlays.get(pageKey)===command)overlays.delete(pageKey);};
+    return()=>{if(overlays.get(pageKey)===command)overlays.delete(pageKey);};
   },[pageKey]);
-  useEffect(()=>{if(state.ready){void send({type:"mode",mode}).catch(()=>{});void send({type:"recording",active:recording.value?.page===pageKey && recording.value.active}).catch(()=>{});}},[mode,state.ready,recording.value?.active]);
+  useEffect(()=>{if(!visible) setMode("off");},[visible]);
+  useEffect(()=>{if(state.ready){void send({type:"mode",mode:visible?mode:"off"}).catch(()=>{});void send({type:"recording",active:visible && recording.value?.page===pageKey && recording.value.active}).catch(()=>{});}},[mode,state.ready,state.document,recording.value?.page,recording.value?.active,visible]);
   useEffect(()=>{void send({type:"pins",pins:livePins(state.pins)}).catch(()=>{});},[state.pins]);
   const s=sideScope.value;
   return <>
-    <div class="browse-tools live-annotation-tools"><button class="btn ghost small" aria-pressed={mode==="pick"} disabled={!state.ready} onClick={()=>changeMode(mode==="pick"?"off":"pick")}>Pick</button><button class="btn ghost small" aria-pressed={mode==="box"} disabled={!state.ready} onClick={()=>changeMode(mode==="box"?"off":"box")}>Box</button><button class="btn ghost small" aria-pressed={showConsole} onClick={()=>setShowConsole(!showConsole)}>Console{errors?` · ${errors}`:""}</button></div>
+    <div class="browse-tools live-annotation-tools"><button class="btn ghost small" aria-pressed={mode==="pick"} disabled={!state.ready} onClick={()=>changeMode(mode==="pick"?"off":"pick")}>Pick</button><button class="btn ghost small" aria-pressed={mode==="box"} disabled={!state.ready} onClick={()=>changeMode(mode==="box"?"off":"box")}>Box</button><button class="btn ghost small" aria-pressed={showConsole} onClick={()=>setShowConsole(!showConsole)}>Console{errors?` · ${errors}${state.consoleDropped?"+":""}`:""}</button></div>
     <JourneyRecorder key={pageKey} pageKey={pageKey} url={url} repository={s.repo} width={width} ready={state.ready===true} toggle={active=>{setMode("off");return send({type:"recording",active});}} />
-    {showConsole ? <ConsoleDrawer pageKey={pageKey} lines={state.console} />:null}
+    {showConsole ? <ConsoleDrawer lines={state.console} dropped={state.consoleDropped??0} clear={clearConsole} />:null}
   </>;
 }
 export function LiveBrowserTray({pageKey}: {pageKey:string}) {
   const state=pageState(pageKey);
-  return state.pins.length || state.capturing ? <PinsTray scope={sideScope.value} pageKey={pageKey} state={state} onSent={()=>overlays.get(pageKey)?.({type:"mode",mode:"off"})} />:null;
+  return state.pins.length || state.capturing ? <PinsTray scope={sideScope.value} pageKey={pageKey} state={state} onSent={()=>{setPage(pageKey,p=>({...p,mode:"off"}));overlays.get(pageKey)?.({type:"mode",mode:"off"});}} />:null;
 }
 
-/** What the overlay draws on the live page: the pins picked there, not boxes drawn on a snapshot. */
-const livePins = (pins: Pin[]) => pins.filter((p) => p.source !== "snapshot").map((p) => ({ n: p.n, rect: p.rect, kind: p.kind }));
-
-/** An image, once loaded (load, not decode(): Chrome can leave decode() waiting in a hidden tab). */
-const loadImage = (src: string) =>
-  new Promise<HTMLImageElement>((resolve, reject) => {
-    const img = new Image();
-    img.onload = () => resolve(img);
-    img.onerror = () => reject(new Error("The snapshot couldn't be read"));
-    img.src = src;
-  });
-/** The whole snapshot with the boxes drawn on it and numbered, as the agent should see it. */
-async function annotatedSnap(snap: Snap, pins: Pin[]): Promise<string | undefined> {
-  try {
-    const img = await loadImage(snap.image);
-    const canvas = Object.assign(document.createElement("canvas"), { width: snap.width, height: snap.height });
-    const ctx = canvas.getContext("2d")!;
-    ctx.drawImage(img, 0, 0);
-    // The marks the overlay draws on the live page: mint boxes, ink numbers (src/preview-overlay.js).
-    for (const p of pins) {
-      ctx.strokeStyle = "#2a9b72";
-      ctx.lineWidth = 3;
-      ctx.strokeRect(p.rect.x + 1.5, p.rect.y + 1.5, Math.max(0, p.rect.w - 3), Math.max(0, p.rect.h - 3));
-      const cx = Math.min(snap.width - 14, p.rect.x + p.rect.w);
-      const cy = Math.max(14, p.rect.y);
-      ctx.fillStyle = "#ffffff";
-      ctx.beginPath();
-      ctx.arc(cx, cy, 15, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = "#343932";
-      ctx.beginPath();
-      ctx.arc(cx, cy, 13, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = "#fbfaf6";
-      ctx.font = "600 14px Inter, system-ui, sans-serif";
-      ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
-      ctx.fillText(String(p.n), cx, cy + 0.5);
-    }
-    return canvas.toDataURL("image/png");
-  } catch {
-    return undefined;
-  }
+/** Pins on the live page. Historical snapshot messages remain readable in browser-context.ts. */
+const livePins = (pins: Pin[]) => pins.map(p => ({n:p.n,rect:p.rect,kind:p.kind}));
+export const CONSOLE_ATTACHMENT_LIMIT = 20;
+export function consoleAttachmentLabel(count:number, dropped=0) {
+  return count > CONSOLE_ATTACHMENT_LIMIT || dropped ? `with last ${Math.min(count,CONSOLE_ATTACHMENT_LIMIT)} of ${count}${dropped?"+":""} console errors` : `with ${count} console error${count===1?"":"s"}`;
 }
 
 const LEVEL: Record<ConsoleLine["level"], string> = { error: "Error", warn: "Warn", network: "Net" };
 
-function ConsoleDrawer({ pageKey, lines }: { pageKey: string; lines: ConsoleLine[] }) {
+function ConsoleDrawer({ lines, dropped, clear }: { lines: ConsoleLine[]; dropped: number; clear:()=>Promise<unknown> }) {
   return (
     <div class="browse-console">
       <div class="bc-head">
         <span class="bc-title">Console</span>
-        <span class="help">errors, warnings and failed requests since the page opened</span>
+        <span class="help">{dropped ? `Latest ${lines.length} entries; ${dropped} older entries omitted` : "Errors, warnings and failed requests since navigation or Clear"}</span>
         <span class="spacer" />
-        <button type="button" class="btn ghost small" disabled={!lines.length} onClick={() => setPage(pageKey, (p) => ({ ...p, console: [] }))}>
+        <button type="button" class="btn ghost small" disabled={!lines.length} onClick={() => void clear().catch(()=>{})}>
           Clear
         </button>
       </div>
@@ -230,16 +183,19 @@ export function destinations(s: SideScope): { key: string; label: string; sub: s
  * be on different pages of the app, so each says where it was when that isn't the first one's.
  * Snapshot names carry the batch: a second lot added to the same message box starts at 1 again.
  */
-export function pinsMessage(pins: Pin[], console: ConsoleLine[], batch: string | number, onSnap?: { name: string; snap: Pick<Snap, "url" | "width" | "height" | "full"> }): { text: string; images: Attachment[] } {
+export function pinsMessage(pins: Pin[], console: ConsoleLine[], batch: string | number, dropped = 0): { text: string; images: Attachment[] } {
   const snapshot = (p: Pin) => `pin-${batch}-${p.n}.png`;
-  const errors = console.filter(c => c.level !== "warn").slice(-20).map(e => e.text.split("\n")[0]!.slice(0, 300));
+  const retainedErrors = console.filter(c => c.level !== "warn");
+  const omitted = retainedErrors.length - Math.min(retainedErrors.length,CONSOLE_ATTACHMENT_LIMIT) + dropped;
+  const errors = retainedErrors.slice(-CONSOLE_ATTACHMENT_LIMIT).map(e => e.text.split("\n")[0]!.slice(0, 300));
   const text = pins.map((p, index) => browserContextMessage({
     version: 1, comment: p.comment.trim(), url: p.url, selector: p.selector,
     text: p.text.slice(0, 120), html: p.html?.replace(/\s+/g, " ").slice(0, 240),
-    viewport: p.viewport, rect: p.rect, tried: p.tried, source: p.source,
-    snapshot: p.image ? snapshot(p) : onSnap?.name,
-    selection: p.n, snapshotPage: p.source === "snapshot" ? onSnap?.snap : undefined,
+    viewport: p.viewport, rect: p.rect, tried: p.tried,
+    snapshot: p.image ? snapshot(p) : undefined,
+    selection: p.n,
     console: index === 0 && errors.length ? errors : undefined,
+    consoleOmitted: index === 0 && omitted ? omitted : undefined,
   })).join("\n\n");
   const images = pins
     .filter((p) => p.image)
@@ -267,13 +223,8 @@ function PinsTray({ scope, pageKey, state, onSent }: { scope: SideScope; pageKey
   };
   const sendTo = async (to: string) => {
     const batch = batchName();
-    const boxes = state.pins.filter((p) => p.source === "snapshot");
-    // Boxes drawn on a snapshot go with the whole snapshot, numbered, so the agent sees where each one is.
-    const whole = boxes.length && state.snap ? await annotatedSnap(state.snap, boxes) : undefined;
-    const onSnap = whole && state.snap ? { name: `snapshot-${batch}.png`, snap: state.snap } : undefined;
-    const message = pinsMessage(state.pins, withConsole ? errors : [], batch, onSnap);
-    const text = message.text;
-    const images = whole && onSnap ? [{ name: onSnap.name, size: Math.round((whole.length * 3) / 4), data: whole.replace(/^data:image\/png;base64,/, "") }, ...message.images] : message.images;
+    const message = pinsMessage(state.pins, withConsole ? errors : [], batch, withConsole ? state.consoleDropped : 0);
+    const {text,images} = message;
     const draft = { to, text, images };
     rememberSide({ sendTo: to });
     for (const p of state.pins) if (!p.gone) overlays.get(pageKey)?.({ type: "reset", id: p.id });
@@ -355,7 +306,7 @@ function PinsTray({ scope, pageKey, state, onSent }: { scope: SideScope; pageKey
       <div class="pins-actions">
         {errors.length ? (
           <label class="check">
-            <input type="checkbox" checked={withConsole} onChange={(e) => setWithConsole(e.currentTarget.checked)} /> with {errors.length} console error{errors.length === 1 ? "" : "s"}
+            <input type="checkbox" checked={withConsole} onChange={(e) => setWithConsole(e.currentTarget.checked)} /> {consoleAttachmentLabel(errors.length,state.consoleDropped)}
           </label>
         ) : null}
         <span class="spacer" />

@@ -65,7 +65,7 @@ test("desktop updates are hidden in browsers and show download/restart states ac
     await desktop.addScriptTag({ content: axe.source });
     for (const width of [1440, 390]) {
       await desktop.setViewportSize({ width, height: 1000 });
-      const violations = await desktop.evaluate(async () => (await (window as any).axe.run('[aria-label="App updates"]', { runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21aa"] } })).violations);
+      const violations = await desktop.evaluate(async () => (await (window as any).axe.run('[aria-label="App updates"]', { runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"] } })).violations);
       assert.deepEqual(violations.map((v: any) => v.id), []);
       assert.equal(await desktop.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
     }
@@ -97,11 +97,11 @@ test("Kilo and Cline presets connect through ACP, preserve edited invocations, a
     await panel.getByText(`${name}: connected`, { exact: true }).waitFor();
     await panel.getByText(/2 models/).waitFor();
     await panel.getByRole("button", { name: "Save connection", exact: true }).click();
-    await page.getByLabel(`${name} model`, { exact: true }).click();
+    await page.getByRole("button", { name: new RegExp("^" + `${name} model` + ":") }).click();
     await page.getByRole("combobox", { name: /^Search / }).fill("fixture/model-b");
     await page.getByRole("listbox").getByRole("option").click();
     await page.reload();
-    assert.match(await page.getByLabel(`${name} model`, { exact: true }).textContent() ?? "", /Model B/i);
+    assert.match(await page.getByRole("button", { name: new RegExp("^" + `${name} model` + ":") }).textContent() ?? "", /Model B/i);
     await panel.getByRole("button", { name: `Connect ${name}`, exact: true }).click();
     assert.equal(await panel.getByLabel("ACP connection ID").getAttribute("readonly"), "");
     assert.equal(await panel.getByLabel("ACP executable").inputValue(), process.execPath);
@@ -111,10 +111,11 @@ test("Kilo and Cline presets connect through ACP, preserve edited invocations, a
     await panel.getByRole("button", { name: "Save connection", exact: true }).click();
     assert.equal(await panel.getByRole("button", { name: `Edit ${name}`, exact: true }).count(), 1);
     await panel.getByRole("button", { name: `Disable ${name}`, exact: true }).click();
-    await page.getByLabel(`${name} model`, { exact: true }).waitFor({ state: "detached" });
+    await page.getByRole("button", { name: new RegExp("^" + `${name} model` + ":") }).waitFor({ state: "detached" });
     await panel.getByRole("button", { name: `Enable ${name}`, exact: true }).click();
-    await page.getByLabel(`${name} model`, { exact: true }).waitFor();
+    await page.getByRole("button", { name: new RegExp("^" + `${name} model` + ":") }).waitFor();
     await panel.getByRole("button", { name: `Remove ${name}`, exact: true }).click();
+    await page.getByRole("dialog", { name: "Remove ACP connection?", exact: true }).getByRole("button", { name: "Remove connection", exact: true }).click();
     await panel.getByRole("button", { name: `Edit ${name}`, exact: true }).waitFor({ state: "detached" });
     await page.setViewportSize({ width: 1440, height: 1000 });
   }
@@ -137,40 +138,41 @@ test("ACP settings connect, discover models, persist, edit, disable and remove a
   await panel.getByText("Fixture ACP: connected", { exact: true }).waitFor();
   await panel.getByText(/2 models/).waitFor();
   await panel.getByRole("button", { name: "Save connection", exact: true }).click();
-  await page.getByLabel("Fixture ACP model", { exact: true }).click();
+  await page.getByRole("button", { name: /^Fixture ACP model:/ }).click();
   await page.getByRole("combobox", { name: /^Search / }).fill("fixture/model-b");
   await page.getByRole("listbox").getByRole("option").click();
   await page.reload();
-  assert.match(await page.getByLabel("Fixture ACP model", { exact: true }).textContent() ?? "", /Model B/i);
+  assert.match(await page.getByRole("button", { name: /^Fixture ACP model:/ }).textContent() ?? "", /Model B/i);
   await panel.getByRole("button", { name: "Edit Fixture ACP", exact: true }).click();
   assert.equal(await panel.getByLabel("ACP connection ID").getAttribute("readonly"), "");
   await panel.getByLabel("ACP connection name").fill("Renamed ACP");
   await panel.getByRole("button", { name: "Save connection", exact: true }).click();
-  await page.getByLabel("Renamed ACP model", { exact: true }).waitFor();
+  await page.getByRole("button", { name: /^Renamed ACP model:/ }).waitFor();
   await panel.getByRole("button", { name: "Disable Renamed ACP", exact: true }).click();
-  await page.getByLabel("Renamed ACP model", { exact: true }).waitFor({ state: "detached" });
+  await page.getByRole("button", { name: /^Renamed ACP model:/ }).waitFor({ state: "detached" });
   await panel.getByRole("button", { name: "Enable Renamed ACP", exact: true }).click();
-  await page.getByLabel("Renamed ACP model", { exact: true }).waitFor();
+  await page.getByRole("button", { name: /^Renamed ACP model:/ }).waitFor();
   await page.setViewportSize({ width: 390, height: 844 });
   await panel.getByRole("button", { name: "Edit Renamed ACP", exact: true }).click();
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
   const screenshots = process.env.CODEFLOW_TEST_SCREENSHOTS ?? directory;
   await page.screenshot({ path: join(screenshots, "acp-mobile.png"), fullPage: true });
   await page.addScriptTag({ content: axe.source });
-  const accessibility = await page.evaluate(async () => (window as any).axe.run({ include: [".acp-connection-form"] }, { runOnly: ["wcag2a", "wcag2aa", "wcag21aa"] }));
+  const accessibility = await page.evaluate(async () => (window as any).axe.run({ include: [".acp-connection-form"] }, { runOnly: ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"] }));
   assert.deepEqual(accessibility.violations.filter((item: any) => ["serious", "critical"].includes(item.impact)).map((item: any) => item.id), []);
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.locator("#main-content").evaluate((element) => { element.scrollTop = 0; });
   await page.screenshot({ path: join(screenshots, "acp-desktop.png"), fullPage: true });
   await panel.getByRole("button", { name: "Cancel", exact: true }).click();
   await panel.getByRole("button", { name: "Remove Renamed ACP", exact: true }).click();
+  await page.getByRole("dialog", { name: "Remove ACP connection?", exact: true }).getByRole("button", { name: "Remove connection", exact: true }).click();
   await panel.getByRole("button", { name: "Edit Renamed ACP", exact: true }).waitFor({ state: "detached" });
   assert.deepEqual(errors, []);
 });
 
 test("settings navigation, search, appearance, and run defaults persist and drive the composer", async () => {
   await page.goto(`${base}/`);
-  await page.getByRole("button", { name: "Application menu", exact: true }).click();
+  await page.getByRole("button", { name: /^Application menu:/ }).click();
   await page.getByRole("menuitem", { name: /^Settings/ }).click();
   await page.getByRole("heading", { name: "Settings", exact: true }).waitFor();
   await page.getByRole("button", { name: "Dark", exact: true }).click();
@@ -209,7 +211,7 @@ test("settings navigation, search, appearance, and run defaults persist and driv
   await page.locator("details.settings > summary").filter({ has: page.locator(".st", { hasText: /^Branches and limits$/ }) }).click();
   assert.equal(await page.locator("#maxMinutes").inputValue(), "37");
   assert.equal(await page.locator("#maxSteps").inputValue(), "18");
-  assert.match(await page.locator(".taskbox").getByRole("button", { name: "Permissions", exact: true }).innerText(), /Safe/);
+  assert.match(await page.locator(".taskbox").getByRole("button", { name: /^Permissions:/ }).innerText(), /Safe/);
   await page.keyboard.press("Control+,");
   await page.getByRole("heading", { name: "Settings", exact: true }).waitFor();
 });
@@ -218,13 +220,13 @@ test("desktop notification preferences are reachable from the app menu and survi
   await page.context().grantPermissions(["notifications"]);
   await page.goto(`${base}/`);
   await page.reload();
-  await page.getByRole("button", { name: "Application menu", exact: true }).click();
+  await page.getByRole("button", { name: /^Application menu:/ }).click();
   await page.getByRole("menuitem", { name: /^Settings/ }).click();
   await category("Notifications");
   const toggle = page.getByRole("switch", { name: "Desktop notifications", exact: true });
   assert.equal(await toggle.getAttribute("aria-checked"), "true");
   await toggle.click();
-  await page.getByRole("button", { name: "Application menu", exact: true }).click();
+  await page.getByRole("button", { name: /^Application menu:/ }).click();
   await page.getByRole("menuitem", { name: "Notifications", exact: true }).click();
   assert.equal(await toggle.getAttribute("aria-checked"), "false");
   await toggle.click();
@@ -257,7 +259,7 @@ test("saved SSH connections survive reload, reject invalid ports, and retain a c
   await page.getByRole("button", { name: "Open Retry VM", exact: true }).click();
   await page.getByRole("alert").filter({ hasText: "host key verification failed" }).waitFor();
   assert.equal(await page.locator(".ssh-connections article").count(), 2);
-  await page.getByRole("button", { name: "SSH connections", exact: true }).click();
+  await page.getByRole("button", { name: /^SSH connections:/ }).click();
   await page.getByRole("menuitem", { name: /^Development VM/ }).click();
   const switcher = page.getByRole("menu", { name: "SSH connections", exact: true });
   await switcher.getByRole("alert").filter({ hasText: "host key verification failed" }).waitFor();
@@ -266,6 +268,7 @@ test("saved SSH connections survive reload, reject invalid ports, and retain a c
   await page.keyboard.press("Escape");
   await page.unroute("**/api/ssh-hosts/*/connect");
   await page.locator(".ssh-connections article").filter({ hasText: "Retry VM" }).getByRole("button", { name: "Remove", exact: true }).click();
+  await page.getByRole("dialog", { name: "Remove SSH connection?", exact: true }).getByRole("button", { name: "Remove connection", exact: true }).click();
   await page.getByRole("button", { name: "Open Retry VM", exact: true }).waitFor({ state: "hidden" });
 });
 
@@ -281,7 +284,7 @@ test("all settings categories render; desktop and mobile preferences are accessi
     await page.setViewportSize({ width, height: 1000 });
     for (const name of ["General", "Connections", "Run defaults"]) {
       await category(name);
-      const violations = await page.evaluate(async () => (await (window as any).axe.run(".settings-page", { runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21aa"] } })).violations);
+      const violations = await page.evaluate(async () => (await (window as any).axe.run(".settings-page", { runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"] } })).violations);
       assert.deepEqual(violations.map((v: any) => `${v.id}: ${v.nodes.map((n: any) => n.target.join(" ")).join(", ")}`), []);
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, `${name} overflows at ${width}`);
     }
@@ -297,7 +300,7 @@ test("operational tools are direct destinations and old Settings links still wor
     await page.getByRole("heading", { name, exact: true }).first().waitFor();
     assert.ok(page.url().endsWith(`#/${path}`));
     assert.equal(await page.getByRole("navigation", { name: "Settings categories" }).count(), 0);
-    await page.getByRole("button", { name: "Open command palette", exact: true }).click();
+    await page.getByRole("button", { name: /^Open command palette/ }).click();
     await page.getByRole("combobox", { name: "Find a command, project or run" }).fill(name);
     const commands = page.getByRole("listbox", { name: "Matching commands" });
     const match = commands.getByRole("option", { name: new RegExp(`^${name} `) });

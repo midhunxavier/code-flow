@@ -248,13 +248,13 @@ export class ModelCatalogStore {
         if (prior && !options.force && now - prior.attemptedAt < TTL && !offline)
             return { ...prior, state: !prior.discoveredAt ? "unknown" : now - prior.discoveredAt < TTL ? "current" : "stale" };
         if (offline)
-            return prior ? { ...prior, state: "stale", issue: "offline" } : { schemaVersion: 1, revision: 0, provider, environment, models: [], discoveredAt: 0, attemptedAt: now, state: "unknown", issue: "offline" };
+            return prior ? { ...prior, state: prior.discoveredAt ? "stale" : "unknown", issue: "offline" } : { schemaVersion: 1, revision: 0, provider, environment, models: [], discoveredAt: 0, attemptedAt: now, state: "unknown", issue: "offline" };
         let reported: ModelCatalog;
         try {
             reported = options.reported ?? await this.discover(provider, options.context ?? {});
         }
         catch {
-            const failed: CapabilityCatalog = prior ? { ...prior, attemptedAt: now, state: "stale", issue: "discovery-unavailable" } : { schemaVersion: 1, revision: 0, provider, environment, models: [], discoveredAt: 0, attemptedAt: now, state: "unknown", issue: "discovery-unavailable" };
+            const failed: CapabilityCatalog = prior ? { ...prior, attemptedAt: now, state: prior.discoveredAt ? "stale" : "unknown", issue: "discovery-unavailable" } : { schemaVersion: 1, revision: 0, provider, environment, models: [], discoveredAt: 0, attemptedAt: now, state: "unknown", issue: "discovery-unavailable" };
             await this.save(failed);
             return failed;
         }

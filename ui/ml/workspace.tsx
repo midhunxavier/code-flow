@@ -1,3 +1,4 @@
+import { scrollBehavior } from "../lib.js";
 import { PromotionPanel } from "./promotions.js";
 import type { PromotionPolicy } from "../../src/ml/promotion-model.js";
 import { MonitorPanel } from "./monitors.js";
@@ -8,7 +9,7 @@ import { RegistryPanel } from "./registry.js";
 import type { RegisteredModel } from "../../src/ml/registry-model.js";
 import { SchedulePanel, scheduleDefaults, type ScheduleDraft } from "./schedules.js";
 import type { TrainingSchedule } from "../../src/ml/schedule-model.js";
-import { cycleTerminal, type Cycle } from "../../src/ml/cycle-model.js";
+import { cycleLimitReason, cycleTerminal, type Cycle } from "../../src/ml/cycle-model.js";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { api, apiPath, enc, usePoll, workspaceId } from "../lib.js";
 import { ProjectDraftStore } from "../project-context.js";
@@ -45,7 +46,7 @@ export function MlWorkspace({ project }: { project: Project }) {
   usePoll(async current => { const data = await api<Overview>(`/api/ml?project=${enc(project.id)}`); if (current()) setOverview(data); }, 3000, [project.id]);
   function selectJob(value: string) {
     setSelected(value);
-    requestAnimationFrame(() => { const detail = document.getElementById("ml-experiment-details"); detail?.focus({ preventScroll: true }); detail?.scrollIntoView({ block: "start", behavior: "smooth" }); });
+    requestAnimationFrame(() => { const detail = document.getElementById("ml-experiment-details"); detail?.focus({ preventScroll: true }); detail?.scrollIntoView({ block: "start", behavior: scrollBehavior() }); });
   }
   async function refresh() { const data = await api<Overview>(`/api/ml?project=${enc(project.id)}`); if (mounted.current) setOverview(data); }
   function edit(patch: Partial<Draft>, inputs = false) {
@@ -93,7 +94,7 @@ export function MlWorkspace({ project }: { project: Project }) {
         <button class="btn" disabled={fieldsDisabled} onClick={() => setServerForm(!serverForm)}>Add SSH server</button>
       </div>
       {target ? <p class="muted">{target.kind === "local" ? "This project's computer" : `SSH: ${target.host}`} · Worker files: <code>{target.directory}</code></p> : null}
-      {target ? <PythonSettings key={`${target.id}:${target.revision}`} target={target} disabled={fieldsDisabled || active} onSave={python => act("Saving Python settings", async () => { await post(`/api/ml/targets/${enc(target.id)}/settings`, { python, revision: target.revision }); setProbe(undefined); })} /> : null}
+      {target ? <PythonSettings key={`${target.id}:${target.revision}`} target={target} disabled={fieldsDisabled || active} onSave={python => act("Saving Python settings", async () => { await post(`/api/ml/targets/${enc(target.id)}/settings`, { python, revision: target.revision }); setProbe(undefined); setMessage("Python settings saved. Check computer to verify the selected environment."); })} /> : null}
       {probe ? <div class="ml-capability" role="status"><strong>{probe.hostname}</strong> · {probe.platform} · {probe.cpus} CPU threads · {Math.round(probe.freeBytes / 1073741824)} GiB free disk
         <p>{probe.gpus.length ? probe.gpus.map(g => `${g.name} · ${Math.round((g.freeMiB ?? g.memoryMiB) / 1024)} GiB available`).join(", ") : "No NVIDIA GPU detected."}{devices.includes("mps") ? " Apple GPU available." : ""}</p>
         {llm && !capability ? <p>Update this worker to enable language-model fine-tuning.</p> : capability?.ready ? <p>Selected recipe's environment is ready.</p> : <><p>{capability?.issue}</p><p>Install locked packages from PyPI into this recipe's private environment. Python 3.12 must already be installed.</p><button class="btn" disabled={fieldsDisabled || unavailable || active} onClick={() => void act("Starting environment setup", async () => { const job = await post<Experiment>(`/api/ml/targets/${enc(draft.target)}/setup`, { project: project.id, repo: draft.repo, operationId: crypto.randomUUID(), ...(llm ? { recipe: LLM_RECIPE } : {}) }); setSelected(job.id); setProbe(undefined); })}>Install training environment</button></>}
@@ -176,7 +177,7 @@ export function MlWorkspace({ project }: { project: Project }) {
       <button class="btn primary" disabled={fieldsDisabled || active || !searchReady} onClick={() => void act("Starting automatic experiments", async () => { await drafts.write(project.id, draft); await post("/api/ml/cycles", { training: searchTraining(), objective: draft.objective, planner: { kind: draft.planner, ...(draft.planner === "claude" ? { model: draft.plannerModel } : {}) }, limits: { iterations: draft.searchIterations, trainSeconds: draft.searchMinutes * 60, elapsedSeconds: draft.elapsedMinutes * 60, patience: draft.patience, minImprovement: draft.minImprovement } }); setMessage("Automatic experiments are recorded. Keep Code Flow running to dispatch subsequent trials."); })}>Start automatic experiments</button>
       {overview.cycles.map(c => <div class="ml-detail" id={`ml-cycle-${c.id}`} key={c.id}><h4>{c.name} · {c.state}</h4><p>{c.trials.length} / {c.limits.iterations} iterations · {Math.round(c.reservedTrainSeconds / 60 * 10) / 10} / {c.limits.trainSeconds / 60} training minutes reserved · Deadline {new Date(c.expiresAt).toLocaleString()}</p>{c.reason ? <p role="status">{c.reason}</p> : null}
         {c.trials.length ? <div class="ml-table-scroll"><table><caption>Validation comparisons</caption><thead><tr><th>Trial</th><th>Configuration</th><th>Status</th><th>Validation score</th><th>Decision</th></tr></thead><tbody>{c.trials.map(t => { const j = overview.experiments.find(j => j.id === t.jobId); return <tr key={t.number}><td>{t.jobId ? <button class="btn" onClick={() => selectJob(t.jobId!)}>Trial {t.number}</button> : t.number}</td><td>{specSummary(t.spec)}</td><td>{j ? labels[j.status.state] : t.state}</td><td>{j?.status.evaluation ? `${j.status.evaluation.candidate.toFixed(4)} ${j.status.evaluation.metric}` : "Pending"}</td><td>{c.bestJobId === t.jobId && t.jobId ? "Selected · " : ""}{t.reason}</td></tr>; })}</tbody></table></div> : null}
-        <div class="ml-actions">{!cycleTerminal(c) ? <button class="btn" disabled={!!busy || c.state === "stopping"} onClick={() => void act("Stopping search", async () => { await post(`/api/ml/cycles/${enc(c.id)}/stop`); })}>Stop search</button> : null}{c.state === "paused" ? <button class="btn" disabled={fieldsDisabled || !!c.finalJobId || Date.now() >= c.expiresAt} onClick={() => void act("Resuming search", async () => { await post(`/api/ml/cycles/${enc(c.id)}/resume`); })}>Resume with remaining budget</button> : null}{c.finalJobId ? <button class="btn" onClick={() => selectJob(c.finalJobId!)}>View final test and export</button> : null}</div>
+        {c.state === "paused" && cycleLimitReason(c) ? <p class="help">{cycleLimitReason(c)}. No further trials will run; finish to record the outcome{c.bestJobId ? " and test the selected model once" : ""}.</p> : null}<div class="ml-actions">{!cycleTerminal(c) ? <button class="btn" disabled={!!busy || c.state === "stopping"} onClick={() => void act("Stopping search", async () => { await post(`/api/ml/cycles/${enc(c.id)}/stop`); })}>Stop search</button> : null}{c.state === "paused" ? <button class="btn" disabled={fieldsDisabled || !!c.finalJobId || Date.now() >= c.expiresAt} onClick={() => void act("Resuming search", async () => { await post(`/api/ml/cycles/${enc(c.id)}/resume`); })}>{cycleLimitReason(c) ? c.bestJobId ? "Finish: test selected model once" : "Finish search" : "Resume with remaining budget"}</button> : null}{c.finalJobId ? <button class="btn" onClick={() => selectJob(c.finalJobId!)}>View final test and export</button> : null}</div>
       </div>)}
     </section>
     <SchedulePanel draft={draft} edit={edit} disabled={fieldsDisabled} busy={!!busy} ready={searchReady}

@@ -1,3 +1,4 @@
+import { TEAM_JOIN_SETTINGS } from "./settings-location.js";
 import { createHash } from "node:crypto";
 import { constants, createReadStream } from "node:fs";
 import { copyFile, lstat, open, rm } from "node:fs/promises";
@@ -149,7 +150,11 @@ export async function readBounded(response: Response, limit: number, options: { 
 }
 /** The hub's `{ error }` envelope as a CollabError, read from at most `limit` bytes of the body (anything larger is not a hub message). A 401 on a credentialed call means the runner credential is gone (revoked, or the hub's store was reset), so the owner's action is appended; `connecting` keeps the hub's own words for a wrong password. */
 export async function readError(response: Response, connecting = false, limit = 64 * 1024): Promise<CollabError> {
-  let message = ""; try { const text = await readBounded(response, limit, { truncate: true }); const parsed: unknown = JSON.parse(text); if (object(parsed) && typeof parsed.error === "string") message = parsed.error.slice(0, 2000); } catch { /* not JSON: use the status */ }
-  if (response.status === 401 && !connecting) return new CollabError(`${message || "The team server no longer accepts this computer's credential"}; reconnect in Settings → Team`, 401);
-  return new CollabError(message || `The team server answered HTTP ${response.status}`, response.status >= 400 && response.status <= 599 ? response.status : 502);
+  let message = "", code: string | undefined; try { const text = await readBounded(response, limit, { truncate: true }); const parsed: unknown = JSON.parse(text); if (object(parsed)) { if (typeof parsed.error === "string") message = parsed.error.slice(0, 2000); if (typeof parsed.code === "string") code = parsed.code.slice(0, 100); } } catch { /* not JSON: use the status */ }
+  if (response.status === 401 && !connecting) {
+    // Older hubs supplied their own (sometimes obsolete) reconnect suffix. Normalize it once.
+    const reason = message.replace(/;\s*(?:connect this computer again|reconnect) in Settings[^;]*/gi, "").trim();
+    return new CollabError(`${reason || "The team server no longer accepts this computer's credential"}; connect this computer again in ${TEAM_JOIN_SETTINGS}`, 401, code ?? "runner-credential-invalid");
+  }
+  return new CollabError(message || `The team server answered HTTP ${response.status}`, response.status >= 400 && response.status <= 599 ? response.status : 502, code);
 }

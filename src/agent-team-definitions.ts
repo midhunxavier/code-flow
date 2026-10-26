@@ -11,10 +11,11 @@ export interface AgentTeamDefinition extends AgentTeamSnapshot {
   operations: { id: string; hash: string }[];
 }
 const MAX_BYTES = 2 * 1024 * 1024;
+const MAX_VERSIONS = 100;
 function validate(value: unknown): AgentTeamDefinition {
   const r = closed(value, ["version", "id", "revision", "name", "configuration", "createdAt", "updatedAt", "versions", "operations"], "reusable agent team");
   const snapshot = validateTeamSnapshot({ id: r.id, revision: r.revision, name: r.name, configuration: r.configuration });
-  if (r.version !== 1 || !Number.isSafeInteger(r.createdAt) || r.createdAt < 0 || !Number.isSafeInteger(r.updatedAt) || r.updatedAt < 0 || !Array.isArray(r.versions) || r.versions.length !== r.revision || r.versions.length > 100 || !Array.isArray(r.operations) || r.operations.length !== r.revision) throw new Error("Invalid reusable team history");
+  if (r.version !== 1 || !Number.isSafeInteger(r.createdAt) || r.createdAt < 0 || !Number.isSafeInteger(r.updatedAt) || r.updatedAt < 0 || !Array.isArray(r.versions) || r.versions.length !== r.revision || r.versions.length > MAX_VERSIONS || !Array.isArray(r.operations) || r.operations.length !== r.revision) throw new Error("Invalid reusable team history");
   r.versions.forEach((entry: unknown, i: number) => { const v = validateTeamSnapshot(entry); if (v.id !== r.id || v.revision !== i + 1) throw new Error("Invalid reusable team version sequence"); });
   if (digest(snapshot) !== digest(r.versions.at(-1))) throw new Error("Reusable team differs from its current version");
   for (const op of r.operations) if (!op || typeof op.id !== "string" || !op.id || op.id.length > 150 || !/^[a-f0-9]{64}$/.test(op.hash)) throw new Error("Invalid reusable team operation");
@@ -72,6 +73,7 @@ export class AgentTeamDefinitions {
       if (prior) { if (prior.hash !== hash) throw new ProjectTeamConflict("Operation ID was reused with different content"); return structuredClone(before!); }
       if (before && !input.id) throw new ProjectTeamConflict("Reusable team creation ID collision");
       if (before && input.revision !== before.revision) throw new ProjectTeamConflict("Reusable team changed. Reload before saving.");
+      if (before && before.versions.length >= MAX_VERSIONS) throw new ProjectTeamConflict(`This reusable team reached its ${MAX_VERSIONS}-version limit. Create a new reusable team to keep editing.`);
       if (!before && this.definitions.size >= 100) throw new Error("The reusable team library is full");
       const revision = (before?.revision ?? 0) + 1, now = Date.now();
       const snapshot: AgentTeamSnapshot = { id, revision, name, configuration };

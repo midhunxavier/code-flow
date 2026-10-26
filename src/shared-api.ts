@@ -7,6 +7,7 @@ import { roleAtLeast, type SharedAccounts, type SharedPrincipal } from "./shared
 import { sharedCanReadRun, sharedCoverageProjection, sharedDiffProjection, sharedEventProjection, sharedProjectProjection, sharedProjectRole, sharedRoutePolicy, sharedRunProjection } from "./shared-access.js";
 import type { CollaborationReviews } from "./collaboration-reviews.js";
 import { afterRunCursor, compareRuns, decodeRunCursor, encodeRunCursor } from "./run-history.js";
+import { matchesHistoryFilter } from "./run-status.js";
 import { sensitiveContextPath } from "./context-inspection.js";
 import { redactExport } from "./privacy.js";
 
@@ -71,8 +72,11 @@ export async function handleSharedApi(req: IncomingMessage, res: ServerResponse,
     const query = url.searchParams.get("q") ?? "", selectedProject = url.searchParams.get("project");
     if (!Number.isInteger(limit) || limit < 1 || limit > 100 || query.length > 300) throw new HttpError(400, "Choose a history limit of 1–100 and a bounded search");
     if (selectedProject && !sharedProjectRole(current(), selectedProject)) throw new HttpError(404, "Project not found");
+    const archived = url.searchParams.get("archived") ?? undefined;
+    if (archived && !["include", "exclude", "only"].includes(archived)) throw new HttpError(400, "Invalid archived history filter");
     const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
     const filtered = authorized().filter((run) => {
+      if (!matchesHistoryFilter(run, { archived: archived as "include" | "exclude" | "only" | undefined })) return false;
       if (selectedProject && projectId(run) !== selectedProject) return false;
       if (!words.length) return true;
       // Search only the shared fields of runs already admitted to this project scope.

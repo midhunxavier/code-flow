@@ -6,7 +6,16 @@ import { normalizeRepoPath } from "./repo-tree.js";
 import { assertProjectFileAccess } from "./filesystem-policy.js";
 
 const MAX_EDIT_BYTES = 512 * 1024;
-export class WorkspaceConflictError extends Error { constructor(readonly currentHash: string) { super("This file changed since it was loaded. Reload and compare your draft before saving."); } }
+export class WorkspaceConflictError extends Error { constructor(readonly currentHash: string, message = "This file changed since it was loaded. Reload and compare your draft before saving.") { super(message); } }
+/** A checkpoint tool's observed HEAD is no longer the worktree's. */
+export const CHECKPOINT_HEAD_MOVED = "The worktree HEAD changed since checkpoints were loaded. Load checkpoints again and retry.";
+/** Restoring a path that is absent from the checkpoint deletes it; the caller confirms that first. */
+export class CheckpointDeletionError extends Error {
+  constructor(readonly paths: string[], source: string) { super(`${paths.length === 1 ? "This file isn't" : `These ${paths.length} files aren't`} in checkpoint ${source.slice(0, 8)}, so applying it deletes ${paths.length === 1 ? "it" : "them"} from the worktree: ${paths.slice(0, 10).join(", ")}${paths.length > 10 ? ` and ${paths.length - 10} more` : ""}.`); }
+}
+/** The path names no file (a missing component, or a file used as a folder). Never carries the absolute path. */
+export class WorkspaceFileMissingError extends Error { constructor(message = "File not found") { super(message); } }
+const missing = (error: unknown) => ["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "");
 const hash = (text: string) => createHash("sha256").update(text).digest("hex");
 const folderOf = (repo: GitCwd) => typeof repo === "string" ? repo : repo.path;
 const rootOf = (repo: GitCwd) => typeof repo === "string" ? repoRoot(repo) : Promise.resolve(repo.path);
@@ -19,10 +28,10 @@ async function editablePath(repo: GitCwd, path: string): Promise<{ root: string;
   let current = root;
   for (const part of rel.split("/")) {
     current = join(current, part);
-    const info = await lstat(current);
+    const info = await lstat(current).catch((error) => { throw missing(error) ? new WorkspaceFileMissingError() : error; });
     if (info.isSymbolicLink()) throw new Error("Editing symbolic links is refused; open the regular file instead");
   }
-  const canonical = await realpath(current);
+  const canonical = await realpath(current).catch((error) => { throw missing(error) ? new WorkspaceFileMissingError() : error; });
   if (!canonical.startsWith(root + sep)) throw new Error("The file leaves the repository");
   const info = await lstat(canonical);
   if (!info.isFile() || info.size > MAX_EDIT_BYTES) throw new Error("Edit a regular text file under 512 KB");
@@ -43,7 +52,7 @@ export async function saveEditableFile(repo: GitCwd, path: string, text: string,
   if (typeof text !== "string" || Buffer.byteLength(text) > MAX_EDIT_BYTES || text.includes("\0")) throw new Error("The file must be text under 512 KB without binary NUL characters");
   if (!/^[a-f0-9]{64}$/.test(expectedHash)) throw new Error("Saving needs the hash of the loaded version");
   return withRepoLock(await rootOf(repo), async () => {
-    const file = await editablePath(repo, path);
+    const file = await editablePath(repo, path).catch((error) => { throw error instanceof WorkspaceFileMissingError ? new WorkspaceFileMissingError("This file no longer exists. Copy your draft before reloading.") : error; });
     const before = await readEditableFile(repo, path);
     if (before.hash !== expectedHash) throw new WorkspaceConflictError(before.hash);
     const temp = join(dirname(file.absolute), `.codeflow-edit-${randomBytes(8).toString("hex")}`);
@@ -113,24 +122,38 @@ export async function dependencyGraph(repo: GitCwd) {
   return { nodes, edges, truncated: all.size > nodes.length, language: "JavaScript/TypeScript relative imports" };
 }
 
-export async function checkpoints(repo: GitCwd, ref = "HEAD") {
+/** With a run's `base`, each checkpoint says whether it is `owned`: the base or a commit descending from it, which a fork may start from. */
+export async function checkpoints(repo: GitCwd, ref = "HEAD", base?: string): Promise<{ sha: string; at: number; subject: string; owned?: boolean }[]> {
   const commit = await resolveCommit(repo, ref);
   const log = await git(["log", "--max-count=50", "--format=%H%x00%at%x00%s", commit], repo);
   if (log.code !== 0) throw new Error("Cannot read checkpoints");
-  return log.stdout.trim().split("\n").filter(Boolean).map((line) => { const [sha, at, subject] = line.split("\0"); return { sha: sha!, at: Number(at) * 1000, subject: subject! }; });
+  const list = log.stdout.trim().split("\n").filter(Boolean).map((line) => { const [sha, at, subject] = line.split("\0"); return { sha: sha!, at: Number(at) * 1000, subject: subject! }; });
+  if (!base) return list;
+  const start = await resolveCommit(repo, base);
+  const descendants = await git(["rev-list", "--ancestry-path", `${start}..${commit}`], repo);
+  if (descendants.code !== 0) throw new Error("Cannot read this run's checkpoints");
+  const owned = new Set([start, ...descendants.stdout.split("\n").filter(Boolean)]);
+  return list.map((item) => ({ ...item, owned: owned.has(item.sha) }));
 }
 
-/** Selective application requires a clean result worktree and an exact observed HEAD. */
-export async function applyCheckpoint(repo: GitCwd, input: { source: string; paths: string[]; expectedHead: string }) {
+/**
+ * Selective application requires a clean result worktree and an exact observed HEAD. A tracked path the
+ * checkpoint lacks is deleted (Git's restore semantics), so that needs `confirmDeletes` and is reported.
+ */
+export async function applyCheckpoint(repo: GitCwd, input: { source: string; paths: string[]; expectedHead: string; confirmDeletes?: boolean }) {
   return withRepoLock(folderOf(repo), async () => {
     const head = await resolveCommit(repo);
-    if (head !== input.expectedHead) throw new WorkspaceConflictError(head);
+    if (head !== input.expectedHead) throw new WorkspaceConflictError(head, CHECKPOINT_HEAD_MOVED);
     if ((await git(["status", "--porcelain"], repo)).stdout.trim()) throw new Error("Commit or save existing changes before applying a checkpoint");
     const source = await resolveCommit(repo, input.source);
     const paths = [...new Set(input.paths.map(normalizeRepoPath))];
     if (!paths.length || paths.length > 100 || paths.some((path) => !path || path.split("/").some((part) => part.toLowerCase() === ".git"))) throw new Error("Choose 1–100 repository paths");
+    const absent = await git(["--literal-pathspecs", "diff", "--no-ext-diff", "--no-renames", "--name-only", "-z", "--diff-filter=D", head, source, "--", ...paths], repo);
+    if (absent.code !== 0) throw new Error(absent.stderr.trim() || "Could not compare the selected paths");
+    const deleted = absent.stdout.split("\0").filter(Boolean);
+    if (deleted.length && input.confirmDeletes !== true) throw new CheckpointDeletionError(deleted, source);
     const applied = await git(["--literal-pathspecs", "restore", `--source=${source}`, "--worktree", "--", ...paths], repo);
     if (applied.code !== 0) throw new Error(applied.stderr.trim() || "Could not apply the selected paths");
-    return { head, source, paths, staged: false };
+    return { head, source, paths, deleted, staged: false };
   });
 }

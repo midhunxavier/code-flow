@@ -235,11 +235,23 @@ function initializeCompanion() {
     if (initialized || initializing) return;
     initializing = true;
     $("#retry-help").hidden = true;
-    $("#help-status").textContent = "Checking your installed CLIs…";
+    $("#help-status").textContent = "Checking companion access…";
     try {
+      const identity = await fetch("/api/auth/self");
+      if (!identity.ok) throw Error("The app could not confirm companion access. Check the connection and try again.");
+      const viewer = await identity.json();
+      if (viewer.kind !== "owner" || viewer.localOnlyApis === false) {
+        $("#help-form").hidden = true;
+        $("#help-status").textContent = "Ask code-flow is available to the app owner on this computer. Open Code Flow using its terminal link, then choose Check again.";
+        $("#retry-help").textContent = "Check again";
+        $("#retry-help").hidden = false;
+        return;
+      }
+      $("#retry-help").textContent = "Retry connection";
+      $("#help-status").textContent = "Checking your installed CLIs…";
       const response = await fetch("/api/docs-help");
       const data = await response.json();
-      if (!response.ok) throw Error(data.error || "Open the owner app and sign in to use the companion.");
+      if (!response.ok) throw Error(response.status === 401 || response.status === 403 ? "Open the owner app using its terminal link to use the companion." : data.error || "The companion could not connect. Try again.");
       if (!data.agents.length) throw Error("No supported CLI found. Install and sign in to Claude Code, Codex or Antigravity, then retry.");
       $("#help-agent").replaceChildren();
       for (const agent of data.agents) {
@@ -254,7 +266,7 @@ function initializeCompanion() {
       $("#help-status").textContent = "Answers use your guides. Check the linked sources for details.";
       initialized = true;
     } catch (error) {
-      $("#help-status").textContent = error.message;
+      $("#help-status").textContent = error instanceof TypeError ? "Can't reach Code Flow. Check the connection and try again." : error.message;
       $("#retry-help").hidden = false;
     } finally { initializing = false; }
   }

@@ -6,7 +6,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { HttpError, readJson, send } from "./http.js";
 import { RUNS_DIR, flushWrites } from "./store.js";
 import { StrictRunLogReader } from "./run-log.js";
-import { git, repoRoot, resolveCommit } from "./git.js";
+import { branchExists, git, repoRoot, resolveCommit } from "./git.js";
 import { readRepoConfig } from "./repo-config.js";
 import { validateVerificationProfile, type VerificationReport } from "./verification.js";
 import { deferredProviderReadiness, sanitizeDeferredRequest, type DeferredRunRequest } from "./deferred-runs.js";
@@ -57,8 +57,8 @@ export async function persistCoordinatedReceipt(run: Pick<Run, "id" | "repo" | "
 /** Owner-only HTTP bridge. Shared identities must never fall through into this dispatcher. */
 export function createCoordinatedApi(options: CoordinatedApiOptions) {
   const { manager, projects } = options, persist = options.persist ?? persistCoordinatedReceipt;
-  const authorize = (projectId: string | undefined, repo: string) => { const project = typeof projectId === "string" ? projects.get(projectId) : undefined; if (!project || !project.repos.includes(repo)) throw new HttpError(409, "This project or its explicit repository membership changed. Review the coordinated request before continuing."); return project; };
-  const canonicalRepo = async (request: DeferredRunRequest) => { const repo = await realpath(await repoRoot(request.repo)); authorize(request.project, repo); return repo; };
+  const authorize = (projectId: string | undefined, repo: string, creating = false) => { const project = typeof projectId === "string" ? projects.get(projectId) : undefined; if (creating && !project) throw new HttpError(404, "Project not found"); if (creating && project && !project.repos.includes(repo)) throw new HttpError(400, `Repository ${repo} is not in project ${project.name ?? projectId}`); if (!project || !project.repos.includes(repo)) throw new HttpError(409, "This project or its explicit repository membership changed. Review the coordinated request before continuing."); return project; };
+  const canonicalRepo = async (request: DeferredRunRequest, creating = false) => { const repo = await realpath(await repoRoot(request.repo)); authorize(request.project, repo, creating); return repo; };
   const owned = (node: CoordinatedNode): Run | undefined => {
     authorize(node.run.project, node.run.repo); const run = node.runId ? manager.get(node.runId) : undefined;
     const expected = { jobId: node.jobId, nodeId: node.id, claimId: node.claimId!, attempt: node.attempts };
@@ -68,7 +68,7 @@ export function createCoordinatedApi(options: CoordinatedApiOptions) {
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new HttpError(400, "Choose a run configuration for each repository task");
     const request = sanitizeDeferredRequest({ ...raw, project }); if (request.parentRunId) throw new HttpError(400, "Coordinated tasks cannot inherit parent runs");
     if (request.source?.kind === "pr") throw new HttpError(400, "Coordinated changes pin local starting commits. Fetch and review the PR branch locally, then select that base explicitly.");
-    const repo = await canonicalRepo(request), configured = await readRepoConfig(repo); if (configured.error) throw new HttpError(400, configured.error);
+    const repo = await canonicalRepo(request, true), configured = await readRepoConfig(repo); if (configured.error) throw new HttpError(400, configured.error);
     const check = request.loop.check ?? configured.config.check, setup = request.loop.setup ?? configured.config.setup;
     const verification = request.loop.verification ? validateVerificationProfile(request.loop.verification) : check ? validateVerificationProfile({ name: "Coordinated task checks", checks: [{ id: "primary-check", kind: "custom", command: check, required: true, timeoutMs: (request.loop.checkTimeoutMin ?? 5) * 60_000 }] }) : undefined;
     if (!verification || !verification.checks.some((gate) => gate.required)) throw new HttpError(400, "Each coordinated task needs at least one required verification command or profile");
@@ -85,8 +85,12 @@ export function createCoordinatedApi(options: CoordinatedApiOptions) {
     if (!branch || !run.worktrees.some((tree) => tree.branch === branch) || !run.artifacts.some((artifact) => artifact.branch === branch) || !report || report.branch !== branch || report.state !== "verified" || !report.head || run.verdict === "failing") return { status: "failed", reason: "The owned result has no current published branch with successful engine verification" };
     const configured = run.loop.verification; if (!configured?.checks.some((gate) => gate.required) || digest(configured) !== digest(node.run.loop.verification) || configured.checks.some((gate) => gate.required && !report.checks.some((evidence) => evidence.check.id === gate.id && evidence.check.command === gate.command && evidence.diagnosis === "passed" && evidence.attempts.length && evidence.attempts.every((attempt) => attempt.ok && !attempt.timedOut && attempt.exitCode === 0))) || report.skipped.some((gate) => gate.check.required) || report.requirements?.some((requirement) => !requirement.covered)) return { status: "failed", reason: "Required pinned engine verification evidence is missing, changed, skipped, stale or unsuccessful" };
     if (run.pattern === "auto-team" && (!run.team?.verification?.approved || !run.team.verification.reviewed || run.team.verification.head !== report.head)) return { status: "failed", reason: "The coordinated team result lacks its current independent accepted review" };
+    if (!await branchExists(run.repo, branch)) return { status: "blocked", reason: `${node.id}'s result branch "${branch}" no longer exists. Retry the task to produce a verified result.` };
+    const head = await resolveCommit(run.repo, `refs/heads/${branch}`);
+    if (head !== report.head) return { status: "blocked", reason: `${node.id}'s result branch changed from ${report.head.slice(0, 12)} to ${head.slice(0, 12)} after it was verified. Retry the task to verify its new result.` };
     const coverage = await manager.reviewCoverage(run.id, branch); signal.throwIfAborted(); authorize(node.run.project, node.run.repo);
-    if (coverage.head !== report.head || coverage.stale || await resolveCommit(run.repo, `refs/heads/${branch}`) !== report.head || run.verification !== report || run.status !== "done" || run.followUps.some((follow) => follow.status === "pending")) return { status: "failed", reason: "The result HEAD, verification or review changed during inspection" };
+    if (coverage.stale || coverage.head !== report.head) return { status: "blocked", reason: `Review coverage for ${node.id}'s result is stale. Retry the task to obtain current verified evidence.` };
+    if (run.verification !== report || run.status !== "done" || run.followUps.some((follow) => follow.status === "pending") || await resolveCommit(run.repo, `refs/heads/${branch}`) !== head) return { status: "blocked", reason: `${node.id}'s result or verification changed during inspection. Retry after the run is idle.` };
     return { status: "verified", runId: run.id, repo: run.repo, branch, commit: report.head, verifiedAt: report.endedAt, verificationId: verificationIdentity(run.id, report) };
   };
   const service = new CoordinatedChanges({

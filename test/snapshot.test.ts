@@ -102,6 +102,7 @@ test("snapshots keep away from this computer and link-local addresses, every add
   for (const ip of ["192.168.1.20", "10.0.0.5", "172.16.3.4", "100.64.0.1", "fd12:3456::1", "8.8.8.8", "2606:4700::1111", "::ffff:192.168.1.20"]) assert.equal(addressKind(ip), undefined, ip);
 
   // Refused before any Chrome starts: there's none here, and the answer is still 403, not 501.
+  const previousChrome = process.env.CODEFLOW_CHROME;
   process.env.CODEFLOW_CHROME = "/no/such/chrome";
   try {
     for (const url of [
@@ -114,7 +115,7 @@ test("snapshots keep away from this computer and link-local addresses, every add
       "http://app.localhost/", // Chrome answers *.localhost itself
       "https://localhost./",
     ]) {
-      await assert.rejects(takeSnapshot({ url, width: 800 }), refused(403, /is this computer, and snapshots don't open those\. For an app running here, open its http:\/\/localhost address in the Browser tab/), url);
+      await assert.rejects(takeSnapshot({ url, width: 800 }), refused(403, /is this computer, and snapshots don't open those\. Only a running local app at an allowed http:\/\/localhost:<port> address can be captured/), url);
     }
     for (const url of ["http://169.254.169.254/latest/meta-data/", "http://[fe80::1]/"]) {
       await assert.rejects(takeSnapshot({ url, width: 800 }), refused(403, /is a link-local address \(where cloud machines keep their metadata service\)/), url);
@@ -124,7 +125,8 @@ test("snapshots keep away from this computer and link-local addresses, every add
     await assert.rejects(takeSnapshot({ url: "http://localhost:5173/", width: 800 }, { localApp }), refused(501, /need Google Chrome/));
     await assert.rejects(takeSnapshot({ url: "http://localhost:4317/", width: 800 }, { localApp }), refused(403, /localhost:4317 is this computer/));
   } finally {
-    delete process.env.CODEFLOW_CHROME;
+    if (previousChrome === undefined) delete process.env.CODEFLOW_CHROME;
+    else process.env.CODEFLOW_CHROME = previousChrome;
   }
 
   // A host name is checked by every address it has, not just the first.
@@ -250,6 +252,7 @@ test("a page that can't be reached, an alert(), and a Chrome that dies each end 
     const fake = join(dir, "chrome");
     writeFileSync(fake, "#!/bin/sh\necho 'fake chrome dying' >&2\nexit 3\n");
     chmodSync(fake, 0o755);
+    const previousChrome = process.env.CODEFLOW_CHROME;
     process.env.CODEFLOW_CHROME = fake;
     try {
       const started = Date.now();
@@ -259,7 +262,8 @@ test("a page that can't be reached, an alert(), and a Chrome that dies each end 
       writeFileSync(fake, "garbage, not a program\n");
       await assert.rejects(snap({ url: "http://127.0.0.1:9/", width: 800 }), (e: unknown) => e instanceof SnapshotError && e.status === 502 && /Couldn't start|exit 127/.test(e.message));
     } finally {
-      delete process.env.CODEFLOW_CHROME;
+      if (previousChrome === undefined) delete process.env.CODEFLOW_CHROME;
+      else process.env.CODEFLOW_CHROME = previousChrome;
     }
   }
   const again = await page("<title>Again</title>");

@@ -33,7 +33,19 @@ export interface Project {
   /** Repository roots. Every run in the project works in one of them. */
   repos: string[];
   createdAt: number;
+  /** Metadata revision. Older project files begin at zero. */
+  revision?: number;
   defaults?: ProjectDefaults;
+}
+
+export interface ProjectsStatus {
+  available: boolean;
+  reason?: string;
+  recovery?: { kind: "set-aside" | "unreadable"; reason: string; aside?: string; at: number };
+}
+export class ProjectsStorageError extends Error {}
+export class ProjectConflictError extends Error {
+  constructor(readonly current: Project) { super("This project changed in another tab. Reload the current project before saving."); }
 }
 
 const MAX_NAME = 60;
@@ -57,6 +69,9 @@ export class Projects {
   private queue: Promise<unknown> = Promise.resolve();
   /** False while projects.json can't be read (or set aside): it's never written over then. */
   private writable = true;
+  private recovery?: ProjectsStatus["recovery"];
+  private offReason?: string;
+  get status(): ProjectsStatus { return structuredClone({ available: this.writable, reason: this.offReason, recovery: this.recovery }); }
 
   constructor(private readonly file = join(CODEFLOW_HOME, "projects.json")) {}
 
@@ -77,11 +92,14 @@ export class Projects {
   async load(runs: { repo: string; createdAt: number }[] = []) {
     this.projects = [];
     this.writable = false;
+    this.recovery = undefined; this.offReason = undefined;
     let text: string | undefined;
     try {
       text = await readFile(this.file, "utf8");
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+        this.offReason = `couldn't be read (${(err as NodeJS.ErrnoException).code ?? "unknown error"})`;
+        this.recovery = { kind: "unreadable", reason: this.offReason, at: Date.now() };
         logError(`Couldn't read ${this.file}; projects are off and it won't be written over until it can be read`, err);
         return;
       }
@@ -106,7 +124,7 @@ export class Projects {
     const usable = entries.filter(isProject);
     const rejected = entries.length - usable.length;
     if ((!Array.isArray(parsed) || rejected) && !(await this.setAside(Array.isArray(parsed) ? `has ${rejected} project(s) code-flow can't read` : why))) return;
-    this.projects = usable;
+    this.projects = usable.map(p => ({ ...p, revision: Number.isSafeInteger(p.revision) && p.revision! >= 0 ? p.revision : 0 }));
     this.writable = true;
     if (rejected) await this.write().catch((err) => logError(`Couldn't save ${this.file}`, err));
   }
@@ -116,9 +134,12 @@ export class Projects {
     const aside = `${this.file}.corrupt-${new Date().toISOString().replace(/[:.]/g, "-")}`;
     try {
       await rename(this.file, aside);
+      this.recovery = { kind: "set-aside", reason: why, aside: basename(aside), at: Date.now() };
       logError(`${this.file} ${why}: moved it to ${aside}`);
       return true;
     } catch (err) {
+      this.offReason = `${why}, and it couldn't be moved aside (${(err as NodeJS.ErrnoException).code ?? "unknown error"})`;
+      this.recovery = { kind: "unreadable", reason: this.offReason, at: Date.now() };
       logError(`${this.file} ${why}, and it couldn't be moved aside; projects are off until it's fixed`, err);
       return false;
     }
@@ -149,7 +170,7 @@ export class Projects {
 
   create(input: { name: unknown; repos?: unknown[] }): Promise<Project> {
     return this.change(async () => {
-      const project: Project = { id: `p-${randomBytes(4).toString("hex")}`, name: this.checkName(input.name), repos: await checkRepos(input.repos ?? []), createdAt: Date.now() };
+      const project: Project = { id: `p-${randomBytes(4).toString("hex")}`, name: this.checkName(input.name), repos: await checkRepos(input.repos ?? []), createdAt: Date.now(), revision: 0 };
       this.projects.push(project);
       return copy(project);
     });
@@ -159,11 +180,14 @@ export class Projects {
    * Rename a project or change its repos. Runs already in it stay, even in a repo you take out
    * (RunManager.updateProject records the project on older runs that relied on the repo).
    */
-  update(id: string, patch: { name?: unknown; repos?: unknown[] }): Promise<Project> {
+  update(id: string, patch: { name?: unknown; repos?: unknown[] }, expectedRevision?: number): Promise<Project> {
     return this.change(async () => {
       const p = this.require(id);
+      if (expectedRevision !== undefined && (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0)) throw new Error("Project revision must be a nonnegative integer");
+      if (expectedRevision !== undefined && expectedRevision !== (p.revision ?? 0)) throw new ProjectConflictError(copy(p));
       const name = patch.name !== undefined ? this.checkName(patch.name, id) : p.name;
       const repos = patch.repos !== undefined ? await checkRepos(patch.repos, p.repos) : p.repos;
+      if (name !== p.name || JSON.stringify(repos) !== JSON.stringify(p.repos)) p.revision = (p.revision ?? 0) + 1;
       p.name = name;
       p.repos = repos;
       return copy(p);
@@ -196,7 +220,7 @@ export class Projects {
       const created = !project;
       project ??= this.add(repo);
       const added = !created && !project.repos.includes(repo);
-      if (added) project.repos.push(repo);
+      if (added) { project.repos.push(repo); project.revision = (project.revision ?? 0) + 1; }
       return { project: copy(project), created, added };
     });
   }
@@ -209,6 +233,7 @@ export class Projects {
       if (added) {
         if (p.repos.length >= MAX_REPOS) throw new Error(`A project holds at most ${MAX_REPOS} repositories`);
         p.repos.push(repo);
+        p.revision = (p.revision ?? 0) + 1;
       }
       return { project: copy(p), added };
     });
@@ -239,13 +264,13 @@ export class Projects {
    */
   private change<T>(fn: () => T | Promise<T>): Promise<T> {
     const next = this.queue.then(async () => {
-      if (!this.writable) throw new Error(`Projects are off: ${this.file} couldn't be read (see server.log)`);
+      if (!this.writable) throw new ProjectsStorageError(`Projects are off: projects.json ${this.offReason ?? "is unavailable"}. Fix it in CODEFLOW_HOME and restart Code Flow (see server.log)`);
       const before = JSON.stringify(this.projects);
       this.committedWhileWriting = JSON.parse(before) as Project[];
       try {
         const result = await fn();
         if (JSON.stringify(this.projects) === before) return result;
-        try { await this.write(); } catch (err) { throw new Error(`code-flow couldn't save projects: ${(err as Error).message}`); }
+        try { await this.write(); } catch (err) { throw new ProjectsStorageError(`code-flow couldn't save projects: ${(err as Error).message}`); }
         this.committedWhileWriting = undefined;
         for (const listener of this.listeners) { try { listener(); } catch { /* Notification errors cannot undo persisted membership changes. */ } }
         return result;
@@ -287,7 +312,7 @@ export class Projects {
     let name = fit();
     if (taken(name)) name = fit(` (${basename(dirname(repo)).slice(0, 20)})`);
     for (let i = 2; taken(name); i++) name = fit(` ${i}`);
-    const project: Project = { id: `p-${randomBytes(4).toString("hex")}`, name, repos: [repo], createdAt };
+    const project: Project = { id: `p-${randomBytes(4).toString("hex")}`, name, repos: [repo], createdAt, revision: 0 };
     this.projects.push(project);
     return project;
   }

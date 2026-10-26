@@ -10,16 +10,19 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { acpPresets, acpPresetConnection } from "../src/adapters/acp-presets.ts";
-import { commandExists } from "../src/adapters/process.ts";
+import { runProviderProblem } from "../src/run-permissions.ts";
 import { approveLiveAcpRequest } from "./acp-live-approval.ts";
 
 const args = process.argv.slice(2);
-const usage = "Usage: npm run test:acp:live -- [--agent opencode|kilo|cline]\nUses the CLI's saved authentication and consumes real model usage.\nOverride its executable with CODEFLOW_LIVE_OPENCODE, CODEFLOW_LIVE_KILO or CODEFLOW_LIVE_CLINE; optionally set CODEFLOW_LIVE_MODEL.";
+const usage = "Usage: npm run test:acp:live -- [--agent opencode|kilo|cline]\nCurrently unavailable while ACP providers cannot enforce managed run permissions. No CLI is launched.\nOverride its executable with CODEFLOW_LIVE_OPENCODE, CODEFLOW_LIVE_KILO or CODEFLOW_LIVE_CLINE; optionally set CODEFLOW_LIVE_MODEL.";
 if (args.length === 1 && args[0] === "--help") { console.log(usage); process.exit(0); }
 if (args.length && (args.length !== 2 || args[0] !== "--agent")) throw new Error(usage);
 const preset = acpPresets.find((item) => item.key === (args[1] ?? "opencode"));
 if (!preset) throw new Error(usage);
 const connection = acpPresetConnection(preset);
+const unavailable = runProviderProblem(connection.id, connection.name);
+if (unavailable) { console.error(`ACP live acceptance is unavailable. ${unavailable} No provider was started and no usage was consumed.`); process.exit(1); }
+const { commandExists } = await import("../src/adapters/process.ts");
 connection.command = process.env[`CODEFLOW_LIVE_${preset.key.toUpperCase()}`] ?? connection.command;
 if (!await commandExists(connection.command)) throw new Error(`${preset.name} executable not found: ${connection.command}. Install with ${preset.install}, then sign in with ${preset.login}.`);
 const root = fileURLToPath(new URL("../", import.meta.url));

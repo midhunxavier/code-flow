@@ -146,7 +146,7 @@ test("a quiet PR watch is polled less and less often, up to 10 minutes, and ever
   assert.equal(watch.state, "green");
   // Every minute at first, then 2, 4, 8 minutes apart, then every 10.
   assert.deepEqual(polledAt, [0, 1, 3, 7, 15, 25]);
-  assert.equal(logged.filter((l) => /line comments on the diff \(review threads\) aren't read yet/.test(l)).length, 1, "said once per watch");
+  assert.equal(logged.filter((l) => /inline review comments reach the agent/.test(l)).length, 1, "said once per watch");
 
   // A new comment (even one the watch ignores) is a change: back to every minute.
   setState((s) => s.prs[1].comments.push({ id: "c1", author: { login: "stranger" }, authorAssociation: "NONE", body: "hi", createdAt: new Date(t0 + minute).toISOString() }));

@@ -1,3 +1,4 @@
+import { dispatchLabel } from "./run-outcome.js";
 import { runPassed } from "./run-status.js";
 import type { RunSummary, Step } from "./engine.js";
 import { confidenceInterval } from "./stats.js";
@@ -38,7 +39,8 @@ export function progressSummary(run: RunSummary, steps: Step[]) {
   const questions = run.team?.messages.filter(message => message.kind === "question" && message.recipient === "user" && message.status === "open") ?? [];
   if (run.awaiting) return { title: "Your plan decision is needed", detail: run.awaiting.title };
   if (questions.length) return { title: `${questions.length} question${questions.length === 1 ? "" : "s"} need your answer`, detail: questions[0]!.body };
-  if (run.pauseRequested) return { title: "Pausing at a safe checkpoint", detail: "Current work is retained. Resume dispatch when you're ready." };
+  const paused = dispatchLabel(run, steps);
+  if (paused) return { title: paused, detail: paused === "Dispatch paused" ? "No work is running. Resume dispatch when you’re ready." : "Active work is finishing before new dispatch is held." };
   const active = steps.filter(step => step.status === "running" && !step.sideOf);
   if (active.length) return { title: active.every(step => step.kind === "check") ? "Checking the result" : "Work in progress", detail: active.map(step => step.title).join(" · ") };
   if (run.status === "running") return { title: "Preparing the next step", detail: "Waiting for a provider slot, a dependency, or the next workflow action." };

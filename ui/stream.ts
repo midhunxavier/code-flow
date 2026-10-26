@@ -17,7 +17,7 @@ import { apiPath, api, ApiError, post } from "./lib.js";
 
 type OnData = (data: any) => void;
 export interface StreamSharing { channelKey: string; lockId: string }
-export interface StreamState { state: "connecting" | "connected" | "reconnecting" | "offline"; lastReceived?: number }
+export interface StreamState { state: "connecting" | "connected" | "reconnecting" | "offline"; lastReceived?: number; detail?: string }
 let sharing: StreamSharing | undefined;
 let transport: StreamState = { state: "connecting" };
 const stateListeners = new Set<(state: StreamState) => void>();
@@ -87,6 +87,7 @@ let syncQueued = false;
 let retry: ReturnType<typeof setTimeout> | undefined;
 let failures = 0;
 let opening = false;
+let reconnectVersion = 0;
 
 function serve(id: number, wired: Wired) {
   wire.set(id, wired);
@@ -112,6 +113,7 @@ function request(id: number, wired: Wired) {
 }
 
 function connect() {
+  reconnectVersion++;
   clearTimeout(retry);
   retry = undefined;
   source?.close();
@@ -158,26 +160,34 @@ function connect() {
   };
 }
 
-function reconnect() {
+function reconnect(immediate = false) {
+  const version = ++reconnectVersion;
   source?.close();
   source = undefined;
   client = "";
-  connection({ ...transport, state: "reconnecting" });
+  connection({ ...transport, state: "reconnecting", detail: "The live-update connection closed. Retrying…" });
   clearTimeout(retry);
   const wait = [500, 1_000, 2_000, 5_000][Math.min(failures++, 3)]!;
   const probe = async () => {
+    const signal = AbortSignal.timeout(10_000);
     try {
       if (sharing) {
-        const identity = await api<{ kind: string; streamSharing?: StreamSharing }>("/api/auth/self");
+        const identity = await api<{ kind: string; streamSharing?: StreamSharing }>("/api/auth/self", { signal });
+        if (version !== reconnectVersion) return;
         // Cookies are shared between tabs. A role switch or owner recovery must leave the old
         // broker group rather than reconnect it with a different browser identity.
         if (identity.kind !== "owner" || identity.streamSharing?.channelKey !== sharing.channelKey || identity.streamSharing?.lockId !== sharing.lockId) { location.reload(); return; }
       }
-      await api("/api/health");
+      // Diagnostics can fail independently of the feed. Let the stream itself establish liveness.
+      if (version !== reconnectVersion) return;
       connect();
-    } catch { retry = setTimeout(() => void probe(), 5_000); }
+    } catch (error) {
+      if (version !== reconnectVersion) return;
+      connection({ ...transport, state: "reconnecting", detail: signal.aborted ? "Could not reconnect: the identity check timed out. Retrying…" : `Could not reconnect: ${(error as Error).message.slice(0, 240)}` });
+      retry = setTimeout(() => void probe(), 5_000);
+    }
   };
-  retry = setTimeout(() => void probe(), wait);
+  retry = setTimeout(() => void probe(), immediate ? 0 : wait);
 }
 
 function scheduleSync() {
@@ -228,7 +238,7 @@ type Shared = { kind: "leader"; state: StreamState } | { kind: "state"; state: S
 
 function share() {
   window.addEventListener("offline", () => connection({ ...transport, state: "offline" }));
-  window.addEventListener("online", () => { connection({ ...transport, state: "reconnecting" }); if (role === "follower") announce(); else if (wire.size) connect(); });
+  window.addEventListener("online", () => { connection({ ...transport, state: "reconnecting" }); if (role === "follower") announce(); else if (wire.size) reconnect(true); });
   // Static channel names let a shared-role tab impersonate a window and read owner events.
   // Web Lock names are enumerable, so the channel capability is distinct from every lock ID.
   if (!sharing || typeof BroadcastChannel !== "function" || typeof navigator === "undefined" || !navigator.locks?.request) {
@@ -273,7 +283,7 @@ function share() {
 function lead() {
   role = "leader";
   for (const [id, sub] of subs) wire.set(id, { topic: sub.topic, cursor: () => sub.cursor?.(), deliver: sub.onData });
-  connect();
+  reconnect(true); // A promoted follower must validate its broker capability before forwarding.
   shared!.postMessage({ kind: "leader", state: transport } satisfies Shared);
 }
 

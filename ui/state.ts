@@ -1,15 +1,19 @@
-import { chatTaskId } from "../src/chat-family.js";
+import { fillTemplate } from "./composer-tools.js";
+import { EXECUTION_LIMITS, numberProblem } from "../src/start-input-validation.js";
+import type { ProjectHistoryCounts } from "../src/project-report.js";
+import { chatTaskId, groupChatTasks } from "../src/chat-family.js";
 import { needsYou, matchesHistoryFilter } from "../src/run-status.js";
 import { DEFAULT_EXECUTION_BUDGET } from "../src/execution-budget.js";
 export { needsYou, runState, isFlagged } from "../src/run-status.js";
 import { rerunDraft } from "./rerun-draft.js";
 import { contextBudget, contextBudgetOrigin } from "./context-budget.js";
 import { intentDraft, journeyDraft } from "./composer-draft-fields.js";
-import { batch, computed, effect, signal } from "@preact/signals";
+import { batch, computed, effect, signal, untracked } from "@preact/signals";
 import { legacyDraftProject, projectDestination, ProjectDraftStore } from "./project-context.js";
 import { supportsRunPermissions } from "../src/run-permissions.js";
 import { selectedTeamTemplate } from "./team-template-state.js";
-import { api, sharedGet, ApiError, post, showToast, store, workspaceId, workspaceKey, SHORT } from "./lib.js";
+import { readProjectDefaults } from "./project-defaults.js";
+import { api, sharedGet, ApiError, post, showToast, showError, store, workspaceId, workspaceKey, SHORT } from "./lib.js";
 import { independentRoles, type RoleValue } from "./roles.js";
 import { onStreamState, subscribe } from "./stream.js";
 import { defaultPlanApproval, teamAwaitingAnswer } from "./team-state.js";
@@ -32,8 +36,15 @@ import type {
 
 // ---------------------------------------------------------------- app-wide
 export const agents = signal<AgentInfo[]>([]);
-export async function loadAgents() {
-  const inventory = await sharedGet<AgentInfo[]>("/api/agents");
+/** A custom filesystem restriction in some project pauses app-managed work in every project (docs/filesystem-policy.md); every provider says so. */
+export const executionPaused = computed(() => agents.value.some((agent) => agent.unavailableReason === "filesystem-policy"));
+/** The project Settings → Projects shows first, after a link to review its filesystem policy. */
+export const settingsProject = signal("");
+let agentsRequest = 0;
+export async function loadAgents(force = false) {
+  const request = ++agentsRequest;
+  const inventory = await sharedGet<AgentInfo[]>(force ? "/api/agents?refresh=1" : "/api/agents");
+  if (request !== agentsRequest) return;
   for (const agent of inventory) SHORT[agent.id] = agent.displayName;
   agents.value = inventory;
 }
@@ -58,7 +69,11 @@ export function routeFromHash(hash = location.hash): Route {
 }
 export const railOpen = signal(false);
 export const railCollapsed = signal(store.get("railCollapsed") === "1");
+export const railPeek = signal(false);
+/** Reveal search without changing the saved desktop sidebar preference. */
+export function peekRail() { if (window.innerWidth > 760) railPeek.value = true; }
 export function setRailCollapsed(value: boolean) {
+  railPeek.value = false;
   railCollapsed.value = value;
   store.set("railCollapsed", value ? "1" : "0");
 }
@@ -73,8 +88,9 @@ export const sideTab = signal<SideTab>(SIDE_TABS.includes(store.get("sideTab") a
 export const sideWidth = signal(Math.min(Math.max(Number(store.get("sideWidth")) || 420, 300), 900));
 const viewportWidth = signal(window.innerWidth);
 window.addEventListener("resize", () => { viewportWidth.value = window.innerWidth; });
+export const railIsCollapsed = computed(() => viewportWidth.value > 760 && railCollapsed.value && !railPeek.value);
 /** Leave room for the conversation when the panel is docked; retain the saved width on resize. */
-export const sideMaxWidth = computed(() => Math.max(300, Math.min(900, viewportWidth.value - (railCollapsed.value ? 64 : viewportWidth.value <= 1180 ? 236 : 248) - 360)));
+export const sideMaxWidth = computed(() => Math.max(300, Math.min(900, viewportWidth.value - (railIsCollapsed.value ? 64 : viewportWidth.value <= 1180 ? 236 : 248) - 360)));
 export const sideDisplayWidth = computed(() => Math.min(sideWidth.value, sideMaxWidth.value));
 export const sideExpanded = signal(false);
 export const sideFullWidth = computed(() => sideOpen.value && (sideExpanded.value || viewportWidth.value <= 760));
@@ -182,7 +198,11 @@ export async function setRepo(path: string, remember = true) {
     setupCmd.value = "";
     checkCmd.value = "";
     checkHint.value = "";
-    trust.value = (["safe", "standard", "trusted", "full"].includes(store.get("trust") ?? "") ? store.get("trust") : "standard") as Trust;
+    checkWarning.value = "";
+    // What the draft chose was for the repository it leaves.
+    forgetChoices();
+    deriveDefaults({});
+    configRead = { repo: "", ref: "" };
     contextPaths.value = new Map();
   };
   // A picker path may be an alias of the current repository. Keep retry settings until
@@ -216,12 +236,11 @@ export async function setRepo(path: string, remember = true) {
   if (request !== repoSelection) return false;
   checkLoading = loadCheck();
   await checkLoading;
-  if (request === repoSelection && runFilter.value.thisRepo) void refreshRuns();
   return request === repoSelection;
 }
 export const recentRepos = () => store.json<string[]>("recentRepos", []);
 /** The folder picker adds a repo to something (a project you're editing) instead of choosing the composer's repo. */
-export const pickerChoose = signal<{ title: string; choose: (path: string) => void } | null>(null);
+export const pickerChoose = signal<{ title: string; choose: (path: string) => void | Promise<unknown> } | null>(null);
 
 // ---------------------------------------------------------------- projects
 /** Which runs the app shows: one project's (its id), every run (ALL), or the runs in no project (NONE). */
@@ -230,6 +249,7 @@ export const NONE = "none";
 export const projects = signal<Project[]>([]);
 /** The list of projects has come: until then, an empty list says nothing about a project being gone. */
 export const projectsLoaded = signal(false);
+export const projectsStatus = signal<import("../src/projects.js").ProjectsStatus>({ available: true });
 export const currentProject = signal(store.get("project") ?? ALL);
 export const activeProject = computed(() => projects.value.find((p) => p.id === currentProject.value));
 /** The draft's destination is independent of global list filters and the page being viewed. */
@@ -237,6 +257,8 @@ export const composerProject = signal(store.get("composerProject") ?? "");
 export const composerLoading = signal(false);
 export const draftsReady = signal(false);
 export const draftError = signal("");
+export const unreadableDrafts = signal<Record<string, string>>({});
+export const draftUnavailable = computed(() => unreadableDrafts.value[composerProject.value] ?? "");
 export const projectPickerPurpose = signal<"filter" | "composer">("filter");
 export const repositoryChoice = signal<{ repository: string; project?: string } | null>(null);
 export const composerRunOptions = signal<{
@@ -260,7 +282,9 @@ export function editProject(id: string) {
 
 export async function loadProjects() {
   try {
-    projects.value = await sharedGet<Project[]>("/api/projects");
+    const [list, status] = await Promise.all([sharedGet<Project[]>("/api/projects"), sharedGet<{ projects?: import("../src/projects.js").ProjectsStatus }>("/api/health").catch(() => null)]);
+    projects.value = list;
+    if (status?.projects) projectsStatus.value = status.projects;
     projectsLoaded.value = true;
   } catch {
     return; // keep what we have
@@ -302,17 +326,27 @@ function lastRepo(p: Project): string {
   return latest?.repo ?? p.repos[0] ?? "";
 }
 
+/**
+ * Prefill a fresh draft with the team a project remembers. Only this draft changes: the workflow,
+ * team and models saved in Settings stay as they are for every other project.
+ */
 function applyDefaults(d: ProjectDefaults) {
+  const origins = { ...composerOrigins.value };
   for (const [patternId, team] of Object.entries(d.teams)) {
-    roleSel.value = { ...roleSel.value, [patternId]: team.roles as Record<string, RoleValue[]> };
-    roleModels.value = { ...roleModels.value, [patternId]: team.roleSettings ?? {} };
+    roleSel.value = { ...roleSel.value, [patternId]: structuredClone(team.roles) as Record<string, RoleValue[]> };
+    roleModels.value = { ...roleModels.value, [patternId]: structuredClone(team.roleSettings ?? {}) };
+    origins.roles = "Project defaults";
   }
-  if (patterns.value.some((p) => p.id === d.pattern)) setPattern(d.pattern);
-  agentSettings.value = d.agentSettings ?? {};
-  store.set("roleSel", JSON.stringify(roleSel.value));
-  store.set("roleModels", JSON.stringify(roleModels.value));
-  store.set("agentSettings", JSON.stringify(agentSettings.value));
-  composerOrigins.value = { ...composerOrigins.value, pattern: "Project defaults", roles: "Project defaults", models: "Project defaults" };
+  if (patterns.value.some((p) => p.id === d.pattern)) {
+    selectedTeamTemplate.value = null;
+    patternId.value = d.pattern;
+    origins.pattern = "Project defaults";
+  }
+  if (d.agentSettings && Object.keys(d.agentSettings).length) {
+    agentSettings.value = { ...agentSettings.value, ...structuredClone(d.agentSettings) };
+    origins.models = "Project defaults";
+  }
+  composerOrigins.value = origins;
 }
 
 /** Opening a repository requires a deliberate destination when membership is ambiguous or absent. */
@@ -322,6 +356,10 @@ export async function pickRepo(path: string, project = composerProject.value) {
   try {
     const info = await api<RepoInfo>(`/api/branches?repo=${encodeURIComponent(path)}`);
     if (request !== repositoryPick) return;
+    if (!projectsStatus.value.available) {
+      if (!await openComposer("", { repository: info.repo })) return;
+      route.value = { view: "composer", project: "" }; return;
+    }
     const p = projects.value.find(item => item.id === project);
     if (p?.repos.includes(info.repo)) {
       if (composerProject.value !== p.id && !await openComposer(p.id)) return;
@@ -332,13 +370,15 @@ export async function pickRepo(path: string, project = composerProject.value) {
     const matches = projects.value.filter(item => item.repos.includes(info.repo));
     if (!project && matches.length === 1) return void await openComposer(matches[0]!.id, { repository: info.repo, carryUnassigned: true });
     repositoryChoice.value = { repository: info.repo, project: p?.id };
-  } catch (error) { if (request === repositoryPick) showToast(repoProblem(path, error), 6000); }
+  } catch (error) { if (request === repositoryPick) showError(repoProblem(path, error), 6000); }
 }
 
 /** The explicit destination of the saved composer draft; never inferred from a list filter. */
 export const target = computed(() => {
   const r = repo.value;
   const destination = projectDestination(projects.value, composerProject.value, r);
+  if (!projectsLoaded.value) destination.problem = "";
+  else if (!projectsStatus.value.available && !composerProject.value) destination.problem = "";
   return { ...destination, adds: !!destination.project && !!r && !destination.project.repos.includes(r), creates: !destination.project && !!r };
 });
 
@@ -373,6 +413,8 @@ export interface SideScope {
   pinned: boolean;
   /** Its run or project hasn't loaded yet: the panel waits, so no tab acts on a scope without them. */
   waiting?: boolean;
+  /** An explicit scope no longer exists after its list finished loading. */
+  missing?: boolean;
 }
 type SidePin = { kind: "run"; id: string } | { kind: "project"; project?: string; repo: string };
 const sidePin = signal<SidePin | null>(store.json<SidePin | null>("sidePin", null));
@@ -431,7 +473,12 @@ function scopeFromKey(key: string): SideScope | undefined {
 export const sideScope = computed<SideScope>(() => {
   const popped = poppedScope.value;
   // Until its run or project has loaded, a popped-out panel waits on its key.
-  if (popped) return scopeFromKey(popped) ?? waitingScope(popped, true);
+  if (popped) {
+    const found = scopeFromKey(popped);
+    if (found) return found;
+    const scope = waitingScope(popped, true);
+    return { ...scope, missing: !scope.waiting };
+  }
   const pin = sidePin.value;
   if (pin?.kind === "run") {
     // A run that isn't loaded (yet, or any more) can't be shown: follow until it is.
@@ -465,20 +512,34 @@ export function openSideChat(runId: string, chat: string) {
 }
 
 /** Open links in the Browser belonging to the run that supplied them. */
-export function openBrowserPage(url: string, runId?: string) {
+export function openBrowserPage(url: string, runId?: string, previewStartedAt?: number) {
   const key = runId ? taskSideKey(`run:${runId}`) : sideScope.value.key;
   const memo = sideMemory.value[key];
   const pages = memo?.pages ?? (memo?.url ? [{ id: "p0", url: memo.url }] : []);
   const existing = pages.find(page => { try { return new URL(page.url).href === new URL(url).href; } catch { return page.url === url; } });
   const id = existing?.id ?? `p${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
-  rememberSide({ pages: existing ? pages : [...pages, { id, url }], page: id, tab: "browser", browserRequest:{id:`${Date.now()}-${Math.random()}`,url} }, key);
+  rememberSide({ pages: existing ? pages : [...pages, { id, url }], page: id, tab: "browser", browserRequest:{id:`${Date.now()}-${Math.random()}`,url,...(previewStartedAt === undefined ? {} : {previewStartedAt})} }, key);
   if (runId && sideScope.value.key !== key) setPin(followed.value.key === key ? null : { kind: "run", id: runId });
   openSide("browser");
 }
 
+/** Cancel only the automatic navigation belonging to the preview being stopped. History stays intact. */
+export function cancelPreviewBrowserPage(url: string, startedAt: number, runId: string) {
+  const scope = taskSideKey(`run:${runId}`), request = sideMemory.value[scope]?.browserRequest;
+  if (!request || request.previewStartedAt !== startedAt) return;
+  try { if (new URL(request.url).href !== new URL(url).href) return; } catch { return; }
+  rememberSide({browserRequest:{...request,cancelled:"stopped",manualUrl:undefined}},scope);
+}
+
+/** A manual browser action takes precedence over a queued automatic preview. */
+export function supersedePreviewBrowserPage(scope: string, manualUrl?: string) {
+  const request = sideMemory.value[scope]?.browserRequest;
+  if (request?.previewStartedAt !== undefined) rememberSide({browserRequest:{...request,cancelled:"superseded",...(manualUrl ? {manualUrl} : {})}},scope);
+}
+
 /** What the panel remembers per scope, so going back to a run brings back its panel. */
 export interface SideMemory {
-  browserRequest?: {id:string;url:string};
+  browserRequest?: {id:string;url:string;previewStartedAt?:number;cancelled?:"stopped"|"superseded";manualUrl?:string};
   browserHandled?: string;
   tab?: SideTab;
   /** The chat shown (see `sideChat`); "" for a new chat. */
@@ -496,6 +557,8 @@ export interface SideMemory {
   shell?: string;
   below?: string;
   split?: boolean;
+  /** You closed the last terminal here: none opens by itself again until you open one. */
+  shellsClosed?: boolean;
   /** The Browser tab's pages (tabs of its own), the one shown, the one beside it to compare, and the width. */
   pages?: { id: string; url: string }[];
   page?: string;
@@ -628,44 +691,110 @@ export function listenForHandOffs() {
 
 // ---------------------------------------------------------------- composer
 export const task = signal(store.get("draftTask") ?? "");
-export const acceptanceCriteria = signal<string[]>(store.json<unknown>("draftAcceptance", []) instanceof Array ? store.json<unknown[]>("draftAcceptance", []).filter((v): v is string => typeof v === "string").slice(0, 100) : []);
+export const acceptanceCriteria = signal<string[]>(store.json<unknown>("draftAcceptance", []) instanceof Array ? store.json<unknown[]>("draftAcceptance", []).filter((v): v is string => typeof v === "string") : []);
 export function setAcceptanceCriteria(criteria: string[]) {
-  acceptanceCriteria.value = criteria.slice(0, 100).map((c) => c.slice(0, 2000));
+  acceptanceCriteria.value = criteria;
   store.set("draftAcceptance", JSON.stringify(acceptanceCriteria.value));
 }
-export const composerOrigins = signal<Record<string, string>>({ pattern: store.get("pattern") ? "Browser preference" : "Application default", roles: store.get("roleSel") ? "Browser preferences" : "Workflow defaults", models: store.get("agentSettings") ? "Browser preferences" : "CLI defaults" });
+/** Where a fresh draft's workflow, team and models come from before anything is applied to it. */
+const browserOrigins = (): Record<string, string> => ({ pattern: store.get("pattern") ? "Browser preference" : "Application default", roles: store.get("roleSel") ? "Browser preferences" : "Workflow defaults", models: store.get("agentSettings") ? "Browser preferences" : "CLI defaults" });
+export const composerOrigins = signal<Record<string, string>>(browserOrigins());
+/**
+ * Values a draft keeps only when they were chosen for it: typed in Run options, picked in a
+ * permissions menu, or brought back by Edit & run again. composerOrigins says where each chosen one
+ * came from and is saved with the draft. A field without an origin is derived again from Settings,
+ * .codeflow/config.json and the repository whenever the draft opens, so a saved draft never replays
+ * an old default as if you had chosen it (docs/configuration.md).
+ */
+const DRAFT_CHOICES = ["check", "setup", "trust", "limits"] as const;
+type DraftChoice = (typeof DRAFT_CHOICES)[number];
+/** The origin of what Edit & run again restores; it applies to that retry only. */
+export const RERUN_ORIGIN = "Original run";
+const chosen = (field: DraftChoice) => composerOrigins.value[field] !== undefined;
+export function chooseForDraft(field: DraftChoice, origin: string) {
+  composerOrigins.value = { ...composerOrigins.value, [field]: origin };
+}
+export function forgetChoices(fields: readonly DraftChoice[] = DRAFT_CHOICES) {
+  if (!fields.some(chosen)) return;
+  const origins = { ...composerOrigins.value };
+  for (const field of fields) delete origins[field];
+  composerOrigins.value = origins;
+}
 export const contextPaths = signal<Map<string, ContextItem>>(new Map());
 export const attachments = signal<Attachment[]>([]);
 export const contextError = signal("");
-export const patternId = signal(store.get("pattern") ?? "solo");
+/** Settings > Run defaults: the workflow new drafts start with, unless their project remembers a team. */
+export const defaultPattern = signal(store.get("pattern") ?? "solo");
+/** The current draft's workflow. */
+export const patternId = signal(defaultPattern.value);
 export const pattern = computed(() => patterns.value.find((p) => p.id === patternId.value) ?? patterns.value[0]);
 /** A role is filled by an agent, or "auto": code-flow picks one whose plan has room. */
 export type { RoleValue } from "./roles.js";
 export const roleSel = signal<Record<string, Record<string, RoleValue[]>>>(store.json("roleSel", {}));
 export const optionValues = signal<Record<string, Record<string, number | boolean>>>({});
-export const agentSettings = signal<AgentSettings>(store.json("agentSettings", {}));
+/** Settings > Agents & models: the saved provider models and efforts every fresh draft starts from. */
+export const providerDefaults = signal<AgentSettings>(store.json("agentSettings", {}));
+/**
+ * The current draft's provider models: the provider defaults, or what a project's remembered team,
+ * a template or a restored run chose for this draft. Never saved as the provider defaults.
+ */
+export const agentSettings = signal<AgentSettings>(structuredClone(providerDefaults.value));
 export const baseRef = signal(store.get("baseRef") ?? "");
 export const branchPrefix = signal("");
 export const checkCmd = signal("");
 export const checkHint = signal("");
+/** What detecting the check had to skip or couldn't do (an invalid package.json), shown by "Done when". */
+export const checkWarning = signal("");
 export const setupCmd = signal("");
-export const limits = signal(store.json<{ maxMinutes: number; maxSteps: number; maxTokens?: number; maxCostUsd?: number }>("limits", DEFAULT_EXECUTION_BUDGET));
+export type Limits = { maxMinutes: number; maxSteps: number; maxTokens?: number; maxCostUsd?: number };
+/** Run limits saved in Settings → Run defaults; null until you save some, when the repository's .codeflow/config.json and then the app's apply. */
+export const limitPreference = signal(store.json<Limits | null>("limits", null));
+/** The draft's limits: what it chose, else your saved ones, else the repository's, else the app's. */
+function safeLimits(saved: Limits): Limits {
+  const value = { ...saved };
+  for (const key of ["maxMinutes", "maxSteps", "maxTokens", "maxCostUsd"] as const) if (value[key] !== undefined && numberProblem(value[key], EXECUTION_LIMITS[key])) {
+    if (key === "maxMinutes" || key === "maxSteps") value[key] = DEFAULT_EXECUTION_BUDGET[key]; else delete value[key];
+  }
+  return { ...DEFAULT_EXECUTION_BUDGET, ...value };
+}
+if (limitPreference.value) limitPreference.value = safeLimits(limitPreference.value);
+export const limits = signal<Limits>(safeLimits(limitPreference.value ?? DEFAULT_EXECUTION_BUDGET));
 export type Trust = "safe" | "standard" | "trusted" | "full";
-export const trust = signal<Trust>((store.get("trust") as Trust) || "standard");
+const trustPreference = (): Trust | null => {
+  const saved = store.get("trust");
+  return saved && ["safe", "standard", "trusted", "full"].includes(saved) ? saved as Trust : null;
+};
+export const trust = signal<Trust>(trustPreference() ?? "standard");
 export function setTrust(value: Trust) {
   trust.value = value;
   store.set("trust", value);
+  chooseForDraft("trust", "This run (remembered)");
+}
+/** Permissions and limits the draft didn't choose: your browser's, else the repository's, else the app's. */
+function deriveDefaults(config: Record<string, any>) {
+  if (!chosen("trust")) trust.value = trustPreference() ?? config.trust ?? "standard";
+  if (chosen("limits")) return;
+  const configured = config.limits ?? {};
+  limits.value = limitPreference.value ? { ...limitPreference.value } : {
+    ...DEFAULT_EXECUTION_BUDGET,
+    // Within what the limit fields accept.
+    ...(configured.maxMinutes ? { maxMinutes: Math.min(720, configured.maxMinutes) } : {}),
+    ...(configured.maxSteps ? { maxSteps: Math.min(200, configured.maxSteps) } : {}),
+  };
 }
 /** Per-role model/effort overrides, per pattern: { pattern: { role: { agent: { model, effort } } } }. */
 export const roleModels = signal<Record<string, Record<string, AgentSettings>>>(store.json("roleModels", {}));
 export function setRoleModel(patternId: string, roleId: string, agent: AgentId, patch: { model?: string; effort?: string; variants?: { model: string; effort?: string }[] }) {
   const forPattern = roleModels.value[patternId] ?? {};
   const forRole = forPattern[roleId] ?? {};
-  roleModels.value = { ...roleModels.value, [patternId]: { ...forPattern, [roleId]: { ...forRole, [agent]: { ...(forRole[agent] ?? {}), ...patch } } } };
-  store.set("roleModels", JSON.stringify(roleModels.value));
+  const next = { ...(forRole[agent] ?? {}), ...patch };
+  roleModels.value = { ...roleModels.value, [patternId]: { ...forPattern, [roleId]: { ...forRole, [agent]: next } } };
+  // Remember only this choice: the rest of the draft may hold a project's team or a template's models.
+  const saved = store.json<Record<string, Record<string, AgentSettings>>>("roleModels", {});
+  store.set("roleModels", JSON.stringify({ ...saved, [patternId]: { ...saved[patternId], [roleId]: { ...saved[patternId]?.[roleId], [agent]: next } } }));
 }
 /** .codeflow/config.json of the selected repo, if it has one. */
-interface RepoConfiguration { config: Record<string, any>; found: boolean; error?: string }
+interface RepoConfiguration { config: Record<string, any>; found: boolean; error?: string; /** The start branch it was read at; "" for your checkout. */ ref?: string }
 export const repoConfig = signal<RepoConfiguration | null>(null);
 
 export interface Health {
@@ -693,10 +822,30 @@ export interface GitHealth {
 export const health = signal<Health[] | null>(null);
 export const gitHealth = signal<GitHealth | null>(null);
 export const healthOpen = signal(false);
-export async function loadHealth() {
-  const [agents, git] = await Promise.allSettled([sharedGet<Health[]>("/api/doctor"), sharedGet<GitHealth>("/api/doctor/git")]);
-  health.value = agents.status === "fulfilled" ? agents.value : null;
-  gitHealth.value = git.status === "fulfilled" ? git.value : null;
+/** Why the last health check failed ("" while it hasn't): shown instead of an endless "Checking…". */
+export const healthError = signal("");
+export const healthChecking = signal(false), providersRefreshing = signal(false);
+let healthFlight: Promise<void> | undefined, providerRefreshFlight: Promise<void> | undefined;
+export function loadHealth(): Promise<void> {
+  if (healthFlight) return healthFlight;
+  if (executionPaused.value) { health.value = null; gitHealth.value = null; healthError.value = ""; return Promise.resolve(); }
+  healthChecking.value = true; healthError.value = "";
+  const pending = (async () => {
+    const [agents, git] = await Promise.allSettled([sharedGet<Health[]>("/api/doctor"), sharedGet<GitHealth>("/api/doctor/git")]);
+    health.value = agents.status === "fulfilled" ? agents.value : null;
+    healthError.value = agents.status === "rejected" ? (agents.reason as Error).message || "Health is unavailable" : "";
+    gitHealth.value = git.status === "fulfilled" ? git.value : null;
+  })();
+  healthFlight = pending.finally(() => { healthFlight = undefined; healthChecking.value = false; });
+  return healthFlight;
+}
+/** Finish an older health read before invalidating model evidence, then share the fresh discovery. */
+export function refreshProviders(): Promise<void> {
+  if (providerRefreshFlight) return providerRefreshFlight;
+  providersRefreshing.value = true;
+  const pending = (async () => { await healthFlight; await loadAgents(true); await Promise.all([loadModels(true), loadHealth()]); })();
+  providerRefreshFlight = pending.catch(error => { healthError.value = (error as Error).message; }).finally(() => { providerRefreshFlight = undefined; providersRefreshing.value = false; });
+  return providerRefreshFlight;
 }
 
 /**
@@ -727,50 +876,75 @@ export function setTask(value: string) {
 export function setPattern(id: string) {
   selectedTeamTemplate.value = null;
   patternId.value = id;
+  defaultPattern.value = id;
   store.set("pattern", id);
   composerOrigins.value = { ...composerOrigins.value, pattern: "This run (remembered)" };
 }
 export function setRoles(patternId: string, roleId: string, ids: RoleValue[]) {
   roleSel.value = { ...roleSel.value, [patternId]: { ...(roleSel.value[patternId] ?? {}), [roleId]: ids } };
-  store.set("roleSel", JSON.stringify(roleSel.value));
+  // Remember only this choice: the rest of the draft may hold a project's remembered team.
+  const saved = store.json<Record<string, Record<string, RoleValue[]>>>("roleSel", {});
+  store.set("roleSel", JSON.stringify({ ...saved, [patternId]: { ...saved[patternId], [roleId]: ids } }));
   composerOrigins.value = { ...composerOrigins.value, roles: "This run (remembered)" };
 }
+/** A model choice for this draft only, such as a template's; Settings keeps the provider defaults. */
 export function setAgentSetting(id: AgentId, patch: { model?: string; effort?: string }) {
   agentSettings.value = { ...agentSettings.value, [id]: { ...(agentSettings.value[id] ?? {}), ...patch } };
-  store.set("agentSettings", JSON.stringify(agentSettings.value));
-  composerOrigins.value = { ...composerOrigins.value, models: "This run (remembered)" };
+  composerOrigins.value = { ...composerOrigins.value, models: "This run" };
+}
+/** Settings > Agents & models: save one provider's default, and use it in the current draft too. */
+export function setProviderDefault(id: AgentId, patch: { model?: string; effort?: string }) {
+  providerDefaults.value = { ...providerDefaults.value, [id]: { ...(providerDefaults.value[id] ?? {}), ...patch } };
+  store.set("agentSettings", JSON.stringify(providerDefaults.value));
+  agentSettings.value = { ...agentSettings.value, [id]: { ...(agentSettings.value[id] ?? {}), ...patch } };
+  composerOrigins.value = { ...composerOrigins.value, models: "Browser preferences" };
 }
 let checkEdit = 0;
 let setupEdit = 0;
 /** Override only this draft, including an intentional blank, during repository discovery. */
-export function setRunCheck(value: string) {
+export function setRunCheck(value: string, origin = "This run override") {
   checkEdit++;
   checkCmd.value = value;
+  chooseForDraft("check", origin);
 }
-export function setRunSetup(value: string) {
+export function setRunSetup(value: string, origin = "This run override") {
   setupEdit++;
   setupCmd.value = value;
+  chooseForDraft("setup", origin);
 }
+/** Remembered for the repository: a default from then on, like one from Settings → Projects. */
 export function setCheck(value: string) {
   setRunCheck(value);
-  if (repo.value) store.set(`check:${repo.value}`, value);
+  if (repo.value) { store.set(`check:${repo.value}`, value); forgetChoices(["check"]); }
 }
 export function setSetup(value: string) {
   setRunSetup(value);
-  if (repo.value) store.set(`setup:${repo.value}`, value);
+  if (repo.value) { store.set(`setup:${repo.value}`, value); forgetChoices(["setup"]); }
 }
-export function setLimits(patch: Partial<{ maxMinutes: number; maxSteps: number; maxTokens?: number; maxCostUsd?: number }>) {
+/** Settings → Run defaults: saved for new drafts, and applied to this one (on top of its own limits, if it chose some). */
+export function setLimits(patch: Partial<Limits>) {
+  limitPreference.value = { ...(limitPreference.value ?? DEFAULT_EXECUTION_BUDGET), ...patch };
+  store.set("limits", JSON.stringify(limitPreference.value));
+  limits.value = chosen("limits") ? { ...limits.value, ...patch } : { ...limitPreference.value };
+}
+/** Override only this draft's limits; your saved ones stay as they are. */
+export function setRunLimits(patch: Partial<Limits>, origin = "This run override") {
   limits.value = { ...limits.value, ...patch };
-  store.set("limits", JSON.stringify(limits.value));
+  chooseForDraft("limits", origin);
 }
 
 /** Who fills each role: saved choice, else the pattern default — only installed agents. */
 export function rolesFor(p: PatternInfo | undefined): Record<string, RoleValue[]> {
   if (!p) return {};
   const saved = roleSel.value[p.id] ?? {};
+  const options = composerRunOptions.value;
+  // Antigravity can't ask for approval: after an explicit Ask for approval, defaults go to Claude or Codex.
+  // A draft keeps no container of its own while it matches the project's Docker default.
+  const container = options.container ?? readProjectDefaults(repo.value).container;
+  const approvals = options.toolApprovals === true && trust.value !== "safe" && !options.remoteWorker && !container.enabled;
   const eligibleDefaults = agents.value.filter((a) => {
     const diagnostic = health.value?.find(entry => entry.id === a.id);
-    return a.available && supportsRunPermissions(a.id) && (a.id !== "agy" || composerRunOptions.value.antigravityExecution === "native" || diagnostic?.managedCompatible === true) && diagnostic?.signedIn !== false && diagnostic?.compatible !== false && (!a.id.startsWith("acp:") || trust.value === "full");
+    return a.available && supportsRunPermissions(a.id) && (a.id !== "agy" || !approvals && (options.antigravityExecution === "native" || diagnostic?.managedCompatible === true)) && diagnostic?.signedIn !== false && diagnostic?.compatible !== false;
   });
   const eligibleIds = new Set(eligibleDefaults.map(agent => agent.id));
   const firstAvailable = eligibleDefaults[0]?.id;
@@ -801,87 +975,150 @@ export function loadCheck(): Promise<void> {
   return checkLoading;
 }
 
+/** The repository and start branch the configuration was last read for (see configRef). */
+let configRead = { repo: "", ref: "" };
+
 async function loadRepoCheck() {
   const r = repo.value;
+  const ref = configRef.value;
   const request = ++configRequest;
   const selection = repoSelection;
   const checkVersion = checkEdit;
   const setupVersion = setupEdit;
   const current = () => request === configRequest && selection === repoSelection && repo.value === r;
-  configChecking.value = !!r;
-  repoConfig.value = null;
-  setupCmd.value = r ? store.get(`setup:${r}`) ?? "" : "";
-  checkCmd.value = r ? store.get(`check:${r}`) ?? "" : "";
-  checkHint.value = "";
+  // A value chosen for this draft, or typed during the lookup, is never replaced by a default.
+  const ownCheck = () => checkVersion !== checkEdit || chosen("check");
+  const ownSetup = () => setupVersion !== setupEdit || chosen("setup");
+  // Read again for the same repository and branch (a new run, back to the composer): the
+  // commands stay usable meanwhile and change only if the file did.
+  const again = !!r && configRead.repo === r && configRead.ref === ref;
+  configRead = { repo: r, ref };
+  if (!again) {
+    configChecking.value = !!r;
+    repoConfig.value = null;
+    checkWarning.value = "";
+    if (!ownSetup()) setupCmd.value = r ? store.get(`setup:${r}`) ?? "" : "";
+    if (!ownCheck()) {
+      checkCmd.value = r ? store.get(`check:${r}`) ?? "" : "";
+      checkHint.value = "";
+    }
+  }
   if (!r) {
+    deriveDefaults({});
     return;
   }
   let result: RepoConfiguration | null = null;
   try {
-    result = await api(`/api/repo-config?repo=${encodeURIComponent(r)}`);
+    result = await api(`/api/repo-config?repo=${encodeURIComponent(r)}${ref ? `&ref=${encodeURIComponent(ref)}` : ""}`);
   } catch {
     // Repository commands remain editable even when configuration cannot be read.
   }
   if (!current()) return;
-  repoConfig.value = result;
+  repoConfig.value = result && { ...result, ref };
   const config = repoConfig.value?.config ?? {};
-  if (setupVersion === setupEdit && store.get(`setup:${r}`) === null && !setupCmd.value && config.setup) setupCmd.value = config.setup;
-  if (config.trust && !store.get("trust")) trust.value = config.trust;
-  const saved = store.get(`check:${r}`);
+  deriveDefaults(config);
+  const saved = store.get(`check:${r}`), savedSetup = store.get(`setup:${r}`);
+  if (!ownSetup() && (savedSetup !== null || config.setup || !again)) setupCmd.value = savedSetup ?? config.setup ?? "";
   // A detected setup (`uv sync`, `poetry install`) fills an empty setup you haven't edited.
-  const detectSetup = setupVersion === setupEdit && !setupCmd.value && store.get(`setup:${r}`) === null;
+  const detectSetup = !ownSetup() && savedSetup === null && !config.setup;
   if (saved !== null || config.check) {
-    if (checkVersion === checkEdit) {
+    if (!ownCheck()) {
       checkCmd.value = saved ?? config.check!;
       checkHint.value = saved !== null ? "" : "From .codeflow/config.json.";
+      checkWarning.value = "";
     }
     if (!detectSetup) {
       configChecking.value = false;
       return;
     }
-  } else if (checkVersion === checkEdit) {
+  } else if (!ownCheck() && !again) {
     checkCmd.value = "";
   }
   try {
-    const d = await api<{ command: string | null; source?: string; setup?: string }>(`/api/check?repo=${encodeURIComponent(r)}`);
+    const d = await api<{ command: string | null; source?: string; setup?: string; warning?: string }>(`/api/check?repo=${encodeURIComponent(r)}`);
     if (!current()) return;
     // A late result fills only fields nobody touched during the lookup: it must neither replace
     // what you typed meanwhile nor land in the input while you are typing into it.
-    if (detectSetup && setupVersion === setupEdit && d.setup && !setupCmd.value && store.get(`setup:${r}`) === null) setupCmd.value = d.setup;
-    if (checkVersion !== checkEdit || saved !== null || config.check || store.get(`check:${r}`) !== null || checkCmd.value) return;
+    if (detectSetup && !ownSetup() && store.get(`setup:${r}`) === null) setupCmd.value = d.setup ?? "";
+    if (ownCheck() || saved !== null || config.check || store.get(`check:${r}`) !== null) return;
     checkCmd.value = d.command ?? "";
     checkHint.value = d.command ? `Detected from ${d.source}${d.setup ? `; each worktree is set up with “${d.setup}” (Settings)` : ""}.` : "No test command found in this repo.";
-  } catch {
-    if (current() && checkVersion === checkEdit && saved === null && !config.check) checkHint.value = "";
+    checkWarning.value = d.warning ? `Detection: ${d.warning}.` : "";
+  } catch (err) {
+    if (!current()) return;
+    // Detection only suggests a command: say why there's none, and the field stays yours to fill.
+    // As a first read would have left them: what is no longer configured isn't kept.
+    if (!ownCheck() && saved === null && !config.check) {
+      checkHint.value = "Couldn't detect a test command.";
+      checkWarning.value = `Couldn't detect a test command: ${(err as Error).message}`;
+      if (again) checkCmd.value = "";
+    }
+    if (again && detectSetup && !ownSetup()) setupCmd.value = "";
   } finally {
     if (current()) configChecking.value = false;
   }
 }
 
-export async function loadModels() {
+let modelsRequest = 0;
+export async function loadModels(force = false) {
+  const request = ++modelsRequest;
+  if (executionPaused.value) { catalogs.value = {}; return; } // refused under a filesystem restriction
   try {
-    catalogs.value = await sharedGet("/api/models");
+    const result = await sharedGet<Record<string, CatalogOrError>>(force ? "/api/models?refresh=1" : "/api/models");
+    if (request === modelsRequest) catalogs.value = result;
   } catch {
-    catalogs.value = {};
+    if (request === modelsRequest) catalogs.value = {};
   }
 }
 
 // ---------------------------------------------------------------- runs
-const deletedRunIds = new Set<string>();
-export function forgetRun(id: string) {
-  const fresh = !deletedRunIds.has(id);
+const deletedRunIds = signal(new Set<string>());
+const deletingLocally = new Set<string>();
+export const deletedRunNotice = signal<{ id: string; elsewhere: boolean } | null>(null);
+export const replaceRouteHistory = signal(false);
+export const isRunDeleted = (id: string) => deletedRunIds.value.has(id);
+export function beginRunDeletion(id: string) { deletingLocally.add(id); return () => deletingLocally.delete(id); }
+export function forgetRun(id: string, local = false, elsewhere = true) {
+  const fresh = !deletedRunIds.value.has(id);
   const removed = runs.value.get(id);
-  deletedRunIds.add(id);
+  deletedRunIds.value = new Set([...deletedRunIds.value, id]);
   const next = new Map(runs.value); next.delete(id); runs.value = next;
   if (fresh && historyTotal.value !== null && (!historyRequestQuery() || removed && matchesFilter(removed))) historyTotal.value = Math.max(0, historyTotal.value - 1);
-  if ((route.value.view === "run" || route.value.view === "review") && route.value.id === id) route.value = { view: "composer" };
+  if ((route.value.view === "run" || route.value.view === "review") && route.value.id === id) {
+    if (!local && !deletingLocally.has(id)) deletedRunNotice.value = { id, elsewhere };
+    batch(() => { replaceRouteHistory.value = true; route.value = { view: "composer" }; });
+  }
 }
 export function upsertRun(run: RunSummary) {
   if (run.deleted) { forgetRun(run.id); return; }
-  if (deletedRunIds.has(run.id)) return;
+  if (deletedRunIds.value.has(run.id)) return;
   const next = new Map(runs.value);
   next.set(run.id, run);
   runs.value = next;
+}
+
+export const projectCounts = signal<Record<string, ProjectHistoryCounts> | null>(null);
+export const projectCountsError = signal("");
+let countsRequest = 0;
+export async function refreshProjectCounts() {
+  const request = ++countsRequest;
+  try {
+    const next = await api<Record<string, ProjectHistoryCounts>>("/api/projects/counts");
+    if (request === countsRequest) { projectCounts.value = next; projectCountsError.value = ""; }
+    return next;
+  } catch (error) {
+    if (request === countsRequest) { projectCounts.value = null; projectCountsError.value = (error as Error).message; }
+    throw error;
+  }
+}
+/** Mounted once by the sidebar; coalesce live updates and refresh quiet history periodically. */
+export function watchProjectCounts() {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const refresh = () => { clearTimeout(timer); timer = undefined; void refreshProjectCounts().catch(() => {}); };
+  const stop = effect(() => { runs.value; projects.value; if (!timer) timer = setTimeout(refresh, 250); });
+  const poll = setInterval(refresh, 15_000);
+  refresh();
+  return () => { stop(); clearTimeout(timer); clearInterval(poll); countsRequest++; };
 }
 
 /**
@@ -899,6 +1136,7 @@ export const historyLoading = signal(false);
 export const historyLoadingMore = signal(false);
 export const historyError = signal("");
 let historyQuery = "";
+let historyFailed: "refresh" | "older" | null = null;
 const historyMatches = new Set<string>();
 /** A cursor belongs to the entire filter, including the selected repository. */
 export function historyRequestQuery() {
@@ -907,7 +1145,7 @@ export function historyRequestQuery() {
   if (f.status !== "all") query.set("status", f.status);
   if (f.pattern) query.set("pattern", f.pattern);
   if (f.agent) query.set("agent", f.agent);
-  if (f.thisRepo && repo.value) query.set("repo", repo.value);
+  if (f.repo) query.set("repo", f.repo);
   return query.toString();
 }
 let historyGeneration = 0;
@@ -924,8 +1162,9 @@ function prepareHistoryQuery(query: string) {
   historyNextCursor.value = null;
   historyLoadingMore.value = false;
   historyError.value = "";
+  historyFailed = null;
 }
-export const connection = signal<{ state: "connecting" | "connected" | "reconnecting" | "offline"; since: number; lastReceived?: number }>({ state: "connecting", since: Date.now() });
+export const connection = signal<{ state: "connecting" | "connected" | "reconnecting" | "offline"; since: number; lastReceived?: number; detail?: string }>({ state: "connecting", since: Date.now() });
 function connectionState(state: typeof connection.value.state) {
   connection.value = { ...connection.value, state, since: connection.value.state === state ? connection.value.since : Date.now() };
 }
@@ -945,11 +1184,11 @@ function noticeChange(before: RunSummary | undefined, run: RunSummary) {
 function applyRunList(list: RunSummary[], fresher: (id: string) => boolean, preserve = false) {
   const before = runs.value;
   const next = preserve ? new Map(before) : new Map<string, RunSummary>();
-  for (const run of list) if (!deletedRunIds.has(run.id)) next.set(run.id, fresher(run.id) && before.has(run.id) ? before.get(run.id)! : run);
+  for (const run of list) if (!deletedRunIds.value.has(run.id)) next.set(run.id, fresher(run.id) && before.has(run.id) ? before.get(run.id)! : run);
   for (const [id, run] of before) if (!next.has(id) && fresher(id)) next.set(id, run);
   runs.value = next;
   runsLoaded.value = true;
-  for (const run of next.values()) noticeChange(before.get(run.id), run);
+  for (const run of next.values()) { const prior = before.get(run.id); if (prior) noticeChange(prior, run); }
 }
 
 /** Restore all tabs/side chats when opening a deep link outside the first history page. */
@@ -998,16 +1237,16 @@ export async function refreshRuns() {
   try {
     const page = await api<RunPage | RunSummary[]>(`/api/runs?limit=100${query ? `&${query}` : ""}`);
     // The server restarted while this was on its way: the stream's own list is newer.
-    if (feed.epoch !== epoch || generation !== historyGeneration || query !== historyRequestQuery() || request !== historyRefresh) return;
+    if (epoch && feed.epoch !== epoch || generation !== historyGeneration || query !== historyRequestQuery() || request !== historyRefresh) return;
     const list = Array.isArray(page) ? page : page.runs;
     for (const run of list) historyMatches.add(run.id);
     applyRunList([...list, ...(Array.isArray(page) ? [] : page.related ?? [])], (id) => (feed.runSeq.get(id) ?? 0) > seq, true);
     historyTotal.value = Array.isArray(page) ? page.length : page.total;
-    if (historyPages <= 1) historyNextCursor.value = Array.isArray(page) ? null : page.nextCursor ?? null;
+    if (historyPages <= 1 && historyFailed !== "older") historyNextCursor.value = Array.isArray(page) ? null : page.nextCursor ?? null;
     historyPages = Math.max(1, historyPages);
-    historyError.value = "";
+    if (historyFailed !== "older") { historyError.value = ""; historyFailed = null; }
   } catch (error) {
-    if (generation === historyGeneration && request === historyRefresh) historyError.value = (error as Error).message;
+    if (generation === historyGeneration && request === historyRefresh && historyFailed !== "older") { historyError.value = (error as Error).message; historyFailed = "refresh"; }
   } finally {
     if (generation === historyGeneration && request === historyRefresh) historyLoading.value = false;
   }
@@ -1024,18 +1263,20 @@ export async function loadOlderRuns() {
   historyError.value = "";
   try {
     const page = await api<RunPage>(`/api/runs?limit=100&cursor=${encodeURIComponent(cursor)}${query ? `&${query}` : ""}`);
-    if (generation !== historyGeneration || query !== historyRequestQuery() || feed.epoch !== epoch) return;
+    if (generation !== historyGeneration || query !== historyRequestQuery() || epoch && feed.epoch !== epoch) return;
     for (const run of page.runs) historyMatches.add(run.id);
     applyRunList([...page.runs, ...page.related ?? []], (id) => (feed.runSeq.get(id) ?? 0) > seq, true);
     historyNextCursor.value = page.nextCursor ?? null;
     historyTotal.value = page.total;
-    historyPages++;
+    historyPages++; historyFailed = null;
   } catch (error) {
-    if (generation === historyGeneration) historyError.value = (error as Error).message;
+    if (generation === historyGeneration) { historyError.value = (error as Error).message; historyFailed = "older"; }
   } finally { if (generation === historyGeneration) historyLoadingMore.value = false; }
 }
 
-export const waitingCount = computed(() => [...runs.value.values()].filter(needsYou).length);
+export const retryHistory = () => historyFailed === "older" && historyNextCursor.value ? loadOlderRuns() : refreshRuns();
+
+export const waitingCount = computed(() => projectCounts.value?.[ALL]?.attentionTasks ?? groupChatTasks([...runs.value.values()]).filter(task => task.chats.some(needsYou)).length);
 
 // ---------------------------------------------------------------- finding runs
 export interface RunFilter {
@@ -1044,11 +1285,13 @@ export interface RunFilter {
   status: "all" | "attention" | "running" | "passed" | "failing" | "flagged";
   pattern: string;
   agent: string;
-  /** Only runs in the selected repository. */
-  thisRepo: boolean;
+  /** An explicit list filter, independent of the composer destination. */
+  repo: string;
 }
 // Filters are remembered; the search text isn't.
-export const runFilter = signal<RunFilter>({ status: "all", pattern: "", agent: "", thisRepo: false, ...store.json<Partial<RunFilter>>("runFilter", {}), q: "" });
+const storedRunFilter = store.json<Partial<RunFilter> & { thisRepo?: boolean } | null>("runFilter", {});
+const savedRunFilter = storedRunFilter && typeof storedRunFilter === "object" ? storedRunFilter : {};
+export const runFilter = signal<RunFilter>({ status: savedRunFilter.status ?? "all", pattern: savedRunFilter.pattern ?? "", agent: savedRunFilter.agent ?? "", repo: savedRunFilter.repo ?? (savedRunFilter.thisRepo ? store.get("repo") ?? "" : ""), q: "" });
 export function setRunFilter(patch: Partial<RunFilter>) {
   runFilter.value = { ...runFilter.value, ...patch };
   const { q: _q, ...kept } = runFilter.value;
@@ -1059,10 +1302,10 @@ export function setRunFilter(patch: Partial<RunFilter>) {
 }
 export const filterActive = computed(() => {
   const f = runFilter.value;
-  return !!(f.q.trim() || f.status !== "all" || f.pattern || f.agent || f.thisRepo);
+  return !!(f.q.trim() || f.status !== "all" || f.pattern || f.agent || f.repo);
 });
 export function matchesFilter(r: RunSummary, f = runFilter.value): boolean {
-  if (!matchesHistoryFilter(r, { ...f, repo: f.thisRepo ? repo.value : undefined })) return false;
+  if (!matchesHistoryFilter(r, { ...f, repo: f.repo || undefined })) return false;
   const q = f.q.trim().toLowerCase();
   if (!q) return true;
   if (r.cold && f === runFilter.value && historyQuery === historyRequestQuery() && historyMatches.has(r.id)) return true;
@@ -1096,6 +1339,7 @@ export function watchAllRuns(notify: (run: RunSummary) => void) {
   onFinished = notify;
   const stopState = onStreamState((status) => {
     connectionState(status.state);
+    connection.value = { ...connection.value, detail: status.detail };
     if (status.lastReceived !== undefined) connection.value = { ...connection.value, lastReceived: status.lastReceived };
   });
   const stopRuns = subscribe(
@@ -1181,16 +1425,58 @@ export const externalSource = signal<import("../src/integrations.js").ExternalSo
 /** The GitHub picker, and the template waiting for its pick. */
 export const ghPicker = signal<{ kind: "issue" | "pr"; template?: Template } | null>(null);
 
-export function applyTemplate(t: Template, pick?: SourcePick) {
+export const sourceTemplatePicker = signal<Template | null>(null);
+
+export function applyTemplate(t: Template, pick?: SourcePick, values: Record<string, string> = {}) {
+  const filled = fillTemplate({ ...t, criteria: [] }, values).task;
   externalSource.value = null;
   setPattern(t.pattern);
-  const fill = (text: string) => (pick ? text.replace(/\{number\}/g, String(pick.number)).replace(/\{title\}/g, pick.title) : text);
-  setTask(fill(t.task));
+  const fill = (text: string) => (pick ? text.replace(/\{number\}/g, String(pick.number)).replace(/\{title\}/g, `${pick.kind} #${pick.number}`) : text);
+  setTask(fill(filled));
   setAcceptanceCriteria([]);
   source.value = pick ? { ...pick, ciLogs: !!t.ciLogs } : null;
 }
 
+/** External issues choose an issue workflow, never a prior PR-review template. */
+export function applyExternalIssue(value: import("../src/integrations.js").ExternalSource) {
+  batch(() => {
+    const template = templates.value.find(template => template.id === "fix-issue");
+    if (template) applyTemplate(template);
+    else { setPattern("solo"); setAcceptanceCriteria([]); source.value = null; }
+    setTask("Address the selected issue. Add appropriate checks and explain the result.");
+    externalSource.value = value;
+  });
+}
+
 export const markSeen = (id: string) => post(`/api/runs/${id}/seen`).catch(() => {});
+
+// ---------------------------------------------------------------- start branch and its configuration
+/**
+ * Where the draft's .codeflow/config.json comes from: the start branch you chose, or your checkout.
+ * A run from an issue, a PR or an imported source, and a retry, use the checkout's, as the server does.
+ */
+export const configRef = computed(() => source.value || externalSource.value || rerunDraft.value ? "" : baseRef.value);
+// Choosing another start branch brings its defaults; what the draft chose stays (loadRepoCheck).
+effect(() => {
+  const ref = configRef.value;
+  untracked(() => { if (repo.value && repo.value === configRead.repo && ref !== configRead.ref) void loadCheck(); });
+});
+
+/** Why the draft's start branch changed by itself, until you choose one or open another draft. */
+export const baseNotice = signal("");
+/** "" (the current branch) or one of the repository's branches; not a commit a retry was pinned to. */
+export const knownBase = (ref: string | null | undefined): ref is string => ref === "" || !!ref && !!repoInfo.value?.branches.some((branch) => branch.name === ref);
+/** A saved start branch that is gone (deleted since) gives way to the current branch. A commit Edit & run again pinned stays. */
+function dropMissingBase() {
+  const ref = baseRef.value, info = repoInfo.value, retry = rerunDraft.value;
+  if (!info || knownBase(ref) || retry?.repo === info.repo && (retry.baseRef ?? ref) === ref) return;
+  baseRef.value = "";
+  baseNotice.value = `Branch “${ref}” no longer exists, so this draft starts from the current branch.`;
+}
+/** Remember the start branch for new drafts; never a pinned commit. */
+export function rememberBase() {
+  if (knownBase(baseRef.value)) store.set("baseRef", baseRef.value);
+}
 
 // ---------------------------------------------------------------- project drafts
 function composerSnapshot() {
@@ -1206,7 +1492,19 @@ function composerSnapshot() {
   };
 }
 type ComposerSnapshot = ReturnType<typeof composerSnapshot>;
-const draftStore = new ProjectDraftStore<ComposerSnapshot>(workspaceKey("project-draft-v1:"));
+const draftStore = new ProjectDraftStore<ComposerSnapshot>(workspaceKey("project-draft-v1:"), globalThis.localStorage, snapshot => {
+  if (!snapshot || snapshot.version !== 1) throw new Error("This draft uses an unsupported format");
+  if (typeof snapshot.task !== "string" || !Array.isArray(snapshot.paths) || snapshot.paths.some(entry => !Array.isArray(entry) || entry.length !== 2) || !Array.isArray(snapshot.attachments) || !Array.isArray(snapshot.acceptance)) throw new Error("This draft contains unreadable fields");
+});
+async function readComposerDraft(id: string) {
+  try { return await draftStore.read(id); }
+  catch (error) { unreadableDrafts.value = { ...unreadableDrafts.value, [id]: (error as Error).message }; throw error; }
+}
+/** Read an overview without replacing the composer's active draft. */
+export async function savedDraftTask(id: string): Promise<string> {
+  if (id === composerProject.value) return draftUnavailable.value ? "" : task.value;
+  return (await readComposerDraft(id))?.task ?? "";
+}
 let composerSwitch = 0;
 let composerWork: Promise<boolean> = Promise.resolve(true);
 let draftWatching = false;
@@ -1216,15 +1514,39 @@ function unsavedDraftWarning() {
   return names.length ? `Not saved: ${names.join(", ")}. Keep this tab open, return to the draft and retry saving.` : "";
 }
 
+/**
+ * The task of a project's draft when replacing it would lose work: text, files, criteria or context
+ * you added. An untouched Edit & run again draft holds nothing its run can't bring back.
+ */
+export async function unsentDraft(project: string): Promise<{ task: string } | null> {
+  const snapshot = project === composerProject.value ? composerSnapshot() : await readComposerDraft(project).catch(() => undefined);
+  if (!snapshot) return null;
+  const retry = snapshot.rerun;
+  const task = snapshot.task?.trim() ?? "", files = snapshot.attachments?.length || snapshot.acceptance?.length;
+  // A retry can be restored from its run only while the selected context still matches too.
+  // Legacy retry drafts have no baseline; retaining their context is safer than discarding it.
+  const paths = (items: { path: string; type: string }[]) => JSON.stringify(items.map(item => [item.path, item.type]).sort(([a], [b]) => a!.localeCompare(b!)));
+  const sameContext = retry && paths((snapshot.paths ?? []).map(([, item]) => item)) === paths(retry.contextPaths ?? []);
+  if (retry && snapshot.task === retry.task && !files && sameContext) return null;
+  return task || files || !retry && (snapshot.paths?.length || snapshot.source || snapshot.externalSource) ? { task } : null;
+}
+
 export async function saveComposerDraft() {
-  if (!draftsReady.value || composerLoading.value) return;
+  if (!draftsReady.value || composerLoading.value || draftUnavailable.value) return;
   try {
     await draftStore.write(composerProject.value, composerSnapshot());
     draftError.value = unsavedDraftWarning();
   } catch { draftError.value = "This draft is kept in this tab, but could not be saved. Keep the tab open and retry saving."; }
 }
 
+/**
+ * Put a saved draft back. Its check, setup, permissions and limits come back only when they were
+ * chosen for it; the others keep what was just derived from the repository and your settings.
+ */
 function restoreComposer(snapshot: ComposerSnapshot) {
+  const origins = { ...snapshot.origins };
+  // Drafts saved before choices were recorded: only an Edit & run again draft's values were chosen.
+  if (snapshot.rerun && !DRAFT_CHOICES.some((field) => field in origins)) for (const field of DRAFT_CHOICES) origins[field] = RERUN_ORIGIN;
   batch(() => {
     contextBudget.value = snapshot.contextBudget; contextBudgetOrigin.value = snapshot.contextBudgetOrigin ?? "Application default";
     intentDraft.value = snapshot.intent; journeyDraft.value = snapshot.journey;
@@ -1233,9 +1555,13 @@ function restoreComposer(snapshot: ComposerSnapshot) {
     patternId.value = snapshot.pattern; roleSel.value = snapshot.roles; roleModels.value = snapshot.models;
     agentSettings.value = snapshot.settings; optionValues.value = snapshot.options;
     baseRef.value = snapshot.base; branchPrefix.value = snapshot.branch;
-    checkCmd.value = snapshot.check; setupCmd.value = snapshot.setup;
-    limits.value = snapshot.limits; trust.value = snapshot.trust; approvalChoices.value = snapshot.approvals;
-    composerOrigins.value = snapshot.origins; source.value = snapshot.source; externalSource.value = snapshot.externalSource;
+    // Counted as edits, so a lookup still on its way doesn't replace them.
+    if (origins.check !== undefined) { checkEdit++; checkCmd.value = snapshot.check; }
+    if (origins.setup !== undefined) { setupEdit++; setupCmd.value = snapshot.setup; }
+    if (origins.limits !== undefined) limits.value = snapshot.limits;
+    if (origins.trust !== undefined) trust.value = snapshot.trust;
+    approvalChoices.value = snapshot.approvals;
+    composerOrigins.value = origins; source.value = snapshot.source; externalSource.value = snapshot.externalSource;
     selectedTeamTemplate.value = snapshot.selectedTemplate ?? null;
     composerRunOptions.value = snapshot.runOptions ?? {};
     rerunDraft.value = snapshot.rerun ?? null;
@@ -1262,17 +1588,18 @@ async function switchComposer(next: string, options: { repository?: string; carr
     return true;
   }
   const before = composerSnapshot();
-  const carried = !composerProject.value && options.carryUnassigned ? before : undefined;
+  const carried = (!composerProject.value || target.value.unavailable) && options.carryUnassigned ? before : undefined;
   const saving = saveComposerDraft();
   composerLoading.value = true;
   await saving;
   try {
-    const stored = await draftStore.read(next);
+    const stored = await readComposerDraft(next);
     if (stored && stored.version !== 1) throw new Error("This draft uses an unsupported format. It has been retained.");
     const saved = stored ?? carried;
     const repository = options.repository ?? saved?.repository ?? (project ? lastRepo(project) : "");
     // Retry metadata belongs to the saved project draft, even when two projects share a repository.
     rerunDraft.value = null;
+    baseNotice.value = "";
     await setRepo(repository);
     const detectedCheck = checkCmd.value, detectedSetup = setupCmd.value, detectedTrust = trust.value;
     batch(() => {
@@ -1282,15 +1609,19 @@ async function switchComposer(next: string, options: { repository?: string; carr
         task.value = ""; acceptanceCriteria.value = []; attachments.value = []; contextPaths.value = new Map();
         source.value = null; externalSource.value = null; branchPrefix.value = ""; baseRef.value = "";
         roleSel.value = store.json("roleSel", {}); roleModels.value = store.json("roleModels", {});
-        patternId.value = store.get("pattern") ?? "solo"; agentSettings.value = store.json("agentSettings", {});
-        optionValues.value = {}; limits.value = store.json("limits", DEFAULT_EXECUTION_BUDGET);
+        patternId.value = defaultPattern.value; agentSettings.value = structuredClone(providerDefaults.value);
+        optionValues.value = {};
         approvalChoices.value = store.json("approvePlanByPattern", {}); selectedTeamTemplate.value = null; composerRunOptions.value = {}; rerunDraft.value = null;
+        // Labels describe this draft: another project's "Project defaults" must not carry over.
+        composerOrigins.value = browserOrigins();
         if (project?.defaults) applyDefaults(project.defaults);
       }
       if (saved && repository !== saved.repository) {
         contextPaths.value = new Map(); source.value = null; externalSource.value = null; baseRef.value = ""; journeyDraft.value = undefined;
         checkCmd.value = detectedCheck; setupCmd.value = detectedSetup; trust.value = detectedTrust; selectedTeamTemplate.value = null; composerRunOptions.value = {}; rerunDraft.value = null;
+        forgetChoices(["check", "setup", "trust"]);
       }
+      dropMissingBase();
       composerProject.value = next;
       store.set("composerProject", next);
     });
@@ -1299,13 +1630,14 @@ async function switchComposer(next: string, options: { repository?: string; carr
     return true;
   } catch (error) {
     draftError.value = `Could not open the draft: ${(error as Error).message}`;
+    if (request === composerSwitch) route.value = { view: "composer", project: composerProject.value };
     return false;
   } finally { composerLoading.value = false; }
 }
 
 export function chooseComposerRepository(repository: string): Promise<boolean> {
   if (repository === repo.value && !composerLoading.value) return Promise.resolve(true);
-  if (!projects.value.find(item => item.id === composerProject.value)?.repos.includes(repository)) return Promise.resolve(false);
+  if (projectsStatus.value.available && !projects.value.find(item => item.id === composerProject.value)?.repos.includes(repository)) return Promise.resolve(false);
   return openComposer(composerProject.value, { repository, stay: true });
 }
 
@@ -1323,20 +1655,23 @@ export async function initializeProjectDrafts() {
       store.set("composerProject", id);
       store.set("projectDraftVersion", "1");
     }
-    const saved = await draftStore.read(id);
+    const saved = await readComposerDraft(id);
     if (saved && saved.version !== 1) throw new Error("Saved draft format is unavailable.");
     composerProject.value = id;
     const repository = saved?.repository ?? store.get("repo") ?? "";
     if ((repoInfo.value?.repo ?? "") !== repository) await setRepo(repository, false);
     if (saved) restoreComposer(saved);
+    dropMissingBase();
     draftsReady.value = true;
     draftWatching = true;
   } catch (error) {
-    draftError.value = `Could not restore saved drafts: ${(error as Error).message}. Reload to retry.`;
+    draftError.value = `Could not restore this draft: ${(error as Error).message}`;
+    // One unreadable key must not disable healthy project drafts. Its bytes stay protected.
+    draftsReady.value = true; draftWatching = true;
   } finally { composerLoading.value = false; }
   if (!draftWatching) return;
   effect(() => {
-    if (composerLoading.value) return;
+    if (composerLoading.value || draftUnavailable.value) return;
     const snapshot = composerSnapshot(), id = composerProject.value;
     // Start persistence in the input turn: a debounce can lose an attachment or edit
     // when the next action reloads or leaves the page.

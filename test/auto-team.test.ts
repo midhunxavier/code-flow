@@ -786,7 +786,7 @@ test("Auto team accepts host-observed browser effects without source edits and s
     const actions = run.steps.flatMap(step => step.sharedToolActions ?? []);
     assert.ok(actions.length > 0);
     assert.ok(actions.some(action => action.name === "browser_type" && action.state === "completed"));
-    assert.ok(actions.some(action => action.name === "browser_type" && action.state === "uncertain"), "failed actions remain recoverable without claiming completion");
+    assert.ok(actions.some(action => action.name === "browser_type" && action.state === "rejected"), "stale input is rejected before dispatch without claiming an uncertain effect");
     assert.ok(!actions.some(action => action.name === "browser_snapshot"), "observations do not become effect evidence");
     assert.ok(run.team!.tasks.every(task => task.attempts === 1), "completed effects must not be replayed for an empty diff");
     completeAction = false;

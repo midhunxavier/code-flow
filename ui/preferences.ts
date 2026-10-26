@@ -1,5 +1,5 @@
 import { signal } from "@preact/signals";
-import { showToast, store } from "./lib.js";
+import { showToast, showError, store } from "./lib.js";
 
 export const desktopNotifications = signal(store.get("notify") !== "0");
 export const notificationPermission = signal<NotificationPermission | "unsupported">("Notification" in window ? Notification.permission : "unsupported");
@@ -15,7 +15,7 @@ export async function setDesktopNotifications(enabled: boolean) {
     desktopNotifications.value = enabled && permission === "granted";
     store.set("notify", desktopNotifications.value ? "1" : "0");
     showToast(desktopNotifications.value ? "You'll be notified when a run needs you" : enabled ? "Notifications are blocked in the browser settings" : "Notifications off");
-  } catch { showToast("Couldn't enable notifications. Check your browser's site permissions."); }
+  } catch { showError("Couldn't enable notifications. Check your browser's site permissions."); }
 }
 
 /** An optional workspace surface, not an authorization or execution switch. */

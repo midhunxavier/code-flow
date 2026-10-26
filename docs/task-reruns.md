@@ -14,7 +14,7 @@ All checks, reviews, fail-to-pass claims, human coverage, messages, context mani
 
 An implementation rerun can legitimately produce no new diff when the accepted behavior already exists. This is measured by Git, not accepted from an agent's assertion. Such a result still requires a passing check on the child commit and independent approval of its acceptance. An entirely unchanged result does not fabricate fail-to-pass evidence: it records `proofNotRequired: "unchanged-rerun"` after the fresh check and review. Any new code diff, including a repair, retains the normal proof policy.
 
-Plan approval follows the source's setting. A rerun's held plan cannot be replaced through the plan editor or a coordinator revision request; reject it and create another selection to change its task set or instructions. Runtime questions and bounded repairs continue through normal Auto-team controls. An internal, checksummed seed is journaled before execution, so restart/resume restores the same selected work and pinned baseline projection. The checksum detects changed replay data; it is not an authorization token.
+Plan approval follows the source's setting. A rerun's held plan cannot be replaced through the plan editor or a coordinator revision request; reject it and create another selection to change its task set or instructions. Both return 409 and leave the rerun waiting. Runtime questions and bounded repairs continue through normal Auto-team controls. An internal, checksummed seed is journaled before execution, so restart/resume restores the same selected work and pinned baseline projection. The checksum detects changed replay data; it is not an authorization token.
 
 `POST /api/runs/:id/rerun-tasks` accepts:
 

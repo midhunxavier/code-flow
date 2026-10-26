@@ -45,9 +45,9 @@ export interface JobStatus {
   artifact?: { hash: string; bytes: number; filename: string };
 }
 export interface Probe {
-  workerId: string; protocol: number; commonHoldout?: 1; boundedSearch?: 1; dataWatch?: 1; serving?: 1; persistentServing?: 1; platform: string; hostname: string; cpus: number;
+  workerId: string; protocol: number; uploadResume?: 1; commonHoldout?: 1; boundedSearch?: 1; dataWatch?: 1; serving?: 1; persistentServing?: 1; platform: string; hostname: string; cpus: number;
   memoryBytes: number; freeBytes: number; python: string; ready: boolean; issue?: string;
-  recipe: string; recipes?: { id: Recipe; ready: boolean; python: string; issue?: string; devices?: string[] }[]; gpus: { uuid: string; name: string; memoryMiB: number; freeMiB?: number }[];
+  recipe: string; recipes?: { id: Recipe; ready: boolean; python: string; pythonVersion?: string; issue?: string; devices?: string[] }[]; gpus: { uuid: string; name: string; memoryMiB: number; freeMiB?: number }[];
   limits: { datasetBytes: number; concurrentJobs: number; hardMemoryLimit: boolean };
 }
 export interface Target {

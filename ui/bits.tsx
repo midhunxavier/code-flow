@@ -54,7 +54,7 @@ export function Markdown({ text }: { text: string }) {
 export function markdownNodes(text: string): ComponentChildren[] {
   const nodes: ComponentChildren[] = [];
   text.split(/^```[^\n]*\n?/m).forEach((chunk, i) => {
-    if (i % 2 === 1) nodes.push(<pre key={`c${i}`}>{chunk.replace(/\n$/, "")}</pre>);
+    if (i % 2 === 1) nodes.push(<pre key={`c${i}`} tabIndex={0} aria-label="Code block">{chunk.replace(/\n$/, "")}</pre>);
     else blocks(chunk, `b${i}`, nodes);
   });
   return nodes;
@@ -167,16 +167,21 @@ const startsBlock = (lines: string[], i: number) => {
 const withBreaks = (lines: string[]) => lines.flatMap((l, n) => (n ? [<br key={`br${n}`} />, ...inline(l)] : inline(l)));
 
 function inline(text: string): ComponentChildren[] {
-  return text.split(/(`[^`]+`|\*\*[^*]+\*\*|__[^_]+__|\[[^\]]+\]\(https?:\/\/[^\s)]+\)|(?<![\w*])\*[^*\s][^*]*\*(?![\w*])|(?<![\w_])_[^_\s][^_]*_(?![\w_]))/).map((part, i) => {
+  return text.split(/(\*\*(?:`[^`]+`|[^*`])+\*\*|(?<![\w_])__(?:`[^`]+`|[^_`])+__(?![\w_])|`[^`]+`|\[[^\]]+\]\([^\s)]+\)|(?<![\w*])\*[^*\s][^*]*\*(?![\w*])|(?<![\w_])_[^_\s][^_]*_(?![\w_]))/).map((part, i) => {
     if (part.length > 1 && part.startsWith("`") && part.endsWith("`")) return <code key={i}>{part.slice(1, -1)}</code>;
-    if ((part.startsWith("**") && part.endsWith("**")) || (part.startsWith("__") && part.endsWith("__"))) return <b key={i}>{part.slice(2, -2)}</b>;
-    const link = part.match(/^\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)$/);
-    if (link)
+    if (/^__[A-Za-z0-9_]+__$/.test(part)) return part; // Keep code identifiers such as __init__ intact.
+    if ((part.startsWith("**") && part.endsWith("**")) || (part.startsWith("__") && part.endsWith("__"))) return <b key={i}>{inline(part.slice(2, -2))}</b>;
+    const link = part.match(/^\[([^\]]+)\]\(([^\s)]+)\)$/);
+    if (link && /^https?:\/\//i.test(link[2]!))
       return (
         <a key={i} href={link[2]} target="_blank" rel="noreferrer">
-          {link[1]}
+          {inline(link[1]!)}
         </a>
       );
+    if (link && (/^file:\/\//i.test(link[2]!) || !/^[a-z][a-z0-9+.-]*:/i.test(link[2]!) || /^[^:]*[./\\][^:]*:\d+$/.test(link[2]!))) {
+      let target = link[2]!; try { target = decodeURIComponent(target); } catch { /* show the original malformed escape */ }
+      return <span key={i} class="md-file-label" title={target}>{inline(link[1]!)}</span>;
+    }
     if (part.length > 2 && ((part.startsWith("*") && part.endsWith("*")) || (part.startsWith("_") && part.endsWith("_")))) return <i key={i}>{part.slice(1, -1)}</i>;
     return part;
   });

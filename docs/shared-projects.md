@@ -39,3 +39,5 @@ The password parameters and authorization model follow the [OWASP Password Stora
 ---
 
 [Documentation library](README.md) · [Getting started](getting-started.md) · [Ask code-flow](help.md)
+
+A shared account can keep four Board event streams and four Results event streams open at once. A fifth tab still loads its page but displays the server's limit message and **Retry live updates**. Close another tab and retry, or wait for the automatic retry (within 30 seconds). This limit does not grant extra sessions or extend access after sign-out.

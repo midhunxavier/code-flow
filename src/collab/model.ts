@@ -1,3 +1,5 @@
+import { MAX, selfReview, historyLimitMessage } from "./presentation.js";
+export { MAX, selfReview, historyLimitMessage } from "./presentation.js";
 import { randomBytes } from "node:crypto";
 import type { SharedRole } from "../shared-accounts.js";
 
@@ -30,20 +32,16 @@ export type TaskSummary = Pick<Task, "id" | "projectId" | "repository" | "title"
 export interface BoardProject { id: string; name: string; role: SharedRole; repositories: RepoRef[]; members: { userId: string; username: string; displayName: string; role: SharedRole; online: boolean }[] }
 export interface Board { revision: number; projects: BoardProject[]; tasks: TaskSummary[]; me: Who & { roles: Record<string, SharedRole>; runners: RunnerPublic[] }; inboxUnread: number }
 export interface RunnerPublic { id: string; userId: string; name: string; createdAt: number; lastSeenAt: number; online: boolean; revokedAt?: number }
-export type InboxKind = "assigned" | "mention" | "review-requested" | "review-recorded" | "handoff-offered" | "handoff-accepted" | "handoff-declined" | "handoff-cancelled" | "instruction-proposed" | "blocked" | "attempt-finished" | "attempt-failed" | "comment";
+export type InboxKind = "assigned" | "mention" | "review-requested" | "review-recorded" | "handoff-offered" | "handoff-accepted" | "handoff-declined" | "handoff-cancelled" | "instruction-proposed" | "instruction-approved" | "instruction-declined" | "blocked" | "attempt-finished" | "attempt-failed" | "comment";
 export interface InboxItem { id: string; userId: string; kind: InboxKind; taskId: string; taskTitle: string; text: string; by: Who; at: number; readAt?: number }
 /** Who is acting on the hub: the owner process itself, or a shared account reached through a browser session or a linked runner's credential. */
 export type CollabActor = { kind: "owner"; userId: "owner"; displayName: string } | { kind: "member"; userId: string; username: string; displayName: string; roles: Record<string, SharedRole>; via: "browser" | "runner"; runnerId?: string };
-/** Carries the HTTP status so the API answers 403/404/409/503 without mapping messages back to codes. */
-export class CollabError extends Error { constructor(message: string, readonly status = 400) { super(message); } }
-
-/** Every bound the board enforces, in one place so the store, the API and the UI agree. Sizes written in KiB count bytes; everything else counts characters or items. */
-export const MAX = {
-  tasks: 500, attempts: 50, checkpoints: 50, decisions: 100, discussion: 500, instructions: 50, reviews: 100, handoffs: 50, audit: 200, collaborators: 20, dependsOn: 20, labels: 10, repositories: 50,
-  title: 200, goal: 16 * 1024, acceptance: 8 * 1024, text: 4000, note: 4000, decision: 2000, blocker: 1000, reason: 1000, summary: 4 * 1024, requirements: 16 * 1024, remaining: 8 * 1024,
-  changedFiles: 100, path: 300, blockers: 10, blockerItem: 500, stage: 200, command: 200, runStatus: 40, steps: 100_000, label: 40, repoLabel: 80, repoRemote: 300, branch: 100, baseRef: 100, runnerName: 80, displayName: 120, inboxText: 500, auditAction: 60, auditDetail: 500,
-  bundle: 64 * 1024 * 1024, runners: 64, runnersPerUser: 8, inboxPerUser: 500, inboxTotal: 5000, bundlesOnDisk: 200, heartbeatLiveMs: 90_000,
-} as const;
+/** Carries the HTTP status so the API answers 403/404/409/503 without mapping messages back to codes. `code` names a refusal a client handles on its own, which the API sends beside the message: only STALE_REVISION so far. */
+export class CollabError extends Error { constructor(message: string, readonly status = 400, readonly code?: string) { super(message); } }
+/** A save based on an older revision: the one 409 a page answers by reloading and keeping the draft; every other 409 is a refusal whose message the person must read. */
+export const STALE_REVISION = "stale-revision";
+/** The JSON body an API answers a CollabError with: `{ error }`, plus `code` when the refusal has one. */
+export const collabErrorBody = (error: CollabError): { error: string; code?: string } => error.code ? { error: error.message, code: error.code } : { error: error.message };
 
 export const TASK_ID = /^t-[a-f0-9]{16}$/, ATTEMPT_ID = /^[a-f0-9]{32}$/, CHECKPOINT_ID = /^[a-f0-9]{32}$/, RUNNER_ID = /^r-[a-f0-9]{16}$/, PREFIXED_ID = /^[a-z]{1,4}-[a-f0-9]{16}$/, PATH_ID = /^[a-zA-Z0-9_-]{1,100}$/, REPO_KEY = /^[a-z][a-z0-9-]{0,63}$/, COMMIT_ID = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/, SHA256_HEX = /^[a-f0-9]{64}$/, RUNNER_TOKEN = /^tr-[A-Za-z0-9_-]{43}$/;
 export type RandomSource = (bytes: number) => Buffer;
@@ -232,21 +230,30 @@ export function mentionsIn(text: string, members: readonly { userId: string; use
   return ids;
 }
 
-const CURRENT_STATES: readonly AttemptState[] = ["claimed", "running", "paused", "unknown"], BUSY_STATES: readonly AttemptState[] = ["claimed", "running", "unknown"];
+const BUSY_STATES: readonly AttemptState[] = ["claimed", "running", "unknown"], NOT_SUPERSEDED = ATTEMPT_STATES.filter((state) => state !== "superseded");
 const latestAttempt = (task: Pick<Task, "attempts">, states: readonly AttemptState[]): Attempt | undefined => { for (let index = task.attempts.length - 1; index >= 0; index--) { const attempt = task.attempts[index]!; if (states.includes(attempt.state)) return attempt; } return undefined; };
 /** Execution stays reserved while claimed, running or unknown. Lost contact is not evidence that an agent stopped. */
 export function busyAttempt(task: Pick<Task, "attempts">): Attempt | undefined { return latestAttempt(task, ["claimed", "running"]) ?? latestAttempt(task, BUSY_STATES); }
-/** The attempt a task is "on": the busy one while a runner executes, else the latest one not yet finished, failed, stopped or superseded. An `unknown` attempt still counts, because its runner may come back. */
-export function currentAttempt(task: Pick<Task, "attempts">): Attempt | undefined { return busyAttempt(task) ?? latestAttempt(task, CURRENT_STATES); }
+/** The attempt a task is "on": the busy one while a runner executes, else the latest attempt that was not superseded, when it is paused (or unknown: its runner may come back). A paused attempt behind a newer finished, failed or stopped one is history, not the task's state, so the card never reports it over the newer outcome. */
+export function currentAttempt(task: Pick<Task, "attempts">): Attempt | undefined { const busy = busyAttempt(task); if (busy) return busy; const latest = latestAttempt(task, NOT_SUPERSEDED); return latest && (latest.state === "paused" || latest.state === "unknown") ? latest : undefined; }
+/** Retires an attempt that can no longer continue (paused or stopped behind a change of hands or a newer attempt), saying why in its own reason: the reason it paused with ("resume it from here") would otherwise outlive the Resume it promised. */
+export function supersedeAttempt(attempt: Attempt, reason: string, now: number): void { attempt.state = "superseded"; attempt.endedAt = now; attempt.reason = truncateText(reason, MAX.reason); }
+/** Older saved boards may still have a paused attempt before a newer result. Its runner cannot revive that older line of work. */
+export function assertLatestAttempt(task: Pick<Task, "attempts">, attempt: Attempt): void {
+  const latest = latestAttempt(task, NOT_SUPERSEDED);
+  if (latest && latest.id !== attempt.id) throw new CollabError("A newer attempt started; continue from the task's latest checkpoint instead", 409);
+}
 /** Live means a runner is executing and said so within the last 90 s; a paused or unknown attempt has nobody heartbeating for it. */
 export function attemptIsLive(attempt: Pick<Attempt, "state" | "lastHeartbeatAt">, now = Date.now()): boolean { return (attempt.state === "claimed" || attempt.state === "running") && now - attempt.lastHeartbeatAt < MAX.heartbeatLiveMs; }
+/** Lost contact: marked unknown, or claimed or running without a word for 90 s ("Connection lost"). Execution stays reserved either way, and either is what a human may recover once they confirmed the agent stopped. */
+export function attemptLostContact(attempt: Pick<Attempt, "state" | "lastHeartbeatAt">, now = Date.now()): boolean { return attempt.state === "unknown" || ((attempt.state === "claimed" || attempt.state === "running") && !attemptIsLive(attempt, now)); }
 export function liveAttempt(task: Pick<Task, "attempts">, now = Date.now()): Attempt | undefined { const busy = busyAttempt(task); return busy && attemptIsLive(busy, now) ? busy : undefined; }
 const assertNotBusy = (task: Pick<Task, "attempts">, before: string): void => { const busy = busyAttempt(task); if (busy) throw new CollabError(`Stop the attempt running on ${busy.runnerName} before ${before}`, 409); };
 export function latestCheckpoint(task: Pick<Task, "checkpoints">): Checkpoint | undefined { let latest: Checkpoint | undefined; for (const checkpoint of task.checkpoints) if (!latest || checkpoint.at >= latest.at) latest = checkpoint; return latest; }
 /** Reviews attach to checkpoints, so only the latest checkpoint's non-stale reviews count and the most recent verdict wins. */
-export function reviewState(task: Pick<Task, "checkpoints" | "reviews" | "reviewer">): ReviewState {
+export function reviewState(task: Pick<Task, "checkpoints" | "reviews" | "reviewer"> & Partial<Pick<Task, "owner">>): ReviewState {
   const latest = latestCheckpoint(task); if (!latest) return "none";
-  const reviews = task.reviews.filter((review) => review.checkpointId === latest.id && !review.stale).sort((a, b) => a.at - b.at), last = reviews[reviews.length - 1];
+  const reviews = task.reviews.filter((review) => review.checkpointId === latest.id && !review.stale && !selfReview(task, review)).sort((a, b) => a.at - b.at), last = reviews[reviews.length - 1];
   if (last) return last.verdict === "approve" ? "approved" : "changes-requested";
   return task.reviewer ? "pending" : "none";
 }
@@ -282,7 +289,7 @@ export function assertCanChangeOwner(task: Task, actor: CollabActor, nextOwner: 
 }
 /** Changing hands supersedes everything the previous owner's machines left paused or stopped, not only the latest attempt: each is resumable and would stay a live handle onto a task its user no longer owns, and the next attempt starts from a checkpoint, never from one of those worktrees. A claimed, running or unknown attempt refuses the change (409) here as well, so no caller path can move a task under its runner. */
 export function assignOwner(task: Task, nextOwner: Who | undefined, now = Date.now()): Task {
-  if (nextOwner?.userId !== task.owner?.userId) { assertNotBusy(task, "changing the owner"); for (const attempt of task.attempts) if (attempt.state === "paused" || attempt.state === "stopped" || attempt.state === "unknown") { attempt.state = "superseded"; attempt.endedAt = now; } }
+  if (nextOwner?.userId !== task.owner?.userId) { assertNotBusy(task, "changing the owner"); const why = nextOwner ? `Superseded when the task passed to ${nextOwner.displayName}; work continues from the task's latest checkpoint` : "Superseded when the task was unassigned; whoever takes it continues from its latest checkpoint"; for (const attempt of task.attempts) if (attempt.state === "paused" || attempt.state === "stopped" || attempt.state === "unknown") supersedeAttempt(attempt, why, now); }
   if (nextOwner) task.owner = { ...nextOwner }; else delete task.owner;
   task.updatedAt = now; return task;
 }
@@ -302,7 +309,7 @@ export function summarize(task: Task, forUserId?: string, now = Date.now(), unre
 }
 /** Appends within a hard bound. People-facing lists refuse (the task has grown past what a board should hold); `drop-oldest` is for the audit trail, which is a window, not a record. */
 export function pushBounded<T>(list: T[], item: T, max: number, label: string, overflow: "refuse" | "drop-oldest" = "refuse"): T[] {
-  if (list.length >= max) { if (overflow === "refuse") throw new CollabError(`At most ${max} ${label} can be kept here; finish or remove some before adding more`); list.splice(0, list.length - max + 1); }
+  if (list.length >= max) { if (overflow === "refuse") throw new CollabError(historyLimitMessage(max, label)); list.splice(0, list.length - max + 1); }
   list.push(item); return list;
 }
 export function trimAudit<T extends Pick<Task, "audit">>(task: T): T { if (task.audit.length > MAX.audit) task.audit.splice(0, task.audit.length - MAX.audit); return task; }

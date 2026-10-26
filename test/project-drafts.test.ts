@@ -10,7 +10,7 @@ Object.assign(globalThis, {
 });
 globalThis.fetch = (async (input: string) => {
   const url = new URL(input, "http://localhost"), repo = url.searchParams.get("repo");
-  return new Response(JSON.stringify(url.pathname === "/api/branches" ? { repo, current: "main", branches: [{ name: "main" }], worktreeRoot: `${repo}/worktrees` } : url.pathname === "/api/repo-config" ? { found: true, config: { setup: `setup ${repo}`, check: `test ${repo}` } } : {}), { status: 200 });
+  return new Response(JSON.stringify(url.pathname === "/api/branches" ? { repo, current: "main", branches: [{ name: "main" }, { name: "feature/a" }], worktreeRoot: `${repo}/worktrees` } : url.pathname === "/api/repo-config" ? { found: true, config: { setup: `setup ${repo}`, check: `test ${repo}` } } : {}), { status: 200 });
 }) as typeof fetch;
 const state = await import("../ui/state.js");
 const { selectedTeamTemplate } = await import("../ui/team-template-state.js");

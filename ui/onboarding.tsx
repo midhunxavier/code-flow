@@ -1,11 +1,16 @@
+import type { CheckMode } from "./composer-checks.js";
+import { startBranchLabel } from "./start-branch.js";
+import { providerSetupProblem } from "./provider-readiness.js";
+import { FillTemplateDialog } from "./template-parameters.js";
+import { acceptanceCriteriaProblem } from "../src/start-input-validation.js";
 import { intentDraft } from "./experience.js";
 import { Templates } from "./github.js";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { useDialog } from "./app.js";
 import { post, showToast, store } from "./lib.js";
-import { acceptanceCriteria, agentSettings, baseRef, catalogs, checkCmd, checkHint, composerOrigins, configChecking, contextPaths, attachments, health, limits, optionsFor, patterns, planApprovalFor, repo, repoChecking, repoConfig, roleModels, rolesFor, setAcceptanceCriteria, setAgentSetting, setApprovePlan, setLimits, setOption, setPattern, setRoleModel, setRoles, setRunCheck, setRunSetup, setTask, setTrust, setupCmd, target, task, trust } from "./state.js";
+import { acceptanceCriteria, agents, agentSettings, source, repoInfo, baseRef, catalogs, checkCmd, checkHint, composerOrigins, configChecking, contextPaths, attachments, health, limits, limitPreference, optionsFor, patterns, planApprovalFor, providerDefaults, repo, repoChecking, repoConfig, roleModels, rolesFor, setAcceptanceCriteria, setApprovePlan, setLimits, setOption, setPattern, setRoles, setRunCheck, setRunSetup, setTask, setTrust, setupCmd, target, task, trust } from "./state.js";
 import { fillTemplate, parseComposerLibrary, taskWithCriteria, templateParameters, type ComposerLibrary, type PresetConfig, type TaskTemplate, type TemplateRunOptions } from "./composer-tools.js";
-import type { AgentId, PatternInfo } from "./types.js";
+import type { AgentSettings, PatternInfo } from "./types.js";
 import type { VerificationProfile } from "../src/verification.js";
 import { ContextBudgetControls } from "./context-budget-controls.js";
 import { contextBudget, contextBudgetOrigin, setContextBudget } from "./context-budget.js";
@@ -15,7 +20,7 @@ const EMPTY_LIBRARY: ComposerLibrary = { schemaVersion: 1, presets: [], template
 
 export function ProviderSetupPrompt() {
   const providers = health.value;
-  if (!providers || providers.some((provider) => provider.installed && provider.signedIn !== false && provider.compatible !== false)) return null;
+  if (!providers || !providerSetupProblem(agents.value, providers)) return null;
   return <div class="banner provider-setup" role="status">
     <p>Connect a provider to start a conversation or run a team.</p>
     <a class="btn" href="#/settings/agents">Connect a provider</a>
@@ -23,10 +28,12 @@ export function ProviderSetupPrompt() {
 }
 
 export function AcceptanceEditor() {
+  const problem = acceptanceCriteriaProblem(acceptanceCriteria.value);
   return <details class="settings acceptance-editor">
     <summary><span class="st">Acceptance criteria</span><span class="ss">{acceptanceCriteria.value.filter((c) => c.trim()).length || "Optional"} · explicit requirements for the team</span></summary>
     <div class="settings-body"><label class="lbl" for="acceptance-criteria">One requirement per line</label>
-      <textarea id="acceptance-criteria" class="field" rows={4} placeholder="The new behavior has automated tests.&#10;Existing API clients continue to work." value={acceptanceCriteria.value.join("\n")} onInput={(e) => setAcceptanceCriteria(e.currentTarget.value.split("\n"))} />
+      <textarea aria-invalid={!!problem} id="acceptance-criteria" class="field" rows={4} placeholder="The new behavior has automated tests.&#10;Existing API clients continue to work." value={acceptanceCriteria.value.join("\n")} onInput={(e) => setAcceptanceCriteria(e.currentTarget.value.split("\n"))} />
+      {problem ? <p class="msg err" role="alert">{problem}</p> : null}
       <p class="help">These requirements are included in the run's task and in saved automations. Review them before starting.</p>
     </div>
   </details>;
@@ -66,8 +73,9 @@ export function RepositoryReadiness({ repository = repo.value, setup = setupCmd.
   </details>;
 }
 
-function currentConfig(p: PatternInfo): PresetConfig {
-  return structuredClone({ pattern: p.id, roles: rolesFor(p), options: optionsFor(p), agentSettings: agentSettings.value, roleSettings: roleModels.value[p.id] ?? {}, trust: trust.value, limits: limits.value, approvePlan: planApprovalFor(p.id), toolApprovals: store.get("interactiveApprovals") === "1", contextBudget: contextBudget.value, check: checkCmd.value, setup: setupCmd.value, baseRef: baseRef.value });
+/** `toolApprovals` is what the composer would start the run with; elsewhere the browser preference. */
+function currentConfig(p: PatternInfo, toolApprovals = store.get("interactiveApprovals") === "1"): PresetConfig {
+  return structuredClone({ pattern: p.id, roles: rolesFor(p), options: optionsFor(p), agentSettings: agentSettings.value, roleSettings: roleModels.value[p.id] ?? {}, trust: trust.value, limits: limits.value, approvePlan: planApprovalFor(p.id), toolApprovals, contextBudget: contextBudget.value, check: checkCmd.value, setup: setupCmd.value, baseRef: baseRef.value });
 }
 export function applyPreset(config: PresetConfig, label: string) {
   const p = patterns.value.find((p) => p.id === config.pattern);
@@ -75,12 +83,10 @@ export function applyPreset(config: PresetConfig, label: string) {
   setPattern(config.pattern);
   for (const role of p.roles) setRoles(p.id, role.id, config.roles[role.id] ?? []);
   for (const option of p.options) setOption(p, option.id, config.options[option.id] ?? option.default);
-  agentSettings.value = {};
-  store.set("agentSettings", "{}");
-  roleModels.value = { ...roleModels.value, [p.id]: {} };
-  store.set("roleModels", JSON.stringify(roleModels.value));
-  for (const [id, setting] of Object.entries(config.agentSettings)) setAgentSetting(id as AgentId, setting!);
-  for (const [role, providers] of Object.entries(config.roleSettings)) for (const [id, setting] of Object.entries(providers)) setRoleModel(p.id, role, id as AgentId, setting!);
+  // The preset's models apply to this draft only: Settings keeps the saved provider defaults, which
+  // fill in any provider the preset didn't record.
+  agentSettings.value = { ...providerDefaults.value, ...structuredClone(config.agentSettings) };
+  roleModels.value = { ...roleModels.value, [p.id]: structuredClone(config.roleSettings) };
   // A reusable preset supplies behavior, never run authority, approval bypasses, or extra budget.
   setContextBudget(config.contextBudget, label);
   if (config.check !== undefined) setRunCheck(config.check);
@@ -132,10 +138,10 @@ export function ComposerLibraryEditor({ p, onToolApprovalsChange, libraryKey = "
   return <details class="settings composer-library">
     <summary><span class="st">Advanced library management</span><span class="ss">{library.presets.length} teams · {library.templates.length} templates</span></summary>
     <div class="settings-body">
-      <p class="help">Saved in this browser for the selected library. Export a backup to share or move them. Saving captures the current run draft. Teams include permissions, models, workflow options and limits; saved workflow commands are restored when applied.</p>
+      <p class="help">Saved in this browser for the selected library. Export a backup to share or move them. Saving captures the current run draft. Applying restores the workflow, agents, models, workflow options and saved commands to the current draft; its permissions, approvals, limits and agent isolation stay as they are.</p>
       <div class="settings-grid"><div><label class="lbl" for="saved-preset">Saved workflow</label><select class="field" id="saved-preset" value={presetId} onChange={(e) => { const item = library.presets.find((p) => p.id === e.currentTarget.value); setPresetId(item?.id ?? ""); setPresetName(item?.name ?? ""); setRevision(""); }}><option value="">New saved workflow…</option>{library.presets.map((item) => <option value={item.id} key={item.id}>{item.name} · r{item.revision}</option>)}</select></div>
         <div><label class="lbl" for="preset-name">Workflow name</label><input id="preset-name" class="field" maxLength={80} value={presetName} onInput={(e) => setPresetName(e.currentTarget.value)} /></div></div>
-      {selected ? <div><label class="lbl" for="preset-revision">Revision to apply</label><select id="preset-revision" class="field" value={revision} onChange={(e) => setRevision(e.currentTarget.value)}><option value="">Current · r{selected.revision}</option>{[...selected.history].reverse().map((h) => <option value={h.revision} key={h.revision}>r{h.revision} · {new Date(h.updatedAt).toLocaleString()}</option>)}</select><p class="help">Permissions: {(revision ? selected.history.find((h) => String(h.revision) === revision)?.config : selected.config)?.trust}. Up to 10 previous revisions are kept.</p></div> : null}
+      {selected ? <div><label class="lbl" for="preset-revision">Revision to apply</label><select id="preset-revision" class="field" value={revision} onChange={(e) => setRevision(e.currentTarget.value)}><option value="">Current · r{selected.revision}</option>{[...selected.history].reverse().map((h) => <option value={h.revision} key={h.revision}>r{h.revision} · {new Date(h.updatedAt).toLocaleString()}</option>)}</select><p class="help">Saved with {(revision ? selected.history.find((h) => String(h.revision) === revision)?.config : selected.config)?.trust} permissions; applying keeps the draft's own. Up to 10 previous revisions are kept.</p></div> : null}
       <div class="onboarding-actions"><button class="btn" disabled={!presetName.trim()} onClick={savePreset}>{selected ? "Save new revision" : "Save current workflow"}</button><button class="btn" disabled={!selected || configChecking.value || repoChecking.value} onClick={() => { if (selected) { const config = revision ? selected.history.find((h) => String(h.revision) === revision)!.config : selected.config; applyPreset(config, `Preset ${selected.name} r${revision || selected.revision}`); } }}>Apply workflow</button>{selected ? <button class="btn ghost" onClick={() => { if (save({ ...library, presets: library.presets.filter((item) => item.id !== presetId) })) { setPresetId(""); setPresetName(""); } }}>Delete workflow</button> : null}</div>
       <div class="settings-grid"><div><label class="lbl" for="saved-template">Task template</label><select class="field" id="saved-template" value={templateId} onChange={(e) => { const item = library.templates.find((t) => t.id === e.currentTarget.value); setTemplateId(item?.id ?? ""); setTemplateName(item?.name ?? ""); }}><option value="">New task template…</option>{library.templates.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></div><div><label class="lbl" for="template-name">Template name</label><input class="field" id="template-name" maxLength={80} value={templateName} onInput={(e) => setTemplateName(e.currentTarget.value)} /></div></div>
       <p class="help">Save the current task, workflow and acceptance criteria. Write parameters such as <code>{"{{component}}"}</code> or <code>{"{{issue}}"}</code> in the task or criteria; you'll be asked to fill each one when applying.</p>
@@ -230,7 +236,7 @@ export function UseTaskTemplateDialog({ initialScope, onClose, onUsed, onConfigu
           {template && editable ? <div class="settings-actions"><button type="button" class="btn" onClick={() => { setEditing({ ...template, criteria: [...template.criteria] }); setError(""); }}>Edit template</button><button type="button" class="btn danger" onClick={() => { setDeleting(true); setError(""); }}>Delete template…</button></div> : null}
           {parameters.map((name) => <label class="lbl" key={name} for={`quick-use-${name}`}>{name}<input class="field" id={`quick-use-${name}`} required maxLength={4000} value={values[name] ?? ""} onInput={(event) => setValues({ ...values, [name]: event.currentTarget.value })} /></label>)}
           {filled ? <details><summary>Preview task</summary><pre class="template-preview" tabIndex={0}>{taskWithCriteria(filled.task, filled.criteria)}</pre></details> : null}
-          <p class="help">{template?.config ? `Restores task, workflow, agents, models, checks and permissions (${template.config.trust}).` : "Replaces the task, workflow and acceptance criteria; current agent settings are retained."} Review the settings before choosing Start run.</p>
+          <p class="help">{template?.config ? `${preset ? "Keeps your task and restores the" : "Restores the task,"} workflow, agents, models and checks. Permissions, approvals, limits and agent isolation stay as set in this draft.` : "Replaces the task, workflow and acceptance criteria; current agent settings are retained."} Review the settings before choosing Start run.</p>
         </>}
       </> : <p class="help" role="status">No templates in this library yet. Choose “Save as template…” from the chat box menu to create one.</p>}
       {repo.value && !editing && !deleting ? <Templates only="sources" onChoose={onClose} /> : null}
@@ -240,12 +246,12 @@ export function UseTaskTemplateDialog({ initialScope, onClose, onUsed, onConfigu
   </form></dialog>;
 }
 
-export function SaveTaskTemplateDialog({ p, initialScope, onClose, onSaved, runOptions }: { p: PatternInfo; initialScope: string; onClose: () => void; onSaved: (scope: string) => void; runOptions?: TemplateRunOptions }) {
+export function SaveTaskTemplateDialog({ p, initialScope, onClose, onSaved, runOptions, toolApprovals }: { p: PatternInfo; initialScope: string; onClose: () => void; onSaved: (scope: string) => void; runOptions?: TemplateRunOptions; toolApprovals?: boolean }) {
   const ref = useDialog(true, onClose);
   const [name, setName] = useState("");
   const [project] = useState(() => target.value.project);
   const [scope, setScope] = useState(project && initialScope === "project" ? "project" : "personal");
-  const [draft] = useState(() => ({ task: task.value, intent: intentDraft.value, pattern: p.id, criteria: [...acceptanceCriteria.value], config: currentConfig(p), ...(runOptions ? { runOptions: structuredClone(runOptions) } : {}) }));
+  const [draft] = useState(() => ({ task: task.value, intent: intentDraft.value, pattern: p.id, criteria: [...acceptanceCriteria.value], config: currentConfig(p, toolApprovals), ...(runOptions ? { runOptions: structuredClone(runOptions) } : {}) }));
   const [error, setError] = useState("");
   const save = () => {
     if (!name.trim() || !draft.task.trim()) return;
@@ -268,51 +274,49 @@ export function SaveTaskTemplateDialog({ p, initialScope, onClose, onSaved, runO
     <div class="dialog-body">
       <label class="lbl" for="quick-template-name">Template name</label><input id="quick-template-name" class="field" maxLength={80} required value={name} onInput={(event) => setName(event.currentTarget.value)} placeholder="e.g. Review a component" />
       <label class="lbl" for="quick-template-library">Save to</label><select id="quick-template-library" class="field" value={scope} onChange={(event) => setScope(event.currentTarget.value)}>{project ? <option value="project">This project · {project.name}</option> : null}<option value="personal">Personal library · all projects</option></select>
-      <p class="help">Saves the task, acceptance criteria, workflow, agents, models, permissions, checks and run settings in this browser. Repository selection, remote worker assignments and attached files remain specific to each run. Use placeholders such as <code>{"{{component}}"}</code> for reusable prompts.</p>
+      <p class="help">Saves the task, acceptance criteria, workflow, agents, models and checks in this browser. Using the template keeps the permissions, approvals, limits and agent isolation of the draft it's used in. Repository selection, remote worker assignments and attached files remain specific to each run. Use placeholders such as <code>{"{{component}}"}</code> for reusable prompts.</p>
       {error ? <p class="msg err" role="alert">{error}</p> : null}
     </div>
     <div class="picker-foot"><button type="button" class="btn" onClick={onClose}>Cancel</button><button type="submit" class="btn primary" disabled={!name.trim() || !draft.task.trim()}>Save template</button></div>
   </form></dialog>;
 }
 
-function FillTemplateDialog({ template, onClose, onApply }: { template: TaskTemplate; onClose: () => void; onApply: (values: Record<string, string>) => void }) {
-  const ref = useDialog(true, onClose);
-  const [values, setValues] = useState<Record<string, string>>({});
-  const names = templateParameters(template);
-  let preview = "";
-  try { const filled = fillTemplate(template, values); preview = taskWithCriteria(filled.task, filled.criteria); } catch { /* incomplete parameters */ }
-  return <dialog class="picker" ref={ref} aria-labelledby="fill-template-title"><div class="picker-inner"><div class="picker-head"><h3 id="fill-template-title">Apply {template.name}</h3></div><div class="dialog-body">{names.map((name) => <div key={name}><label class="lbl" for={`parameter-${name}`}>{name}</label><input class="field" id={`parameter-${name}`} value={values[name] ?? ""} maxLength={4000} onInput={(e) => setValues({ ...values, [name]: e.currentTarget.value })} /></div>)}{preview ? <details><summary>Preview task</summary><pre class="template-preview" tabIndex={0}>{preview}</pre></details> : null}</div><div class="picker-foot"><span class="ps" /><button class="btn" onClick={onClose}>Cancel</button><button class="btn primary" disabled={!preview} onClick={() => onApply(values)}>Use template</button></div></div></dialog>;
-}
 
-export function EffectiveSettings({ p, verificationProfile, container }: { p: PatternInfo; verificationProfile?: VerificationProfile | null; container?: { enabled: boolean; image: string; authVolume: string; network?: boolean } }) {
+export function EffectiveSettings({ p, checkMode = p.id === "solo" ? "conversation" : "managed", toolApprovals, verificationProfile, container }: { p: PatternInfo; checkMode?: CheckMode; toolApprovals: { tools: boolean; source: string }; verificationProfile?: VerificationProfile | null; container?: { enabled: boolean; image: string; authVolume: string; network?: boolean } }) {
   const r = repo.value;
   const config = repoConfig.value?.config ?? {};
+  const fromConfig = `.codeflow/config.json${repoConfig.value?.ref ? ` at ${repoConfig.value.ref}` : ""}`;
   const rememberedCheck = r ? store.get(`check:${r}`) : null;
   const rememberedSetup = r ? store.get(`setup:${r}`) : null;
+  // A value chosen for this draft names its origin; any other was just derived, in this order.
+  const origins = composerOrigins.value;
   const rows: Array<[string, string, string]> = [
     ["Repository", r || "Not chosen", "Repository picker"],
     ["Project", target.value.project?.name ?? "Created from repository on start", "Project selection / repository membership"],
     ["Workflow", p.name, composerOrigins.value.pattern ?? "Workflow default"],
     ["Team", Object.entries(rolesFor(p)).map(([role, ids]) => `${role}: ${ids.join(", ") || "skipped"}`).join(" · "), composerOrigins.value.roles ?? "Workflow defaults"],
-    ["Verification command", checkCmd.value || "No automated command", checkHint.value === "Override for this run." ? "This run override" : rememberedCheck !== null ? "Project Settings (this browser)" : config.check ? ".codeflow/config.json" : checkHint.value || "Not configured"],
-    ["Worktree setup", setupCmd.value || "None", rememberedSetup !== null ? "Repository preference (this browser)" : config.setup ? ".codeflow/config.json" : setupCmd.value ? "Repository detection" : "Not configured"],
-    ["Permissions", trust.value, store.get("trust") !== null ? "Explicit browser preference" : config.trust ? ".codeflow/config.json" : "Application default"],
+    ["Verification command", checkCmd.value || "No automated command", (origins.check ?? (rememberedCheck !== null ? "Project Settings (this browser)" : config.check ? fromConfig : checkHint.value || "Not configured")) + (checkMode === "conversation" ? " · Merge validation; not automatic after Agent replies" : "")],
+    ["Worktree setup", setupCmd.value || "None", origins.setup ?? (rememberedSetup !== null ? "Repository preference (this browser)" : config.setup ? fromConfig : setupCmd.value ? "Repository detection" : "Not configured")],
+    // A start branch's file never sets permissions: they always come from your checkout's (readRepoConfigAt).
+    ["Permissions", trust.value, origins.trust ?? (store.get("trust") !== null ? "Explicit browser preference" : config.trust ? ".codeflow/config.json" : "Application default")],
     ["Plan approval", planApprovalFor(p.id) ? "Required" : "Automatic", "Per-workflow browser preference / workflow default"],
-    ["Tool permissions", store.get("interactiveApprovals") === "1" ? "Ask for supported native requests" : "Decline requests requiring interaction", store.get("interactiveApprovals") !== null ? "Explicit browser preference / selected preset" : "Application default"],
-    ["Verification gates", verificationProfile ? `${verificationProfile.name}: ${verificationProfile.checks.map((check) => `${check.id} (${check.required ? "required" : "optional"}) · ${check.command}`).join("; ") || "No runnable gates"}` : "Single configured check", verificationProfile ? `Detected profile${verificationProfile.source ? ` from ${verificationProfile.source}` : ""}; selected for this run` : "Verification command above"],
+    ["Tool permissions", toolApprovals.tools ? "Ask for supported native requests" : "Decline requests requiring interaction", toolApprovals.source],
+    ["Verification gates", checkMode === "conversation" ? "Inactive for Agent conversations" : verificationProfile ? `${verificationProfile.name}: ${verificationProfile.checks.map((check) => `${check.id} (${check.required ? "required" : "optional"}) · ${check.command}`).join("; ") || "No runnable gates"}` : "Single configured check", checkMode === "conversation" ? "Used when a team or managed workflow verifies the work" : verificationProfile ? `Detected profile${verificationProfile.source ? ` from ${verificationProfile.source}` : ""}; selected for this run` : "Verification command above"],
     ["Agent container", container?.enabled ? `${container.image || "Image not configured"}${container.authVolume ? ` · authentication volume ${container.authVolume}` : " · no authentication volume"}` : "Host CLI execution", container?.enabled ? `Explicit choice for this run; network ${container.network === false ? "disabled" : "enabled"}` : "Application default"],
-    ["Start branch", baseRef.value || "Current HEAD", baseRef.value ? "Selected branch (remembered)" : "Repository HEAD"],
-    ["Limits", `${limits.value.maxMinutes} minutes · ${limits.value.maxSteps} steps${limits.value.maxTokens ? ` · ${limits.value.maxTokens.toLocaleString()} reported tokens` : ""}${limits.value.maxCostUsd ? ` · $${limits.value.maxCostUsd} reported API equivalent` : ""}`, store.get("limits") ? "Browser preferences / selected preset" : "Application defaults"],
+    ["Start branch", startBranchLabel(source.value, baseRef.value, repoInfo.value?.current), source.value?.kind === "pr" ? `GitHub pull request #${source.value.number}` : baseRef.value ? "Selected branch (remembered)" : "Repository HEAD"],
+    ["Limits", `${limits.value.maxMinutes} minutes · ${limits.value.maxSteps} steps${limits.value.maxTokens ? ` · ${limits.value.maxTokens.toLocaleString()} reported tokens` : ""}${limits.value.maxCostUsd ? ` · $${limits.value.maxCostUsd} reported API equivalent` : ""}`, origins.limits ?? (limitPreference.value ? "Browser preferences" : config.limits?.maxMinutes || config.limits?.maxSteps ? fromConfig : "Application defaults")],
     ["Explicit input context budget", contextBudget.value ? `${contextBudget.value.maxPromptBytes ?? "No"} byte ceiling · ${contextBudget.value.maxApproximateTokens ?? "no"} estimated token ceiling · ${contextBudget.value.policy}` : "No configured ceiling", contextBudgetOrigin.value],
   ];
   for (const [role, ids] of Object.entries(rolesFor(p))) for (const id of ids) {
     if (id === "auto") { rows.push([`${role} model`, "Selected at dispatch from available providers", "Auto selection"]); continue; }
     const overrides = roleModels.value[p.id]?.[role]?.[id];
     const base = agentSettings.value[id];
+    // The server puts the repository's models under the run's (withConfiguredModels).
+    const configured = (config.models as AgentSettings | undefined)?.[id];
     const catalog = catalogs.value[id];
-    const model = overrides?.model || base?.model || (catalog && !("error" in catalog) ? catalog.defaultModel : undefined);
-    const effort = overrides?.effort || base?.effort || (catalog && !("error" in catalog) ? catalog.models.find((m) => m.id === model)?.defaultEffort || catalog.defaultEffort : undefined);
-    rows.push([`${role} · ${id}`, `${model || "CLI default"} · ${effort || "default effort"}`, overrides?.model || overrides?.effort ? "Per-role override" : base?.model || base?.effort ? composerOrigins.value.models ?? "Provider settings" : "CLI defaults"]);
+    const model = overrides?.model || base?.model || configured?.model || (catalog && !("error" in catalog) ? catalog.defaultModel : undefined);
+    const effort = overrides?.effort || base?.effort || configured?.effort || (catalog && !("error" in catalog) ? catalog.models.find((m) => m.id === model)?.defaultEffort || catalog.defaultEffort : undefined);
+    rows.push([`${role} · ${id}`, `${model || "CLI default"} · ${effort || "default effort"}`, overrides?.model || overrides?.effort ? "Per-role override" : base?.model || base?.effort ? composerOrigins.value.models ?? "Provider settings" : configured?.model || configured?.effort ? fromConfig : "CLI defaults"]);
   }
   return <details class="settings effective-settings"><summary><span class="st">Run details</span><span class="ss">Values and where they came from</span></summary><div class="settings-body"><div class="settings-table-scroll"><table><thead><tr><th>Setting</th><th>Value</th><th>Source</th></tr></thead><tbody>{rows.map(([label, value, source], i) => <tr key={`${label}-${i}`}><th scope="row">{label}</th><td>{value}</td><td>{source}</td></tr>)}</tbody></table></div></div></details>;
 }

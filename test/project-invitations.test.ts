@@ -46,7 +46,8 @@ test("existing members prove their password, preserve other projects and never d
   const result = await store.acceptInvitation({ ...credentials, token, existing: true });
   assert.equal(result.user.id, user.users[0]!.id);
   assert.deepEqual(result.user.roles, { "p-one": "maintainer", "p-two": "reviewer" });
-  assert.equal(store.authenticate(signed.token), undefined, "membership changes revoke old sessions");
+  assert.equal(store.authenticate(signed.token)?.revision, signed.user.revision, "no-op membership preserves other sessions");
+  assert.equal(result.granted, false);
   const next = await store.invite({ projectId: "p-three", role: "contributor" });
   const added = await store.acceptInvitation({ ...credentials, token: next.token, existing: true });
   assert.deepEqual(added.user.roles, { "p-one": "maintainer", "p-two": "reviewer", "p-three": "contributor" });
@@ -123,7 +124,8 @@ test("computer setup preserves public project context and rejects non-local or c
   assert.deepEqual(parseTeamAddress(connection), { url: "https://hub.example:4318", username: "alice", project: "p-shared" });
   const setup = new URL(computerSetupLink("http://localhost:4322", connection));
   assert.equal(setup.origin, "http://localhost:4322");
-  assert.equal(setup.search, "?team=local");
+  assert.equal(setup.search, "");
+  assert.equal(setup.pathname, "/team-handoff");
   assert.equal(new URLSearchParams(setup.hash.split("?")[1]).get("connection"), connection);
   for (const address of ["https://evil.example", "javascript:alert(1)", "http://user:pass@localhost:4318", "http://localhost:4318/?token=owner", "http://localhost:4318/path", "http://localhost:4318/#secret"]) assert.throws(() => computerSetupLink(address, connection));
   assert.throws(() => computerSetupLink("http://localhost:4318", "https://hub.example/?token=owner"));

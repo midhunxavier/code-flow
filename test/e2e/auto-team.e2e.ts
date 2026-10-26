@@ -158,7 +158,9 @@ test("Auto team approval, addressed question, distinct members, and verified cov
   await page.locator(".awaiting-card").getByText("Approve Auto team", { exact: true }).waitFor({ timeout: 30_000 });
   await page.locator(".team-details > summary").click();
   assert.equal(await page.locator(".auto-team .at-member").count(), 4);
-  assert.match(await page.getByLabel("Coordination usage").innerText(), /1 coordinator calls \(lifetime\)/);
+  const coordinationUsage = await page.getByLabel("Coordination usage").innerText();
+  assert.match(coordinationUsage, /\b1 coordinator call \(lifetime\) · limit \d+ per execution\b/);
+  assert.match(coordinationUsage, /\b1 total call \(lifetime\) · limit \d+ per execution\b/);
   await page.getByPlaceholder(/What should change/).fill("Keep the implementation and test assignments separate.");
   await page.getByRole("button", { name: "Ask for changes" }).click();
   await page.locator(".awaiting-card").getByText("Approve Auto team revision 1", { exact: true }).waitFor({ timeout: 30_000 });

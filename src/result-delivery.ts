@@ -1,3 +1,4 @@
+import { parsePullRequestUrl } from "./github-url.js";
 import type { PrMergeInfo } from "./github.js";
 import type { RunSummary } from "./engine.js";
 import { checksLabel } from "./run-status.js";
@@ -6,7 +7,7 @@ export function localDeliveryProblem(run: RunSummary, branch: string): string | 
   const checks = checksLabel(run, false, branch);
   if (["Failed", "Blocked"].includes(checks)) return "The run's checks need attention. Ask the agent to fix them before publishing.";
   const findings = run.findings?.[branch], turn = run.teamTurns?.at(-1);
-  if (findings?.stale || findings?.findings.some(f => f.blocking) || turn?.reviewStale || turn?.resolutionReview?.approved === false ||
+  if (findings?.stale || findings?.findings.some(f => f.blocking) || turn?.reviewStale || turn?.resolutionReview?.approved === false || turn?.resolutionReview?.approved === undefined && turn?.teamEvidence?.review?.approved === false ||
       !findings && (run.review?.verdict === "changes_requested" || run.team?.verification?.reviewed && !run.team.verification.approved)) return "The run's review needs attention. Review the findings and ask for a revision before publishing.";
 }
 
@@ -37,6 +38,7 @@ export function prDelivery(pr: PrMergeInfo, localProblem?: string): ResultDelive
   if (localProblem) return result("Review your changes first", localProblem, "review", "Review changes");
   if (pr.isDraft) return result("PR is still a draft", "Mark it ready for review on GitHub when you are happy with the changes.", "github", "Open pull request");
   if (pr.mergeable === "CONFLICTING" || pr.mergeStateStatus === "DIRTY") return result("Resolve merge conflicts", `This PR conflicts with ${pr.baseRefName}. Ask the agent to resolve the conflicts, then run the checks again.`, "github", "Open pull request");
+  if (pr.mergeStateStatus === "BEHIND" && !parsePullRequestUrl(pr.url)) return result("Update this PR on GitHub", "The PR address cannot be used for an automatic branch update. Open the pull request to update its branch.", "github", "Open pull request");
   if (pr.mergeStateStatus === "BEHIND") return result("Update PR before merging", `Bring in the latest ${pr.baseRefName}, then wait for GitHub checks on the updated branch.`, "update", "Update branch");
   if (pr.ci === "fail") return result("GitHub checks need attention", "Ask the agent to fix the failing checks. Merge will be available when the PR passes.", "github", "View failing checks");
   if (pr.ci === "pending") return result("Waiting for GitHub checks", "Checks are running on the current PR commit. This card updates automatically.", "wait", "Checks running…");

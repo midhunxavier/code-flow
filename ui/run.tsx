@@ -1,3 +1,8 @@
+import { scrollBehavior } from "./lib.js";
+import { useMessageDraft } from "./message-draft.js";
+import { appendDraftText, conversationAnswer, recoveryMessage, replySignInIssue } from "./conversation-feedback.js";
+import { runTitle } from "../src/run-title.js";
+import { planRejected, failedWork, dispatchLabel } from "../src/run-outcome.js";
 import { BrowserMessage, BrowserDraftCards } from "./browser-context-cards.js";
 import { browserImageNames, editBrowserText, parseBrowserMessage } from "./browser-context.js";
 import { chatTaskId } from "../src/chat-family.js";
@@ -5,6 +10,7 @@ import { TaskTeamControl, TaskTeamActivity, TaskTeamStatus } from "./task-team.j
 import { TeamTemplateLibrary } from "./team-template-library.js";
 import { templateFromPlan, type TeamTemplate } from "../src/team-templates.js";
 import { confirmAction } from "./confirm-state.js";
+import { pendingApprovals } from "./approval-inbox.js";
 import { DEFAULT_EXECUTION_BUDGET, coordinatorInvocationLimit } from "../src/execution-budget.js";
 import { localAppUrls } from "../src/local-app-url.js";
 import { intentDraft, LiveProgress, ResultStudio } from "./experience.js";
@@ -12,9 +18,10 @@ import { PREVIEW_REQUEST } from "./result-preview.js";
 import { journeyDraft } from "./journeys.js";
 import { rerunDraft } from "./rerun-draft.js";
 import { setContextBudget } from "./context-budget.js";
-import { nextRunAction, executionLabel, agentReviewLabel } from "./run-experience.js";
-import { RunEvidence, VerificationEvidence } from "./run-evidence.js";
-import { DeleteRunDialog } from "./run-actions.js";
+import { nextRunAction, executionLabel, agentReviewLabel, declinedUnasked, chatProvider, branchesGone, runStateBadges, integrityFor, replyTargets } from "./run-experience.js";
+import { IntegrityNote, MergeValidationGates, RunEvidence, VerificationEvidence } from "./run-evidence.js";
+import { ArchiveDialog, DeleteRunDialog } from "./run-actions.js";
+import { MissionRunNote, MissionTask, missionBrief, missionHref } from "./mission-brief.js";
 import { Menu, MenuItem, MenuTitle, Strip } from "./panel-bits.js";
 import { Component } from "preact";
 import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
@@ -22,8 +29,9 @@ import { useDialog } from "./app.js";
 import { AgentTag, CantRunNote, Markdown } from "./bits.js";
 import { TriageActions } from "./automations.js";
 import { ChatControls, type ChatSettings, type ChatPermissions } from "./chat-controls.js";
+import { runProviderProblem, narrowerTrust } from "../src/run-permissions.js";
 import { Icon } from "./icons.js";
-import { api, ApiError, baseName, copy, duration, enc, fmtCost, fmtSize, fmtTokens, onPhone, post, safeHref, SHORT, showToast, STATUS_TEXT, usePoll } from "./lib.js";
+import { ago, api, ApiError, baseName, copy, duration, enc, fmtCost, fmtSize, fmtTokens, onPhone, post, safeHref, SHORT, showToast, showError, plural, agentName, STATUS_TEXT, usePoll } from "./lib.js";
 import { loadLocalAttempts, localAttempts } from "./collab-state.js";
 import {
   agents,
@@ -41,21 +49,26 @@ import {
   route,
   setAcceptanceCriteria,
   setApprovePlan,
-  setTrust,
+  trust,
+  chooseForDraft,
+  RERUN_ORIGIN,
+  unsentDraft,
   healthOpen,
+  health,
+  refreshProviders, providersRefreshing,
   attachments,
-  checkCmd,
+  setRunCheck,
+  setRunSetup,
+  setRunLimits,
   contextPaths,
   markSeen,
   patterns,
   repo,
   repoInfo,
   runState,
-  setLimits,
   setPattern,
   setRoles,
   setTask,
-  setupCmd,
   source,
   projectFor,
   openComposer,
@@ -78,8 +91,8 @@ import { GithubReviewThreadsPanel } from "./github-review-threads.js";
 import { RemoteStepReceipt } from "./remote-workers.js";
 import type { MergeValidation } from "../src/merge-validation.js";
 import { loadStepTranscript, transcriptVersion, useRunStream, type RunData } from "./run-feed.js";
-import { followupMinimumCalls, teamAwaitingAnswer, teamNeedsResume } from "./team-state.js";
-import type { AgentEvent, AgentId, Artifact, Attachment, CheckedReview, FindingCheck, FollowUp, IntegrityIssue, MergeMethod, MergeOutcome, Note, PrMergeInfo, Proof, RepoInfo, RunSummary, Step } from "./types.js";
+import { defaultFollowupCalls, followupMinimumCalls, teamAwaitingAnswer, teamNeedsResume, teamStatusLabel, wholeMinutes } from "./team-state.js";
+import type { AgentEvent, AgentId, Artifact, Attachment, CheckedReview, FindingCheck, FollowUp, MergeMethod, MergeOutcome, Note, PrMergeInfo, Proof, RepoInfo, RunSummary, Step } from "./types.js";
 
 const STEP_ICON: Record<string, string> = { done: "✓", failed: "✕", cancelled: "■", interrupted: "⏸" };
 const openedAppTurns = new Set<string>();
@@ -99,6 +112,8 @@ export function RunView({ id }: { id: string }) {
   const follow = useRef(true);
   /** The steps the timeline shows, in order: what [ and ] step through. */
   const listed = useRef<string[]>([]);
+  const chatNavigation = useRef(false);
+  const turnCursor = useRef<string>();
   const [archiving, setArchiving] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [savingStrategy, setSavingStrategy] = useState<TeamTemplate | null>(null);
@@ -113,23 +128,43 @@ export function RunView({ id }: { id: string }) {
     if (follow.current && step.status === "running" && !sideWork(step)) setSelected(step.id);
   });
 
+  const [providerTime, setProviderTime] = useState(Date.now());
+  useEffect(() => {
+    const reset = run?.providerLimit?.resetsAt;
+    if (!reset || reset <= providerTime) return;
+    const now = Date.now();
+    if (reset <= now) { setProviderTime(now); return; }
+    const timer = setTimeout(() => setProviderTime(Date.now()), Math.min(30_000, reset - now + 1));
+    return () => clearTimeout(timer);
+  }, [run?.providerLimit?.resetsAt, providerTime]);
   useEffect(() => {
     if (run && run.status !== "running" && !run.seen && !document.hidden) void markSeen(run.id);
   }, [run?.status, run?.seen]);
   useEffect(() => {
-    if (run?.pattern !== "solo") return;
-    rememberAgentTab(run);
-    void loadAgentChats(id).catch(error => showToast(`Could not load this task’s chats: ${error.message}`));
+    if (!run) return;
+    if (run.pattern === "solo") rememberAgentTab(run);
+    if (run.pattern === "solo" || !runs.value.has(id)) void loadAgentChats(id).catch(error => showError(`Could not load this task’s chats: ${error.message}`));
   }, [id, run?.pattern]);
   // A run started from the team board links back to its task: the runner's own records say which attempt it executes (the engine knows nothing of tasks).
   useEffect(() => { void loadLocalAttempts(); }, [id]);
   const teamTask = localAttempts.value.find((entry) => entry.runId === id)?.taskId;
 
-  // [ and ] step through the timeline.
+  // [ and ] step through the visible timeline or the conversation’s agent turns.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if ((e.key !== "[" && e.key !== "]") || e.metaKey || e.ctrlKey || e.altKey) return;
-      if ((e.target as HTMLElement | null)?.closest("input, textarea, select, dialog")) return;
+      if ((e.key !== "[" && e.key !== "]") || e.metaKey || e.ctrlKey || e.altKey || e.defaultPrevented) return;
+      if ((e.target as HTMLElement | null)?.closest("input, textarea, select, [contenteditable=true], dialog")) return;
+      if (chatNavigation.current) {
+        const turns = [...(scroll.current?.querySelectorAll<HTMLElement>("[data-agent-turn]") ?? [])];
+        if (!turns.length) return;
+        const focused = (document.activeElement as HTMLElement | null)?.closest<HTMLElement>("[data-agent-turn]")?.dataset.agentTurn;
+        const at = turns.findIndex(turn => turn.dataset.agentTurn === (focused ?? turnCursor.current));
+        const next = turns[Math.max(0, Math.min(turns.length - 1, (at < 0 ? turns.length - 1 : at) + (e.key === "]" ? 1 : -1)))]!;
+        e.preventDefault(); followChat.current = false; turnCursor.current = next.dataset.agentTurn;
+        (next.querySelector<HTMLElement>(".show-work") ?? next).focus({ preventScroll: true });
+        next.scrollIntoView({ block: "nearest", behavior: scrollBehavior() });
+        return;
+      }
       const ids = listed.current;
       if (!ids.length) return;
       e.preventDefault();
@@ -149,6 +184,7 @@ export function RunView({ id }: { id: string }) {
   }, [selected]);
 
   useLayoutEffect(() => {
+    turnCursor.current = undefined;
     const saved = chatScroll.get(id); followChat.current = saved?.follow ?? true;
     if (scroll.current && saved) scroll.current.scrollTop = saved.top;
   }, [id, !!run]);
@@ -191,18 +227,22 @@ export function RunView({ id }: { id: string }) {
   };
   const p = patterns.value.find((x) => x.id === run.pattern);
   const state = runState(run);
-  const awaitingInput = !!run.awaiting || teamAwaitingAnswer(run);
+  /** A tool approval or a question of this run waits in the approval inbox. */
+  const approvalPending = run.status === "running" && pendingApprovals.value.some((record) => record.runId === run.id);
+  const awaitingInput = !!run.awaiting || teamAwaitingAnswer(run) || approvalPending;
   /** A conversation with one agent (Single agent): the turns are the thread, not a list of steps. */
   const chat = !!p?.chat && !run.checkpointOnFinish;
+  chatNavigation.current = chat;
 
   const next = nextRunAction(run);
+  const brief = run.projectTeam ? missionBrief(run.task) : undefined;
   const hasResult = finished && !run.archived && run.worktrees.some(tree => run.artifacts.some(artifact => artifact.branch === tree.branch));
-  const allocation = resumeBudget?.id === run.id ? resumeBudget : { id: run.id, maxSteps: Math.min(run.loop.maxSteps, run.loop.maxInvocations ?? run.loop.maxSteps), maxMinutes: run.loop.maxMinutes };
+  const allocation = resumeBudget?.id === run.id ? resumeBudget : { id: run.id, maxSteps: Math.min(run.loop.maxSteps, run.loop.maxInvocations ?? run.loop.maxSteps), maxMinutes: wholeMinutes(run.loop.maxMinutes) };
   const minimumCalls = run.pattern === "auto-team" ? 4 : 1;
   const allocationValid = Number.isSafeInteger(allocation.maxSteps) && allocation.maxSteps >= minimumCalls && allocation.maxSteps <= 200 && Number.isFinite(allocation.maxMinutes) && allocation.maxMinutes >= 1 && allocation.maxMinutes <= 720;
   const focusSection = (id: string) => {
     const section = document.getElementById(id);
-    section?.scrollIntoView({ block: "center", behavior: "smooth" });
+    section?.scrollIntoView({ block: "center", behavior: scrollBehavior() });
     (section?.querySelector<HTMLElement>("textarea, button, summary") ?? section)?.focus({ preventScroll: true });
   };
   const resume = async () => {
@@ -219,9 +259,11 @@ export function RunView({ id }: { id: string }) {
   const act = () => {
     if (!next) return;
     if (next.kind === "resume") void resume();
-    else if (next.kind === "provider") healthOpen.value = true;
+    else if (next.kind === "provider" || next.kind === "provider-limit") healthOpen.value = true;
+    else if (next.kind === "rerun") void editAndRerun(run);
     else if (next.kind === "check") setRecovering(true);
     else if (next.kind === "review" && next.branch) navigate({ view: "review", id: run.id, branch: next.branch });
+    else if (next.kind === "mission" && run.project) navigate({ view: "project", id: run.project, section: "automation", kind: "missions" });
     else if (next.kind === "revise") {
       chatDrafts.value = [...chatDrafts.value, { to: `main:${run.id}`, text: `Investigate and fix the failing checks (${run.loop.check || "the configured verification profile"}). Preserve the existing work and report fresh verification evidence.`, images: [] }];
     } else focusSection(`run-${next.kind}`);
@@ -233,29 +275,31 @@ export function RunView({ id }: { id: string }) {
         const el = event.currentTarget; followChat.current = el.scrollHeight - el.scrollTop - el.clientHeight < 100;
         chatScroll.set(id, { top: el.scrollTop, follow: followChat.current });
       }}>
-        {persistence?.state === "saving" ? <p class="help" role="status">Saving run…</p> : persistence?.state === "error" ? <p class="msg err" role="alert">Run changes have not been saved: {persistence.error}</p> : null}
-        {run.projectTeam && <p class="help">Standing team {run.projectTeam.phase} · <a href={`#/project/${run.project}`}>Review the opportunity, approve this result, or request a bounded team revision</a></p>}
+        {run.projectTeam && <p class="help">Project mission {run.projectTeam.phase} · <a href={missionHref(run)}>Review the opportunity, approve this result, or request a bounded team revision</a></p>}
         <header class="run-head">
           <div class="run-title">
             {/* OntoLab's page head: a status line above the heading, the actions beside it */}
             <div class="run-name">
               <div class="run-kicker">
-                <span class={`status-pill ${awaitingInput ? "awaiting" : state}`}>
-                  {executionLabel(run)}
+                <span class={`status-pill ${awaitingInput ? "awaiting" : dispatchLabel(run, steps) === "Dispatch paused" ? "stopped" : state}`}>
+                  {approvalPending ? executionLabel(run, true) : dispatchLabel(run, steps) ?? executionLabel(run)}
                 </span>
+                {runStateBadges(run).map((label) => <span key={label} class="status-pill run-state" title={label}>{label}</span>)}
+                {run.chatLink?.kind !== "side" ? <ProjectChip run={run} /> : null}
                 <span class="run-pattern">{p?.name ?? run.pattern}</span>
+                {run.permissions?.antigravityExecution === "native" ? <span class="badge warn run-unrestricted" title="Antigravity turns in this run use your normal profile and settings without Code Flow's sandbox">Unrestricted Antigravity</span> : null}
                 {teamTask ? <a class="run-team-task" href={`#/team/task/${enc(teamTask)}`} title="This run executes a task of the team board">Team task</a> : null}
               </div>
-              <h2 title={run.task}>{run.task.split("\n")[0] || "(no task)"}</h2>
+              <h2 title={run.task}>{runTitle(run)}</h2>
             </div>
             <div class="run-actions">
               {finished && !chat ? <Menu label="More run actions" icon="more">{close => <>
                 <MenuItem onClick={() => { close(); try {
                   const common = { id: `strategy-${Date.now().toString(36)}`, name: run.task.split("\n")[0]!.slice(0, 80), scope: run.project ? "project" as const : "personal" as const, ...(run.project ? { project: run.project } : {}) };
                   setSavingStrategy(run.team ? templateFromPlan(run.team, common) : { schemaVersion: 1, ...common, version: 1, description: "Saved workflow. Parameterize inputs before reuse.", autoEnabled: false, parameters: ["task"], roles: [], tasks: [], contracts: [], workflow: run.pattern, task: "{{task}}", criteria: [] });
-                } catch (e) { showToast((e as Error).message); } }}>Save as team template…</MenuItem>
+                } catch (e) { showError((e as Error).message); } }}>Save as team template…</MenuItem>
                 {!run.projectTeam ? <MenuItem disabled={!draftsReady.value || composerLoading.value} onClick={() => { close(); void editAndRerun(run); }}>Edit &amp; run again</MenuItem> : null}
-                <MenuItem onClick={() => { close(); if (run.archived) void post(`/api/runs/${run.id}/archive`, { archived: false }).catch(e => showToast(e.message)); else setArchiving(true); }}>{run.archived ? "Unarchive" : "Archive…"}</MenuItem>
+                <MenuItem onClick={() => { close(); if (run.archived) void post(`/api/runs/${run.id}/archive`, { archived: false }).catch(e => showError(e.message)); else setArchiving(true); }}>{run.archived ? "Unarchive" : "Archive…"}</MenuItem>
                 <MenuItem onClick={() => { close(); setDeleting(true); }}>Delete…</MenuItem>
               </>}</Menu> : null}
               {!finished ? (
@@ -263,7 +307,7 @@ export function RunView({ id }: { id: string }) {
                   class="btn danger"
                   onClick={async () => {
                     if (chat || await confirmAction(checking ? "Stop the running checks? Finished work stays on its branch; verification will be incomplete." : "Stop this run? Agents still working will be stopped; finished work stays on its branches.", {"title":"Stop current work?","confirmLabel":"Stop work","danger":true})) {
-                      post(`/api/runs/${run.id}/cancel`).catch((e) => showToast(e.message));
+                      post(`/api/runs/${run.id}/cancel`).catch((e) => showError(e.message));
                     }
                   }}
                 >
@@ -275,22 +319,24 @@ export function RunView({ id }: { id: string }) {
         </header>
 
         <div class="thread">
+          {persistence?.state === "saving" ? <p class="help" role="status">Saving run…</p> : persistence?.state === "error" ? <div class="banner bad" role="alert"><p>{persistence.error || "Run changes have not been saved."}</p></div> : null}
           {/* Your task, as the message that started the conversation. */}
           <div class="msg-you">
             <div class="bubble">
-              <div class="run-task">
-                <BrowserMessage text={run.task} />
+              <div class="run-task" tabIndex={0} role="region" aria-label="Your task">
+                {run.projectTeam && brief ? <MissionTask brief={brief} /> : <BrowserMessage text={run.task} />}
               </div>
               {run.parentRunId ? (
                 <a class="help" href={`#/run/${run.parentRunId}`}>
                   ↩ previous conversation
                 </a>
               ) : null}
+              {run.parentRunId && run.supersededBy ? <span class="help" aria-hidden="true"> · </span> : null}
               {run.supersededBy ? <a class="help" href={`#/run/${run.supersededBy}`}>Continue with the revised goal →</a> : null}
             </div>
           </div>
 
-          {!chat && next && !(hasResult && next.kind === "review") ? <section class={`next-action ${["resume", "provider", "check", "revise"].includes(next.kind) ? "needs-attention" : ""}`} aria-label="Next action">
+          {!chat && next && !(hasResult && next.kind === "review") ? <section class={`next-action ${["resume", "provider", "provider-limit", "check", "revise"].includes(next.kind) ? "needs-attention" : ""}`} aria-label="Next action">
             <div><h3>{next.title}</h3><p>{next.detail}</p>
               {next.kind === "resume" ? <div class="resume-budget" role="group" aria-label="Resume budget">
                 <div class="resume-budget-fields">
@@ -298,16 +344,17 @@ export function RunView({ id }: { id: string }) {
                   <label>Maximum minutes<input class="field" aria-label="Resume maximum minutes" type="number" min={1} max={720} value={allocation.maxMinutes} disabled={actionBusy} onInput={(event) => setResumeBudget({ ...allocation, maxMinutes: Number(event.currentTarget.value) })} /></label>
                   <button class="btn small" disabled={actionBusy} onClick={() => setResumeBudget({ id: run.id, ...DEFAULT_EXECUTION_BUDGET })}>Use extended budget</button>
                 </div>
-                <p class="help">New allowance: {allocation.maxSteps} calls · {allocation.maxMinutes} minutes.{run.team ? ` Up to ${coordinatorInvocationLimit(allocation.maxSteps)} coordinator calls.` : ""} Earlier usage is retained.</p>
+                <p class="help">New allowance: {plural(allocation.maxSteps, "call")} · {allocation.maxMinutes} minutes.{run.team ? ` Up to ${plural(coordinatorInvocationLimit(allocation.maxSteps), "coordinator call")}.` : ""} Earlier usage is retained.</p>
                 {!allocationValid ? <p class="msg err" role="alert">Choose {minimumCalls}–200 calls and 1–720 minutes.</p> : null}
               </div> : null}
               {finished && run.worktrees.length ? <p class="help">Saved work: {run.worktrees.length} {run.worktrees.length === 1 ? "worktree" : "worktrees"}. Branches and files are kept.</p> : null}
             </div>
             <div class="next-action-buttons"><button class="btn primary" disabled={actionBusy || next.kind === "resume" && !allocationValid} onClick={act}>{actionBusy ? "Resuming…" : next.label}</button>
-              {next.kind === "provider" ? <button class="btn" disabled={actionBusy || !allocationValid} onClick={() => void resume()}>Resume after reconnecting</button> : null}
+              {next.kind === "provider" || next.kind === "provider-limit" ? <button class="btn" disabled={actionBusy || !allocationValid || next.kind === "provider-limit" && (run.providerLimit?.resetsAt ?? 0) > providerTime} onClick={() => void resume()}>{next.kind === "provider-limit" ? "Resume after reset" : "Resume after reconnecting"}</button> : null}
             </div>
           </section> : null}
           {actionError ? <p class="msg err" role="alert">{actionError}</p> : null}
+          {finished && !run.archived && branchesGone(run) ? <p class="help" role="note">{run.deletedWorktrees!.length === 1 ? "This run's branch was" : "This run's branches were"} deleted, so its changes are gone. Start a new run to continue from here.</p> : null}
           {!chat && !finished ? <LiveProgress run={run} steps={steps} /> : null}
           {run.source?.kind === "pr" && !Object.values(run.prs ?? {}).includes(run.source.url) ? <GithubReviewThreadsPanel runId={run.id} /> : null}
           {run.lockdown ? (
@@ -321,7 +368,7 @@ export function RunView({ id }: { id: string }) {
           {run.taskExecution ? <a class="btn" href={`#/run/${run.taskExecution.chatId}`}>Back to conversation</a> : null}
           {run.awaiting ? <div id="run-approval" tabIndex={-1}><AwaitingCard run={run} /></div> : null}
           {teamAwaitingAnswer(run) ? <div id="run-question" tabIndex={-1}><TeamQuestionCard run={run} /></div> : null}
-          {run.team ? <details class="team-details"><summary>Team activity · {run.team.status}</summary><AutoTeam run={run} steps={steps} />{run.project ? <ProjectMemory projectId={run.project} repo={run.repo} refreshKey={`${run.status}:${run.team.revision}`} /> : null}</details> : null}
+          {run.team ? <details class="team-details"><summary>Team activity · {teamStatusLabel(run)}</summary><AutoTeam run={run} steps={steps} />{run.project ? <ProjectMemory projectId={run.project} repo={run.repo} refreshKey={`${run.status}:${run.team.revision}`} /> : null}</details> : null}
           {run.triage?.state === "pending" && run.status !== "running" ? (
             <div class="awaiting-card" id="run-triage" tabIndex={-1}>
               <div class="aw-head">
@@ -336,7 +383,7 @@ export function RunView({ id }: { id: string }) {
           ) : null}
 
           {chat ? (
-            <><ChatThread run={run} steps={steps} data={data.current} />{["failed", "stopped", "interrupted", "cancelled"].includes(run.status) ? <div class="chat-recovery" role="status"><p>{run.error ?? run.stopReason ?? "Work is saved. Resume when you're ready."}</p><button class="btn small" disabled={actionBusy} onClick={() => void resume()}>{actionBusy ? "Resuming…" : run.providerRecovery ? "Retry reply" : "Resume"}</button>{actionError ? <p class="help" role="alert">{actionError}</p> : null}</div> : null}</>
+            <><ChatThread run={run} steps={steps} data={data.current} />{["failed", "stopped", "interrupted", "cancelled"].includes(run.status) ? <div class="chat-recovery" role="status"><p>{next?.kind === "provider-limit" ? next.detail : recoveryMessage(run, steps)}</p>{next?.kind === "provider" || next?.kind === "provider-limit" ? <button class="btn small" onClick={() => { healthOpen.value = true; }}>{next.label}</button> : null}<button class="btn small" disabled={actionBusy || next?.kind === "provider-limit" && (run.providerLimit?.resetsAt ?? 0) > providerTime} onClick={() => planRejected(run) ? void editAndRerun(run) : void resume()}>{actionBusy ? "Resuming…" : planRejected(run) ? "Edit & run again" : next?.kind === "provider-limit" ? "Resume after reset" : run.providerRecovery ? "Retry reply" : "Resume"}</button>{actionError ? <p class="help" role="alert">{actionError}</p> : null}</div> : null}</>
           ) : (
             /* The agents' work: one disclosure, each step opening inline to its transcript. */
             <details class={`work ${finished ? "" : "live"}`} open={showWork}>
@@ -356,11 +403,11 @@ export function RunView({ id }: { id: string }) {
                         type="button"
                         class={`tl-step ${s.id === current ? "selected" : ""}`}
                         aria-expanded={s.id === current}
-                        aria-label={`${s.title}: ${STATUS_TEXT[s.status] ?? s.status}`}
+                        aria-description={`${s.title}: ${s.outcome === "warning" ? "Warning" : s.outcome === "expected" ? "Expected failure" : STATUS_TEXT[s.status] ?? s.status}`}
                         onClick={() => toggleStep(s.id)}
                       >
-                        <span class={`ic ${s.status}`} aria-hidden="true">
-                          {STEP_ICON[s.status] ?? ""}
+                        <span class={`ic ${s.outcome === "warning" ? "warn" : s.status}`} aria-hidden="true">
+                          {s.outcome === "warning" ? "⚠" : STEP_ICON[s.status] ?? ""}
                         </span>
                         <span class="tt">{s.title}</span>
                         <span class="tm">
@@ -386,19 +433,20 @@ export function RunView({ id }: { id: string }) {
           {!chat && run.patternDone && (run.patternSummary || run.summary) ? <div class="workflow-answer"><div class="lbl">{run.pattern === "solo" ? "Agent" : "Team"}</div><Markdown text={run.patternSummary ?? run.summary ?? ""} /></div> : null}
           {chat ? null : <FollowUpThread run={run} data={data.current} />}
           {hasResult ? <ResultStudio run={run} /> : null}
-          {finished && !chat && run.status !== "done" ? <ResultCard run={run} steps={steps} onSelectStep={selectStep} /> : null}
+          {finished && run.review && !run.artifacts.length ? <section id="run-publish-review" aria-label="Council review"><ReviewCard run={run} /></section> : null}
+          {finished && !chat && (run.status !== "done" || failedWork(steps).length > 0) ? <ResultCard run={run} steps={steps} onSelectStep={selectStep} /> : null}
           {!chat ? <details class="result-details"><summary>{run.testRun ? "Test details" : "Details and publishing"}</summary>
           {!chat ? <RunEvidence run={run} checking={checking} /> : null}
           {run.teamTemplate || run.team?.templateUses?.length ? <details class="settings"><summary>Template provenance</summary><div class="settings-body">{run.teamTemplate ? <p>Selected: {run.teamTemplate.template.name} v{run.teamTemplate.template.version}</p> : null}{run.team?.templateUses?.map(use => <p key={use.id}>{use.id}: {use.templateId} v{use.version}{use.instructions ? ` · adaptation: ${use.instructions}` : ""}</p>)}<p class="help">Definitions and inputs are pinned to this run. Library edits do not change this execution.</p></div></details> : null}
           {!chat && run.permissions ? <details class="settings"><summary>Run permissions · {run.permissions.trust}{run.permissions.antigravityExecution === "native" ? " · Unrestricted Antigravity" : ""}</summary><div class="settings-body"><p>{run.permissions.antigravityExecution === "native" ? "Unrestricted Antigravity uses the existing login and normal provider settings. Its read-only requests are advisory; terminal, browser, MCP, hooks and native agents are unrestricted by Code Flow, including child usage outside the worker budget. Other providers inherit the run policy." : "Workers inherit this run’s policy. Planning and review turns use narrower access. Native agent delegation is disabled; Code Flow schedules the team."}</p>{[...data.current.steps.values()].filter(step => step.permissions).map(step => <p key={step.id}>{step.title}: {step.permissions!.trust} · {step.permissions!.mode} · {step.permissions!.isolation} · command network {step.permissions!.commandNetwork} · external tools {step.permissions!.externalTools}{step.permissions!.implementation ? <><br /><span class="help">{step.permissions!.implementation}: {step.permissions!.limitations.join(" ")}</span></> : null}</p>)}<p class="help">Worktrees do not restrict reads. External browser/MCP tools retain their provider permissions unless explicitly disabled. Setup, checks and previews use their separately configured execution environment.</p></div></details> : null}
-          {finished && run.status === "done" ? <ResultCard run={run} steps={steps} onSelectStep={selectStep} /> : null}
+          {finished && run.status === "done" && !failedWork(steps).length ? <ResultCard run={run} steps={steps} onSelectStep={selectStep} /> : null}
           <RunMeta run={run} /><RunChips run={run} />
           <ActivityLog logs={data.current.logs} count={data.current.logs.length} />
           </details> : null}
         </div>
       </div>
 
-      <ConversationBar key={run.id} run={run} steps={steps} chat={chat} />
+      {run.projectTeam && run.status !== "running" ? <MissionRunNote run={run} /> : <ConversationBar key={run.id} run={run} steps={steps} chat={chat} />}
       {recovering ? <RecoveryCheckDialog run={run} onClose={() => setRecovering(false)} /> : null}
       {savingStrategy ? <SaveStrategyDialog template={savingStrategy} onClose={() => setSavingStrategy(null)} /> : null}
       {deleting ? <DeleteRunDialog run={run} onClose={() => setDeleting(false)} /> : null}
@@ -438,18 +486,19 @@ function AgentTabs({ run }: { run: RunSummary }) {
 
 function WorkSummary({ run, steps }: { run: RunSummary; steps: Step[] }) {
   const live = steps.filter((s) => s.status === "running");
-  const failed = steps.filter((s) => s.status === "failed").length;
+  const failed = failedWork(steps).length;
+  const warnings = steps.filter(step => step.outcome === "warning").length;
   const who = [...new Set(steps.map((s) => s.agent).filter((a): a is AgentId => !!a))];
   const took = duration((run.endedAt ?? Date.now()) - run.createdAt);
   return (
     <>
-      <span class={`work-ic ${runState(run)}`} aria-hidden="true" />
+      <span class={`work-ic ${dispatchLabel(run, steps) === "Dispatch paused" ? "interrupted" : runState(run)}`} aria-hidden="true" />
       <span class="work-title">
-        {run.status === "running" ? (live.length ? `Working — ${live.map((s) => s.title).join(", ")}` : "Working…") : `${steps.length} step${steps.length === 1 ? "" : "s"}`}
+        {run.status === "running" ? (live.length ? `Working — ${live.map((s) => s.title).join(", ")}` : dispatchLabel(run, steps) ?? "Working…") : `${steps.length} step${steps.length === 1 ? "" : "s"}`}
       </span>
       <span class="work-meta">
         {run.status === "running" ? `${steps.length} step${steps.length === 1 ? "" : "s"} so far · ${took}` : took}
-        {failed ? <span class="warn"> · {failed} failed</span> : null}
+        {failed ? <span class="warn"> · {failed} failed</span> : null}{warnings ? <span class="warn"> · {warnings} warning{warnings === 1 ? "" : "s"}</span> : null}
       </span>
       <span class="work-agents">
         {who.map((a) => (
@@ -499,7 +548,6 @@ function RunMeta({ run }: { run: RunSummary }) {
   const team = Object.entries(run.roles).filter(([, ids]) => ids.length);
   return (
     <div class="run-meta">
-      <ProjectChip run={run} />
       <span title={run.repo} class="repo-line">
         <Icon name="folder" /> {baseName(run.repo)}
       </span>
@@ -563,7 +611,7 @@ function RunMeta({ run }: { run: RunSummary }) {
       ) : null}
       {run.usage ? (
         <span class="usage">
-          {run.usage.agentSteps}/{run.loop.maxSteps} agent steps · {duration((run.endedAt ?? Date.now()) - run.createdAt)} of {run.loop.maxMinutes} min
+          {run.usage.agentSteps}/{run.loop.maxSteps} agent steps · {duration((run.endedAt ?? Date.now()) - run.createdAt)} of {wholeMinutes(run.loop.maxMinutes)} min
           {run.usage.inputTokens || run.usage.outputTokens ? (
             <span title={agentUsageTitle(run)}>
               {" "}
@@ -582,32 +630,34 @@ const usageTitle = (u: NonNullable<Step["usage"]>) =>
 
 const agentUsageTitle = (run: RunSummary) =>
   Object.entries(run.usage.byAgent ?? {})
-    .map(([agent, u]) => `${agent}: ${u!.steps} steps, ${fmtTokens(u!.inputTokens + u!.outputTokens)} tokens${u!.costUsd ? `, ≈${fmtCost(u!.costUsd)}` : ""}, ${duration(u!.ms)}`)
+    .map(([agent, u]) => `${agentName(agent)}: ${plural(u!.steps, "step")}, ${fmtTokens(u!.inputTokens + u!.outputTokens)} tokens${u!.costUsd ? `, ≈${fmtCost(u!.costUsd)}` : ""}, ${duration(u!.ms)}`)
     .join("\n");
 
 // ---------------------------------------------------------------- result & shipping
 /** In a chat, the answers are already in the thread: the card is about the branch (and the check). */
 function ResultCard({ run, steps, onSelectStep, chat }: { run: RunSummary; steps: Step[]; onSelectStep: (id: string) => void; chat?: boolean }) {
   const state = runState(run);
-  const failedSteps = steps.filter((s) => s.status === "failed");
+  const failedSteps = failedWork(steps);
   const titles: Record<string, string> = {
     done: "✓ Finished — the check passes",
     unverified: "Finished — no independent check passed",
     failing: "⚠ Finished — but the check still fails",
     unchecked: "⚠ Finished — but the check couldn't run, so nothing was tested",
     failed: "✕ Failed",
-    cancelled: "■ Stopped by you",
+    cancelled: planRejected(run) ? "■ Plan rejected" : "■ Stopped by you",
     stopped: teamNeedsResume(run) ? "■ Paused with unresolved work — press Resume to continue" : `■ Stopped at the ${run.stopReason ?? "limit"} — work so far is kept below`,
     interrupted: "■ Interrupted — press Resume to continue where it stopped",
   };
   if (chat) Object.assign(titles, { done: "✓ The check passes", unverified: "No independent check passed", failing: "⚠ The check fails", unchecked: "⚠ The check couldn't run, so nothing was tested" });
-  const title = state === "done" && agentReviewLabel(run) === "Changes requested" ? "Checks passed · review needs changes" : titles[state] ?? run.status;
+  const flagged = state === "done" && !!run.artifacts[0] && integrityFor(run, run.artifacts[0].branch).length > 0;
+  const title = state === "done" && agentReviewLabel(run) === "Changes requested" ? "Checks passed · review needs changes" : flagged ? `⚠ ${chat ? "The" : "Finished — the"} check passes only with changes to the tests` : titles[state] ?? run.status;
   return (
-    <div class={`result ${state}${chat ? " chat" : ""}`}>
-      {title ? <div class="rh">{title}</div> : null}
+    <div class={`result ${state}${flagged ? " flagged" : ""}${chat ? " chat" : ""}`}>
+      {/* A revised goal stopped this run on purpose: say where the work went on, not that it stopped. */}
+      {state === "cancelled" && run.supersededBy ? <div class="rh">■ Goal revised · <a href={`#/run/${run.supersededBy}`}>continued in the revised run →</a></div> : title ? <div class="rh">{title}</div> : null}
       {run.checkCantRun ? <CantRunNote cantRun={run.checkCantRun} /> : null}
       <VerificationEvidence run={run} />
-      {failedSteps.length && run.status !== "done" ? (
+      {failedSteps.length ? (
         <div class="failures">
           <div class="lbl">What went wrong</div>
           {failedSteps.slice(-5).map((s) => (
@@ -625,7 +675,7 @@ function ResultCard({ run, steps, onSelectStep, chat }: { run: RunSummary; steps
         <div class="rb">
           <div class="ev error">{run.error}</div>
         </div>
-      ) : run.review ? (
+      ) : run.review && run.artifacts.length ? (
         <ReviewCard run={run} />
       ) : run.summary && !chat ? (
         <div class="rb">
@@ -737,7 +787,7 @@ export function FollowUpBadges({ f, run }: { f: FollowUp; run?: RunSummary }) {
 export function TurnBody({ run, step, data, answer }: { run: RunSummary; step: Step; data: RunData; answer?: string }) {
   const [open, setOpen] = useState(false);
   const version = data.events.get(step.id)?.length ?? 0;
-  const text = answer ?? step.finalText;
+  const text = conversationAnswer(answer ?? step.finalText, step.error);
   const latestTurn = [...data.steps.values()].filter(value => (value.kind ?? "agent") === "agent" && !sideWork(value)).sort((a, b) => a.startedAt - b.startedAt).at(-1)?.id;
   useEffect(() => {
     const identity = `${run.id}:${step.id}:${step.endedAt}`;
@@ -761,7 +811,10 @@ export function TurnBody({ run, step, data, answer }: { run: RunSummary; step: S
     return () => { stop.abort(); clearTimeout(timer); };
   }, [run.id, step.id, step.status, step.endedAt, text, latestTurn]);
   if (step.status === "running") return <Transcript run={run} step={step} data={data} version={version} />;
-  const tools = itemsFor(data, step).filter((i) => i.kind === "tool").length;
+  const items = itemsFor(data, step);
+  const tools = items.filter((i) => i.kind === "tool").length;
+  // What code-flow declined for the agent without asking you: the answer may leave it out, or call it yours.
+  const unasked = items.filter((i): i is Extract<Item, { text: string }> => i.kind === "status" && declinedUnasked(i.text));
   return (
     <div class="turn-body">
       <button type="button" class="show-work" aria-expanded={open} onClick={() => setOpen(!open)}>
@@ -769,7 +822,8 @@ export function TurnBody({ run, step, data, answer }: { run: RunSummary; step: S
         {step.endedAt ? ` · ${duration(step.endedAt - step.startedAt)}` : ""}
       </button>
       {open ? <>{step.teamResponseFor ? [...data.steps.values()].filter(previous => previous.teamResponseFor === step.teamResponseFor && previous.id !== step.id).map(previous => <p class="help" key={previous.id}>{SHORT[previous.agent ?? "claude"]}: {previous.error ?? previous.status}. Continued with {SHORT[step.agent ?? "claude"]}.</p>) : null}<Transcript run={run} step={step} data={data} version={version} /></> : null}
-      {text ? <Markdown text={text} /> : step.status !== "done" && !open ? <Transcript run={run} step={step} data={data} version={version} /> : null}
+      {text ? <Markdown text={text} /> : step.status !== "done" && !step.error && !open ? <Transcript run={run} step={step} data={data} version={version} /> : null}
+      {!open && (text || step.status === "done") ? unasked.map((item, n) => <p key={n} class="ev declined" role="note">{item.text}</p>) : null}
       {step.error ? <div class="ev error" role="status">{step.error}</div> : null}
     </div>
   );
@@ -786,14 +840,21 @@ export function ChatThread({ run, steps, data }: { run: RunSummary; steps: Step[
   const sideSteps = sideStepIds(run);
   const responseSteps = new Map(steps.filter(step => step.teamResponseFor).map(step => [step.teamResponseFor, step.id]));
   const turns = steps.filter((s) => (s.kind ?? "agent") === "agent" && !sideSteps.has(s.id) && (!s.teamResponseFor || responseSteps.get(s.teamResponseFor) === s.id));
+  // The task's own turn: not a reply's (also one whose link to its message is still on its way), not a question to the lead.
+  const opening = (step: Step) => !byStep.has(step.id) && !step.leadQuestion && step.role !== "follow-up";
   const stepless = followUps.filter((f) => !f.stepId || !data.steps.has(f.stepId));
   // A change a side chat made gets a line, where its turn ran, so the history is whole.
   const sideChanges = run.followUps.filter((f) => f.side?.mode === "change" && f.status !== "pending");
+  // A reply's turn sits where its message was sent: a stopped team answers it on resume, after newer messages.
+  // The task's own turn comes first, whenever it ran.
   const thread: { at: number; step?: Step; followUp?: FollowUp; side?: FollowUp }[] = [
-    ...turns.map((step) => ({ at: step.startedAt, step })),
-    ...stepless.map((followUp) => ({ at: followUp.at, followUp })),
-    ...sideChanges.map((side) => ({ at: (side.stepId && data.steps.get(side.stepId)?.startedAt) || side.at, side })),
-  ].sort((a, b) => a.at - b.at);
+    ...turns.filter(opening).map((step) => ({ at: step.startedAt, step })),
+    ...[
+      ...turns.filter((step) => !opening(step)).map((step) => ({ at: byStep.get(step.id)?.at ?? step.startedAt, step })),
+      ...stepless.map((followUp) => ({ at: followUp.at, followUp })),
+      ...sideChanges.map((side) => ({ at: (side.stepId && data.steps.get(side.stepId)?.startedAt) || side.at, side })),
+    ].sort((a, b) => a.at - b.at),
+  ];
   // The run's last check is the first turn's while nothing that changes the branch came after it (a side Ask doesn't).
   // A side change that started (working, done, or failed after its turn) is about to set, or has set, the
   // run's last check: the first turn's badge isn't its to show. One that never started (still queued, or
@@ -821,7 +882,8 @@ export function ChatThread({ run, steps, data }: { run: RunSummary; steps: Step[
   const correctionBubble = (note: Note) => <div key={note.id} class="team-question-history">{note.question ? <div class="msg-agent"><div class="help">{note.question.sender} asked</div><Markdown text={note.question.body} /></div> : null}<div class="msg-you"><div class="bubble"><BrowserMessage text={note.text} /><div class="help" role="status">{note.control ? "Stopped · work saved. Resume when you’re ready." : note.teamDelivery?.state === "applied" ? note.requestId ? "Answer sent" : note.teamDelivery.taskIds?.length ? `Updated ${note.teamDelivery.taskIds.join(", ")}` : "Added to the team request" : note.teamDelivery?.state === "not_applied" ? "Saved for your agent" : "Received · updating the team…"}</div></div></div></div>;
   return (
     <>
-      {!turns.length && !followUps.length ? <>{corrections().map(correctionBubble)}{teamActivity()}</> : null}
+      {/* Until the task's own turn has a step, its corrections and team (question, approval, progress) sit under your task, whatever came after. */}
+      {!turns.some(opening) ? <>{corrections().map(correctionBubble)}{teamActivity()}</> : null}
       {thread.map(({ step: s, followUp, side }) => {
         if (side) return <SideNote key={side.id} run={run} f={side} />;
         if (!s) {
@@ -850,10 +912,12 @@ export function ChatThread({ run, steps, data }: { run: RunSummary; steps: Step[
           );
         }
         const f = byStep.get(s.id);
+        // A question to the lead, or a reply's turn not yet linked to its message, has no team of its own here.
+        const own = !!f || opening(s);
         // Messages a turn took when it started, or while it ran (Codex takes them mid-turn).
         const notes = run.notes.filter((n) => n.deliveredTo?.stepId === s.id && !n.followUp);
         return (
-          <div key={s.id} class="fu">
+          <div key={s.id} class="fu" data-agent-turn={s.id} tabIndex={-1} role="article" aria-label={`Agent turn: ${s.title}`}>
             {f ? (
               <div class="msg-you">
                 <div class="bubble">
@@ -861,7 +925,7 @@ export function ChatThread({ run, steps, data }: { run: RunSummary; steps: Step[
                 </div>
               </div>
             ) : null}
-            {!s.leadQuestion ? corrections(f).map(correctionBubble) : null}
+            {own ? corrections(f).map(correctionBubble) : null}
             {notes.map((n) => (
               <div key={n.id} class="msg-you">
                 <div class="bubble">
@@ -870,7 +934,7 @@ export function ChatThread({ run, steps, data }: { run: RunSummary; steps: Step[
                 </div>
               </div>
             ))}
-            {!s.leadQuestion ? teamActivity(f) : null}
+            {own ? teamActivity(f) : null}
             <div class="fu-answer">
               <div class="fu-head">
                 <AgentTag id={s.agent} note={modelNote(run, s.agent, s.settings)} />
@@ -968,7 +1032,7 @@ function ReviewCard({ run }: { run: RunSummary }) {
                   await post(`/api/runs/${run.id}/post-review`);
                   showToast("Review posted");
                 } catch (err) {
-                  showToast((err as Error).message, 5000);
+                  showError((err as Error).message, 5000);
                 } finally {
                   setBusy(false);
                 }
@@ -1009,13 +1073,16 @@ function ReviewCard({ run }: { run: RunSummary }) {
   );
 }
 
-export function ArtifactCard({ run, artifact, steps, reviewing = false }: { run: RunSummary; artifact: Artifact; steps: Step[]; reviewing?: boolean }) {
-  const [panel, setPanel] = useState<"merge" | "pr" | null>(null);
+export function ArtifactCard({ run, artifact, steps, reviewing = false, initialPanel }: { run: RunSummary; artifact: Artifact; steps: Step[]; reviewing?: boolean; initialPanel?: "pr" }) {
   const worktree = (run.worktrees ?? []).find((w) => w.branch === artifact.branch);
+  // Its branch is gone: nothing left to review, merge or open a pull request from.
+  const deleted = !worktree && !!run.deletedWorktrees?.some((w) => w.branch === artifact.branch);
   const merged = run.merges?.filter((m) => m.branch === artifact.branch) ?? [];
   const pr = run.prs?.[artifact.branch];
   const canReview = (run.status === "done" || teamNeedsResume(run)) && !!worktree;
   const fromPr = run.source?.kind === "pr" ? run.source : undefined;
+  const [panel, setPanel] = useState<"merge" | "pr" | null>(() => initialPanel && worktree && !run.testRun && !fromPr ? initialPanel : null);
+  const [actionsOpen, setActionsOpen] = useState(!!panel);
   const [pushing, setPushing] = useState(false);
   return (
     <div class="artifact">
@@ -1032,7 +1099,8 @@ export function ArtifactCard({ run, artifact, steps, reviewing = false }: { run:
             PR <Icon name="external" />
           </a>
         ) : null}
-        <details class="artifact-actions"><summary>Actions</summary><div class="acts">
+        {deleted ? <span class="badge" title="Its branch was deleted, so these changes are gone">Branch deleted</span> : null}
+        {!deleted ? <details class="artifact-actions" open={actionsOpen} onToggle={event => setActionsOpen(event.currentTarget.open)}><summary>Actions</summary><div class="acts">
           {canReview && !reviewing ? (
             <button class="btn small" onClick={() => navigate({ view: "review", id: run.id, branch: artifact.branch })}>
               Review changes
@@ -1055,7 +1123,7 @@ export function ArtifactCard({ run, artifact, steps, reviewing = false }: { run:
                   const result = await post<{ warning?: string }>(`/api/runs/${run.id}/push-pr`, { branch: artifact.branch });
                   showToast(result.warning || `Pushed to PR #${fromPr.number}`, result.warning ? 8000 : 5000);
                 } catch (err) {
-                  showToast((err as Error).message, 6000);
+                  showError((err as Error).message, 6000);
                 } finally {
                   setPushing(false);
                 }
@@ -1075,37 +1143,20 @@ export function ArtifactCard({ run, artifact, steps, reviewing = false }: { run:
           <button class="btn small" onClick={() => copy(artifact.path, "Path copied")}>
             Copy path
           </button>
-        </div></details>
+        </div></details> : null}
       </div>
-      {run.integrity?.[artifact.branch]?.length ? <IntegrityNote issues={run.integrity[artifact.branch]!} /> : null}
+      {!reviewing && integrityFor(run, artifact.branch).length ? <IntegrityNote issues={integrityFor(run, artifact.branch)} /> : null}
       {run.proofs?.[artifact.branch] ? <ProofNote proof={run.proofs[artifact.branch]!} /> : null}
       {run.findings?.[artifact.branch]?.findings.length ? <FindingsNote review={run.findings[artifact.branch]!} /> : null}
       {/* focusable: a long stat scrolls (max-height), and keyboard users need to reach it to scroll it */}
       {!reviewing ? artifact.stat ? <pre tabIndex={0}>{artifact.stat}</pre> : <div class="help">No changes</div> : null}
       {!reviewing && worktree && existsHint(run) ? <details class="artifact-tools"><summary>Open in your tools</summary><WorkspaceTools run={run} worktree={worktree.name} /></details> : null}
       {!run.testRun && panel === "merge" && worktree ? (
-        pr ? <PrMergePanel run={run} branch={artifact.branch} worktree={worktree.name} steps={steps} /> : <MergePanel run={run} branch={artifact.branch} worktree={worktree.name} steps={steps} />
+        pr ? <PrMergePanel run={run} branch={artifact.branch} worktree={worktree.name} steps={steps} /> : <MergePanel run={run} branch={artifact.branch} worktree={worktree.name} steps={steps} onMerged={() => setPanel(null)} />
       ) : null}
-      {!run.testRun && panel === "pr" ? <PrPanel run={run} branch={artifact.branch} /> : null}
+      {!run.testRun && panel === "pr" ? <PrPanel run={run} branch={artifact.branch} focusOnOpen={initialPanel === "pr"} /> : null}
       {pr ? <GithubReviewThreadsPanel runId={run.id} branch={artifact.branch} /> : null}
       {!run.testRun && pr && worktree && !merged.some((m) => m.pr === pr) ? <WatchPanel run={run} branch={artifact.branch} steps={steps} worktree={worktree.name} /> : null}
-    </div>
-  );
-}
-
-/** Test changes that could make the check pass without fixing anything: look before merging. */
-function IntegrityNote({ issues }: { issues: IntegrityIssue[] }) {
-  return (
-    <div class="integrity" role="note">
-      <b>⚠ Changes to tests to check before merging</b>
-      <span class="help"> — they can make the check pass without a real fix.</span>
-      <ul>
-        {issues.map((i, n) => (
-          <li key={n}>
-            <span class={`sev ${i.severity}`}>{i.severity}</span> {i.file ? <code>{i.file}</code> : null} {i.detail}
-          </li>
-        ))}
-      </ul>
     </div>
   );
 }
@@ -1249,10 +1300,13 @@ const WATCH_TEXT: Record<string, string> = {
 function WatchPanel({ run, branch, steps, worktree }: { run: RunSummary; branch: string; steps: Step[]; worktree: string }) {
   const watch = run.watches?.[branch];
   const active = watch && ["watching", "fixing", "green"].includes(watch.state);
-  const [agent, setAgent] = useState<AgentId>(watch?.agent ?? lastAgentIn(steps, worktree) ?? "claude");
-  const [maxFixes, setMaxFixes] = useState(watch?.maxFixes ?? 3);
+  const provider = chatProvider(run);
+  const [picked, setAgent] = useState<AgentId>(watch?.agent ?? lastAgentIn(steps, worktree) ?? "claude");
+  const agent = provider ?? picked;
+  const [maxFixes, setMaxFixes] = useState(String(watch?.maxFixes ?? 3));
+  const validMaxFixes = /^\d+$/.test(maxFixes) && Number(maxFixes) >= 1 && Number(maxFixes) <= 10;
   const [allow, setAllow] = useState((watch?.allow ?? []).map((a) => `@${a}`).join(", "));
-  const call = (body: object) => post(`/api/runs/${run.id}/watch`, { branch, ...body }).catch((e) => showToast(e.message, 5000));
+  const call = (body: object) => post(`/api/runs/${run.id}/watch`, { branch, ...body }).catch((e) => showError(e.message, 5000));
   return (
     <div class={`watch ${watch?.state ?? "off"}`}>
       {watch ? (
@@ -1276,20 +1330,22 @@ function WatchPanel({ run, branch, steps, worktree }: { run: RunSummary; branch:
           ) : null}
         </div>
       ) : null}
-      {!active && watch?.state !== "closed" ? (
+      {!active ? (
         <div class="row">
           <span class="lbl">Follow through</span>
           <span>When CI fails or you comment,</span>
-          <AgentPicker value={agent} onChange={setAgent} label="Agent that fixes CI failures and comments" />
+          <AgentPicker value={agent} fixed={!!provider} onChange={setAgent} label="Agent that fixes CI failures and comments" />
           <span>fixes it and pushes — up to</span>
-          <input class="field inline num" type="number" min={1} max={10} value={maxFixes} aria-label="Most fixes" onInput={(e) => setMaxFixes(Number(e.currentTarget.value) || 3)} />
+          <input class="field inline num" type="number" min={1} max={10} value={maxFixes} aria-label="Most fixes" aria-invalid={!validMaxFixes} onInput={(e) => setMaxFixes(e.currentTarget.value)} />
           <span>times. Never merges.</span>
+          {!validMaxFixes ? <span role="alert">Most fixes must be an integer from 1 to 10.</span> : null}
           <button
             class="btn small primary"
+            disabled={!validMaxFixes}
             onClick={() =>
               call({
                 agent,
-                maxFixes,
+                maxFixes: Number(maxFixes),
                 allow: allow
                   .split(/[\s,]+/)
                   .map((a) => a.replace(/^@/, ""))
@@ -1301,7 +1357,7 @@ function WatchPanel({ run, branch, steps, worktree }: { run: RunSummary; branch:
           </button>
         </div>
       ) : null}
-      {!active && watch?.state !== "closed" ? (
+      {!active ? (
         <div class="row">
           <span class="help">Also act on comments from</span>
           <input class="field inline" placeholder="@teammate, @reviewer" value={allow} aria-label="Other GitHub users whose comments the agent acts on" onInput={(e) => setAllow(e.currentTarget.value)} />
@@ -1312,13 +1368,13 @@ function WatchPanel({ run, branch, steps, worktree }: { run: RunSummary; branch:
   );
 }
 
-/** Branches you could merge a result into: local ones, with the run's base first. */
+/** Branches you could merge a result into: local ones, never a run's result, with the run's base first. */
 function useTargetBranches(run: RunSummary): { branches: string[]; initial: string } {
   const [info, setInfo] = useState<RepoInfo | null>(null);
   useEffect(() => {
     api<RepoInfo>(`/api/branches?repo=${encodeURIComponent(run.repo)}`).then(setInfo, () => setInfo(null));
   }, [run.repo]);
-  const branches = (info?.branches ?? []).filter((b) => b.kind === "local").map((b) => b.name);
+  const branches = (info?.branches ?? []).filter((b) => b.kind === "local" && !run.worktrees.some((tree) => tree.branch === b.name)).map((b) => b.name);
   const initial = run.baseLabel !== "HEAD" && branches.includes(run.baseLabel) ? run.baseLabel : info?.current ?? branches[0] ?? "";
   return { branches, initial };
 }
@@ -1326,37 +1382,66 @@ function useTargetBranches(run: RunSummary): { branches: string[]; initial: stri
 const lastAgentIn = (steps: Step[], worktree: string): AgentId | undefined =>
   [...steps].reverse().find((s) => (s.kind ?? "agent") === "agent" && s.worktree === worktree && s.mode === "write")?.agent;
 
-function MergePanel({ run, branch, worktree, steps }: { run: RunSummary; branch: string; worktree: string; steps: Step[] }) {
-  const { branches, initial } = useTargetBranches(run);
+function MergePanel({ run, branch, worktree, steps, onMerged }: { run: RunSummary; branch: string; worktree: string; steps: Step[]; onMerged: () => void }) {
+  const { branches, initial: base } = useTargetBranches(run);
+  // A branch it was already merged into isn't the next target.
+  const mergedInto = new Set(run.merges?.filter((m) => m.branch === branch).map((m) => m.into));
+  const initial = mergedInto.has(base) ? branches.find((b) => !mergedInto.has(b)) ?? base : base;
   const [into, setInto] = useState("");
   const [archiveAfter, setArchiveAfter] = useState(true);
   const [busy, setBusy] = useState(false);
   const [validating, setValidating] = useState(false);
   const [conflicts, setConflicts] = useState<string[] | null>(null);
   const [requireValidation, setRequireValidation] = useState(!!run.loop.verification);
-  const [validation, setValidation] = useState<MergeValidation | null>(null);
-  const [agent, setAgent] = useState<AgentId>(lastAgentIn(steps, worktree) ?? "claude");
+  const [posted, setPosted] = useState<MergeValidation | null>(null);
+  const [warning, setWarning] = useState("");
+  const provider = chatProvider(run);
+  const [picked, setAgent] = useState<AgentId>(lastAgentIn(steps, worktree) ?? "claude");
+  const agent = provider ?? picked;
   const target = into || initial;
+  // The server keeps the latest validation with the run: it outlives this panel and a reload.
+  const saved = run.mergeValidation?.branch === branch ? run.mergeValidation : null;
+  const validation = validating ? null : saved && (!posted || saved.at >= posted.at) ? saved : posted;
   const validated = validation?.branch === branch && validation.into === target && validation.report?.state === "verified" && !validation.conflicts.length;
+  // The latest work on this branch was a conflict resolution that failed (and committed nothing).
+  const latest = [...run.followUps].reverse().find((f) => f.worktree === worktree && !f.side && f.status !== "pending");
+  const resolving = latest?.kind === "resolve-conflicts" && latest.status === "failed" ? latest : undefined;
   const validateTarget = async (allowUntrusted = false) => {
     setBusy(true);
     setValidating(true);
-    setValidation(null);
-    try { setValidation(await post(`/api/runs/${run.id}/validate-merge`, { branch, into: target, allowUntrusted })); }
+    setPosted(null);
+    try { setPosted(await post(`/api/runs/${run.id}/validate-merge`, { branch, into: target, allowUntrusted })); }
     catch (error) {
       if (error instanceof ApiError && error.confirm === "allowUntrusted" && await confirmAction(`${error.message}\n\nRun validation on this computer?`, {"title":"Run validation locally?","confirmLabel":"Run validation","danger":true})) { setBusy(false); await validateTarget(true); return; }
-      showToast((error as Error).message, 5000);
+      showError((error as Error).message, 5000);
     } finally { setBusy(false); setValidating(false); }
   };
-  const merge = async () => {
+  const merge = async (allowConflictMarkers = false) => {
     setBusy(true);
     setConflicts(null);
+    setWarning("");
     try {
-      const outcome = await post<MergeOutcome>(`/api/runs/${run.id}/merge`, { branch, into: target, archiveAfter, requireValidation });
-      if (outcome.ok) showToast(`Merged into ${target}${archiveAfter ? " and archived the run" : ""}`, 3000);
-      else setConflicts(outcome.conflicts);
+      const outcome = await post<MergeOutcome>(`/api/runs/${run.id}/merge`, { branch, into: target, archiveAfter, requireValidation, ...(allowConflictMarkers ? { allowConflictMarkers } : {}) });
+      if (outcome.ok) {
+        // Its verification was for the target before the merge.
+        setPosted(null);
+        // Merged, but with something to look at (git stopped while a hook ran): said where it's seen,
+        // so the panel stays open with it.
+        if (outcome.warning) { setWarning(outcome.warning); showToast(`${outcome.warning}${archiveAfter ? " The run was archived." : ""}`, 12000); }
+        else {
+          showToast(`Merged into ${target}${archiveAfter ? " and archived the run" : ""}`, 3000);
+          // Done: the card shows "Merged into".
+          onMerged();
+        }
+      } else setConflicts(outcome.conflicts);
     } catch (err) {
-      showToast((err as Error).message, 5000);
+      // Lines that look like conflict markers but belong there (a test fixture, a documented example).
+      if (err instanceof ApiError && err.confirm === "allowConflictMarkers") {
+        setBusy(false);
+        if (await confirmAction(`${err.message}\n\nMerge into ${target} with those lines in?`, { title: "Merge with conflict markers?", confirmLabel: "Merge anyway", danger: true })) await merge(true);
+        return;
+      }
+      showError((err as Error).message, 5000);
     } finally {
       setBusy(false);
     }
@@ -1365,7 +1450,7 @@ function MergePanel({ run, branch, worktree, steps }: { run: RunSummary; branch:
     <div class="ship-panel">
       <div class="row">
         <label class="lbl">Merge into</label>
-        <select class="field" value={target} onChange={(e) => setInto(e.currentTarget.value)}>
+        <select class="field" aria-label="Merge into" value={target} onChange={(e) => setInto(e.currentTarget.value)}>
           {branches.map((b) => (
             <option key={b} value={b}>
               {b}
@@ -1375,11 +1460,15 @@ function MergePanel({ run, branch, worktree, steps }: { run: RunSummary; branch:
         <label class="check">
           <input type="checkbox" checked={archiveAfter} onChange={(e) => setArchiveAfter(e.currentTarget.checked)} /> Archive the run afterwards (removes its worktrees, keeps branches)
         </label>
-        <button class="btn primary small" disabled={busy || !target || requireValidation && !validated} onClick={merge}>
+        <button class="btn primary small" disabled={busy || !target || requireValidation && !validated} onClick={() => merge()}>
           {busy && !validating ? "Merging…" : `Merge into ${target || "…"}`}
         </button>
       </div>
-      {run.loop.check || run.loop.verification ? <div class="row"><label class="check"><input type="checkbox" checked={requireValidation} onChange={(event) => setRequireValidation(event.currentTarget.checked)} /> Require verification of the current merge target</label><button class="btn small" disabled={busy || !target} onClick={() => validateTarget()}>{validating ? "Validating…" : "Validate merge result"}</button>{validation?.into === target ? <span role="status" class="help">{validation.conflicts.length ? `Conflicts: ${validation.conflicts.join(", ")}` : `Merge verification: ${validation.report?.state ?? "unchecked"}`} · target {validation.target.slice(0, 12)}{validation.report ? ` · ${validation.report.checks.length} gates` : ""}</span> : null}</div> : null}
+      {run.loop.check || run.loop.verification ? <div class="row"><label class="check"><input type="checkbox" checked={requireValidation} onChange={(event) => setRequireValidation(event.currentTarget.checked)} /> Require verification of the current merge target</label><button class="btn small" disabled={busy || !target} onClick={() => validateTarget()}>{validating ? "Validating…" : "Validate merge result"}</button>{validation?.into === target ? <span role="status" class="help">{validation.conflicts.length ? `Conflicts: ${validation.conflicts.join(", ")}` : `Merge verification: ${validation.report?.state ?? "unchecked"}`} · target {validation.target.slice(0, 12)}{validation.report ? ` · ${validation.report.checks.length} gate${validation.report.checks.length === 1 ? "" : "s"}` : ""} · validated {ago(validation.at)}</span> : null}</div> : null}
+      {validation?.into === target && validation.report && validation.report.state !== "verified" ? <MergeValidationGates report={validation.report} /> : null}
+      {mergedInto.has(target) ? <div class="help">Already merged into {target}: merging again brings only what's new on {branch} since.</div> : null}
+      {resolving ? <div class="msg warn">Resolving the conflicts with {resolving.mergeFrom} failed{resolving.result ? `: ${resolving.result}` : "."}</div> : null}
+      {warning ? <div class="msg warn" role="status">{warning}</div> : null}
       <div class="help">If {target || "the branch"} is checked out, code-flow merges there only when it has no uncommitted changes, and aborts cleanly on conflicts.</div>
       {conflicts ? (
         <div class="conflicts">
@@ -1388,7 +1477,7 @@ function MergePanel({ run, branch, worktree, steps }: { run: RunSummary; branch:
           </div>
           <div class="row">
             <span>Ask</span>
-            <AgentPicker value={agent} onChange={setAgent} />
+            <AgentPicker value={agent} fixed={!!provider} onChange={setAgent} />
             <span>
               to merge {target} into this branch and resolve them, then merge again.
             </span>
@@ -1397,7 +1486,7 @@ function MergePanel({ run, branch, worktree, steps }: { run: RunSummary; branch:
               onClick={() =>
                 post(`/api/runs/${run.id}/followups`, { kind: "resolve-conflicts", worktree, agent, mergeFrom: target }).then(
                   () => showToast("Sent — the agent is resolving the conflicts"),
-                  (e) => showToast(e.message, 5000),
+                  (e) => showError(e.message, 5000),
                 )
               }
             >
@@ -1431,12 +1520,12 @@ function PrMergePanel({ run, branch, worktree, steps }: { run: RunSummary; branc
     if (!info || !await confirmAction(`${MERGE_METHOD_TEXT[how]}: merge ${name} into ${info.baseRefName} on GitHub?`, {"title":"Merge pull request?","confirmLabel":"Merge pull request","danger":true})) return;
     setBusy(true);
     try {
-      const outcome = await post<{ merged: boolean; already?: boolean; into: string }>(`/api/runs/${run.id}/merge-pr`, { branch, method: how, archiveAfter });
+      const outcome = await post<{ merged: boolean; already?: boolean; into: string; warning?: string }>(`/api/runs/${run.id}/merge-pr`, { branch, method: how, archiveAfter });
       if (!outcome.merged) showToast(`GitHub accepted the merge; ${name} merges once the repository's requirements are met`, 6000);
-      else showToast(`${outcome.already ? `${name} was already merged` : `Merged ${name}`} into ${outcome.into} on GitHub${archiveAfter ? " and archived the run" : ""}`, 4000);
+      else showToast(`${outcome.already ? `${name} was already merged` : `Merged ${name}`} into ${outcome.into} on GitHub${archiveAfter ? " and archived the run" : ""}${outcome.warning ? `. ${outcome.warning}` : ""}`, outcome.warning ? 10000 : 4000);
       setInfo({ ...info, state: outcome.merged ? "MERGED" : info.state });
     } catch (err) {
-      showToast((err as Error).message, 6000);
+      showError((err as Error).message, 6000);
     } finally {
       setBusy(false);
     }
@@ -1485,32 +1574,36 @@ function PrMergePanel({ run, branch, worktree, steps }: { run: RunSummary; branc
           </div>
         ) : null}
       </div>
-      {local || error ? <MergePanel run={run} branch={branch} worktree={worktree} steps={steps} /> : null}
+      {local || error ? <MergePanel run={run} branch={branch} worktree={worktree} steps={steps} onMerged={() => setLocal(false)} /> : null}
     </>
   );
 }
 
-function PrPanel({ run, branch }: { run: RunSummary; branch: string }) {
+function PrPanel({ run, branch, focusOnOpen = false }: { run: RunSummary; branch: string; focusOnOpen?: boolean }) {
+  const panel = useRef<HTMLDivElement>(null);
+  useEffect(() => { if (focusOnOpen) { panel.current?.scrollIntoView({ block: "center" }); panel.current?.focus({ preventScroll: true }); } }, []);
   // Only branches that are on GitHub now: the run's starting branch may have been merged and deleted.
-  const [targets, setTargets] = useState<{ branches: string[]; initial: string } | null>(null);
+  const [targets, setTargets] = useState<{ branches: string[]; initial: string; runBranches?: string[] } | null>(null);
   const [error, setError] = useState("");
   useEffect(() => {
-    api<{ branches: string[]; initial: string }>(`/api/runs/${run.id}/pr-targets`).then(setTargets, (e) => setError((e as Error).message));
-  }, [run.id]);
+    api<{ branches: string[]; initial: string; runBranches?: string[] }>(`/api/runs/${run.id}/pr-targets?branch=${encodeURIComponent(branch)}`).then(setTargets, (e) => setError((e as Error).message));
+  }, [run.id, branch]);
   const [into, setInto] = useState("");
   const [busy, setBusy] = useState(false);
+  const [published, setPublished] = useState("");
   const target = into || targets?.initial || "";
   return (
-    <div class="ship-panel">
+    <div class="ship-panel" ref={panel} tabIndex={-1} aria-label="Create pull request">
       <div class="row">
         <label class="lbl">Pull request into</label>
-        <select class="field" value={target} disabled={!targets} onChange={(e) => setInto(e.currentTarget.value)}>
+        <select class="field" aria-label="Pull request into" value={target} disabled={!targets} onChange={(e) => setInto(e.currentTarget.value)}>
           {targets ? null : <option value="">{error ? "—" : "Asking GitHub…"}</option>}
           {(targets?.branches ?? []).filter((b) => b !== branch).map((b) => (
             <option key={b} value={b}>
               {b}
             </option>
           ))}
+          {targets?.runBranches?.length ? <optgroup label="Other code-flow run branches">{targets.runBranches.filter(b => b !== branch).map(b => <option key={b} value={b}>{b}</option>)}</optgroup> : null}
         </select>
         <button
           class="btn primary small"
@@ -1519,10 +1612,10 @@ function PrPanel({ run, branch }: { run: RunSummary; branch: string }) {
             setBusy(true);
             try {
               const { url } = await post<{ url: string }>(`/api/runs/${run.id}/pr`, { branch, into: target });
-              showToast("Pull request opened", 3000);
-              window.open(url, "_blank", "noreferrer");
+              setPublished(url);
+              showToast("Pull request created — use View pull request to open it", 5000);
             } catch (err) {
-              showToast((err as Error).message, 6000);
+              showError((err as Error).message, 6000);
             } finally {
               setBusy(false);
             }
@@ -1531,9 +1624,10 @@ function PrPanel({ run, branch }: { run: RunSummary; branch: string }) {
           {busy ? "Opening…" : "Push & open PR"}
         </button>
       </div>
+      {published ? <p class="msg ok" role="status">Pull request ready. <a href={safeHref(published)} target="_blank" rel="noreferrer">View pull request <Icon name="external" /></a></p> : null}
       {error ? <div class="msg warn">{error}</div> : null}
       <div class="help">
-        This pushes <code>{branch}</code> to <code>origin</code> and opens a pull request with GitHub CLI (<code>gh</code>), using the run's task and summary as the description.
+        This pushes <code>{branch}</code> to <code>origin</code> and creates a pull request with the run's title, summary and check evidence. The task appears in a collapsed section.
       </div>
     </div>
   );
@@ -1554,7 +1648,7 @@ function WorkspaceTools({ run, worktree }: { run: RunSummary; worktree: string }
   const [command, setCommand] = useState(run.app?.command ?? "");
   usePoll((current) => api(base + "/serve").then((s) => current() && setServer(s), () => {}), 2000, [base]);
   const open = (target: string) =>
-    post<{ openedWith: string }>(`${base}/open`, { target }).then((r) => showToast(`Opened in ${r.openedWith}${onPhone ? " on your computer" : ""}`), (e) => showToast(e.message, 5000));
+    post<{ openedWith: string }>(`${base}/open`, { target }).then((r) => showToast(`Opened in ${r.openedWith}${onPhone ? " on your computer" : ""}`), (e) => showError(e.message, 5000));
   /** Start the app; for a locked-down run, only once you've said to run that code here. It opens in the side panel's Browser. */
   const runApp = async () => {
     try {
@@ -1562,9 +1656,9 @@ function WorkspaceTools({ run, worktree }: { run: RunSummary; worktree: string }
       setServer(started);
       if (!onPhone) showInPanel(started.url);
     } catch (e) {
-      if (!(e instanceof ApiError) || e.confirm !== "allowUntrusted") return showToast((e as Error).message, 5000);
+      if (!(e instanceof ApiError) || e.confirm !== "allowUntrusted") return showError((e as Error).message, 5000);
       if (!await confirmAction(`${e.message}\n\nRun it on this computer anyway?`, {"title":"Run repository code locally?","confirmLabel":"Run app","danger":true})) return;
-      await post(base + "/serve", { command, allowUntrusted: true }).then(setServer, (err) => showToast(err.message, 5000));
+      await post(base + "/serve", { command, allowUntrusted: true }).then(setServer, (err) => showError(err.message, 5000));
     }
   };
   // From the phone, the app is on the computer's Wi-Fi address — reachable if it listens there.
@@ -1622,10 +1716,16 @@ function WorkspaceTools({ run, worktree }: { run: RunSummary; worktree: string }
   );
 }
 
-/** A select of the available agents; named "Agent" unless told otherwise (several sit inline in a sentence, with no label of their own). */
-export function AgentPicker({ value, onChange, label = "Agent" }: { value: AgentId; onChange: (id: AgentId) => void; label?: string }) {
+/**
+ * A select of the available agents; named "Agent" unless told otherwise (several sit inline in a sentence, with no label of their own).
+ * With no value it shows `placeholder`, chosen by nobody, so picking any agent (the first one too) is a choice. `fixed`: an Agent
+ * chat keeps its provider, so it's named rather than offered.
+ */
+export function AgentPicker({ value, onChange, label = "Agent", placeholder = "Choose an agent…", fixed = false }: { value: AgentId | undefined; onChange: (id: AgentId) => void; label?: string; placeholder?: string; fixed?: boolean }) {
+  if (fixed && value) return <span class="agent-fixed" title="This chat keeps its provider. Open a provider tab to switch providers.">{agents.value.find((a) => a.id === value)?.displayName ?? value}</span>;
   return (
-    <select class="field inline" aria-label={label} value={value} onChange={(e) => onChange(e.currentTarget.value as AgentId)}>
+    <select class="field inline" aria-label={label} value={value ?? ""} onChange={(e) => onChange(e.currentTarget.value as AgentId)}>
+      {value ? null : <option value="" disabled>{placeholder}</option>}
       {agents.value
         .filter((a) => a.available)
         .map((a) => (
@@ -1634,52 +1734,6 @@ export function AgentPicker({ value, onChange, label = "Agent" }: { value: Agent
           </option>
         ))}
     </select>
-  );
-}
-
-function ArchiveDialog({ run, onClose }: { run: RunSummary; onClose: () => void }) {
-  const [cleanup, setCleanup] = useState(true);
-  const [deleteBranches, setDeleteBranches] = useState(false);
-  const ref = useDialog(true, onClose);
-  return (
-    <dialog class="picker small-dialog" ref={ref} aria-labelledby="archive-title">
-      <div class="picker-inner">
-        <div class="picker-head">
-          <h3 id="archive-title">Archive this run</h3>
-        </div>
-        <div class="dialog-body">
-          <label class="check">
-            <input type="checkbox" checked={cleanup} onChange={(e) => setCleanup(e.currentTarget.checked)} /> Remove its {(run.worktrees ?? []).length} worktree
-            {(run.worktrees ?? []).length === 1 ? "" : "s"} (uncommitted changes in them are lost)
-          </label>
-          <label class="check">
-            <input type="checkbox" checked={deleteBranches} disabled={!cleanup} onChange={(e) => setDeleteBranches(e.currentTarget.checked)} /> Also delete its branches
-            {run.merges?.length ? "" : " (nothing from this run has been merged yet)"}
-          </label>
-          <div class="help">Kept branches can be resumed or merged later; Resume re-attaches them.</div>
-        </div>
-        <div class="picker-foot">
-          <span class="ps" />
-          <button class="btn" onClick={onClose}>
-            Cancel
-          </button>
-          <button
-            class="btn primary"
-            onClick={() =>
-              post(`/api/runs/${run.id}/archive`, { cleanup, deleteBranches }).then(
-                () => {
-                  showToast("Archived");
-                  onClose();
-                },
-                (e) => showToast(e.message, 5000),
-              )
-            }
-          >
-            Archive
-          </button>
-        </div>
-      </div>
-    </dialog>
   );
 }
 
@@ -1694,7 +1748,7 @@ function AwaitingCard({ run, compact = false }: { run: RunSummary; compact?: boo
       await post(`/api/runs/${run.id}/answer`, { decision, note });
       setNote("");
     } catch (err) {
-      showToast((err as Error).message, 4000);
+      showError((err as Error).message, 4000);
     } finally {
       setBusy(false);
     }
@@ -1714,7 +1768,7 @@ function AwaitingCard({ run, compact = false }: { run: RunSummary; compact?: boo
         <b>{awaiting.title}</b>
         <span class="help">The run is paused, and so is its time budget.</span>
       </div>
-      <div class="aw-body">
+      <div class="aw-body" tabIndex={0} role="region" aria-label="Proposed plan">
         <Markdown text={awaiting.content} />
       </div>
       <div class="aw-actions">
@@ -1762,37 +1816,33 @@ export function DraftImages({ images, onRemove, message = "" }: { images: Attach
   );
 }
 
-const agentDrafts = new Map<string, { text: string; images: Attachment[] }>();
-function savedAgentDraft(id: string) {
-  const draft = agentDrafts.get(id); if (draft) return draft;
-  try { return { text: sessionStorage.getItem(`agent-draft:${id}`) ?? "", images: [] }; } catch { return { text: "", images: [] }; }
+function UndeliveredNotes({ notes, onRestore }: { notes: Note[]; onRestore?: (note: Note) => void }) {
+  return <div class="notes undelivered-notes" aria-label="Undelivered messages">{notes.map(note => <div key={note.id} class="chip-ctx note-chip undelivered"><span class="n">Not delivered — the run finished first: {parseBrowserMessage(note.text).text || "Browser context"}</span>{onRestore ? <button type="button" class="btn small" onClick={() => onRestore(note)}>Put in reply box</button> : <span>Resume the run to send this message.</span>}</div>)}</div>;
 }
 
 export function ConversationBar({ run, steps, chat, onOpenChat }: { run: RunSummary; steps: Step[]; chat: boolean; onOpenChat?: (id: string) => void }) {
-  const [text, setText] = useState(savedAgentDraft(run.id).text);
+  const { text, setText, images, setImages, ready: draftReady, warning: draftWarning } = useMessageDraft(`main:${run.id}`, `agent-draft:${run.id}`);
   const [target, setTarget] = useState("");
   const [handoff, setHandoff] = useState<{ agent: AgentId; settings: ChatSettings } | null>(null);
   const openChat = onOpenChat ?? (id => navigate({ view: "run", id }));
   const [replySettings, setReplySettings] = useState<Record<string, ChatSettings>>({});
   const [replyPermissions, setReplyPermissions] = useState<ChatPermissions | null>(null);
   const [busy, setBusy] = useState(false);
-  const [followupSteps, setFollowupSteps] = useState(run.loop.maxInvocations ?? run.loop.maxSteps);
-  const [followupMinutes, setFollowupMinutes] = useState(run.loop.maxMinutes);
-  /** Snapshots that came with pins from the Browser: they go with the reply. */
-  const [images, setImages] = useState<Attachment[]>(savedAgentDraft(run.id).images);
-  useEffect(() => { agentDrafts.set(run.id, { text, images }); try { if (text) sessionStorage.setItem(`agent-draft:${run.id}`, text); else sessionStorage.removeItem(`agent-draft:${run.id}`); } catch {} }, [run.id, text, images]);
+  // Only what you change is kept: until then the budget follows the run and the target you pick.
+  const [editedSteps, setEditedSteps] = useState<number | null>(null);
+  const [followupMinutes, setFollowupMinutes] = useState(() => wholeMinutes(run.loop.maxMinutes));
   const area = useRef<HTMLTextAreaElement>(null);
   // Pins sent here from the side panel's Browser land in the box, to add a line to before sending.
   // Without a box (a run that failed or stopped) they wait in the queue, for when it's resumed.
   const takes = run.status === "running" || run.status === "done" || chat && run.worktrees.length > 0;
   useEffect(() => {
-    if (!takes) return;
+    if (!takes || !draftReady) return;
     const drafts = takeDrafts(`main:${run.id}`);
     if (!drafts.length) return;
-    setText((t) => [t.trim(), ...drafts.map((d) => d.text)].filter(Boolean).join("\n\n"));
+    setText((t) => appendDraftText(t, drafts.map(d => d.text)));
     setImages((i) => [...i, ...drafts.flatMap((d) => d.images)]);
     area.current?.focus();
-  }, [chatDrafts.value, run.id, takes]);
+  }, [chatDrafts.value, run.id, takes, draftReady]);
   // The box grows with what you type, up to a limit (then it scrolls).
   useEffect(() => {
     const el = area.current;
@@ -1810,12 +1860,9 @@ export function ConversationBar({ run, steps, chat, onOpenChat }: { run: RunSumm
   const resultBranch = run.artifacts[0]?.branch;
   const waitForSide = sideOnly && !!resultBranch && pending.some((f) => f.side?.mode === "change" && run.worktrees.find((w) => w.name === f.worktree)?.branch === resultBranch);
   const running = run.status === "running" && !sideOnly;
-  // Who you can talk to after the run: each agent that wrote code, in its worktree.
-  const writers = [
-    ...new Map(
-      steps.filter((s) => (s.kind ?? "agent") === "agent" && (s.mode === "write" || run.chatLink?.kind === "side") && s.agent && s.worktree).map((s) => [`${s.agent}@${s.worktree}`, s]),
-    ).values(),
-  ];
+  // Who you can talk to after the run: each agent that wrote code, in its worktree, and a team's lead in
+  // its result; not where the branch was deleted (nothing is left to continue from there).
+  const writers = replyTargets(run, steps);
   const teamAgents = [...new Set(Object.values(run.roles).flat())];
   const coordinator = run.team?.members.find((member) => member.role === "coordinator");
   const soloAgent = run.pattern === "solo" ? run.conversationAgent ?? run.roles.agent?.[0] : undefined;
@@ -1831,11 +1878,17 @@ export function ConversationBar({ run, steps, chat, onOpenChat }: { run: RunSumm
   const memberId = chosen.startsWith("member:") ? chosen.slice(7) : undefined;
   const member = run.team?.members.find((item) => item.id === memberId);
   const minimumCalls = followupMinimumCalls(!!run.team, running, chosen);
+  const followupSteps = editedSteps ?? defaultFollowupCalls(run.loop, minimumCalls);
   const budgetValid = Number.isInteger(followupSteps) && followupSteps >= minimumCalls && followupSteps <= 200 && Number.isFinite(followupMinutes) && followupMinutes >= 1 && followupMinutes <= 720;
-  if (!takes) return null;
+  const undelivered = (run.notes ?? []).filter(note => note.status === "undelivered");
+  const signedOut = !running ? replySignInIssue(run, replyAgent, health.value) : undefined;
+  const latestReply = !running ? run.followUps.filter(turn => !turn.side).at(-1) : undefined;
+  const latestReplyFailed = latestReply?.status === "failed";
+  const authFailed = !run.loop.remoteWorker && !run.loop.agentContainer && latestReplyFailed && steps.find(step => step.id === latestReply?.stepId)?.errorKind === "auth";
+  if (!takes) return undelivered.length ? <div class="convo"><UndeliveredNotes notes={undelivered} /></div> : null;
 
   const send = async () => {
-    if (!text.trim() || busy || (!running && !budgetValid)) return;
+    if (!draftReady || !text.trim() || busy || (!running && !budgetValid)) return;
     setBusy(true);
     try {
       const files = images.map(({ name, data }) => ({ name, data }));
@@ -1845,8 +1898,8 @@ export function ConversationBar({ run, steps, chat, onOpenChat }: { run: RunSumm
         else if (note.requestId) showToast("Answer sent to the team");
         else if (note.control) showToast("Stopped — work is saved");
         else if (note.teamDelivery) showToast("Received — updating the team with your message");
-        else if (note.deliveredTo?.midTurn) showToast(`Sent into ${note.deliveredTo.agent}'s running turn`);
-        else showToast(chosen ? `Queued for ${member?.name ?? chosen}'s next turn` : "Queued for the next agent's turn");
+        else if (note.deliveredTo?.midTurn) showToast(`Sent into ${agentName(note.deliveredTo.agent)}'s running turn`);
+        else showToast(chosen ? `Queued for ${member?.name ?? agentName(chosen)}'s next turn` : "Queued for the next agent's turn");
         setText("");
         return;
       } else if (chosen === "team") {
@@ -1854,7 +1907,9 @@ export function ConversationBar({ run, steps, chat, onOpenChat }: { run: RunSumm
           showToast("Wait for the side chat to finish: a new run would start without its change", 6000);
           return;
         }
-        const base = run.artifacts[0]?.branch ?? run.baseLabel;
+        // From the result, or where the run started if its branch was deleted.
+        const result = run.artifacts[0]?.branch;
+        const base = result && !run.deletedWorktrees?.some((d) => d.branch === result && !run.worktrees.some((w) => w.branch === result)) ? result : run.baseLabel;
         const { id } = await post<{ id: string }>("/api/runs", {
           repo: run.repo,
           task: `${run.task}\n\n## Feedback on the previous attempt\n${text.trim()}`,
@@ -1880,8 +1935,9 @@ export function ConversationBar({ run, steps, chat, onOpenChat }: { run: RunSumm
       }
       setText("");
       setImages([]);
+      setEditedSteps(null); // that reply's allocation was used; the next one starts from the defaults again
     } catch (err) {
-      showToast((err as Error).message, 5000);
+      showError((err as Error).message, 5000);
     } finally {
       setBusy(false);
     }
@@ -1893,12 +1949,13 @@ export function ConversationBar({ run, steps, chat, onOpenChat }: { run: RunSumm
     try {
       const { id } = await post<{ id: string }>(`/api/runs/${run.id}/revise-goal`, { message: text.trim(), budget: { maxSteps: followupSteps, maxInvocations: followupSteps, maxMinutes: followupMinutes } });
       setText(""); navigate({ view: "run", id });
-    } catch (error) { showToast((error as Error).message, 5000); }
+    } catch (error) { showError((error as Error).message, 5000); }
     finally { setBusy(false); }
   };
 
   const [agentId, worktree] = chosen.split("@") as [AgentId, string | undefined];
   const name = member?.name ?? SHORT[agentId] ?? agentId;
+  const direct = writers.find((target) => `${target.agent}@${target.worktree}` === chosen);
   /** In a chat there's one agent to talk to, so no "To"; a message it can't take now is its next turn. */
   const chatName = SHORT[(soloAgent ?? writers.at(-1)?.agent ?? teamAgents[0])!] ?? "the agent";
   const hint = chat
@@ -1915,12 +1972,17 @@ export function ConversationBar({ run, steps, chat, onOpenChat }: { run: RunSumm
         : "Goes to the next agent that takes a turn"
       : chosen === "team"
         ? `${run.team ? "Builds a revised team and plan from this result, with your approval settings" : "Starts a new run with the same team, from this result"}${waitForSide ? ": wait for the side chat to finish first" : ""}`
-        : `Continues ${name}'s session on its branch, in ${worktree}${sideOnly ? ", once the side chat is done" : ""}`;
+        : run.team
+          // A provider-addressed reply never borrows a member's private session.
+          ? direct?.delivered
+            ? `${name} changes the delivered result in ${worktree}; the team's review then no longer covers it, so run the whole team again to verify${sideOnly ? ". Goes once the side chat is done" : ""}`
+            : `${name} changes only ${worktree}'s branch, which isn't part of the delivered result${sideOnly ? ". Goes once the side chat is done" : ""}`
+          : `Continues ${name}'s session on its branch, in ${worktree}${sideOnly ? ", once the side chat is done" : ""}`;
   const placeholder = chat ? `Message ${chatName}…` : running ? "Message the team…" : chosen === "team" ? "Tell the team what to change…" : `Reply to ${name}…`;
   // In a chat, what you said is already in the thread; only what's still on its way shows here.
   const liveSteps = new Set(steps.filter((s) => s.status === "running").map((s) => s.id));
   const shownNotes = (run.notes ?? []).filter((n) => !chat || n.status === "queued" || (n.deliveredTo && liveSteps.has(n.deliveredTo.stepId) && !n.followUp));
-  const pendingNotes = shownNotes.filter((note) => note.status !== "delivered");
+  const pendingNotes = shownNotes.filter((note) => note.status === "queued");
   const sentNotes = shownNotes.filter((note) => note.status === "delivered");
   const noteChip = (n: Note) => (
     <span key={n.id} class={`chip-ctx note-chip ${n.status}`} title={n.text}>
@@ -1928,10 +1990,10 @@ export function ConversationBar({ run, steps, chat, onOpenChat }: { run: RunSumm
         {n.followUp
           ? "✓ Sent as your next message"
           : n.requestId ? "✓ Answered the team's question" : n.status === "delivered"
-            ? `✓ Delivered to ${run.team?.members.find((item) => item.id === n.memberId)?.name ?? n.deliveredTo?.agent ?? "the team"}${noteStep(n, steps)}`
+            ? `✓ Delivered to ${run.team?.members.find((item) => item.id === n.memberId)?.name ?? agentName(n.deliveredTo?.agent) ?? "the team"}${noteStep(n, steps)}`
             : chat
               ? "Sent when this turn ends"
-              : `Queued for ${run.team?.members.find((item) => item.id === n.memberId)?.name ?? n.agent ?? "next agent"}`}
+              : `Queued for ${run.team?.members.find((item) => item.id === n.memberId)?.name ?? agentName(n.agent) ?? "next agent"}`}
         : {parseBrowserMessage(n.text).text || parseBrowserMessage(n.text).contexts.map(context => context.comment || "Browser selection").join(" · ")}
       </span>
     </span>
@@ -1941,18 +2003,22 @@ export function ConversationBar({ run, steps, chat, onOpenChat }: { run: RunSumm
     <div class="convo">
       <div class="convo-inner">
         {chat ? <TaskTeamStatus run={run} /> : null}
-        {handoff ? <ProviderChatDialog run={run} initialAgent={handoff.agent} initialSettings={handoff.settings} initialMessage={text} attachments={images} onClose={() => setHandoff(null)} onOpenChat={openChat} /> : null}
+        {handoff ? <ProviderChatDialog run={run} initialAgent={handoff.agent} initialSettings={handoff.settings} initialPermissions={selectedPermissions} initialMessage={text} attachments={images} onClose={() => setHandoff(null)} onOpenChat={openChat} /> : null}
         {!budgetValid ? <p class="msg err" role="alert">Send is off until the budget below allows {minimumCalls}–200 calls and 1–720 minutes.</p> : null}
-        {!chat && (!running || run.team) ? <details class="followup-budget"><summary>{running ? "Goal revision budget" : "New execution budget"} · {followupSteps} calls · {followupMinutes} min</summary><div class="at-row"><label>Maximum calls<input class="field" aria-label="Follow-up maximum calls" type="number" min={minimumCalls} max={200} value={followupSteps} onInput={(event) => setFollowupSteps(Number(event.currentTarget.value))} /></label><label>Maximum minutes<input class="field" aria-label="Follow-up maximum minutes" type="number" min={1} max={720} value={followupMinutes} onInput={(event) => setFollowupMinutes(Number(event.currentTarget.value))} /></label></div><p class="help">{sideOnly ? "A reply queued behind a side chat joins the running execution's allowance; this budget applies when a reply starts a new execution. " : "This is a new allocation. "}The result branch, project memory and applicable context are retained. Earlier spend remains in lifetime usage.</p>{!budgetValid ? <p class="msg err">Choose {minimumCalls}–200 calls and 1–720 minutes.</p> : null}</details> : null}
+        {!chat && (!running || run.team) ? <details class="followup-budget"><summary>{running ? "Goal revision budget" : "New execution budget"} · {followupSteps} {followupSteps === 1 ? "call" : "calls"} · {followupMinutes} min</summary><div class="at-row"><label>Maximum calls<input class="field" aria-label="Follow-up maximum calls" type="number" min={minimumCalls} max={200} value={followupSteps} onInput={(event) => setEditedSteps(Number(event.currentTarget.value))} /></label><label>Maximum minutes<input class="field" aria-label="Follow-up maximum minutes" type="number" min={1} max={720} value={followupMinutes} onInput={(event) => setFollowupMinutes(Number(event.currentTarget.value))} /></label></div><p class="help">{sideOnly ? "A reply queued behind a side chat joins the running execution's allowance; this budget applies when a reply starts a new execution. " : "This is a new allocation. "}The result branch, project memory and applicable context are retained. Earlier spend remains in lifetime usage.</p></details> : null}
         {running && sentNotes.length ? <details key={run.id} class="activity note-history">
           <summary>Sent messages ({sentNotes.length})</summary>
           <div class="notes">{sentNotes.map(noteChip)}</div>
         </details> : null}
         {running && pendingNotes.length ? <div class="notes">{pendingNotes.map(noteChip)}</div> : null}
+        {!draftReady ? <p class="help" role="status">Restoring reply draft…</p> : draftWarning ? <p class="msg warn" role="status">{draftWarning}</p> : null}
+        {undelivered.length ? <UndeliveredNotes notes={undelivered} onRestore={note => { setText(value => appendDraftText(value, [note.text])); area.current?.focus(); }} /> : null}
+        {signedOut || authFailed ? <p class="msg warn reply-provider-warning" role="alert">{latestReplyFailed ? "The latest reply didn't finish. " : ""}{signedOut ? `${signedOut.name} isn't signed in` : `The latest reply couldn't sign in to ${agentName(replyAgent)}`} — <a href="#/settings/agents">open Settings → Agents &amp; models</a>. After signing in, send your reply again. <button type="button" class="btn small" disabled={providersRefreshing.value} onClick={() => void refreshProviders()}>{providersRefreshing.value ? "Checking…" : "Recheck sign-in"}</button></p> : latestReplyFailed ? <p class="help" role="status">The latest reply didn't finish. Work is saved; send another reply to continue.</p> : null}
         <BrowserDraftCards text={text} onText={setText} images={images} onImages={setImages} />
         <DraftImages message={text} images={images} onRemove={(i) => setImages(images.filter((_, j) => j !== i))} />
         <div class="chatbox">
           <textarea
+            disabled={!draftReady}
             ref={area}
             rows={1}
             aria-label={chat ? "Message agent" : running ? "Message the team" : "Reply"}
@@ -1977,11 +2043,32 @@ export function ConversationBar({ run, steps, chat, onOpenChat }: { run: RunSumm
                     </>
                   ) : (
                     <>
-                      {writers.length ? (
+                      {run.team ? (
+                        <>
+                          {writers.some((s) => s.delivered) ? (
+                            <optgroup label="Change the result">
+                              {writers.filter((s) => s.delivered).map((s) => (
+                                <option key={`${s.agent}@${s.worktree}`} value={`${s.agent}@${s.worktree}`}>
+                                  {SHORT[s.agent] ?? s.agent} · result ({s.worktree})
+                                </option>
+                              ))}
+                            </optgroup>
+                          ) : null}
+                          {writers.some((s) => !s.delivered) ? (
+                            <optgroup label="Worker branches (not in the result)">
+                              {writers.filter((s) => !s.delivered).map((s) => (
+                                <option key={`${s.agent}@${s.worktree}`} value={`${s.agent}@${s.worktree}`}>
+                                  {SHORT[s.agent] ?? s.agent} · {s.worktree}
+                                </option>
+                              ))}
+                            </optgroup>
+                          ) : null}
+                        </>
+                      ) : writers.length ? (
                         <optgroup label="Continue a session">
                           {writers.map((s) => (
                             <option key={`${s.agent}@${s.worktree}`} value={`${s.agent}@${s.worktree}`}>
-                              {SHORT[s.agent!] ?? s.agent} · {s.worktree}
+                              {SHORT[s.agent] ?? s.agent} · {s.worktree}
                             </option>
                           ))}
                         </optgroup>
@@ -1996,18 +2083,18 @@ export function ConversationBar({ run, steps, chat, onOpenChat }: { run: RunSumm
                 </select>
               </label>
             )}
-            {!running && chosen !== "team" && replyAgent && !(chat && (runs.value.get(chatTaskId(run)) ?? run).taskTeam?.enabled) ? <ChatControls showPermissions={run.chatLink?.kind !== "side"} providers={run.chatLink?.kind === "side" ? agents.value.filter(item => item.id === "claude" || item.id === "codex" || item.id === "agy") : undefined} agent={replyAgent} onAgent={chat ? agent => setHandoff({ agent, settings: agent === replyAgent ? selectedSettings : replySettings[agent] ?? {} }) : undefined} resetPermissionsOnAgentChange={!chat} settings={selectedSettings} onSettings={(value) => setReplySettings({ ...replySettings, [replyAgent]: value })} permissions={selectedPermissions} onPermissions={setReplyPermissions} restricted={!!run.lockdown || !!run.trigger} approvalsAvailable={!run.loop.remoteWorker && !run.loop.agentContainer} /> : null}
+            {!running && chosen !== "team" && replyAgent && !(chat && (runs.value.get(chatTaskId(run)) ?? run).taskTeam?.enabled) ? <ChatControls showPermissions={run.chatLink?.kind !== "side"} providers={run.chatLink?.kind === "side" ? agents.value.filter(item => item.id === "claude" || item.id === "codex" || item.id === "agy") : undefined} agent={replyAgent} onAgent={chat && draftReady ? agent => setHandoff({ agent, settings: agent === replyAgent ? selectedSettings : replySettings[agent] ?? {} }) : undefined} resetPermissionsOnAgentChange={!chat} settings={selectedSettings} onSettings={(value) => setReplySettings({ ...replySettings, [replyAgent]: value })} permissions={selectedPermissions} onPermissions={setReplyPermissions} restricted={!!run.lockdown || !!run.trigger} approvalsAvailable={!run.loop.remoteWorker && !run.loop.agentContainer} unrestricted={replyAgent === "agy" && run.permissions?.antigravityExecution === "native"} /> : null}
             {chat && soloAgent ? <TaskTeamControl run={run} lead={soloAgent} /> : null}
             {run.chatLink?.kind === "side" ? <span class="help">Read only</span> : null}
             <span class="chatbox-hint" title={hint}>
               {hint}
             </span>
-            <button class="send" aria-label="Send" title="Send (↵ — ⇧↵ for a new line)" disabled={busy || !text.trim() || !running && !budgetValid} onClick={send}>
+            <button class="send" aria-label="Send" title="Send (↵ — ⇧↵ for a new line)" disabled={!draftReady || busy || !text.trim() || !running && !budgetValid} onClick={send}>
               <Icon name="send" />
             </button>
           </div>
         </div>
-        {running && run.team && !run.awaiting ? <div class="goal-revision-action"><button class="btn small" disabled={busy || !text.trim() || !budgetValid} onClick={reviseGoal}>Revise goal</button><span class="help">Uses this message to stop the current execution and build a new team plan from integrated work, with your approval settings. Send keeps it as a member note.</span></div> : null}
+        {running && run.team && !run.awaiting ? <div class="goal-revision-action"><button class="btn small" disabled={!draftReady || busy || !text.trim() || !budgetValid} onClick={reviseGoal}>Revise goal</button><span class="help">Uses this message to stop the current execution and build a new team plan from integrated work, with your approval settings. Send keeps it as a member note.</span></div> : null}
       </div>
     </div>
   );
@@ -2042,7 +2129,7 @@ function Transcript({ run, step, data }: { run: RunSummary; step?: Step; data: R
         <span>worktree {step.worktree}</span>
         {step.usage ? <span title={usageTitle(step.usage)}>{fmtTokens(step.usage.inputTokens + step.usage.outputTokens)} tokens{step.usage.costUsd ? ` · ≈${fmtCost(step.usage.costUsd)}` : ""}</span> : null}
         {step.contextInput ? <span title={`Measured assembled invocation input. Excludes: ${step.contextInput.excluded.join(", ")}. Input hash ${step.contextInput.hash}`}>{step.contextInput.bytes.toLocaleString()} input bytes · ≈{step.contextInput.approximateTokens.toLocaleString()} input tokens{step.contextInput.exceeded ? ` · ${step.contextInput.policy === "block" ? "blocked" : "budget warning"}` : ""}{step.contextInput.resumed ? " · earlier history excluded" : ""}</span> : null}
-        {step.status !== "done" ? <span class={`status-pill ${step.status}`}>{STATUS_TEXT[step.status] ?? step.status}</span> : null}
+        {step.outcome === "warning" ? <span class="status-pill warn">Warning</span> : step.status !== "done" ? <span class={`status-pill ${step.status}`}>{STATUS_TEXT[step.status] ?? step.status}</span> : null}
       </div>
       <div
         class="tr-body"
@@ -2273,9 +2360,14 @@ export async function editAndRerun(run: RunSummary) {
   const request = ++rerunRequest;
   const origin = route.value;
   const destination = projectFor(run);
+  // One draft per project: what you were writing there is replaced only when you say so.
+  const unsent = await unsentDraft(destination?.id ?? "");
+  const clipped = unsent && unsent.task.length > 80 ? `${unsent.task.slice(0, 80)}…` : unsent?.task;
+  if (unsent && !await confirmAction(`Edit & run again puts this run's task and settings in the ${destination ? `${destination.name} draft` : "unassigned draft"}. Your unsent draft${clipped ? ` “${clipped}”` : ""} will be replaced.\n\nSend or copy it first to keep it.`, { title: "Replace your unsent draft?", confirmLabel: "Replace draft" })) return;
+  if (request !== rerunRequest || route.value !== origin) return;
   if (!await openComposer(destination?.id ?? "", { repository: run.repo, stay: true })) return;
   if (request !== rerunRequest || route.value !== origin || repo.value !== run.repo) return;
-  rerunDraft.value = structuredClone({ id: run.id, repo: run.repo, loop: run.loop, approvals: run.approvals ?? {}, source: run.source, checkpointOnFinish: run.checkpointOnFinish });
+  rerunDraft.value = structuredClone({ id: run.id, repo: run.repo, loop: run.loop, approvals: run.approvals ?? {}, source: run.source, checkpointOnFinish: run.checkpointOnFinish, baseRef: run.baseRef, task: run.task, contextPaths: (run.context?.paths ?? []).map(c => ({ path: c.path, type: c.type })) });
   composerRunOptions.value = {
     remoteWorker: run.loop.remoteWorker,
     container: { enabled: !!run.loop.agentContainer, image: run.loop.agentContainer?.image ?? "", authVolume: run.loop.agentContainer?.authVolume ?? "" },
@@ -2290,8 +2382,11 @@ export async function editAndRerun(run: RunSummary) {
   externalSource.value = null;
   setAcceptanceCriteria([]);
   branchPrefix.value = "";
+  // The original commit, permissions, commands and limits are this retry's own: they aren't
+  // remembered for later drafts, and the draft returns to its defaults once the retry starts.
   baseRef.value = run.baseRef ?? "";
-  setTrust(run.trust ?? "standard");
+  trust.value = run.trust ?? "standard";
+  chooseForDraft("trust", RERUN_ORIGIN);
   setApprovePlan(run.approvals?.plan === true, run.pattern);
   agentSettings.value = structuredClone(run.agentSettings ?? {});
   roleModels.value = { ...roleModels.value, [run.pattern]: structuredClone(run.roleSettings ?? {}) };
@@ -2303,9 +2398,9 @@ export async function editAndRerun(run: RunSummary) {
   contextPaths.value = new Map((run.context?.paths ?? []).map((c) => [c.path, { path: c.path, type: c.type }]));
   attachments.value = [];
   if (run.context?.attachments?.length) showToast("Attached files aren't kept — attach them again if needed", 4000);
-  checkCmd.value = run.loop?.check ?? "";
-  setupCmd.value = run.loop?.setup ?? "";
-  setLimits({ maxMinutes: run.loop?.maxMinutes ?? 60, maxSteps: run.loop?.maxSteps ?? 40, maxTokens: run.loop.maxTokens, maxCostUsd: run.loop.maxCostUsd });
+  setRunCheck(run.loop?.check ?? "", RERUN_ORIGIN);
+  setRunSetup(run.loop?.setup ?? "", RERUN_ORIGIN);
+  setRunLimits({ maxMinutes: run.loop?.maxMinutes ?? 60, maxSteps: run.loop?.maxSteps ?? 40, maxTokens: run.loop.maxTokens, maxCostUsd: run.loop.maxCostUsd }, RERUN_ORIGIN);
   source.value = run.source
       ? {
           kind: run.source.kind,
@@ -2329,7 +2424,7 @@ function RecoveryCheckDialog({ run, onClose }: { run: RunSummary; onClose: () =>
   const [setup, setSetup] = useState(run.loop.setup ?? "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const ref = useDialog(true, () => { if (!busy) onClose(); });
+  const ref = useDialog(true, onClose, () => !busy);
   const branches = run.artifacts.filter(a => run.worktrees.some(w => w.branch === a.branch));
   const [branch, setBranch] = useState(branches[0]?.branch ?? run.baseRef);
   return <dialog ref={ref} class="picker small-dialog" aria-labelledby="recovery-check-title"><div class="picker-inner">
@@ -2338,7 +2433,7 @@ function RecoveryCheckDialog({ run, onClose }: { run: RunSummary; onClose: () =>
       <label>Continue from<select class="field" value={branch} onChange={event => setBranch(event.currentTarget.value)}>{branches.length ? branches.map(a => <option key={a.branch} value={a.branch}>{a.label} · {a.branch}</option>) : <option value={run.baseRef}>Original base · {run.baseRef.slice(0, 12)}</option>}</select></label>
       <label>Setup command<input class="field" value={setup} placeholder="e.g. npm ci" onInput={event => setSetup(event.currentTarget.value)} /></label>
       <label>Check command<input class="field" value={check} placeholder="e.g. npm test" onInput={event => setCheck(event.currentTarget.value)} /></label>
-      <p class="help">Uses a single check and this run's team and permissions. New allowance: {run.loop.maxInvocations ?? run.loop.maxSteps} calls · {run.loop.maxMinutes} minutes.</p>
+      <p class="help">Uses a single check and this run's team and permissions. New allowance: {plural(run.loop.maxInvocations ?? run.loop.maxSteps, "call")} · {run.loop.maxMinutes} minutes.</p>
       {error ? <p class="msg err" role="alert">{error}</p> : null}
     </div><div class="picker-foot"><button class="btn" disabled={busy} onClick={onClose}>Cancel</button><button class="btn primary" disabled={busy || !check.trim()} onClick={async () => {
       if (busy) return;
@@ -2352,42 +2447,56 @@ function RecoveryCheckDialog({ run, onClose }: { run: RunSummary; onClose: () =>
   </div></dialog>;
 }
 
-function ProviderChatDialog({ run, initialAgent, initialSettings, initialMessage, attachments, onClose, onOpenChat }: {
-  run: RunSummary; initialAgent: AgentId; initialSettings: ChatSettings; initialMessage: string; attachments: Attachment[];
+const TRUST_NAMES = { safe: "Safe", standard: "Approve for me", trusted: "Trusted", full: "Full access" } as const;
+const asksForApproval = (id: AgentId) => id === "codex" || id === "claude" || id.startsWith("acp:");
+
+function ProviderChatDialog({ run, initialAgent, initialSettings, initialPermissions, initialMessage, attachments, onClose, onOpenChat }: {
+  run: RunSummary; initialAgent: AgentId; initialSettings: ChatSettings; initialPermissions: ChatPermissions; initialMessage: string; attachments: Attachment[];
   onClose: () => void; onOpenChat: (id: string) => void;
 }) {
-  const choices = run.chatLink?.kind === "side" ? agents.value.filter(item => item.id === "claude" || item.id === "codex" || item.id === "agy") : agents.value;
+  const side = run.chatLink?.kind === "side";
+  const choices = side ? agents.value.filter(item => item.id === "claude" || item.id === "codex" || item.id === "agy") : agents.value;
   const [agent, setAgent] = useState(initialAgent);
   const [settings, setSettings] = useState(initialSettings);
+  // The new chat starts with the reply box's choice, within this chat's current level: a child
+  // never gets more access than its source, and only a source that asks for approval passes it on.
+  const approvalsAvailable = !!run.approvals.tools && !run.loop.remoteWorker && !run.loop.agentContainer;
+  const [permissions, setPermissions] = useState<ChatPermissions>(() => ({ trust: narrowerTrust(run.trust, initialPermissions.trust), tools: initialPermissions.tools && approvalsAvailable && asksForApproval(initialAgent) }));
   const [message, setMessage] = useState(initialMessage);
   const [images, setImages] = useState(attachments);
   const [busy, setBusy] = useState(false), [error, setError] = useState("");
-  const ref = useDialog(true, () => { if (!busy) onClose(); });
+  const ref = useDialog(true, onClose, () => !busy);
+  const raised = !side && narrowerTrust(run.trust, permissions.trust) !== permissions.trust;
+  const problem = runProviderProblem(agent, choices.find(item => item.id === agent)?.displayName) || (raised ? `This chat runs with ${TRUST_NAMES[run.trust]}, and a new chat can't have more access. Choose ${TRUST_NAMES[run.trust]} or lower, or reply here with ${TRUST_NAMES[permissions.trust]} first.` : "");
+  const unrestricted = !side && agent === "agy" && run.permissions?.antigravityExecution === "native";
   const start = async () => {
-    if (busy || !message.trim() || !choices.some(item => item.id === agent && item.available)) return;
+    if (busy || problem || !message.trim() || !choices.some(item => item.id === agent && item.available)) return;
     setBusy(true); setError("");
     try {
-      const next = await post<{ id: string }>(`/api/runs/${run.id}/provider-chat`, { agent, settings, message: message.trim(), kind: run.chatLink?.kind ?? "tab", attachments: images.map(({ name, data }) => ({ name, data })) });
+      const next = await post<{ id: string }>(`/api/runs/${run.id}/provider-chat`, { agent, settings, message: message.trim(), kind: run.chatLink?.kind ?? "tab", attachments: images.map(({ name, data }) => ({ name, data })), ...(side ? {} : { trust: permissions.trust, tools: permissions.tools }) });
       onClose(); onOpenChat(next.id);
     } catch (error) { setError((error as Error).message); setBusy(false); }
   };
   return <dialog class="picker small-dialog" ref={ref} aria-labelledby="provider-chat-title"><div class="picker-inner">
     <div class="picker-head"><h3 id="provider-chat-title">Fork chat</h3></div>
     <div class="dialog-body">
-      <p class="help">Send a message to start a new chat with this conversation’s context. Chats share the workspace.</p>
+      <p class="help">Send a message to start a new chat with this conversation’s context. Chats share the workspace.{side ? "" : " The new chat runs with the permissions chosen below."}</p>
       <fieldset disabled={busy} style={{ border: 0, padding: 0, margin: 0 }}>
         <label>Message<textarea class="field" rows={4} maxLength={20000} autoFocus value={parseBrowserMessage(message).text} onInput={(event) => setMessage(editBrowserText(message, event.currentTarget.value))} placeholder="What should the new chat do?" /></label>
         <BrowserDraftCards text={message} onText={setMessage} images={images} onImages={setImages} />
         <DraftImages message={message} images={images} onRemove={index => setImages(images.filter((_, i) => i !== index))} />
-        <ChatControls agent={agent} onAgent={(value) => { setAgent(value); setSettings({}); }} providers={choices} settings={settings} onSettings={setSettings} permissions={{ trust: run.trust, tools: false }} onPermissions={() => {}} showPermissions={false} />
+        <ChatControls agent={agent} onAgent={(value) => { setAgent(value); setSettings({}); }} providers={choices} settings={settings} onSettings={setSettings} permissions={permissions} onPermissions={setPermissions} showPermissions={!side} restricted={!!run.lockdown || !!run.trigger} approvalsAvailable={approvalsAvailable} approvalsUnavailableReason={!run.approvals.tools ? "The source chat doesn't ask for approval. A fork can ask only when its source does." : undefined} unrestricted={unrestricted} />
       </fieldset>
+      {unrestricted ? <p class="full-warn" role="alert"><b>Unrestricted Antigravity.</b> This chat's run allows it, so the new chat uses your normal Antigravity profile and settings without Code Flow's sandbox.</p>
+        : !side && !raised && permissions.trust === "full" && !permissions.tools ? <p class="full-warn" role="alert"><b>Full access: no sandbox.</b> The new chat can run commands and change files outside its worktree with your credentials.</p> : null}
+      {problem ? <p class="msg warn" role="alert">{problem}</p> : null}
       {error ? <p class="msg err" role="alert">{error}</p> : null}
     </div>
-    <div class="picker-foot"><span class="ps" /><button class="btn" disabled={busy} onClick={onClose}>Cancel</button><button class="btn primary" disabled={busy || !message.trim() || !choices.some((item) => item.id === agent && item.available)} onClick={() => void start()}>{busy ? "Sending…" : "Send"}</button></div>
+    <div class="picker-foot"><span class="ps" /><button class="btn" disabled={busy} onClick={onClose}>Cancel</button><button class="btn primary" disabled={busy || !!problem || !message.trim() || !choices.some((item) => item.id === agent && item.available)} title={problem || undefined} onClick={() => void start()}>{busy ? "Sending…" : "Send"}</button></div>
   </div></dialog>;
 }
 
 function SaveStrategyDialog({ template, onClose }: { template: TeamTemplate; onClose: () => void }) {
   const ref = useDialog(true, onClose);
-  return <dialog ref={ref} class="picker" aria-labelledby="save-strategy-title"><div class="picker-inner"><div class="picker-head"><h3 id="save-strategy-title">Save reusable team strategy</h3></div><div class="dialog-body"><p>Review and parameterize the instructions below, removing any sensitive or task-specific values. Session handles, result records, and permission grants are excluded.</p><TeamTemplateLibrary initial={template} /></div><div class="picker-foot"><button class="btn" onClick={onClose}>Close</button></div></div></dialog>;
+  return <dialog ref={ref} class="picker" aria-labelledby="save-strategy-title"><div class="picker-inner"><div class="picker-head"><h3 id="save-strategy-title">Save reusable team strategy</h3></div><div class="dialog-body"><p>Review and parameterize the instructions below, removing any sensitive or task-specific values. Session handles, result records, and permission grants are excluded.</p><TeamTemplateLibrary initial={template} focused onPublished={saved => { showToast(`Saved ${saved.name} v${saved.version}`); onClose(); }} /></div><div class="picker-foot"><button class="btn" onClick={onClose}>Close</button></div></div></dialog>;
 }

@@ -257,7 +257,7 @@ test("test-first: tests that pass before anything is implemented go back to the 
   const r = await withEnv({ FAKE_TESTS_PASS_FIRST: "1" }, () => run("tdd", { tester: ["codex"], builder: ["claude"] }));
   assert.equal(r.status, "done", r.error);
   const steps = titles(r);
-  assert.deepEqual(steps.slice(0, 4), ["Write failing tests [codex]:done", "New tests (should fail):done", "Make the tests fail first [codex]:done", "Revised tests (should fail):failed"]);
+  assert.deepEqual(steps.slice(0, 4), ["Write failing tests [codex]:done", "New tests (should fail):failed", "Make the tests fail first [codex]:done", "Revised tests (should fail):done"]);
   assert.match(r.summary!, /All tests pass/);
 });
 

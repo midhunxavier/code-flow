@@ -176,8 +176,8 @@ export function Menu({ label, icon, title, trigger, above = false, align = "star
   };
   return (
     <div class={`pop-wrap ${cls}`} ref={ref}>
-      <button type="button" ref={button} class={`icon-btn ${open ? "on" : ""}`} aria-label={label} aria-haspopup="menu" aria-expanded={open} title={title ?? label} onClick={() => setOpen(!open)}>
-        {trigger ?? <Icon name={icon} />}
+      <button type="button" ref={button} class={`icon-btn ${open ? "on" : ""}`} aria-label={trigger == null ? label : undefined} aria-haspopup="menu" aria-expanded={open} title={title ?? (trigger == null ? label : undefined)} onClick={() => setOpen(!open)}>
+        {trigger == null ? <Icon name={icon} /> : <><span class="sr-only">{label}: </span>{trigger}</>}
       </button>
       {open ? (
         <div class="pop-menu" role="menu" aria-label={label} ref={menu} onKeyDown={onKey}>

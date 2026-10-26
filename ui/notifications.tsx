@@ -1,6 +1,6 @@
 import { pollVisible } from "./polling.js";
-import { useEffect, useState } from "preact/hooks";
-import { api, post, showToast } from "./lib.js";
+import { useEffect, useRef, useState } from "preact/hooks";
+import { api, ApiError, post, showToast } from "./lib.js";
 import { projects } from "./state.js";
 import type { NotificationDelivery, NotificationEvent, NotificationSettings } from "../src/notifications.js";
 
@@ -11,37 +11,50 @@ export function NotificationsView({ destinationIds, projectId }: { destinationId
   const [destinations, setDestinations] = useState<Destination[]>([]);
   const [deliveries, setDeliveries] = useState<NotificationDelivery[]>([]);
   const [error, setError] = useState("");
+  const [loaded, setLoaded] = useState(false), [loadError, setLoadError] = useState(""), [unavailable, setUnavailable] = useState(false);
   const [busy, setBusy] = useState("");
+  const request = useRef(0);
   const reload = async () => {
-    const [targets, history] = await Promise.all([api<Destination[]>("/api/notifications"), api<NotificationDelivery[]>("/api/notifications/deliveries")]);
-    setDestinations(targets.filter(target => !destinationIds || destinationIds.includes(target.id))); setDeliveries(history.filter(item => (!destinationIds || destinationIds.includes(item.target)) && (!projectId || item.project === projectId || item.manual)));
+    const current = ++request.current;
+    try {
+      const [targets, history] = await Promise.all([api<Destination[]>("/api/notifications"), api<NotificationDelivery[]>("/api/notifications/deliveries")]);
+      if (current !== request.current) return;
+      setDestinations(targets.filter(target => !destinationIds || destinationIds.includes(target.id))); setDeliveries(history.filter(item => (!destinationIds || destinationIds.includes(item.target)) && (!projectId || item.project === projectId || item.manual)));
+      setLoaded(true); setLoadError(""); setUnavailable(false);
+    } catch (error) {
+      if (current === request.current) { setLoadError((error as Error).message); setUnavailable(error instanceof ApiError && error.status === 503); }
+      throw error;
+    }
   };
   useEffect(() => {
-    let alive = true;
-    const load = () => Promise.all([api<Destination[]>("/api/notifications"), api<NotificationDelivery[]>("/api/notifications/deliveries")]).then(([targets, history]) => { if (alive) { setDestinations(targets.filter(target => !destinationIds || destinationIds.includes(target.id))); setDeliveries(history.filter(item => (!destinationIds || destinationIds.includes(item.target)) && (!projectId || item.project === projectId || item.manual))); setError(""); } }, (err) => { if (alive) setError(err.message); });
-    const stop = pollVisible(load, 10_000);
-    return () => { alive = false; stop(); };
+    setLoaded(false); setLoadError(""); setUnavailable(false);
+    const stop = pollVisible(() => reload().catch(() => {}), 10_000);
+    return () => { ++request.current; stop(); };
   }, [JSON.stringify(destinationIds), projectId]);
   const retry = async (delivery: NotificationDelivery) => {
     setBusy(delivery.id);
-    try { await post(`/api/notifications/deliveries/${delivery.id}/retry`); await reload(); showToast("Notification retry queued"); }
+    try { await post(`/api/notifications/deliveries/${delivery.id}/retry`); await reload(); setError(""); showToast("Notification retry queued"); }
     catch (err) { setError((err as Error).message); }
     finally { setBusy(""); }
   };
   return <section class="wb-card notifications-panel" aria-label="Outbound notifications">
     <h2>Notifications</h2>
     <p>Choose a destination, the events to send and the projects it covers. Notifications include task titles, run IDs, workflow and result status.</p>
-    {!destinations.length ? <p class="help">Connect Slack or a webhook in Integrations. New destinations start off; choose projects and events before enabling delivery.</p> : <div class="wb-list">{destinations.map((target) => <DestinationSettings key={target.id} destination={target} refresh={reload} projectId={projectId} />)}</div>}
+    {loadError ? <p class="msg err" role="alert">{loadError} <button class="btn small" onClick={() => void reload().catch(() => {})}>Retry loading notifications</button></p> : null}
+    {!loaded && !loadError ? <p role="status">Loading notification settings and history…</p> : null}
+    {loaded && !unavailable ? <>
+    {!destinations.length && !loadError ? <p class="help">Connect Slack or a webhook in Integrations. New destinations start off; choose projects and events before enabling delivery.</p> : <div class="wb-list">{destinations.map((target) => <DestinationSettings key={target.id} destination={target} refresh={reload} projectId={projectId} />)}</div>}
     <h3>Delivery history</h3>
     <p class="help">Keeps 200 deliveries. Temporary failures retry up to three times. A delivery interrupted by restart needs an explicit retry; the recipient may already have received it.</p>
     {/* data-label names each cell's column where phones stack a delivery's cells (styles.css, workspace) */}
     {deliveries.length ? <div class="table-wrap delivery-history"><table class="ins-table"><thead><tr><th>Created</th><th>Destination</th><th>Event</th><th>Run</th><th>Status</th><th>Attempts</th><th>Action</th></tr></thead><tbody>{deliveries.map((delivery) => <tr key={delivery.id}>
       <td data-label="Created">{new Date(delivery.createdAt).toLocaleString()}</td><td data-label="Destination">{destinations.find((target) => target.id === delivery.target)?.name ?? delivery.target}</td><td data-label="Event">{delivery.manual ? "Manual test" : EVENTS.find((event) => event.id === delivery.event)?.label ?? delivery.event}</td>
-      <td data-label="Run">{delivery.teamId ? <a href={`#/project/${delivery.project}`}>Standing team</a> : delivery.runId === "test" ? "Test" : <a href={`#/run/${delivery.runId}`}>{delivery.runId}</a>}</td>
-      <td data-label="Status"><span class={`badge${delivery.state === "delivered" ? " ok" : delivery.state === "failed" ? " err" : delivery.state === "sending" ? " run" : ""}`}>{delivery.state.charAt(0).toUpperCase() + delivery.state.slice(1)}</span>{delivery.httpStatus ? ` · HTTP ${delivery.httpStatus}` : ""}{delivery.reason ? <div class="help">{delivery.reason}</div> : null}{delivery.nextAttemptAt ? <div class="help">Next: {new Date(delivery.nextAttemptAt).toLocaleTimeString()}</div> : null}</td>
-      <td data-label="Attempts">{delivery.totalAttempts ?? delivery.attempts}{delivery.retryCount ? <div class="help">{delivery.retryCount} manual retries</div> : null}</td>
+      <td data-label="Run">{delivery.teamId ? <a href={`#/project/${delivery.project}/automation/missions`}>Project mission</a> : delivery.runId === "test" ? "Test" : <a href={`#/run/${delivery.runId}`}>{delivery.runId}</a>}</td>
+      <td data-label="Status"><span class={`badge${delivery.state === "delivered" ? " ok" : delivery.state === "failed" ? " err" : delivery.state === "sending" ? " run" : ""}`}>{delivery.state.charAt(0).toUpperCase() + delivery.state.slice(1)}</span>{delivery.httpStatus ? ` · HTTP ${delivery.httpStatus}` : ""}{delivery.reason ? <div class="help">{delivery.reason}</div> : null}{delivery.state === "pending" && delivery.nextAttemptAt ? <div class="help">Next: {new Date(delivery.nextAttemptAt).toLocaleTimeString()}</div> : null}</td>
+      <td data-label="Attempts">{delivery.totalAttempts ?? delivery.attempts}{delivery.retryCount ? <div class="help">{delivery.retryCount} manual {delivery.retryCount === 1 ? "retry" : "retries"}</div> : null}</td>
       <td data-label="Action">{delivery.state === "failed" ? <button class="btn small" disabled={!!busy} onClick={() => retry(delivery)}>{busy === delivery.id ? "Queuing…" : "Retry delivery"}</button> : "–"}</td>
-    </tr>)}</tbody></table></div> : <p class="help">No notifications have been queued.</p>}
+    </tr>)}</tbody></table></div> : !loadError ? <p class="help">No notifications have been queued.</p> : null}
+    </> : null}
     {error ? <p class="msg err" role="alert">{error}</p> : null}
   </section>;
 }

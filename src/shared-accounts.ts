@@ -72,18 +72,22 @@ interface Bucket { count: number; expires: number }
 /** Global denial limits are deliberately bounded; arbitrary attacker addresses cannot grow this map indefinitely. */
 class LoginLimiter {
   private buckets = new Map<string, Bucket>();
-  check(address: string, name: string, now: number) {
+  check(address: string, name: string | undefined, now: number) {
     for (const [key, value] of this.buckets) if (value.expires <= now) this.buckets.delete(key);
-    const keys: Array<[string, number]> = [["global", 100], [`ip:${address.slice(0, 128)}`, 20], [`user:${digest(name)}`, 8]];
+    const keys: Array<[string, number]> = [["global", 100], [`ip:${address.slice(0, 128)}`, 20], ...(name === undefined ? [] : [[`user:${digest(name.toLowerCase())}`, 8] as [string, number]])];
     if (keys.some(([key, max]) => (this.buckets.get(key)?.count ?? 0) >= max)) throw new SharedAccountError("Too many sign-in attempts; try again later", 429);
-    for (const [key] of keys) { const bucket = this.buckets.get(key) ?? { count: 0, expires: now + 15 * 60_000 }; bucket.count++; this.buckets.delete(key); this.buckets.set(key, bucket); }
+    const reserved: Array<[string, Bucket]> = [];
+    for (const [key] of keys) { const bucket = this.buckets.get(key) ?? { count: 0, expires: now + 15 * 60_000 }; bucket.count++; this.buckets.delete(key); this.buckets.set(key, bucket); reserved.push([key, bucket]); }
     while (this.buckets.size > 2048) this.buckets.delete(this.buckets.keys().next().value!);
+    let released = false;
+    return () => { if (released) return; released = true; for (const [key, bucket] of reserved) if (this.buckets.get(key) === bucket && --bucket.count === 0) this.buckets.delete(key); };
   }
 }
 /** Local accounts delegate result review and team-board work only. Project roles alone never authorize host execution; the separate host queue requires explicit owner grants. */
 export class SharedAccounts {
   private state: State = { version: 1, revision: 0, users: [], sessions: [] };
   private loaded = false; private loading?: Promise<void>; private readable = true; private writes: Promise<unknown> = Promise.resolve();
+  private loadFailure = "Shared account storage has not loaded";
   private listeners = new Set<() => void>(); private limiter = new LoginLimiter();
   constructor(private readonly file = join(CODEFLOW_HOME, "shared-accounts.json")) {}
   get available() { return this.loaded && this.readable; }
@@ -95,7 +99,7 @@ export class SharedAccounts {
         const handle = await open(this.file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
         try { const stat = await handle.stat(); if (!stat.isFile() || stat.size > 4 * 1024 * 1024) throw new Error("Shared account storage is not a bounded regular file"); this.state = validateState(JSON.parse(await handle.readFile("utf8"))); }
         finally { await handle.close(); }
-      } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") { this.readable = false; throw new SharedAccountError("Shared accounts cannot be read; owner recovery remains available and the account file was left untouched", 503); } }
+      } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") { this.readable = false; this.loadFailure = `Shared account storage (${this.file}) could not be read: ${(error as Error).message}. Repair or move the file aside, then restart code-flow. The file was left untouched.`; throw new SharedAccountError(this.loadFailure, 503); } }
       finally { this.loaded = true; }
     })();
   }
@@ -118,7 +122,7 @@ export class SharedAccounts {
     await this.load();
     await this.mutate(state => { const invite = state.invitations?.find(entry => entry.id === id); if (!invite) throw new SharedAccountError("Invitation not found", 404); invite.revokedAt ??= Date.now(); }, false);
   }
-  previewInvitation(token: unknown): ProjectInvitation { this.require(); const { hash: _hash, ...invite } = this.findInvitation(this.state, token); return { ...invite }; }
+  previewInvitation(token: unknown): ProjectInvitation { this.require(false); const { hash: _hash, ...invite } = this.findInvitation(this.state, token); return { ...invite }; }
   private findInvitation(state: State, token: unknown): StoredInvitation {
     const invite = typeof token === "string" && /^[a-zA-Z0-9_-]{43}$/.test(token) ? state.invitations?.find(entry => entry.hash === digest(token)) : undefined;
     if (!invite || invite.expiresAt <= Date.now() || invite.revokedAt !== undefined || invite.acceptedAt !== undefined) throw new SharedAccountError("This invitation expired, was used, or was revoked. Ask the project owner for a new link.", 410);
@@ -126,26 +130,29 @@ export class SharedAccounts {
   }
   /** Consume the invitation, membership and sign-in in one durable write; concurrent acceptance can succeed only once. */
   async acceptInvitation(input: SharedCredentials & { token: unknown; displayName?: unknown; existing?: boolean }, commit: (projectId: string, save: () => Promise<SharedAccountState>) => Promise<SharedAccountState> = (_projectId, save) => save()) {
-    await this.load(); this.require();
+    await this.readyForSignIn();
     if (!input.secure && !input.loopback) throw new SharedAccountError("Joining a project requires HTTPS outside this computer", 403);
     const invitation = this.previewInvitation(input.token);
     const existing = input.existing ? await this.verify(input) : undefined;
-    if (!existing) this.limiter.check(input.address, String(input.username).slice(0, 128), Date.now());
+    const release = !existing ? this.limiter.check(input.address, undefined, Date.now()) : undefined;
     const name = existing?.username ?? username(input.username), label = existing?.displayName ?? displayName(input.displayName);
     const password = existing ? undefined : await makePassword(input.password);
     const token = randomBytes(32).toString("base64url");
-    let result!: { token: string; user: SharedUser; projectId: string; expiresAt: number };
+    let result!: { token: string; user: SharedUser; projectId: string; expiresAt: number; granted: boolean };
     // Password work is outside both queues. The caller holds the project stable for the
     // final account write, so deletion cannot consume a link to a missing project.
     await commit(invitation.projectId, () => this.change(state => {
       const invite = this.findInvitation(state, input.token), now = Date.now();
       let user: StoredUser;
+      let granted = true;
       if (existing) {
         user = this.find(state, existing.id);
         if (!user.enabled || user.revision !== existing.revision) throw new SharedAccountError("Account changed; sign in again", 409);
-        if (!roleAtLeast(user.roles[invite.projectId], invite.role)) user.roles[invite.projectId] = invite.role;
-        user.revision++; user.updatedAt = now;
-        state.sessions = state.sessions.filter(session => session.userId !== user.id);
+        granted = !roleAtLeast(user.roles[invite.projectId], invite.role);
+        if (granted) {
+          user.roles[invite.projectId] = invite.role; user.revision++; user.updatedAt = now;
+          state.sessions = state.sessions.filter(session => session.userId !== user.id);
+        }
       } else {
         if (state.users.some(entry => entry.username === name)) throw new SharedAccountError("That username is already in use. Choose Sign in with an existing account or another username.", 409);
         if (state.users.length >= MAX_USERS) throw new SharedAccountError("This server has reached its account limit; contact the owner", 409);
@@ -153,10 +160,13 @@ export class SharedAccounts {
         state.users.push(user);
       }
       invite.acceptedAt = now;
-      state.sessions = state.sessions.filter(session => session.expiresAt > now && session.lastSeenAt + IDLE_MS > now).sort((a, b) => b.createdAt - a.createdAt).slice(0, MAX_SESSIONS - 1);
+      const live = state.sessions.filter(session => session.expiresAt > now && session.lastSeenAt + IDLE_MS > now).sort((a, b) => b.createdAt - a.createdAt);
+      const own = new Set(live.filter(session => session.userId === user.id).slice(0, 7));
+      state.sessions = live.filter(session => session.userId !== user.id || own.has(session)).slice(0, MAX_SESSIONS - 1);
       state.sessions.push({ hash: digest(token), userId: user.id, revision: user.revision, createdAt: now, lastSeenAt: now, expiresAt: now + SESSION_MS });
-      result = { token, user: publicUser(user), projectId: invite.projectId, expiresAt: now + SESSION_MS };
+      result = { token, user: publicUser(user), projectId: invite.projectId, expiresAt: now + SESSION_MS, granted };
     }));
+    release?.();
     return result;
   }
   create(input: { revision: unknown; username: unknown; displayName: unknown; password: unknown; roles: unknown }): Promise<SharedAccountState> {
@@ -164,6 +174,15 @@ export class SharedAccounts {
   }
   update(id: string, input: { revision: unknown; displayName?: unknown; enabled?: unknown; roles?: unknown; password?: unknown }): Promise<SharedAccountState> {
     return this.change(async (state) => { this.cas(state, input.revision); const user = this.find(state, id); if (input.displayName !== undefined) user.displayName = displayName(input.displayName); if (input.enabled !== undefined) { if (typeof input.enabled !== "boolean") throw new SharedAccountError("Enabled must be true or false"); user.enabled = input.enabled; } if (input.roles !== undefined) user.roles = validateSharedRoles(input.roles); if (input.password !== undefined) user.password = await makePassword(input.password); user.revision++; user.updatedAt = Date.now(); state.sessions = state.sessions.filter((session) => session.userId !== id); });
+  }
+  remove(id: string, input: { revision: unknown }, revokeAccess: () => Promise<void> = async () => {}): Promise<SharedAccountState> {
+    return this.change(async state => {
+      this.cas(state, input.revision); const user = this.find(state, id);
+      if (user.enabled) throw new SharedAccountError("Disable the account and save before deleting it", 409);
+      // Access revocation is retryable; a failed cleanup leaves the account disabled and present.
+      await revokeAccess();
+      state.users = state.users.filter(user => user.id !== id); state.sessions = state.sessions.filter(session => session.userId !== id);
+    });
   }
   revokeSessions(id: string, input: { revision: unknown }): Promise<SharedAccountState> { return this.change((state) => { this.cas(state, input.revision); const user = this.find(state, id); user.revision++; user.updatedAt = Date.now(); state.sessions = state.sessions.filter((session) => session.userId !== id); }); }
   /** Runner enrolment (POST /api/team/runners/connect) proves a password exactly like sign-in, with the same transport rule, limiter and constant-time compare, but must not mint a cookie session. */
@@ -190,20 +209,22 @@ export class SharedAccounts {
     if (!user?.enabled || user.revision !== session.revision) return undefined;
     if (typeof options === "number" || options.touch !== false) session.lastSeenAt = Math.max(session.lastSeenAt, now); return principal(user);
   }
-  async logout(token: string): Promise<void> { await this.load(); await this.mutate((state) => { state.sessions = state.sessions.filter((session) => session.hash !== digest(token)); }, true); }
+  async logout(token: string): Promise<void> { await this.readyForSignIn(); await this.mutate((state) => { state.sessions = state.sessions.filter((session) => session.hash !== digest(token)); }, true); }
   /** The single password check: an unknown account still derives against a dummy salt, so timing never reveals which usernames exist. */
   private async verify(input: SharedCredentials): Promise<StoredUser> {
-    await this.load(); this.require();
+    await this.readyForSignIn();
     if (!input.secure && !input.loopback) throw new SharedAccountError("Shared sign-in requires HTTPS outside this computer", 403);
     const name = typeof input.username === "string" ? input.username.toLowerCase() : "";
-    this.limiter.check(input.address, name.slice(0, 128), Date.now());
+    const release = this.limiter.check(input.address, name.slice(0, 128), Date.now());
     const supplied = passwordText(input.password, false), user = this.state.users.find((entry) => entry.username === name);
     const expected = user ? Buffer.from(user.password.hash, "hex") : dummyHash;
-    const result = await derive(supplied, user?.password.salt ?? dummySalt);
+    const result = await derive(supplied, user?.password.salt ?? dummySalt).catch(error => { release(); throw error; });
     if (!timingSafeEqual(result, expected) || !user?.enabled) throw new SharedAccountError("Invalid username or password", 401);
+    release();
     return user;
   }
-  private require() { if (!this.available) throw new SharedAccountError("Shared account storage is unavailable; use the owner recovery link", 503); }
+  private async readyForSignIn() { try { await this.load(); } catch { this.require(false); } this.require(false); }
+  private require(owner = true) { if (!this.available) throw new SharedAccountError(owner ? this.loadFailure : "Shared sign-in is temporarily unavailable; contact the project owner.", 503); }
   private find(state: State, id: string) { const user = state.users.find((user) => user.id === id); if (!user) throw new SharedAccountError("Shared account not found", 404); return user; }
   private cas(state: State, revision: unknown) { if (!integer(revision) || revision !== state.revision) throw new SharedAccountError("Accounts changed; reload before saving", 409); }
   private async change(update: (state: State) => void | Promise<void>) { await this.load(); await this.mutate(async (state) => { await update(state); state.revision++; }, true); return this.snapshot(); }

@@ -1,9 +1,10 @@
 import { useState } from "preact/hooks";
 import type { Board } from "../src/collab/model.js";
-import { api, collaborationHref, enc, usePoll, workspaceId } from "./lib.js";
+import { api, collaborationHref, ownerOnLocalListener, enc, usePoll, workspaceId } from "./lib.js";
 import { useDialog } from "./app.js";
 import { repositoryChoice } from "./team-repository-choice.js";
 import { ProjectInvitations } from "./project-invitations.js";
+import { rememberSetupMappings } from "./team-setup-state.js";
 
 /** Project pages always share their owning computer's project, regardless of the selected team. */
 export function ProjectShare({ project }: { project: { id: string; name: string } }) {
@@ -19,6 +20,7 @@ export function ProjectShare({ project }: { project: { id: string; name: string 
 
 export function ProjectShareDialog({ project, onClose }: { project: { id: string; name: string }; onClose: () => void }) {
   const ref = useDialog(true, onClose);
+  const [warning, setWarning] = useState("");
   const prepareRepositories = async () => {
     const b = await api<Board>("/api/team/board?teamConnection=local");
     const existing = b.projects.find(p => p.id === project.id);
@@ -27,11 +29,15 @@ export function ProjectShareDialog({ project, onClose }: { project: { id: string
     const folders = projects.find(p => p.id === project.id)?.repos ?? [];
     const repositories: { key: string; label: string }[] = [];
     for (const folder of folders) repositories.push(repositoryChoice(folder, repositories.map(r => r.key)));
-    if (repositories.length) await api(`/api/team/projects/${enc(project.id)}/repositories?teamConnection=local`, { method: "PUT", body: JSON.stringify({ revision: b.revision, repositories }) });
+    if (repositories.length) {
+      await api(`/api/team/projects/${enc(project.id)}/repositories?teamConnection=local`, { method: "PUT", body: JSON.stringify({ revision: b.revision, repositories }) });
+      const warnings = ownerOnLocalListener.value ? await rememberSetupMappings((path, body, method) => api(path, body ? { method, body: JSON.stringify(body) } : {}), project.id, repositories.map((entry, index) => ({ ...entry, sourcePath: folders[index] }))) : [];
+      setWarning(warnings.length ? `Repositories shared, but local folders need attention in repository settings: ${warnings.join("; ")}` : "");
+    }
   };
   return <dialog class="picker project-share-dialog" ref={ref} aria-labelledby="project-share-title"><div class="picker-inner">
     <div class="picker-head"><h3 id="project-share-title">Share {project.name}</h3><p class="help">Invite someone to this project’s tasks, discussions, and results.</p></div>
-    <div class="dialog-body"><ProjectInvitations projects={[project]} projectId={project.id} prefix={workspaceId ? `/computer/${workspaceId}` : ""} compact beforeCreate={prepareRepositories} /></div>
+    <div class="dialog-body">{warning ? <p class="msg" role="status">{warning}</p> : null}<ProjectInvitations projects={[project]} projectId={project.id} prefix={workspaceId ? `/computer/${workspaceId}` : ""} compact beforeCreate={prepareRepositories} /></div>
     <div class="picker-foot"><a class="btn" href={collaborationHref(`#/project/${enc(project.id)}/people`, "local")} onClick={onClose}>People and access</a><button class="btn" onClick={onClose}>Done</button></div>
   </div></dialog>;
 }

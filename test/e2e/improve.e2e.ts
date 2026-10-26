@@ -119,7 +119,7 @@ test("Improve and Undo preserve criteria and attachments; modes support keyboard
     await page.locator('.taskbox input[type="file"]').setInputFiles({ name: "sample.txt", mimeType: "text/plain", buffer: Buffer.from("Useful sample") });
     await page.getByRole("button", { name: "Remove sample.txt", exact: true }).waitFor();
     const response = page.waitForResponse("**/api/improve-prompt");
-    await page.getByRole("button", { name: "Improve", exact: true }).click();
+    await page.getByRole("button", { name: /^Improve ·/ }).click();
     assert.equal((await response).status(), 200);
     await page.getByRole("button", { name: "Undo", exact: true }).waitFor();
     assert.equal(await area.inputValue(), `Goal: ${original}\n\nDone when: the tests pass.`);
@@ -136,7 +136,7 @@ test("Improve and Undo preserve criteria and attachments; modes support keyboard
     await page.keyboard.press("Escape"); assert.equal(await menu.evaluate((element) => element === document.activeElement), true);
     await page.keyboard.press("ArrowUp");
     const request = page.waitForRequest("**/api/improve-prompt"); await page.keyboard.press("Enter");
-    assert.deepEqual((await request).postDataJSON(), { text: original, repo: repos[0], mode: "repo", execution: "local", settings: { agent: "auto", defaultMode: "quick", providers: {} }, context: ["sample.txt"] });
+    assert.deepEqual((await request).postDataJSON(), { text: original, repo: repos[0], mode: "repo", execution: "local", settings: { agent: "auto", defaultMode: "quick", providers: {} }, context: ["sample.txt"], criteria: ["Keep keyboard navigation working"] });
     assert.equal(await page.locator(".improve > .btn").evaluate((element) => element === document.activeElement), true, "mode selection leaves focus on the Improve/Stop action");
     await page.getByRole("button", { name: "Undo", exact: true }).waitFor();
     assert.match(await page.locator(".taskbox [role=status]").innerText(), /repo/);
@@ -151,10 +151,10 @@ test("Stop discards a late reply and an older completion cannot clear a newer Im
   try {
     const replies = await holdReplies(page), area = page.getByRole("textbox", { name: "Task", exact: true });
     await area.fill("Original task");
-    await page.getByRole("button", { name: "Improve", exact: true }).click(); const first = await replies.next();
+    await page.getByRole("button", { name: /^Improve ·/ }).click(); const first = await replies.next();
     await page.getByRole("button", { name: "Stop", exact: true }).click();
     assert.equal(await area.inputValue(), "Original task");
-    await page.getByRole("button", { name: "Improve", exact: true }).click(); const second = await replies.next();
+    await page.getByRole("button", { name: /^Improve ·/ }).click(); const second = await replies.next();
     await replies.answer(first, "Obsolete first rewrite", 1);
     assert.equal(await area.inputValue(), "Original task");
     assert.equal(await page.getByRole("button", { name: "Stop", exact: true }).count(), 1, "first finally must leave the second operation busy");
@@ -169,35 +169,35 @@ test("newer text, repository, project and context transitions invalidate late Im
   try {
     const replies = await holdReplies(page), area = page.getByRole("textbox", { name: "Task", exact: true });
     await area.fill("Keep this task");
-    await page.getByRole("button", { name: "Improve", exact: true }).click(); const edited = await replies.next();
+    await page.getByRole("button", { name: /^Improve ·/ }).click(); const edited = await replies.next();
     await area.fill("Newer draft"); await area.fill("Keep this task");
     await replies.answer(edited, "Old rewrite after text round trip", 1); assert.equal(await area.inputValue(), "Keep this task");
     assert.equal(await page.getByRole("button", { name: "Undo", exact: true }).count(), 0);
 
-    await page.getByRole("button", { name: "Improve", exact: true }).click(); const moved = await replies.next();
+    await page.getByRole("button", { name: /^Improve ·/ }).click(); const moved = await replies.next();
     await chooseRepo(page, repos[1]!); await chooseRepo(page, repos[0]!);
     await replies.answer(moved, "Old rewrite after repository round trip", 2); assert.equal(await area.inputValue(), "Keep this task");
     assert.equal(await page.getByRole("button", { name: "Undo", exact: true }).count(), 0);
 
-    await page.getByRole("button", { name: "Improve", exact: true }).click(); const project = await replies.next();
+    await page.getByRole("button", { name: /^Improve ·/ }).click(); const project = await replies.next();
     await chooseProject(page, "Beta");
     await replies.answer(project, "A failure from the previous project", 3, 500);
     await page.locator(".composer-options > summary").click();
     assert.equal(await area.inputValue(), ""); await area.fill("Keep this task"); assert.equal(await page.getByText("A failure from the previous project", { exact: true }).count(), 0);
 
-    await page.getByRole("button", { name: "Improve", exact: true }).click(); const context = await replies.next();
+    await page.getByRole("button", { name: /^Improve ·/ }).click(); const context = await replies.next();
     await page.locator('.taskbox input[type="file"]').setInputFiles({ name: "new-context.txt", mimeType: "text/plain", buffer: Buffer.from("New input") });
     await page.getByRole("button", { name: "Remove new-context.txt", exact: true }).waitFor();
     await replies.answer(context, "Rewrite made without the new context", 4); assert.equal(await area.inputValue(), "Keep this task");
     assert.equal(await page.getByRole("button", { name: "Undo", exact: true }).count(), 0);
 
-    await page.getByRole("button", { name: "Improve", exact: true }).click(); const isolation = await replies.next();
+    await page.getByRole("button", { name: /^Improve ·/ }).click(); const isolation = await replies.next();
     await page.getByText("Agent isolation", { exact: true }).click();
     await page.getByRole("checkbox", { name: "Run agents in a prebuilt Docker image", exact: true }).check();
     await replies.answer(isolation, "Local rewrite after Docker was selected", 5); assert.equal(await area.inputValue(), "Keep this task");
-    assert.equal(await page.getByRole("button", { name: "Improve", exact: true }).isDisabled(), true);
+    assert.equal(await page.getByRole("button", { name: /^Improve ·/ }).isDisabled(), true);
     await page.getByRole("checkbox", { name: "Run agents in a prebuilt Docker image", exact: true }).uncheck();
-    await page.getByRole("button", { name: "Improve", exact: true }).click(); const completed = await replies.next();
+    await page.getByRole("button", { name: /^Improve ·/ }).click(); const completed = await replies.next();
     await replies.answer(completed, "Valid rewrite for Beta project", 6);
     await page.getByRole("button", { name: "Undo", exact: true }).waitFor();
     await chooseProject(page, "Alpha");
@@ -261,11 +261,11 @@ test("Improve respects SSH and Docker selection and its mode menu remains access
     await page.route("**/api/remote-workers/ssh/probe", (route) => route.fulfill({ contentType: "application/json", body: JSON.stringify({ capabilities: { providers: [{ id: "claude", available: true }], repoMappings: ["project"] } }) }));
     await page.goto(`${base}/?token=${token}`); await page.getByRole("textbox", { name: "Task", exact: true }).fill("A mobile task");
     await page.locator(".composer-options > summary").click(); await page.locator(".advanced-controls > summary").click(); await page.getByLabel("Agent execution", { exact: true }).selectOption("ssh");
-    assert.equal(await page.getByRole("button", { name: "Improve", exact: true }).isDisabled(), true);
+    assert.equal(await page.getByRole("button", { name: /^Improve ·/ }).isDisabled(), true);
     await page.getByText("Improve uses a local provider. Choose This computer to rewrite this task.", { exact: true }).waitFor();
     await page.getByLabel("Agent execution", { exact: true }).selectOption("");
     await page.getByText("Agent isolation", { exact: true }).click(); await page.getByRole("checkbox", { name: "Run agents in a prebuilt Docker image", exact: true }).check();
-    assert.equal(await page.getByRole("button", { name: "Improve", exact: true }).isDisabled(), true);
+    assert.equal(await page.getByRole("button", { name: /^Improve ·/ }).isDisabled(), true);
     await page.getByText("Improve uses a local provider. Turn off Docker isolation to rewrite this task.", { exact: true }).waitFor();
     await page.getByRole("checkbox", { name: "Run agents in a prebuilt Docker image", exact: true }).uncheck();
     const trigger = page.getByRole("button", { name: "How Improve works", exact: true });
@@ -277,11 +277,11 @@ test("Improve respects SSH and Docker selection and its mode menu remains access
       await page.getByRole("textbox", { name: "Task", exact: true }).fill("A mobile task");
       await trigger.focus(); await page.keyboard.press("ArrowDown"); await page.getByRole("menu", { name: "Improve mode" }).waitFor();
       await page.addScriptTag({ content: axe.source });
-      const result = await page.evaluate(async () => (window as unknown as { axe: typeof axe }).axe.run(document, { runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21aa", "wcag22aa"] } }));
+      const result = await page.evaluate(async () => (window as unknown as { axe: typeof axe }).axe.run(document, { runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"] } }));
       assert.deepEqual(result.violations.map((violation) => ({ id: violation.id, nodes: violation.nodes.map((node) => node.target) })), [], `${colorScheme} mobile Improve menu`);
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
       assert.equal(await page.getByRole("menuitemradio", { name: /^Use the repository/ }).locator(".pi-sub").evaluate((element) => element.scrollWidth <= element.clientWidth), true, "the snapshot scope must wrap instead of truncating the local-edits exclusion");
-      for (const button of [trigger, page.getByRole("button", { name: "Improve", exact: true })]) { const box = await button.boundingBox(); assert.ok(box && box.width >= 44 && box.height >= 44); }
+      for (const button of [trigger, page.getByRole("button", { name: /^Improve ·/ })]) { const box = await button.boundingBox(); assert.ok(box && box.width >= 44 && box.height >= 44); }
       const screenshots = process.env.CODEFLOW_UI_SCREENSHOTS;
       if (screenshots) { mkdirSync(screenshots, { recursive: true }); await page.screenshot({ path: join(screenshots, `improve-mobile-${colorScheme}.png`), fullPage: true }); }
       await page.keyboard.press("Escape"); assert.equal(await trigger.evaluate((element) => element === document.activeElement), true);
@@ -313,7 +313,7 @@ test("Prompt improvement settings persist, select the configured provider and de
     await page.setViewportSize({ width: 390, height: 844 });
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
     await page.addScriptTag({ content: axe.source });
-    const audit = await page.evaluate(async () => (window as any).axe.run('section[aria-label="Prompt improvement"]', { runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21aa"] } }));
+    const audit = await page.evaluate(async () => (window as any).axe.run('section[aria-label="Prompt improvement"]', { runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"] } }));
     assert.deepEqual(audit.violations.map((item: any) => ({ id: item.id, nodes: item.nodes.map((node: any) => node.target) })), []);
     mkdirSync(join(root, "output/playwright"), { recursive: true });
     await panel.screenshot({ path: join(root, "output/playwright/improve-settings-mobile.png") });
@@ -322,9 +322,9 @@ test("Prompt improvement settings persist, select the configured provider and de
     await page.goto(`${base}/#/new`);
     const area = page.getByRole("textbox", { name: "Task", exact: true });
     await area.fill("Clarify the login task");
-    assert.match(await page.getByRole("button", { name: "Improve", exact: true }).innerText(), /Codex/);
+    assert.match(await page.getByRole("button", { name: /^Improve ·/ }).innerText(), /Codex/);
     const response = page.waitForResponse("**/api/improve-prompt");
-    await page.getByRole("button", { name: "Improve", exact: true }).click();
+    await page.getByRole("button", { name: /^Improve ·/ }).click();
     const result = await response;
     assert.equal(result.status(), 200, await result.text());
     assert.equal((await result.json()).agent, "codex");

@@ -3,6 +3,7 @@ import { mkdir, readFile, rename, rm, stat } from "node:fs/promises";
 import { createHash, randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { ActionNotPerformed } from "./agent-action-error.js";
 import { CODEFLOW_HOME } from "./config.js";
 
 let compiling: Promise<string> | undefined;
@@ -49,11 +50,11 @@ export class AgentComputer {
       }
       if (name !== "computer_action") throw new Error("Unknown computer tool");
       const seen = this.screenshot;
-      if (!seen || args.screenshot !== seen.id || Date.now() - seen.at > 60_000 || seen.generation !== AgentComputer.generation) throw new Error("Take a fresh computer_screenshot before acting");
+      if (!seen || args.screenshot !== seen.id || Date.now() - seen.at > 60_000 || seen.generation !== AgentComputer.generation) throw new ActionNotPerformed("Take a fresh computer_screenshot before acting");
       const request = { ...args }; delete request.screenshot; delete request.coordinateSpace;
       if (args.action === "click") {
         const width = args.coordinateSpace === "normalized" ? 1000 : seen.width, height = args.coordinateSpace === "normalized" ? 1000 : seen.height;
-        if (!Number.isFinite(args.x) || !Number.isFinite(args.y) || args.x < 0 || args.y < 0 || args.x >= width || args.y >= height) throw new Error("Coordinates are outside the screenshot");
+        if (!Number.isFinite(args.x) || !Number.isFinite(args.y) || args.x < 0 || args.y < 0 || args.x >= width || args.y >= height) throw new ActionNotPerformed("Coordinates are outside the screenshot");
         request.x = args.x * seen.pointWidth / width; request.y = args.y * seen.pointHeight / height;
       }
       this.screenshot = undefined; AgentComputer.generation++;

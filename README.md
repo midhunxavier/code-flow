@@ -139,7 +139,7 @@ node node_modules/playwright-core/cli.js install ffmpeg # once, for test recordi
 npm run test:e2e     # browser acceptance tests; requires Chrome
 ```
 
-Both development modes use http://localhost:4318 and `.codeflow-dev` as their home directory. They rebuild the UI and restart the server on source changes.
+Both development modes use http://localhost:4318 and `.codeflow-dev` as their home directory. They build the training worker once at startup, rebuild the UI and restart the server on source changes. Direct `tsx src/server.ts` launches require `npm run build:training-worker` first.
 
 The [development guide](docs/architecture.md) covers the source layout, adapter and workflow contracts, and tests. Engineering plans and evaluation records are grouped separately in the docs library.
 

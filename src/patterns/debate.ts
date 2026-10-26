@@ -27,9 +27,10 @@ export const debatePattern: Pattern = {
       label: "Debaters",
       description: "Each proposes and defends a design",
       multiple: true,
+      min: 2,
       default: ["claude", "codex"],
     },
-    { id: "synthesizer", label: "Synthesizer", description: "Merges the debate into one plan, ideally a vendor that isn't debating", default: ["claude"] },
+    { id: "synthesizer", label: "Synthesizer", description: "Merges the debate into one plan, ideally a vendor that isn't debating", default: ["claude"], independentOf: ["debaters"] },
     {
       id: "builder",
       label: "Builder",

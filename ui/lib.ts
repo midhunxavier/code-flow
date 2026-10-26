@@ -4,12 +4,16 @@ import { useCallback, useEffect, useRef } from "preact/hooks";
 import type { AgentId } from "./types.js";
 import { projectCollaboration } from "./navigation.js";
 
-/** An API error; `confirm` names a choice the server needs from you before it can go ahead. */
+/** Read the preference at the moment of the action, including changes in an open tab. */
+export const scrollBehavior = (): ScrollBehavior => window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
+
+/** An API error; `confirm` names a choice the server needs from you before it can go ahead, and `code` the server's machine-readable name for a refusal when it sends one (the team API's "stale-revision"). */
 export class ApiError extends Error {
   constructor(
     message: string,
     readonly status: number,
     readonly confirm?: string,
+    readonly code?: string,
   ) {
     super(message);
   }
@@ -21,6 +25,10 @@ export const workspaceUrl = (id = "local", hash = "#/") => `${id === "local" ? "
 /** A tab's team stays fixed until navigation, including downloads and requests already in flight. */
 export let selectedTeamConnection = projectCollaboration(location.hash) ? "local" : new URLSearchParams(location.search).get("team") ?? "";
 export const collaborationConfigured = signal(false);
+/** Server-reported listener capability; full-control phones still use the host board. */
+export const ownerOnLocalListener = signal(true);
+/** Multiple saved teams require a choice before any unscoped team reads. */
+export const teamConnectionRequired = signal(0);
 /** Connection identity stays in the URL and survives copying, reloads and browser history. */
 export function collaborationHref(hash: string, connection = selectedTeamConnection || "local") {
   const url = new URL(location.href); url.searchParams.delete("token"); url.searchParams.set("team", connection); url.hash = hash;
@@ -29,7 +37,9 @@ export function collaborationHref(hash: string, connection = selectedTeamConnect
 /** Switching sources replaces the document, including its requests, cached board and subscriptions. */
 export function ensureCollaborationSource(hash: string): boolean {
   if (!projectCollaboration(hash) || selectedTeamConnection === "local") return true;
-  location.assign(collaborationHref(hash, "local")); return false;
+  const href = collaborationHref(hash, "local");
+  if (location.hash === hash) location.replace(href); else location.assign(href);
+  return false;
 }
 export const apiPath = (path: string) => {
   if (selectedTeamConnection && /^\/api\/team(?:-link)?(?:\/|\?|$)/.test(path) && !new URLSearchParams(path.split("?")[1]).has("teamConnection")) path += `${path.includes("?") ? "&" : "?"}teamConnection=${encodeURIComponent(selectedTeamConnection)}`;
@@ -37,12 +47,15 @@ export const apiPath = (path: string) => {
 };
 /** Resolve the legacy default once, before any team requests or subscriptions, then pin it for this tab. */
 export async function initializeTeamConnection() {
+  if (!ownerOnLocalListener.value) { selectedTeamConnection = "local"; teamConnectionRequired.value = 0; collaborationConfigured.value = false; }
   if (selectedTeamConnection) { const url = new URL(location.href); url.searchParams.set("team", selectedTeamConnection); history.replaceState(history.state, "", url.href); return; }
   try {
     const inventory = await api<{ connections: { id: string; linked: boolean }[] }>("/api/team-link/connections");
     const remotes = inventory.connections.filter((entry) => entry.linked);
     collaborationConfigured.value = remotes.length > 0;
-    selectedTeamConnection = remotes.length === 1 ? remotes[0]!.id : "local";
+    selectedTeamConnection = remotes.length === 1 ? remotes[0]!.id : remotes.length === 0 ? "local" : "";
+    teamConnectionRequired.value = selectedTeamConnection ? 0 : remotes.length;
+    if (!selectedTeamConnection) return;
     const url = new URL(location.href); url.searchParams.set("team", selectedTeamConnection);
     history.replaceState(history.state, "", url.href);
   } catch { /* Older hosts may not expose multiple connections. Their existing team UI remains usable. */ }
@@ -70,9 +83,9 @@ async function fetchJson<T = any>(path: string, opts: RequestInit = {}): Promise
     // The browser only says "Failed to fetch": the server is down or restarting.
     throw new ApiError("Can't reach code-flow. Is the server still running?", 0);
   }
-  const body = (await res.json().catch(() => ({}))) as { error?: string; confirm?: string; signIn?: boolean };
+  const body = (await res.json().catch(() => ({}))) as { error?: string; confirm?: string; code?: string; signIn?: boolean };
   if (res.status === 401 && body.signIn) signInAgain();
-  if (!res.ok) throw new ApiError(body.error || res.statusText, res.status, body.confirm);
+  if (!res.ok) throw new ApiError(body.error || res.statusText, res.status, body.confirm, typeof body.code === "string" ? body.code : undefined);
   return body as T;
 }
 
@@ -220,13 +233,16 @@ export const STATUS_TEXT: Record<string, string> = {
 };
 
 // ---- toasts
-export const toast = signal<{ text: string; id: number } | null>(null);
-let toastTimer: ReturnType<typeof setTimeout> | undefined;
-export function showToast(text: string, ms = 2000) {
-  toast.value = { text, id: Date.now() };
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => (toast.value = null), ms);
+export const toast = signal<{ text: string; id: number; kind: "info" | "error" } | null>(null);
+let toastTimer: ReturnType<typeof setTimeout> | undefined, toastSequence = 0;
+export function dismissToast(id = toast.value?.id) { if (id !== toast.value?.id) return; clearTimeout(toastTimer); toast.value = null; }
+function publishToast(text: string, kind: "info" | "error", ms: number) {
+  const id = ++toastSequence; clearTimeout(toastTimer); toast.value = { text, id, kind };
+  if (ms > 0) toastTimer = setTimeout(() => dismissToast(id), ms);
 }
+export function showToast(text: string, ms = 2000) { publishToast(text, "info", ms); }
+/** Action failures remain available until dismissed unless the caller supplies a readable duration. */
+export function showError(text: string, ms = 0) { publishToast(text, "error", ms ? Math.max(6000, ms) : 0); }
 
 export async function copy(text: string, label = "Copied") {
   try {
@@ -253,3 +269,10 @@ export const readBase64 = (file: File) =>
     reader.onerror = () => reject(reader.error);
     reader.readAsDataURL(file);
   });
+
+/** Counts and provider names shown to people, rather than their transport identifiers. */
+export const plural = (n: number, word: string, many = word + "s") => `${n} ${n === 1 ? word : many}`;
+export const agentName = (id?: string) => id ? SHORT[id as AgentId] ?? id : undefined;
+
+/** Complete a server message before appending UI guidance. */
+export const completeSentence = (message: string) => message.trim() + (/[.!?]$/.test(message.trim()) || !message.trim() ? "" : ".");

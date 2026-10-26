@@ -43,7 +43,7 @@ async function chooseFolder(repository: string) {
   const observe = (request: import("playwright-core").Request) => { if (request.url().includes("/api/fs?")) requests.push(request.url()); };
   page.on("request", observe);
   const field = page.getByLabel("Folder path"); await field.fill(repository); await field.press("Enter");
-  await page.getByText("✓ This folder is a git repository", { exact: true }).waitFor({ timeout: 10000 }).catch(async error => { console.error({ requests, field: await field.inputValue(), expected: repository }, await page.getByRole("dialog", { name: "Open repository", exact: true }).innerText()); throw error; });
+  await page.getByText("✓ This folder is a git repository", { exact: true }).waitFor({ timeout: 10_000 }).catch(async error => { console.error({ requests, field: await field.inputValue(), expected: repository }, await page.getByRole("dialog", { name: "Open repository", exact: true }).innerText()); throw error; });
   page.off("request", observe);
   await page.getByRole("button", { name: "Open this repository", exact: true }).click();
 }
@@ -173,7 +173,9 @@ test("recurring runs retain explicit membership and reject revoked destinations 
   const project = (await api("/api/projects", { name: "Scheduled membership", repos: [repoA] })).id;
   const run = { project, projectSelection: "explicit", repo: repoA, pattern: "solo", task: "Must retain membership", roles: { agent: ["claude"] }, loop: { check: "true" } };
   const saved = await api("/api/automations", { name: "Strict scheduled run", enabled: false, schedule: { every: 60 }, run });
-  assert.equal(saved.run.projectSelection, "explicit");
+  // Interactive selection markers are not persisted so a deleted project can fall back.
+  // The existing project id still authorizes only its current explicit members.
+  assert.equal(saved.run.projectSelection, undefined); assert.equal(saved.run.project, project);
   await api(`/api/projects/${project}`, { repos: [] });
   const before = (await api("/api/runs")).length;
   for (const [path, body] of [["/api/automations", { name: "Stale selection", schedule: { every: 60 }, run }], [`/api/automations/${saved.id}`, { run }], [`/api/automations/${saved.id}/run`, {}]] as const) {
@@ -204,7 +206,7 @@ test("project pages fit narrow screens, expose accessible navigation and have no
   await mkdir(join(root, "output/playwright"), { recursive: true });
   await page.screenshot({ path: join(root, "output/playwright/project-overview.png"), fullPage: true });
   await page.addScriptTag({ content: axe.source });
-  const audit = await page.evaluate(async () => (window as any).axe.run(".project-page", { runOnly: { type: "tag", values: ["wcag2a", "wcag2aa"] } }));
+  const audit = await page.evaluate(async () => (window as any).axe.run(".project-page", { runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21a"] } }));
   assert.deepEqual(audit.violations.map((violation: any) => violation.id), []);
   await page.setViewportSize({ width: 390, height: 844 });
   await page.getByRole("navigation", { name: "Runs", exact: true }).waitFor({ state: "hidden" });
@@ -235,7 +237,7 @@ test("project Board and People use the owning server despite colliding linked pr
     await page.goto(base + `/?team=${remote}#/team/project/${projectA}`);
     await page.getByRole("button", { name: /Remote colliding task/ }).waitFor();
     await page.goto(base + `/?team=${remote}#/project/${projectA}`);
-    await page.getByRole("button", { name: "More project tools", exact: true }).click();
+    await page.getByRole("button", { name: /^More project tools:/ }).click();
     await page.getByRole("menuitem", { name: "Board", exact: true }).click();
     await page.getByRole("button", { name: /Local board task/ }).waitFor();
     assert.equal(new URL(page.url()).searchParams.get("team"), "local");
@@ -277,7 +279,7 @@ test("project Automation ignores global filters and preserves saved schedules an
   await page.goto(base + `/#/project/${projectA}`);
   await page.getByRole("navigation", { name: "Project navigation" }).getByRole("link", { name: "Board", exact: true }).waitFor();
   await page.getByRole("navigation", { name: "Project navigation" }).getByRole("link", { name: "Automation", exact: true }).waitFor();
-  await page.getByRole("button", { name: "Open command palette", exact: true }).click();
+  await page.getByRole("button", { name: /^Open command palette/ }).click();
   await page.getByRole("combobox", { name: "Find a command, project or run" }).fill("alpha people");
   await page.getByRole("option", { name: /alpha · People/ }).waitFor();
   await page.keyboard.press("Escape");
@@ -293,18 +295,20 @@ test("new project destinations support narrow screens, themes and keyboard navig
     if (section.startsWith("automation")) await page.getByText("Alpha scheduled task", { exact: true }).waitFor();
     for (const colorScheme of ["light", "dark"] as const) {
       await page.emulateMedia({ colorScheme, reducedMotion: "reduce" }); await page.setViewportSize({ width: 390, height: 844 });
-      await page.getByRole("navigation", { name: "Runs", exact: true }).waitFor({ state: "hidden" });
-      await page.waitForFunction(() => document.getAnimations().every(animation => animation.playState !== "running"));
+      await page.locator(".rail").waitFor({ state: "hidden", timeout: 10_000 });
+      // Flush style changes before enumerating transitions; otherwise axe can
+      // sample the previous theme before reduced-motion transitions start.
+      await page.waitForFunction(() => { document.documentElement.getBoundingClientRect(); return document.getAnimations().every(animation => animation.playState !== "running" || animation.effect?.getComputedTiming().endTime === Infinity); }, undefined, { timeout: 10_000 });
       await page.addScriptTag({ content: axe.source });
-      const result = await page.evaluate(async () => (await (window as any).axe.run(".project-page", { runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21aa"] } })).violations);
+      const result = await page.evaluate(async () => (await (window as any).axe.run(".project-page", { runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"] } })).violations);
       assert.deepEqual(result.map((v: any) => `${v.id}: ${v.nodes.map((n: any) => n.target.join(" "))}`), [], `${section}, ${colorScheme}`);
       assert.equal(await page.locator(".project-page").evaluate(element => element.scrollWidth <= element.clientWidth + 1), true, section);
       await page.screenshot({ path: join(root, `output/playwright/project-${section.replace("/", "-")}-${colorScheme}.png`), fullPage: true });
     }
-    const more = page.getByRole("button", { name: "More project tools", exact: true }); await more.focus(); await page.keyboard.press("Enter");
-    await page.getByRole("menuitem", { name: "People", exact: true }).waitFor();
-    await page.waitForFunction(() => document.activeElement?.getAttribute("role") === "menuitem"); await page.keyboard.press("Escape");
-    await page.getByRole("menu", { name: "More project tools", exact: true }).waitFor({ state: "hidden" });
+    const more = page.getByRole("button", { name: /^More project tools:/ }); await more.focus(); await page.keyboard.press("Enter");
+    await page.getByRole("menuitem", { name: "People", exact: true }).waitFor({ timeout: 10_000 });
+    await page.waitForFunction(() => document.activeElement?.getAttribute("role") === "menuitem", undefined, { timeout: 10_000 }); await page.keyboard.press("Escape");
+    await page.getByRole("menu", { name: "More project tools", exact: true }).waitFor({ state: "hidden", timeout: 10_000 });
     assert.equal(await more.evaluate(element => document.activeElement === element), true);
   }
   assert.deepEqual(errors, []);
