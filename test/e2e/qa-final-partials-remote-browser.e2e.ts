@@ -12,6 +12,7 @@ import type { Socket } from "node:net";
 import { buildHost, fixture, pause, root } from "../ssh-project-fixture.js";
 import { quote } from "../../src/ssh-projects/transport.js";
 import { reserveQaPorts } from "../qa-port-block.js";
+import { findChrome } from "../../src/snapshot.js";
 
 test("real loopback SSH live Browser navigation, input, preview WebSocket and boot recovery", { skip: process.env.CODEFLOW_TEST_LOOPBACK_SSH !== "1", timeout: 180_000 }, async t => {
   const daemon = process.env.CODEFLOW_TEST_SSHD ?? "/usr/sbin/sshd"; assert.ok(existsSync(daemon), "This explicit opt-in needs a local sshd");
@@ -28,7 +29,7 @@ test("real loopback SSH live Browser navigation, input, preview WebSocket and bo
     const hostKey = join(f.directory, "host-key"), clientKey = join(f.directory, "client-key"), known = join(f.directory, "known_hosts"), authorized = join(f.directory, "authorized_keys"), user = execFileSync("id", ["-un"], { encoding: "utf8" }).trim();
     for (const key of [hostKey, clientKey]) execFileSync("ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-f", key]);
     await writeFile(authorized, await readFile(`${clientKey}.pub`), { mode: 0o600 }); await writeFile(known, `qa-final-loopback ${await readFile(`${hostKey}.pub`, "utf8")}`, { mode: 0o600 });
-    const chrome = join(f.directory, "qa-chrome"); await writeFile(chrome, `#!/bin/sh\nexec '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' --use-mock-keychain "$@"\n`, { mode: 0o700 });
+    const chrome = join(f.directory, "qa-chrome"), executable = findChrome(); assert.ok(executable, "Chrome is required for the browser fixture"); await writeFile(chrome, `#!/bin/sh\nexec ${quote(executable)}${process.platform === "darwin" && !process.env.CODEFLOW_CHROME ? " --use-mock-keychain" : ""} "$@"\n`, { mode: 0o700 });
     const command = join(f.directory, "remote-command"); await writeFile(command, `#!/bin/sh\nexport HOME=${quote(f.remoteHome)} SHELL=${quote(f.login)} CODEFLOW_CHROME=${quote(chrome)} CODEFLOW_HOME=${quote(join(f.remoteHome, ".codeflow/ssh-host"))} CODEFLOW_REMOTE_PORT=${ports.port + 3} PATH=${quote(`${join(root, "test/fake-bin")}:${dirname(process.execPath)}:${process.env.PATH}`)}\nexec /bin/sh -c "$SSH_ORIGINAL_COMMAND"\n`, { mode: 0o700 });
     const config = join(f.directory, "sshd_config"); await writeFile(config, [`Port ${ports.port + 2}`, "ListenAddress 127.0.0.1", `HostKey ${hostKey}`, `PidFile ${join(f.directory, "sshd.pid")}`, `AuthorizedKeysFile ${authorized}`, `AllowUsers ${user}`, "PasswordAuthentication no", "KbdInteractiveAuthentication no", "PubkeyAuthentication yes", "UsePAM no", "StrictModes yes", "AllowTcpForwarding local", "AllowAgentForwarding no", "X11Forwarding no", "PermitTTY no", `ForceCommand ${command}`, "LogLevel ERROR"].join("\n") + "\n", { mode: 0o600 });
     const client = join(f.directory, "ssh_config"); await writeFile(client, [`Host qa-final-loopback`, " HostName 127.0.0.1", ` User ${user}`, " IdentitiesOnly yes", " HostKeyAlias qa-final-loopback", ` UserKnownHostsFile ${known}`, " GlobalKnownHostsFile /dev/null"].join("\n") + "\n"); await writeFile(f.ssh, `#!/bin/sh\nexec /usr/bin/ssh -F ${quote(client)} "$@"\n`, { mode: 0o700 });

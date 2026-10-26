@@ -1,3 +1,5 @@
+import { realpathSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -9,7 +11,7 @@ import { Notifications } from "../src/notifications.js";
 const fetcher = (async () => Response.json([])) as typeof fetch;
 const draft = { provider: "gitlab" as const, name: "Saved GitLab", scope: "org/repo", credential: "fixture-secret", baseUrl: "https://fixture.invalid/api/v4/" };
 async function fixture() {
-  const directory = await mkdtemp("/private/tmp/cf-qa-connections-"), file = join(directory, "notifications.json");
+  const directory = await mkdtemp(join(realpathSync(tmpdir()), "cf-qa-connections-")), file = join(directory, "notifications.json");
   const sources = new Integrations({ environment: {}, fetch: fetcher }); await sources.load([]);
   const notifications = new Notifications({ file, environment: {}, fetch: fetcher }); await notifications.load([]);
   const store = new IntegrationConnections({ directory: join(directory, "secrets"), integrations: sources, notifications, fetch: fetcher, githubTest: async () => {} }); await store.load();

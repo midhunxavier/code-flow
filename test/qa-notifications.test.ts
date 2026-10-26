@@ -1,3 +1,5 @@
+import { realpathSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -8,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import { Notifications, notificationEvents } from "../src/notifications.js";
 import type { RunSummary, Run, RunManager } from "../src/engine.js";
 
-const scratch = await mkdtemp("/private/tmp/cf-qa-notifications-unit-");
+const scratch = await mkdtemp(join(realpathSync(tmpdir()), "cf-qa-notifications-unit-"));
 const services: Notifications[] = [];
 const config = [{ id: "fixture", name: "QA destination", protocol: "webhook", urlEnv: "QA_OUTBOUND_URL", secretEnv: "QA_OUTBOUND_TOKEN" }];
 const env = { QA_OUTBOUND_URL: "https://notification-fixture.invalid/private-hook", QA_OUTBOUND_TOKEN: "private-fixture-token" };

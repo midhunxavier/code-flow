@@ -1,14 +1,15 @@
+import { tmpdir } from "node:os";
 import { before, after, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { realpathSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium, type Browser, type Page } from "playwright-core";
 import { reserveQaPorts } from "../qa-port-block.js";
 
 const ports = await reserveQaPorts(2), root = fileURLToPath(new URL("../..", import.meta.url));
-const scratch = mkdtempSync("/private/tmp/codeflow-final-approval-"), home = join(scratch, "data"), repo = join(scratch, "repo");
+const scratch = mkdtempSync(join(realpathSync(tmpdir()), "codeflow-final-approval-")), home = join(scratch, "data"), repo = join(scratch, "repo");
 const evidence = process.env.CODEFLOW_QA_EVIDENCE_DIR ?? join(root, "output/playwright/qa-final-approval-attention");
 const token = "qa-final-approval", base = `http://127.0.0.1:${ports.port}`;
 const headers = { authorization: `Bearer ${token}`, "content-type": "application/json", origin: base };

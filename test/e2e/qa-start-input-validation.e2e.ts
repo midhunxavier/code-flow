@@ -1,14 +1,15 @@
+import { tmpdir } from "node:os";
 import { reserveQaPorts } from "../qa-port-block.js";
 import { test, before, after, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, execFileSync, type ChildProcess } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, readdirSync, rmSync, renameSync } from "node:fs";
+import { realpathSync, mkdtempSync, mkdirSync, writeFileSync, readdirSync, rmSync, renameSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium, type Browser, type Page } from "playwright-core";
 const qaPorts = await reserveQaPorts(2, process.env.QA_START_INPUT_PORT);
 after(() => qaPorts.release());
-const root = fileURLToPath(new URL("../..", import.meta.url)), scratch = mkdtempSync("/private/tmp/cf-qa-start-ui-");
+const root = fileURLToPath(new URL("../..", import.meta.url)), scratch = mkdtempSync(join(realpathSync(tmpdir()), "cf-qa-start-ui-"));
 const data = join(scratch, "data"), records = join(scratch, "records"), shots = join(root, "output/playwright/qa-start-input-validation");
 const port = qaPorts.port, base = `http://127.0.0.1:${port}`, token = "qa-start-input-validation-token";
 let server: ChildProcess, browser: Browser, restart = false, offlineCompare = false;

@@ -1,3 +1,5 @@
+import { realpathSync } from "node:fs";
+import { tmpdir } from "node:os";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn, execFileSync, type ChildProcess } from "node:child_process";
@@ -9,7 +11,7 @@ import { reserveQaPorts } from "../qa-port-block.js";
 import { copyFinalQaApp } from "../qa-final-app.js";
 
 test("repository defaults respect repository policy and retain browser commands through pause, late reads and project switches", { timeout: 120000 }, async () => {
-  const root = fileURLToPath(new URL("../..", import.meta.url)), dir = await mkdtemp("/private/tmp/codeflow-defaults-policy-"), app = join(dir, "app"), home = join(dir, "home");
+  const root = fileURLToPath(new URL("../..", import.meta.url)), dir = await mkdtemp(join(realpathSync(tmpdir()), "codeflow-defaults-policy-")), app = join(dir, "app"), home = join(dir, "home");
   const evidence = process.env.CODEFLOW_QA_EVIDENCE_DIR ?? join(root, "output/playwright/qa-final-repository-defaults-policy");
   const ports = await reserveQaPorts(2), base = `http://127.0.0.1:${ports.port}`, token = "qa-defaults-policy", headers = { authorization: `Bearer ${token}`, "content-type": "application/json", origin: base };
   let server: ChildProcess | undefined, browser: Browser | undefined, logs = "";

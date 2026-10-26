@@ -1,10 +1,11 @@
+import { tmpdir } from "node:os";
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, readdirSync, rmSync, symlinkSync } from "node:fs";
+import { realpathSync, mkdtempSync, mkdirSync, writeFileSync, readdirSync, rmSync, symlinkSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { EXECUTION_LIMITS, TASK_TEAM_LIMITS, numberProblem, acceptanceCriteriaProblem } from "../src/start-input-validation.js";
-const scratch = mkdtempSync("/private/tmp/cf-qa-start-validation-");
+const scratch = mkdtempSync(join(realpathSync(tmpdir()), "cf-qa-start-validation-"));
 process.env.CODEFLOW_HOME = join(scratch, "data");
 process.env.SHELL = join(scratch, "bash"); process.env.BASH_ENV = ""; process.env.ENV = "";
 writeFileSync(process.env.SHELL, '#!/bin/sh\nexec /bin/bash --noprofile --norc\n', { mode: 0o755 });

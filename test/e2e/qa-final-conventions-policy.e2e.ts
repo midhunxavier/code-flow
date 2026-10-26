@@ -1,3 +1,5 @@
+import { realpathSync } from "node:fs";
+import { tmpdir } from "node:os";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
@@ -9,7 +11,7 @@ import { reserveQaPorts } from "../qa-port-block.js";
 
 test("conventions respect selected project policy at boot and preserve a local draft through pause, recovery and CAS", { timeout: 120000 }, async () => {
   const root = fileURLToPath(new URL("../..", import.meta.url));
-  const scratch = await mkdtemp("/private/tmp/codeflow-conventions-policy-");
+  const scratch = await mkdtemp(join(realpathSync(tmpdir()), "codeflow-conventions-policy-"));
   const home = join(scratch, "home"), osHome = join(scratch, "os-home");
   const evidence = process.env.CODEFLOW_QA_EVIDENCE_DIR || join(root, "output/playwright/qa-final-conventions-policy");
   const ports = await reserveQaPorts(2), base = `http://127.0.0.1:${ports.port}`, token = "conventions-policy-fixture";

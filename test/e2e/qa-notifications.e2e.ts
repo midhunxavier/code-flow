@@ -1,8 +1,9 @@
+import { tmpdir } from "node:os";
 import { reserveQaPorts } from "../qa-port-block.js";
 import { before, after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, execFileSync, type ChildProcess } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
+import { realpathSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AddressInfo } from "node:net";
@@ -10,7 +11,7 @@ import { createServer as createReceiver, type Server as HttpsServer } from "node
 import { chromium, type Browser, type Page } from "playwright-core";
 const qaPorts = await reserveQaPorts(2, process.env.QA_NOTIFICATIONS_PORT);
 after(() => qaPorts.release());
-const root = fileURLToPath(new URL("../..", import.meta.url)), scratch = mkdtempSync("/private/tmp/cf-qa-notifications-ui-");
+const root = fileURLToPath(new URL("../..", import.meta.url)), scratch = mkdtempSync(join(realpathSync(tmpdir()), "cf-qa-notifications-ui-"));
 const home = join(scratch, "data"), repo = join(scratch, "repo"), gh = join(scratch, "gh.json"), shots = join(root, "output/playwright/qa-notifications");
 const port = qaPorts.port, base = `http://127.0.0.1:${port}`, token = "notifications54-fixture";
 const headers = { authorization: `Bearer ${token}`, "content-type": "application/json", origin: base };

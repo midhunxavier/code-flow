@@ -1,3 +1,5 @@
+import { realpathSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, execFileSync, type ChildProcess } from 'node:child_process';
@@ -36,7 +38,7 @@ async function shot(page: Page, name: string) { if (evidence)
 async function composer(page: Page, id: string) { await page.goto(`${base}/#/project/${id}/new`); await page.getByLabel('Task', { exact: true }).waitFor(); }
 async function edit(page: Page, id: string) { await page.goto(`${base}/#/project/${id}/settings`); await page.getByRole('button', { name: 'Edit project', exact: true }).click(); await page.getByLabel('Name', { exact: true }).waitFor(); return page.getByRole('dialog').filter({ has: page.getByLabel('Name', { exact: true }) }); }
 async function chooseFolder(page: Page, path: string, label: string) { const dialog = page.getByRole('dialog', { name: label, exact: true }); await dialog.getByLabel('Folder path', { exact: true }).fill(path); await dialog.getByLabel('Folder path', { exact: true }).press('Enter'); await dialog.getByRole('button', { name: label === 'Add repository' ? 'Add this repository' : 'Open this repository', exact: true }).click(); }
-before(async () => { home = await mkdtemp('/private/tmp/codeflow-qa-continue/projects-ui-'); data = join(home, 'state'); repo = join(home, 'repo'); extra = join(home, 'extra'); await mkdir(data); for (const folder of [repo, extra]) {
+before(async () => { home = await mkdtemp(join(realpathSync(tmpdir()), 'projects-ui-')); data = join(home, 'state'); repo = join(home, 'repo'); extra = join(home, 'extra'); await mkdir(data); for (const folder of [repo, extra]) {
     await mkdir(folder);
     execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: folder });
     await writeFile(join(folder, 'README.md'), 'QA only\n');

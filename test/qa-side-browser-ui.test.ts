@@ -6,8 +6,9 @@ import {join} from "node:path";
 import {fileURLToPath} from "node:url";
 import {createServer,type Server} from "node:http";
 import {chromium,type Browser,type Page,type Locator} from "playwright-core";
+import {findChrome} from "../src/snapshot.js";
 const root=fileURLToPath(new URL("..",import.meta.url));
-const evidence=process.env.QA_SIDE_BROWSER_EVIDENCE??"/private/tmp/codeflow-qa-continue/work/side-browser";
+const evidence=process.env.QA_SIDE_BROWSER_EVIDENCE??join(root,"output/playwright/qa-side-browser-unit");
 mkdirSync(evidence,{recursive:true});
 const home=mkdtempSync(join(evidence,"ui-home-")),repo=join(home,"repo"),token="qa-side-browser-token",base="http://127.0.0.1:4355",site="http://127.0.0.1:4357";
 let server:ChildProcess,fixture:Server,browser:Browser,page:Page,side:Locator,surface:Locator,run:any,hits=0,queued=0;
@@ -46,9 +47,10 @@ before(async()=>{
  const canonical=join(home,"chrome.sh"),legacy=join(home,"legacy-chrome.sh"),log=join(evidence,"chrome-launches.log");writeFileSync(log,"");
  // Keep the outer QA Chrome configuration while testing canonical/legacy precedence.
  // Raw Chrome under a scratch macOS HOME can wait indefinitely for Keychain authorization.
- const inheritedChrome=process.env.CODEFLOW_CHROME||undefined,chrome=inheritedChrome??"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+ const inheritedChrome=process.env.CODEFLOW_CHROME||undefined,chrome=findChrome();
+ assert.ok(chrome,"Chrome is required for the browser fixture");
  const shellQuote=(value:string)=>`'${value.replace(/'/g,"'\\''")}'`;
- for(const [file,label] of [[canonical,"canonical"],[legacy,"legacy"]] as const)writeFileSync(file,`#!/bin/sh\necho ${label} >> ${shellQuote(log)}\nexec ${shellQuote(chrome)}${inheritedChrome?"":" --use-mock-keychain"} "$@"\n`,{mode:0o700});
+ for(const [file,label] of [[canonical,"canonical"],[legacy,"legacy"]] as const)writeFileSync(file,`#!/bin/sh\necho ${label} >> ${shellQuote(log)}\nexec ${shellQuote(chrome)}${!inheritedChrome&&process.platform==="darwin"?" --use-mock-keychain":""} "$@"\n`,{mode:0o700});
  writeFileSync(join(home,"fake-gh.json"),'{"issues":[],"prs":{}}');
  execFileSync(process.execPath,["scripts/build-ui.mjs"],{cwd:root});
  const out=openSync(join(evidence,"ui-server.log"),"w");server=spawn(process.execPath,["--import","tsx","src/server.ts"],{cwd:root,env:{...process.env,PORT:"4355",CODEFLOW_HOME:join(home,"state"),CODEFLOW_TOKEN:token,HOME:home,PATH:`${root}/test/fake-bin:${process.env.PATH}`,FAKE_GH_STATE:join(home,"fake-gh.json"),CODEFLOW_CHROME:canonical,CODEFLOW_CHROME_PATH:legacy},stdio:["ignore",out,out]});

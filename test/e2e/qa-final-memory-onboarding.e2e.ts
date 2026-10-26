@@ -1,3 +1,5 @@
+import { realpathSync } from "node:fs";
+import { tmpdir } from "node:os";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
@@ -10,7 +12,7 @@ import { onboardingExamples, onboardingScopeExamples, literalMemoryPaths } from 
 
 test("onboarding UI and guarded publication retain meaningful whitespace and omit only identical text", { timeout: 60000 }, async () => {
   const root = fileURLToPath(new URL("../..", import.meta.url));
-  const scratch = await mkdtemp("/private/tmp/codeflow-onboarding-ui-");
+  const scratch = await mkdtemp(join(realpathSync(tmpdir()), "codeflow-onboarding-ui-"));
   const home = join(scratch, "home"), repo = join(scratch, "repo"), osHome = join(scratch, "os-home");
   const evidence = join(root, "output/playwright/qa-final-memory-onboarding");
   const ports = await reserveQaPorts(2), base = `http://127.0.0.1:${ports.port}`, token = "onboarding-fixture";

@@ -1,15 +1,16 @@
+import { tmpdir } from "node:os";
 import { reserveQaPorts } from "../qa-port-block.js";
 import { test, before, after, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, execFileSync, type ChildProcess } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
+import { realpathSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHmac, randomUUID } from "node:crypto";
 import { chromium, type Browser } from "playwright-core";
 const qaPorts = await reserveQaPorts(2, process.env.QA_AUTOMATION_WEBHOOKS_PORT);
 after(() => qaPorts.release());
-const root = fileURLToPath(new URL("../..", import.meta.url)), scratch = mkdtempSync("/private/tmp/cf-qa-webhook-ui-");
+const root = fileURLToPath(new URL("../..", import.meta.url)), scratch = mkdtempSync(join(realpathSync(tmpdir()), "cf-qa-webhook-ui-"));
 const data = join(scratch, "data"), gh = join(scratch, "github.json"), shots = join(root, "output/playwright/qa-automation-webhooks");
 const port = qaPorts.port, base = `http://127.0.0.1:${port}`, token = "qa-automation-webhooks-token";
 let server: ChildProcess, browser: Browser, restarting = false, offlineRetry = "";

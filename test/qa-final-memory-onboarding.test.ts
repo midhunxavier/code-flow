@@ -1,3 +1,6 @@
+import { realpathSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -10,7 +13,7 @@ for (const [name, examples] of [
   ["Python indentation", onboardingExamples.slice(0, 2)],
   ["significant quoted spaces", onboardingExamples.slice(2)],
 ] as const) test(`onboarding preserves distinct ${name} while normalized duplicate review remains available`, async () => {
-  const repo = await mkdtemp("/private/tmp/codeflow-onboarding-unit-");
+  const repo = await mkdtemp(join(realpathSync(tmpdir()), "codeflow-onboarding-unit-"));
   const entries = [...examples, { title: "Z Exact duplicate", body: examples[0]!.body }].map((example, i): MemoryEntry => ({
     ...example, id: `m-${i}`, revision: 1, repo, projectId: "p", scope: "project", status: "accepted", acceptedBy: "user",
     tags: [], paths: [], applicability: { kind: "repository" }, derivedFrom: [], sourceRefs: [],
@@ -27,7 +30,7 @@ for (const [name, examples] of [
 });
 
 test("identical onboarding bodies keep distinct branch and path applicability", async () => {
-  const repo = await mkdtemp("/private/tmp/codeflow-onboarding-scopes-");
+  const repo = await mkdtemp(join(realpathSync(tmpdir()), "codeflow-onboarding-scopes-"));
   try {
     execFileSync("git", ["init", "-qb", "main"], { cwd: repo });
     for (const file of ["README.md", "config.txt"]) await writeFile(`${repo}/${file}`, "fixture\n");
@@ -52,7 +55,7 @@ test("identical onboarding bodies keep distinct branch and path applicability", 
 });
 
 test("onboarding path and branch labels fence punctuation, backticks and line breaks as literal JSON", async () => {
-  const repo = await mkdtemp("/private/tmp/codeflow-onboarding-literals-");
+  const repo = await mkdtemp(join(realpathSync(tmpdir()), "codeflow-onboarding-literals-"));
   try {
     execFileSync("git", ["init", "-qb", "_qa_"], { cwd: repo });
     for (const path of literalMemoryPaths) await writeFile(`${repo}/${path}`, "fixture\n");

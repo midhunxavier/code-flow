@@ -1,14 +1,15 @@
+import { tmpdir } from "node:os";
 import { reserveQaPorts } from "../qa-port-block.js";
 import { before, after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, execFileSync, type ChildProcess } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
+import { realpathSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium, type Browser, type Page } from "playwright-core";
 const qaPorts = await reserveQaPorts(2, process.env.QA_FINAL_INTEGRATION_DRAFT_PORT);
 after(() => qaPorts.release());
-const root = fileURLToPath(new URL("../..", import.meta.url)), scratch = mkdtempSync("/private/tmp/cf-qa-draft-readiness-");
+const root = fileURLToPath(new URL("../..", import.meta.url)), scratch = mkdtempSync(join(realpathSync(tmpdir()), "cf-qa-draft-readiness-"));
 const home = join(scratch, "data"), repo = join(scratch, "repo"), gh = join(scratch, "gh.json"), fixtureState = join(scratch, "transport.json"), shots = join(root, "output/playwright/qa-final-integration-draft-readiness");
 const port = qaPorts.port, base = `http://127.0.0.1:${port}`, token = "draft-readiness-fixture", headers = { authorization: `Bearer ${token}`, "content-type": "application/json", origin: base };
 let server: ChildProcess, browser: Browser, page: Page, project: string, other: string, connection: string, github: string;

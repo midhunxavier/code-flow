@@ -1,11 +1,12 @@
+import { tmpdir } from "node:os";
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { realpathSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { createHmac } from "node:crypto";
 import { GITHUB_RUN_EVENTS, GITHUB_SWEEP_EVENTS, describeGithubRunEvents } from "../src/github-webhook-events.js";
 import type { Run, RunManager } from "../src/engine.js";
-const scratch = mkdtempSync("/private/tmp/cf-qa-webhook-unit-"); process.env.CODEFLOW_HOME = join(scratch, "data");
+const scratch = mkdtempSync(join(realpathSync(tmpdir()), "cf-qa-webhook-unit-")); process.env.CODEFLOW_HOME = join(scratch, "data");
 const { Automations, readWebhook } = await import("../src/automation.js");
 const all: InstanceType<typeof Automations>[] = [];
 after(async () => { for (const auto of all) await auto.stop(); rmSync(scratch, { recursive: true, force: true }); });

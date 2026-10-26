@@ -1,14 +1,15 @@
+import { tmpdir } from "node:os";
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, copyFileSync, rmSync } from "node:fs";
+import { realpathSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, copyFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium, type Browser } from "playwright-core";
 import { reserveQaPorts } from "../qa-port-block.js";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
-const fixture = mkdtempSync("/private/tmp/codeflow-alias-replay-");
+const fixture = mkdtempSync(join(realpathSync(tmpdir()), "codeflow-alias-replay-"));
 const home = join(fixture, "home"), repo = join(fixture, "repo"), bin = join(fixture, "bin");
 const evidence = join(root, "output/playwright/qa-team-model-alias");
 const ports = await reserveQaPorts(2), base = `http://127.0.0.1:${ports.port}`;

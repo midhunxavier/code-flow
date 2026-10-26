@@ -1,9 +1,10 @@
+import { tmpdir } from "node:os";
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { realpathSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
-const home = mkdtempSync("/private/tmp/cf-qa-phone-tls-unit-"); process.env.CODEFLOW_HOME = join(home, "data");
+const home = mkdtempSync(join(realpathSync(tmpdir()), "cf-qa-phone-tls-unit-")); process.env.CODEFLOW_HOME = join(home, "data");
 const { inspectEnvironmentCertificate, certificateCoversHost, certificateTimeInvalid, validateRemoteCertificate } = await import("../src/remote-tls.js");
 let cert: string, key: string;
 before(() => {

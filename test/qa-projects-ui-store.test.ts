@@ -1,10 +1,12 @@
+import { realpathSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, writeFile, readFile, mkdir, chmod } from 'node:fs/promises';
 import { join } from 'node:path';
-process.env.CODEFLOW_HOME = await mkdtemp('/private/tmp/codeflow-qa-continue/projects-store-log-');
+process.env.CODEFLOW_HOME = await mkdtemp(join(realpathSync(tmpdir()), 'projects-store-log-'));
 const { Projects } = await import('../src/projects.js');
-const fresh = async () => { const home = await mkdtemp('/private/tmp/codeflow-qa-continue/projects-store-'); return { home, file: join(home, 'projects.json') }; };
+const fresh = async () => { const home = await mkdtemp(join(realpathSync(tmpdir()), 'projects-store-')); return { home, file: join(home, 'projects.json') }; };
 test('stale metadata cannot undo rename or newly included repository; legacy revisions start at zero', async () => {
     const { file } = await fresh();
     await writeFile(file, JSON.stringify([{ id: 'a', name: 'A', repos: [], createdAt: 1 }]));
