@@ -4,11 +4,13 @@ PR: https://github.com/midhunxavier/code-flow/pull/61
 
 The release branch starts at `f14f404` and carries the final QA tree without the raw `docs/qa-dogfood/data` archive or its branch history. The full continuation branch and local evidence remain preserved. Publication is a subsequent user-authorized task; the original QA closeout's no-publication statement describes that earlier checkpoint.
 
-## Product finding
+## Product findings
 
 Automated PR review found that native approvals appeared in the main app's attention state but not the read-only phone view. The phone list now uses the shared attention predicate; list and detail badges show pending native approvals, and the detail explains where to answer. Detail rendering reads live approval state without persisting it or granting control.
 
 Both new Claude/Codex rendering cases failed before the repair. They pass after it, together with 43 related approval, phone, Team, automation and project checks (45 total). Resolution clears the badge, stopped/archived runs do not inherit obsolete approval attention, and the page exposes no approval form, button or mutation route.
+
+CI also reproduced an archived-run cache scheduling race. When an update invalidated an in-flight cache save, its replacement request was discarded because the save was still pending. The run could remain permanently hot. Scheduling now coalesces updates into one replacement write; the original promise includes that replacement so shutdown awaits it. Two held-write regressions fail before the repair and pass afterward, alongside the original storage/cleanup file (18 checks). The original archive-state deadline was restored; increasing it had not repaired the defect.
 
 ## CI and fixture findings
 
@@ -25,6 +27,8 @@ The first Linux jobs failed, and the first macOS/browser jobs exceeded the old t
 
 ## Focused verification
 
-In addition to the original frozen QA totals, release follow-through passed typecheck, installed-package tests (12), publishing-contract tests (8), portability checks (61), approval/phone checks (45), refined preview/UI checks (22), offline-worker/daily checks (16), cold-store/frame/terminal checks (21), merge checks (2), and the mission-engine browser file. These use isolated homes/repositories and fake providers. Current-head GitHub CI is the final merge gate; these focused passes do not recategorize earlier raw failures.
+In addition to the original frozen QA totals, release follow-through passed typecheck, installed-package tests (12), publishing-contract tests (8), portability checks (61), approval/phone checks (45), refined preview/UI checks (22), offline-worker/daily checks (16), cold-store/frame/terminal checks (21), merge checks (2), the mission-engine browser file (6), and the new cold-cache scheduling/storage cases (18). These use isolated homes/repositories and fake providers. Current-head GitHub CI is the final merge gate; these focused passes do not recategorize earlier raw failures.
 
 The QA report's 12 partial features, one blocked feature, original unclassified phone 401 and historical possible home-registry write remain qualified.
+
+Later CI receipts additionally exposed hydration, platform select-all, desktop VM startup-event ordering and settings navigation timing in test fixtures. Their corrections retain the content/visibility assertions and wait for the actual readiness condition. Original raw failures remain preserved.

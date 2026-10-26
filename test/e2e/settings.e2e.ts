@@ -51,8 +51,8 @@ test("desktop updates are hidden in browsers and show download/restart states ac
         openUpdateInstaller: async () => state,
       };
     })()` });
-    await desktop.goto(`${base}/?token=settings-test`);
-    await desktop.goto(`${base}/#/settings/general`);
+    await desktop.goto(`${base}/?token=settings-test&team=local#/settings/general`);
+    await desktop.getByRole("heading", { name: "General", exact: true }).waitFor();
     assert.equal(await desktop.evaluate(() => typeof window.codeflowDesktop), "object", desktopErrors.join("\n"));
     const card = desktop.getByRole("region", { name: "App updates" });
     await card.getByRole("button", { name: "Check for updates" }).click();

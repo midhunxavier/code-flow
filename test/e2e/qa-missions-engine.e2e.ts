@@ -181,7 +181,9 @@ test("legacy transient errors clear from the API and mission card across restart
   await start(); await open();
   for (let i = 0; i < 100 && (await team()).error; i++) await new Promise(r => setTimeout(r, 100));
   assert.equal((await team()).error, undefined);
-  assert.equal(await page.getByRole("alert").filter({ hasText: /Auto team execution is disabled/ }).count(), 0);
+  const legacyError = page.getByRole("alert").filter({ hasText: /Auto team execution is disabled/ });
+  await legacyError.waitFor({ state: "hidden" });
+  assert.equal(await legacyError.count(), 0);
   // One 400 above intentionally verifies that invalid edits are rejected; all other console output must be clean.
   assert.deepEqual(browserErrors, ["Failed to load resource: the server responded with a status of 400 (Bad Request)"], serverLog.join("\n"));
 });

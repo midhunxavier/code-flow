@@ -127,6 +127,7 @@ jobs:
           path: |
             output/playwright/**/*.png
             output/playwright/**/*.webm
+            output/playwright/**/failed-page.txt
           if-no-files-found: ignore
           retention-days: 7
 
