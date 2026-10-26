@@ -12,11 +12,27 @@ const home = join(fixture, "home"), repo = join(fixture, "repo"), token = "qa-st
 let base: string, server: ChildProcess, browser: Browser, context: BrowserContext | undefined, project: string, log = "";
 const errors: string[] = [], consoleErrors: string[] = [], expectedNetworkErrors: string[] = [];
 let disruptingStream = false;
+const deletedRuns = new Set<string>(), missingRunReads = new Map<string, number>();
+const runPath = (url: string) => new URL(url).origin === base ? new URL(url).pathname.match(/^\/api\/runs\/([^/]+)$/) : null;
+function unmatchedConsoleErrors() {
+  return consoleErrors.filter(line => {
+    const match = /^Failed to load resource: the server responded with a status of 404 \(Not Found\) \[(.+)\]$/.exec(line);
+    if (!match) return true;
+    if (new URL(match[1]!).origin !== base) return true;
+    const stale = new URL(match[1]!).pathname.match(/^\/api\/runs\/([^/]+)\/(?:chats|worktrees\/[^/]+\/serve)$/), remaining = missingRunReads.get(match[1]!) ?? 0;
+    if (!stale || !deletedRuns.has(stale[1]!) || remaining < 1) return true;
+    missingRunReads.set(match[1]!, remaining - 1); expectedNetworkErrors.push(line); return false;
+  });
+}
 async function until<T>(read: () => Promise<T>, accepts: (value: T) => boolean, timeout = 20_000): Promise<T> { const end = Date.now() + timeout; for (;;) { const value = await read(); if (accepts(value)) return value; assert.ok(Date.now() < end, JSON.stringify(value).slice(0, 800)); await new Promise(r => setTimeout(r, 60)); } }
-async function api(path: string, body?: unknown, method = body === undefined ? "GET" : "POST") { const response = await fetch(base + path, { headers, method, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }); assert.ok(response.ok, `${response.status} ${path}: ${await response.clone().text()}`); return response.json(); }
+async function api(path: string, body?: unknown, method = body === undefined ? "GET" : "POST") { const response = await fetch(base + path, { headers, method, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }); assert.ok(response.ok, `${response.status} ${path}: ${await response.clone().text()}`); if (method === "DELETE") { const run = runPath(base + path); if (run) deletedRuns.add(run[1]!); } return response.json(); }
 async function stop() { disruptingStream = true; if (server && server.exitCode === null && server.signalCode === null) { const done = new Promise(r => server.once("exit", r)); server.kill("SIGTERM"); await done; } }
 async function launch() { server = spawn(process.execPath, ["--import", "tsx", "src/server.ts"], { cwd: root, env: { ...process.env, CODEFLOW_HOME: home, CODEFLOW_TOKEN: token, PORT: new URL(base).port, PATH: `${join(root, "test/fake-bin")}:${process.env.PATH}` }, stdio: "pipe" }); for (const stream of [server.stdout, server.stderr]) stream?.on("data", value => log += String(value)); await until(() => fetch(base + "/api/health", { headers }).then(r => r.ok, () => false), Boolean); }
-async function page(hash = "") { context ??= await browser.newContext({ viewport: { width: 1440, height: 1000 } }); const p = await context.newPage(); p.setDefaultTimeout(12_000); await p.addInitScript(() => localStorage.setItem("sideOpen", "0")); p.on("pageerror", e => errors.push(e.message)); p.on("console", m => { if (m.type() !== "error") return; const expected = disruptingStream && m.location().url.startsWith(base + "/api/") && /^Failed to load resource: net::ERR_(?:INCOMPLETE_CHUNKED_ENCODING|CONNECTION_REFUSED)$/.test(m.text()); (expected ? expectedNetworkErrors : consoleErrors).push(`${m.text()} [${m.location().url}]`); }); await p.goto(`${base}/?token=${token}#/${hash}`); await until(() => p.locator(".connection-status").innerText(), v => v === "Connected"); return p; }
+async function page(hash = "") { context ??= await browser.newContext({ viewport: { width: 1440, height: 1000 } }); const p = await context.newPage(); p.on("response", response => {
+  const method = response.request().method(), run = runPath(response.url());
+  if (method === "DELETE" && response.status() === 200 && run) deletedRuns.add(run[1]!);
+  if (method === "GET" && response.status() === 404) missingRunReads.set(response.url(), (missingRunReads.get(response.url()) ?? 0) + 1);
+}); p.setDefaultTimeout(12_000); await p.addInitScript(() => localStorage.setItem("sideOpen", "0")); p.on("pageerror", e => errors.push(e.message)); p.on("console", m => { if (m.type() !== "error") return; const expected = disruptingStream && m.location().url.startsWith(base + "/api/") && /^Failed to load resource: net::ERR_(?:INCOMPLETE_CHUNKED_ENCODING|CONNECTION_REFUSED)$/.test(m.text()); (expected ? expectedNetworkErrors : consoleErrors).push(`${m.text()} [${m.location().url}]`); }); await p.goto(`${base}/?token=${token}#/${hash}`); await until(() => p.locator(".connection-status").innerText(), v => v === "Connected"); return p; }
 async function shot(p: Page, name: string) { if (evidence) { mkdirSync(evidence, { recursive: true }); await p.screenshot({ path: join(evidence, name + ".png"), animations: "disabled" }); } }
 let tasks = 0;
 const completed = async () => { const run = await api("/api/runs", { repo, project, pattern: "solo", roles: { agent: ["claude"] }, task: `Stream QA small change ${++tasks}` }); return until(() => api(`/api/runs/${run.id}`), r => r.status !== "running" && !!r.endedAt); };
@@ -27,7 +43,7 @@ before(async () => {
   await launch(); project = (await api("/api/projects", { name: "Stream QA", repos: [repo] })).id; browser = await chromium.launch({ channel: "chrome", headless: true });
 });
 afterEach(async () => { await context?.close(); context = undefined; disruptingStream = false; });
-after(async () => { await browser?.close(); await stop(); if (evidence) { mkdirSync(evidence, { recursive: true }); writeFileSync(join(evidence, "server.log"), log); writeFileSync(join(evidence, "console.json"), JSON.stringify({ unexpected: consoleErrors, expectedNetworkErrors })); } rmSync(fixture, { recursive: true, force: true }); assert.deepEqual(errors, []); assert.deepEqual(consoleErrors, []); assert.doesNotMatch(log, /uncaughtException|unhandledRejection|ReferenceError|TypeError:/); });
+after(async () => { await browser?.close(); await stop(); const unmatched = unmatchedConsoleErrors(); if (evidence) { mkdirSync(evidence, { recursive: true }); writeFileSync(join(evidence, "server.log"), log); writeFileSync(join(evidence, "console.json"), JSON.stringify({ unexpected: unmatched, expectedNetworkErrors })); } rmSync(fixture, { recursive: true, force: true }); assert.deepEqual(errors, []); assert.deepEqual(unmatched, []); assert.doesNotMatch(log, /uncaughtException|unhandledRejection|ReferenceError|TypeError:/); });
 
 test("two tabs retain unsaved dialogs and one broker across repeated server restarts", async () => {
   const a = await page(), b = await page();

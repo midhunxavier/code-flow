@@ -34,13 +34,19 @@ function faultText(id: string, reason: string, fault?: ProjectTeamFault) {
 export function ProjectTeamsPanel({ projectId, repos }: { projectId: string; repos: string[] }) {
   const [data, setData] = useState<Inventory>(), [error, setError] = useState<{ message: string; status?: number }>(), [creating, setCreating] = useState(false);
   const [loading, setLoading] = useState(false);
+  const loads = useRef(0), snapshots = useRef(0);
+  const latestSnapshot = useRef<Partial<Inventory>>();
   const [initialDefinition, setInitialDefinition] = useState<AgentTeamSnapshot>();
   const [featureBusy, setFeatureBusy] = useState(false), [featureError, setFeatureError] = useState("");
   const load = async () => {
-    setLoading(true);
-    try { setData(await api<Inventory>(`/api/project-teams?project=${encodeURIComponent(projectId)}`)); setError(undefined); }
-    catch (e) { setError({ message: (e as Error).message, status: e instanceof ApiError ? e.status : undefined }); }
-    finally { setLoading(false); }
+    const request = ++loads.current, before = snapshots.current; setLoading(true);
+    try {
+      const inventory = await api<Inventory>(`/api/project-teams?project=${encodeURIComponent(projectId)}`);
+      if (request !== loads.current) return;
+      // Live snapshots can arrive before the initial inventory (or a refresh) finishes.
+      setData(snapshots.current !== before ? { ...inventory, ...latestSnapshot.current } : inventory); setError(undefined);
+    } catch (e) { if (request === loads.current) setError({ message: (e as Error).message, status: e instanceof ApiError ? e.status : undefined }); }
+    finally { if (request === loads.current) setLoading(false); }
   };
   const toggle = async () => {
     if (!data || featureBusy) return; setFeatureBusy(true); setFeatureError("");
@@ -48,7 +54,17 @@ export function ProjectTeamsPanel({ projectId, repos }: { projectId: string; rep
     catch (error) { setFeatureError((error as Error).message); await load(); }
     finally { setFeatureBusy(false); }
   };
-  useEffect(() => { void load(); const refresh = () => { void load(); }; window.addEventListener("focus", refresh); const off = subscribe(`project-teams:${projectId}`, (event) => { if (event.type === "snapshot") setData((prior) => prior ? { ...prior, teams: event.teams, definitions: event.definitions, definitionFaults: event.definitionFaults, enabled: event.enabled, revision: event.revision, source: event.source, autoTeamEnabled: event.autoTeamEnabled } : prior); }); return () => { off(); window.removeEventListener("focus", refresh); }; }, [projectId]);
+  useEffect(() => {
+    latestSnapshot.current = undefined; setData(undefined); void load();
+    const refresh = () => { void load(); }; window.addEventListener("focus", refresh);
+    const off = subscribe(`project-teams:${projectId}`, event => {
+      if (event.type !== "snapshot") return;
+      const snapshot = { teams: event.teams, definitions: event.definitions, definitionFaults: event.definitionFaults, enabled: event.enabled, revision: event.revision, source: event.source, autoTeamEnabled: event.autoTeamEnabled };
+      latestSnapshot.current = snapshot; snapshots.current++;
+      setData(prior => prior ? { ...prior, ...snapshot } : prior);
+    });
+    return () => { loads.current++; off(); window.removeEventListener("focus", refresh); };
+  }, [projectId]);
   if (error) return <section class="pp-card pp-unavailable" aria-label="Project missions">
     <div class="pp-card-head"><h2>Project missions</h2><span class="badge">Unavailable</span><button class="btn small" disabled={loading} onClick={() => void load()}>{loading ? "Retrying…" : "Retry"}</button></div>
     <div class="pp-unavailable-body" role="alert">

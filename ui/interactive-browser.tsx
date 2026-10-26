@@ -26,6 +26,8 @@ export function InteractiveBrowser() {
   const [controlBusy,setControlBusy] = useState(false);
   const changeControl = async (action: "takeover" | "release") => { setControlBusy(true); try { setControl(await post(`/api/browser/control?scope=${encodeURIComponent(scope)}`, {action})); } catch (error) { setError((error as Error).message); } finally { setControlBusy(false); } };
   const [state,setState] = useState<State>();
+  const knownState = useRef<State>();
+  const pointerActive = useRef(false);
   const [servers,setServers] = useState<Omit<DevServer,"logs">[]>([]);
   const autoOff = useRef(false);
   // A filesystem restriction pauses the browser: known up front (every provider says so), or the server
@@ -57,7 +59,15 @@ export function InteractiveBrowser() {
     const work = pending.current.catch(() => {}).then(async () => {
       if (!mounted.current || current && !current()) return;
       try {
+        const latest = knownState.current;
+        if (typeof input.tab === "string" && typeof input.view === "number" && latest) {
+          if (input.tab !== latest.selected) return;
+          // Navigation controls follow a queued resize; input stays tied to the frame the user saw.
+          if (["back","forward","reload"].includes(String(input.action))) input = { ...input, view: latest.view };
+          else if (input.view !== latest.view) return;
+        }
         const result = await post<any>(endpoint,input);
+        if (result?.type === "state" && (!knownState.current || result.view >= knownState.current.view)) knownState.current = result;
         if (!mounted.current || current && !current()) return;
         if (!current && !["resize","state","watch","overlay"].includes(String(input.action))) setError(""); // passive updates do not clear a newer user-action error
         return result;
@@ -92,7 +102,7 @@ export function InteractiveBrowser() {
       const value = JSON.parse(event.data);
       if (value.type === "control") setControl(value);
       else if (value.type === "state") {
-        setState(value); setConnected(true);
+        knownState.current = value; setState(value); setConnected(true);
         if (value.selected !== displayed.current?.tab) { setFrame(previous=>previous?.tab===value.selected?previous:undefined); displayed.current = undefined; setDrawn(undefined); }
       } else if (value.type === "frame") { setFrame(value); setConnected(true); }
       else if (value.type === "overlay") receiveBrowserOverlay(`${scope}|${value.tab}`,value.message);
@@ -132,6 +142,9 @@ export function InteractiveBrowser() {
     const resize = () => {
       clearTimeout(timer);
       timer = setTimeout(() => {
+        // Opening the annotation drawer can resize the surface during a drag. Finish
+        // its input against the original view before changing Chrome's viewport.
+        if (pointerActive.current) { resize(); return; }
         const box = surface.current?.getBoundingClientRect(); if (!box?.width || !box.height) return;
         void send({action:"resize",width:Math.min(2560,Math.max(240,device === "phone" ? 390 : device === "tablet" ? 768 : Math.round(box.width))),height:Math.min(1600,Math.max(200,Math.round(box.height)))}).catch(() => {});
       },100);
@@ -185,7 +198,11 @@ export function InteractiveBrowser() {
     if(autoOff.current || !state?.selected || selected?.url !== "about:blank" || memo.url || memo.browserRequest) return;
     const folders=sideScope.value.run?.worktrees.map(tree=>tree.path) ?? [sideScope.value.repo];
     const own=servers.find(server=>server.status==="running" && folders.some(folder=>folder && (server.cwd===folder || server.cwd.startsWith(`${folder}/`))));
-    if(own){autoOff.current=true;void send({action:"navigate",url:own.url}).catch(()=>{});}
+    if(own){
+      // Effects from an older render must not replace a newer explicit or canceled intent.
+      const latest=sideMemory.value[scope]; if(latest?.url || latest?.browserRequest) return;
+      autoOff.current=true;rememberSide({browserRequest:{id:crypto.randomUUID(),url:own.url,previewStartedAt:own.startedAt}},scope);
+    }
   },[state?.selected,selected?.url,servers]);
   const pointer = (event:PointerEvent | WheelEvent, type:string) => {
     const shown = displayed.current, box = canvas.current?.getBoundingClientRect();
@@ -230,7 +247,7 @@ export function InteractiveBrowser() {
     {selected && /^https?:\/\//.test(selected.url) ? <LiveBrowserTools key={selected.id} pageKey={`${scope}|${selected.id}`} url={selected.url} width={state!.width} visible={visible} clearConsole={()=>send({action:"clear-console",tab:selected.id})} send={message=>send({action:"overlay",tab:selected.id,message})} />:null}
     <div class="live-browser-surface" ref={surface}>
       {state?.dialog ? <form class="live-browser-dialog" aria-label="Website dialog" onSubmit={event => {event.preventDefault();act("dialog",{accept:true,text:prompt});}}><p>{state.dialog.message}</p>{state.dialog.type === "prompt" ? <input class="field" aria-label="Website prompt" value={prompt} onInput={event => setPrompt(event.currentTarget.value)} /> : null}<button class="btn primary">OK</button><button type="button" class="btn" onClick={() => act("dialog",{accept:false})}>Cancel</button></form> : null}
-      <canvas ref={canvas} hidden={!showPage || unavailable} role="img" aria-label="Live browser page" data-tab={drawn?.tab} data-view={drawn?.view} data-frame-width={frame?.width} data-frame-height={frame?.height} data-ready={showPage && connected && drawn?.view === state?.view && drawn?.tab === state?.selected} onContextMenu={event => event.preventDefault()} onPointerDown={event => {event.preventDefault();keyboard.current?.focus({preventScroll:true}); event.currentTarget.setPointerCapture(event.pointerId);pointer(event,"mousePressed");}} onPointerUp={event => {pointer(event,"mouseReleased");if(event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);}} onPointerMove={event => {if(event.buttons || performance.now()-hoverAt.current>80) {hoverAt.current=performance.now();pointer(event,"mouseMoved");}}} onWheel={event => {event.preventDefault();pointer(event,"mouseWheel");}} />
+      <canvas ref={canvas} hidden={!showPage || unavailable} role="img" aria-label="Live browser page" data-tab={drawn?.tab} data-view={drawn?.view} data-frame-width={frame?.width} data-frame-height={frame?.height} data-ready={showPage && connected && drawn?.view === state?.view && drawn?.tab === state?.selected} onContextMenu={event => event.preventDefault()} onPointerDown={event => {pointerActive.current=true;event.preventDefault();keyboard.current?.focus({preventScroll:true}); event.currentTarget.setPointerCapture(event.pointerId);pointer(event,"mousePressed");}} onPointerUp={event => {pointer(event,"mouseReleased");pointerActive.current=false;if(event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);}} onLostPointerCapture={() => {pointerActive.current=false;}} onPointerMove={event => {if(event.buttons || performance.now()-hoverAt.current>80) {hoverAt.current=performance.now();pointer(event,"mouseMoved");}}} onWheel={event => {event.preventDefault();pointer(event,"mouseWheel");}} />
       <textarea ref={keyboard} disabled={!showPage} tabIndex={showPage ? 0 : -1} class="live-browser-keyboard" aria-label="Type in browser page" autoComplete="off" autoCapitalize="off" spellcheck={false} onKeyDown={key} onInput={event => {if ((event as InputEvent).isComposing) return;const text=event.currentTarget.value; event.currentTarget.value="";if(text) act("text",{text});}} onCompositionEnd={event => {const text=event.currentTarget.value;event.currentTarget.value="";if(text) act("text",{text});}} onPaste={event => {event.preventDefault();const text=event.clipboardData?.getData("text/plain");if(text) act("text",{text});}} />
       {unavailable ? <div class="live-browser-empty" role="status">{paused ? <PolicyPauseNotice what="Interactive browsing is paused" /> : <p class="msg warn">{blocked}</p>}</div> : blank ? <section class="live-browser-empty" aria-label="Browser start page">
         <div class="live-browser-empty-icon"><Icon name="globe" /></div>

@@ -199,3 +199,28 @@ finally {
     held.release();
     await close(page, run);
 } });
+
+test("Stop cancels queued navigation discovered from an already-running preview", { timeout: 60000 }, async () => {
+  const run = await newRun(), page = await pageFor(run), held = barrier(), entered = barrier();
+  const navigations: string[] = []; let first = true, resizes = 0;
+  page.on("response", response => { if (response.url().includes("/api/browser?") && response.request().postDataJSON()?.action === "resize") resizes++; });
+  await page.route("**/api/browser?**", async route => {
+    const body = route.request().postDataJSON();
+    if (body?.action === "navigate") navigations.push(body.url);
+    if (body?.action === "resize" && first) { first = false; entered.release(); await held.wait; }
+    await route.continue();
+  });
+  try {
+    await openBrowser(page); await entered.wait;
+    const inventory = page.waitForResponse(response => new URL(response.url()).pathname === "/api/serve" && response.status() === 200);
+    const app = await request(endpoint(run), { command: "node app.cjs" });
+    let response = await inventory;
+    while (!(await response.json()).some((server: any) => server.startedAt === app.startedAt)) response = await page.waitForResponse(r => new URL(r.url()).pathname === "/api/serve" && r.status() === 200);
+    // Let the discovery effect enqueue while the resize barrier still owns the queue.
+    await page.waitForTimeout(250);
+    await page.getByRole("button", { name: "Stop preview", exact: true }).waitFor(); await stop(page, run);
+    held.release(); await page.getByLabel("Browser viewport").selectOption("tablet");
+    await until(async () => resizes, value => value >= 2, "discovery queue drained");
+    assert.ok(!navigations.includes(app.url), JSON.stringify(navigations));
+  } finally { held.release(); await page.unrouteAll({ behavior: "wait" }); await close(page, run); }
+});

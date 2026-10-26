@@ -35,7 +35,7 @@ function watch(page: Page) {
     (expected ? expectedResponses : consoleErrors).push(`${text} [${url}]`);
   });
 }
-async function context() { const c = await browser.newContext({ ignoreHTTPSErrors: true, viewport: { width: 1440, height: 1000 } }); c.on("page", watch); return c; }
+async function context() { const c = await browser.newContext({ ignoreHTTPSErrors: true, viewport: { width: 1440, height: 1000 } }); await c.route("**/qa-cookie-document", route => route.fulfill({ contentType: "text/html", body: '<!doctype html><link rel="icon" href="data:,"><title>Cookie transport fixture</title>' })); c.on("page", watch); return c; }
 async function api(path: string, body?: unknown, method = "POST", instance = a, credentials: Record<string, string> = { authorization: `Bearer ${instance.token}` }) {
   const response = await fetch(base(instance) + path, { method: body === undefined ? "GET" : method, headers: { ...credentials, origin: base(instance), "content-type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
   const text = await response.text(); let data: any; try { data = JSON.parse(text); } catch { data = text; }
@@ -43,7 +43,7 @@ async function api(path: string, body?: unknown, method = "POST", instance = a, 
 }
 async function ok(path: string, body?: unknown, method = "POST", instance = a) { const result = await api(path, body, method, instance); assert.ok(result.status < 300, `${path}: ${result.status} ${JSON.stringify(result.body)}`); return result.body; }
 async function start(instance: Instance, fixed = true, agentDelay = "10") {
-  await qaPorts.release(instance.port - ownerPort, 2);
+  await qaPorts.release(instance.port - ownerPort, 1);
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(CODEFLOW_|FAKE_)/.test(key)));
   instance.child = spawn(process.execPath, ["--import", "tsx", "src/server.ts"], { cwd: root, env: { ...env, PORT: String(instance.port), CODEFLOW_REMOTE_PORT: String(instance.port + 1), CODEFLOW_HOME: instance.data, CODEFLOW_TOKEN: fixed ? instance.token : "", CODEFLOW_LAN_ALLOW_LOCAL: "1", NODE_EXTRA_CA_CERTS: certPath, SHELL: join(scratch, "bash"), BASH_ENV: "", ENV: "", FAKE_GH_STATE: join(scratch, "gh.json"), FAKE_SLEEP_MS: agentDelay, PATH: `${join(root, "test/fake-bin")}:${process.env.PATH}` }, stdio: ["ignore", "pipe", "pipe"] });
   for (const stream of [instance.child.stdout, instance.child.stderr]) stream?.on("data", chunk => logs.push(`[${instance.port}] ${chunk}`));
@@ -59,7 +59,8 @@ async function self(page: Page, instance = a) { await page.goto(base(instance));
 async function login(page: Page, username = "bob", origin = base()) {
   await page.goto(origin); await page.getByLabel("Username", { exact: true }).fill(username); await page.getByLabel("Password", { exact: true }).fill(password); await page.getByRole("button", { name: "Sign in", exact: true }).click(); await page.getByRole("tab", { name: "Board", exact: true }).waitFor();
 }
-async function pagePost(page: Page, path: string, body: unknown) { changingPrincipal = true; const result = await page.evaluate(async ({ path, body }) => { const r = await fetch(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }); return { status: r.status, body: await r.json() }; }, { path, body }); await pause(100); changingPrincipal = false; return result; }
+// Cookie transport checks switch principals on a document without background app reads.
+async function pagePost(page: Page, path: string, body: unknown) { await page.goto(new URL("/qa-cookie-document", page.url()).href); changingPrincipal = true; const result = await page.evaluate(async ({ path, body }) => { const r = await fetch(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }); return { status: r.status, body: await r.json() }; }, { path, body }); await pause(100); changingPrincipal = false; return result; }
 const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "-c", "commit.gpgsign=false", ...args], { cwd, encoding: "utf8" }).trim();
 before(async () => {
   mkdirSync(evidence, { recursive: true }); mkdirSync(repo); mkdirSync(join(repo, ".codeflow"));
@@ -70,6 +71,7 @@ before(async () => {
   await start(a); await start(b); projectId = (await ok("/api/projects", { name: "Auth fixture", repos: [repo] })).id;
   const board = await ok("/api/team/board"); await ok(`/api/team/projects/${projectId}/repositories`, { revision: board.revision, repositories: [{ key: "app", label: "App" }] }, "PUT"); await ok("/api/team-link/mappings", { projectId, repository: "app", path: repo }, "PUT");
   for (const [username, role] of [["bob", "contributor"], ["reviewer", "reviewer"], ["leaver", "contributor"]]) { const state = await ok("/api/accounts"); const next = await ok("/api/accounts", { revision: state.revision, username, displayName: username, password, roles: { [projectId]: role } }); if (username === "leaver") leaverId = next.users.find((u: any) => u.username === username).id; }
+  await qaPorts.release(1, 1);
   await ok("/api/remote", { enabled: true, lan: true, transport: "lan" }); await ok("/api/remote/tls", { mode: "import", hostname: "hub.qa.test", cert: cert.cert, key: cert.key });
   browser = await chromium.launch({ channel: "chrome", headless: true, args: ["--host-resolver-rules=MAP hub.qa.test 127.0.0.1", "--no-proxy-server"] });
 });
@@ -84,7 +86,7 @@ test("two local owner cookies survive sign-in, invitations and logout on the oth
   const invitation = await ok("/api/accounts/invitations", { projectId, role: "viewer" }); await p.goto(base()); assert.equal((await pagePost(p, "/api/auth/invitations/accept", { token: invitation.token, existing: true, username: "bob", password })).status, 200); assert.equal((await self(p, b)).kind, "owner");
   await p.goto(base()); assert.equal((await pagePost(p, "/api/auth/logout", {})).status, 200);
   // Let the signed-out UI settle before its session-change reload can compete with the other port.
-  await p.getByRole("heading", { name: "Sign in to shared projects", exact: true }).waitFor();
+  await p.goto(base()); await p.getByRole("heading", { name: "Sign in to shared projects", exact: true }).waitFor();
   assert.equal((await self(p, b)).kind, "owner");
   await c.close(); const legacyContext = await context(), legacyPage = await legacyContext.newPage(); await legacyContext.addCookies([{ name: "codeflow_session", value: b.token, url: base(), httpOnly: true, sameSite: "Strict" }]); await legacyPage.goto(base()); await pagePost(legacyPage, "/api/auth/login", { username: "bob", password });
   assert.equal((await legacyContext.cookies()).find(v => v.name === "codeflow_session")?.value, b.token, "other instance's legacy owner cookie survives");
@@ -96,6 +98,7 @@ test("two local owner cookies survive sign-in, invitations and logout on the oth
 test("stale browser links render protected HTML and the local-only handoff handles a real cross-site hop", async () => {
   const c = await context(), p = await c.newPage(); const bad = base() + "/?token=expired"; allowedFailures.set(bad, [403]);
   const denied = await p.goto(bad); assert.equal(denied!.status(), 403); assert.match(denied!.headers()["content-type"]!, /text\/html/); assert.equal(denied!.headers()["x-frame-options"], "DENY"); assert.match(denied!.headers()["cache-control"]!, /no-store/); assert.equal(denied!.headers()["referrer-policy"], "no-referrer"); await p.getByRole("heading", { name: /expired|stale|no longer/i }).waitFor();
+  const remote = await ok("/api/remote"); assert.equal(remote.secure, true); assert.equal(remote.lanError, undefined); assert.ok(remote.lanUrls.some((url: string) => url.startsWith(hub + "/")), JSON.stringify(remote));
   await owner(p, b); await login(p, "bob", hub); await p.goto(`${hub}/#/team/project/${projectId}`); await p.getByRole("button", { name: "Set up this computer for coding", exact: true }).click();
   const dialog = p.getByRole("dialog", { name: "Connect this computer", exact: true }); await dialog.getByLabel("Local Code Flow address", { exact: true }).fill(base(b));
   const navigations: string[] = []; p.on("framenavigated", frame => { if (frame === p.mainFrame()) navigations.push(frame.url()); });

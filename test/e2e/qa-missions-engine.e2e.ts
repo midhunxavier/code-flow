@@ -187,3 +187,35 @@ test("legacy transient errors clear from the API and mission card across restart
   // One 400 above intentionally verifies that invalid edits are rejected; all other console output must be clean.
   assert.deepEqual(browserErrors, ["Failed to load resource: the server responded with a status of 400 (Bad Request)"], serverLog.join("\n"));
 });
+
+test("a late initial inventory cannot restore an error cleared by the live mission snapshot", async () => {
+  await page.goto("about:blank");
+  await page.addInitScript(() => {
+    const Native = window.EventSource;
+    window.EventSource = class extends Native {
+      constructor(url: string | URL, options?: EventSourceInit) {
+        super(url, options);
+        this.addEventListener("message", event => {
+          const snapshot = JSON.parse(event.data).d;
+          if (snapshot?.type === "snapshot" && Array.isArray(snapshot.teams)) (window as any).__qaMissionSnapshot = snapshot;
+        });
+      }
+    };
+  });
+  let release!: () => void, captured!: () => void;
+  const held = new Promise<void>(resolve => release = resolve), entered = new Promise<void>(resolve => captured = resolve);
+  const inventory = `${base}/api/project-teams?project=${projectId}`;
+  await page.route(inventory, async route => {
+    const response = await route.fetch(), body = await response.json();
+    body.teams.find((item: any) => item.id === teamId).error = "Auto team execution is disabled by this host’s configuration";
+    captured(); await held; await route.fulfill({ response, json: body });
+  });
+  try {
+    const opened = open(); await entered;
+    await page.waitForFunction(id => (window as any).__qaMissionSnapshot?.teams.some((item: any) => item.id === id && !item.error), teamId);
+    release(); await opened;
+    await page.getByRole("heading", { name: /^Replacement mission / }).waitFor();
+    const error = page.getByRole("alert").filter({ hasText: /Auto team execution is disabled/ });
+    await error.waitFor({ state: "hidden", timeout: 3000 }); assert.equal(await error.count(), 0);
+  } finally { release(); await page.unrouteAll({ behavior: "wait" }); }
+});

@@ -77,7 +77,9 @@ before(async () => {
   const finished = (request: import("playwright-core").Request) => { if (finiteRequests.delete(request)) lastRequestFinished = Date.now(); };
   page.on("request", request => { if (trackFiniteReads && new URL(request.url()).pathname.startsWith("/api/")) finiteRequests.add(request); });
   page.on("requestfinished", finished); page.on("requestfailed", finished);
-  page.on("response", response => { if (response.headers()["content-type"]?.startsWith("text/event-stream")) finished(response.request()); });
+  // Headers arrive after the server has finished its admission-protected work.
+  // Waiting for browser body-consumption events can retain cached/streaming reads indefinitely.
+  page.on("response", response => finished(response.request()));
   page.on("pageerror", (error) => errors.push(error.message));
   await page.goto(`${base}/?token=${token}`);
 });

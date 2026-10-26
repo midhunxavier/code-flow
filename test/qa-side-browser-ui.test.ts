@@ -80,13 +80,13 @@ test("failed Preview is consumed once; manual navigation and reload stay on the 
 });
 
 test("Pick and Box follow reload, navigation, Escape and sending without clicking through",{timeout:60000},async()=>{
- await go("/annotations");const pick=side.getByRole("button",{name:"Pick",exact:true});await pick.click();const beforeHits=hits;
+ await go("/annotations");const pick=side.getByRole("button",{name:"Pick",exact:true});await pick.click();await ready();const beforeHits=hits;
  await side.getByRole("button",{name:"Reload",exact:true}).click();await ready();await page.waitForTimeout(300);assert.equal(await pick.getAttribute("aria-pressed"),"true");await click(60,80);await until(async()=>await side.locator(".pin-row").count()===1);assert.equal(hits,beforeHits);
  await go("/annotations-next");await page.waitForTimeout(300);assert.equal(await pick.getAttribute("aria-pressed"),"true");await click(60,80);await until(async()=>await side.locator(".pin-row").count()===2);assert.equal(hits,beforeHits);
  await side.getByRole("button",{name:"Add to chat",exact:true}).click();await until(async()=>await pick.getAttribute("aria-pressed")==="false");assert.equal(await side.locator(".pin-row").count(),0);
  await pick.click();await click(60,80);await until(async()=>await side.locator(".pin-row").count()===1);await page.keyboard.press("Escape");await until(async()=>await pick.getAttribute("aria-pressed")==="false");await click(60,80);await until(async()=>hits===beforeHits+1);await clearPins();
- const box=side.getByRole("button",{name:"Box",exact:true});await box.click();await side.getByRole("button",{name:"Reload",exact:true}).click();await ready();await page.waitForTimeout(300);assert.equal(await box.getAttribute("aria-pressed"),"true");
- const bounds=await surface.boundingBox(),from=await point(20,60),to=await point(130,105);await page.mouse.move(bounds!.x+from.x,bounds!.y+from.y);await page.mouse.down();await page.mouse.move(bounds!.x+to.x,bounds!.y+to.y,{steps:5});await page.mouse.up();await until(async()=>await side.locator(".pin-row").count()===1);assert.equal(hits,beforeHits+1);await shot("03-box-after-reload");await off();await clearPins();
+ const box=side.getByRole("button",{name:"Box",exact:true});await box.click();await ready();await side.getByRole("button",{name:"Reload",exact:true}).click();await ready();await page.waitForTimeout(300);assert.equal(await box.getAttribute("aria-pressed"),"true");
+ const bounds=await surface.boundingBox(),from=await point(20,60),to=await point(130,105);await page.mouse.move(bounds!.x+from.x,bounds!.y+from.y);await page.mouse.down();const dragView=(await api(endpoint(),{action:"state"})).view;await side.getByLabel("Browser viewport").selectOption("tablet");await page.waitForTimeout(300);assert.equal((await api(endpoint(),{action:"state"})).view,dragView,"viewport changes wait for the active annotation gesture");for(let step=1;step<=5;step++){await page.mouse.move(bounds!.x+from.x+(to.x-from.x)*step/5,bounds!.y+from.y+(to.y-from.y)*step/5);await page.waitForTimeout(100);}await page.mouse.up();await until(async()=>await side.locator(".pin-row").count()===1);assert.equal(hits,beforeHits+1);await side.getByLabel("Browser viewport").selectOption("full");await ready();await shot("03-box-after-reload");await off();await clearPins();
 });
 
 test("switching tabs resets old interception without stale-tab cleanup errors",{timeout:45000},async()=>{
@@ -126,4 +126,17 @@ test("visual captures give direct own-port guidance and use the same Chrome over
  const launches=readFileSync(join(evidence,"chrome-launches.log"),"utf8");assert.ok(launches.trim().split("\n").length>=2);assert.doesNotMatch(launches,/legacy/);
  assert.equal(await side.getByRole("button",{name:/^(Snapshot|Whole page|Retake|Live page|Draw|Compare)$/}).count(),0);
  assert.deepEqual(errors,[]);assert.equal(apiFailures.filter(x=>!x.includes('"action":"navigate"')&&!x.includes('"url":"http://127.0.0.1:4355"')).length,0,apiFailures.join("\n"));console.log("UI console errors",errors,"expected failures",apiFailures);
+});
+
+test("Reload queued behind a resize uses the current view of the same tab", { timeout: 45000 }, async () => {
+ await go("/queued-reload"); const marker=apiFailures.length;
+ let release!:()=>void,entered!:()=>void,first=true;
+ const held=new Promise<void>(resolve=>release=resolve),captured=new Promise<void>(resolve=>entered=resolve);
+ await page.route("**/api/browser?**",async route=>{if(route.request().postDataJSON()?.action==="resize"&&first){first=false;entered();await held;}await route.continue();});
+ try {
+  await side.getByLabel("Browser viewport").selectOption("tablet");await captured;
+  const reloaded=page.waitForResponse(response=>response.url().includes("/api/browser?")&&response.request().postDataJSON()?.action==="reload");
+  await side.getByRole("button",{name:"Reload",exact:true}).click();release();assert.equal((await reloaded).status(),200);await ready();
+  assert.deepEqual(apiFailures.slice(marker),[]);
+ } finally {release();await page.unrouteAll({behavior:"wait"});await side.getByLabel("Browser viewport").selectOption("full");await ready();}
 });
