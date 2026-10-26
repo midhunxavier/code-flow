@@ -1,4 +1,4 @@
-import { after, before, test } from "node:test";
+import { after, afterEach, before, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
@@ -10,6 +10,7 @@ import { chromium, type Browser, type Page } from "playwright-core";
 const root = fileURLToPath(new URL("../..", import.meta.url));
 const token = "qa-history-counts", headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
 let directory: string, repo: string, other: string, home: string, base: string, server: ChildProcess, browser: Browser, page: Page;
+const historyReads: { url: string; status: number; total?: number; nextCursor?: string | null; error?: string }[] = [];
 const errors: string[] = [], expected: string[] = []; let output = "", injectingFailure = false;
 const evidence = join(root, "output/playwright/qa-history-paging-counts");
 const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
@@ -18,6 +19,11 @@ async function until<T>(read: () => Promise<T>, ready: (value: T) => boolean) { 
 async function fresh(hash: string, filter?: unknown) {
   await page?.close(); page = await browser.newPage({ viewport: { width: 1440, height: 1000 } }); page.setDefaultTimeout(12000);
   page.on("pageerror", error => errors.push(error.message));
+  page.on("response", response => {
+    if (new URL(response.url()).pathname !== "/api/runs") return;
+    const record = { url: response.url(), status: response.status() }; historyReads.push(record);
+    void response.json().then(body => Object.assign(record, { total: body.total, nextCursor: body.nextCursor ?? null, error: body.error })).catch(() => {});
+  });
   page.on("response", response => { if (response.status() >= 500) { const url = new URL(response.url()); const fixture = injectingFailure && (url.pathname === "/api/runs" && !!url.searchParams.get("cursor") || url.pathname === "/api/runs/bulk-6/archive"); if (!fixture) errors.push(`Unexpected ${response.status()}: ${url.pathname}${url.search}`); } });
   page.on("console", message => { if (message.type() === "error") { if (injectingFailure && /500 \(Internal Server Error\)/.test(message.text())) expected.push(message.text()); else errors.push(message.text()); } });
   await page.addInitScript(({ repo, filter }) => { localStorage.setItem("repo", repo); localStorage.setItem("sideOpen", "0"); if (filter) localStorage.setItem("runFilter", JSON.stringify(filter)); }, { repo, filter });
@@ -47,6 +53,13 @@ before(async () => {
   server.stdout?.on("data", chunk => { output += chunk; }); server.stderr?.on("data", chunk => { output += chunk; });
   await until(() => fetch(base + "/api/health", { headers }).then(response => response.ok, () => false), Boolean);
   browser = await chromium.launch({ channel: "chrome", headless: true });
+});
+afterEach(async t => {
+  if (!(t as { error?: unknown }).error || !page || page.isClosed()) return;
+  await page.screenshot({ path: join(evidence, "failed.png"), fullPage: true });
+  await writeFile(join(evidence, "failed-page.txt"), await page.locator("body").innerText());
+  await writeFile(join(evidence, "failed-history-reads.json"), JSON.stringify(historyReads, null, 2));
+  console.error("History failure responses", JSON.stringify(historyReads.slice(-12)));
 });
 after(async () => { await browser?.close(); if (server && server.exitCode === null) { server.kill("SIGTERM"); await new Promise<void>(resolve => { const timer = setTimeout(() => { server.kill("SIGKILL"); resolve(); }, 5000); server.once("exit", () => { clearTimeout(timer); resolve(); }); }); } await writeFile(join(evidence, "server.log"), output); await writeFile(join(evidence, "browser-errors.json"), JSON.stringify({ errors, expected }, null, 2)); await rm(directory, { recursive: true, force: true }); });
 
@@ -84,7 +97,10 @@ test("archived totals cover unloaded pages and Retry history repeats its failed 
   const cursors: string[] = []; let fail = true;
   await page.route("**/api/runs?**", async route => { const cursor = new URL(route.request().url()).searchParams.get("cursor"); if (cursor) { cursors.push(cursor); if (fail) { fail = false; injectingFailure = true; await route.fulfill({ status: 500, json: { error: "Fixture older page failure" } }); return; } } await route.continue(); });
   await rail.getByRole("button", { name: "Load older runs", exact: true }).click(); await rail.getByText("Fixture older page failure", { exact: false }).waitFor();
-  await rail.getByRole("button", { name: "Retry history", exact: true }).click(); await until(async () => rail.getByRole("button", { name: "Load older runs", exact: true }).count(), count => count === 0);
+  const retried = page.waitForResponse(response => new URL(response.url()).pathname === "/api/runs" && new URL(response.url()).searchParams.get("cursor") === cursors[0], { timeout: 15000 });
+  await rail.getByRole("button", { name: "Retry history", exact: true }).click();
+  const response = await retried; assert.equal(response.status(), 200); assert.equal((await response.json()).nextCursor ?? null, null, "the retry reaches the end of this fixture's history");
+  await until(async () => rail.getByRole("button", { name: "Load older runs", exact: true }).count(), count => count === 0);
   injectingFailure = false; assert.equal(cursors.length, 2); assert.equal(cursors[0], cursors[1]); await shot("retry-older-page");
 });
 

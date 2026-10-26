@@ -43,7 +43,7 @@ before(async () => {
   page.on("response", r => { if (r.url().includes("/api/") && r.status() >= 500) (r.status() === 503 && r.url().endsWith("/api/automations") ? expected : errors).push(`${r.status()} ${r.request().method()} ${r.url()}`); });
   console.log(JSON.stringify({ dir, base, repo, evidence }));
 });
-afterEach(async t => { if ((t as { error?: unknown }).error) { await mkdir(evidence, { recursive: true }); await page.screenshot({ path: join(evidence, "failed.png"), fullPage: true }); await writeFile(join(evidence, "failed-page.txt"), await page.locator("body").innerText()); } });
+afterEach(async t => { if ((t as { error?: unknown }).error) { await mkdir(evidence, { recursive: true }); await page.screenshot({ path: join(evidence, "failed.png"), fullPage: true }); const body = await page.locator("body").innerText(); await writeFile(join(evidence, "failed-page.txt"), body); console.error("Automation failure page", body); } });
 after(async () => { await stop(); await browser?.close(); if (evidence) { await writeFile(join(evidence, "server.log"), logs); await writeFile(join(evidence, "browser-errors.json"), JSON.stringify({ errors, expected }, null, 2)); } assert.deepEqual(errors, []); });
 
 test("global automation routes reject bad purposes and extra path segments; valid and legacy routes work", { timeout: 60_000 }, async () => {
@@ -87,7 +87,14 @@ test("a no-project automation is discoverable without any orphan runs, and elsew
   const counts = await api("/api/projects/counts"); assert.equal(counts.none.live + counts.none.archived, 0, "no orphan run unlocks this choice");
   // An ambiguous legacy record has no project even though its repository appears in two projects.
   await api("/api/projects", { name: "Second repo owner", repos: [repo] }); const a = await api("/api/automations", { name: "Ambiguous record", run: { ...run(), project: undefined }, webhook: true });
-  await open(); await page.getByTitle("Filter projects", { exact: true }).click(); let picker = page.getByRole("dialog", { name: "Projects", exact: true }); await picker.getByRole("button", { name: /^Records QA/ }).click();
+  let releaseHealth!: () => void;
+  const heldHealth = new Promise<void>(resolve => releaseHealth = resolve);
+  await page.route("**/api/health", async route => { await heldHealth; await route.continue(); });
+  let picker = page.getByRole("dialog", { name: "Projects", exact: true });
+  try {
+    await open(); await page.getByTitle("Filter projects", { exact: true }).click();
+    await picker.getByRole("button", { name: /^Records QA/ }).click();
+  } finally { releaseHealth(); await page.unrouteAll({ behavior: "wait" }); }
   await page.getByRole("button", { name: "Show without a project", exact: true }).waitFor(); await shot("05-without-project-hint"); await page.getByTitle("Filter projects", { exact: true }).click(); picker = page.getByRole("dialog", { name: "Projects", exact: true }); await picker.getByRole("button", { name: /^Without a project/ }).click(); await page.locator(".auto-row", { hasText: a.name }).waitFor(); await shot("06-without-project-list");
 });
 

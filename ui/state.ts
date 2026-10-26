@@ -282,8 +282,11 @@ export function editProject(id: string) {
 
 export async function loadProjects() {
   try {
-    const [list, status] = await Promise.all([sharedGet<Project[]>("/api/projects"), sharedGet<{ projects?: import("../src/projects.js").ProjectsStatus }>("/api/health").catch(() => null)]);
-    projects.value = list;
+    const diagnosis = sharedGet<{ projects?: import("../src/projects.js").ProjectsStatus }>("/api/health").catch(() => null);
+    // Show available choices promptly; boot still awaits the storage diagnosis below
+    // before restoring drafts or treating project storage as fully loaded.
+    projects.value = await sharedGet<Project[]>("/api/projects");
+    const status = await diagnosis;
     if (status?.projects) projectsStatus.value = status.projects;
     projectsLoaded.value = true;
   } catch {

@@ -45,6 +45,10 @@ jobs:
           echo "CODEFLOW_CHROME=$wrapper" >> "$GITHUB_ENV"
       - run: npm run typecheck
       - run: npm test
+        if: runner.os != 'macOS'
+      - name: Run full macOS suite with bounded fixture concurrency
+        if: runner.os == 'macOS'
+        run: npx tsx --test --test-concurrency=2 test/*.test.ts test/desktop/*.test.mjs
 
   package:
     name: Installed npm launcher (${{ matrix.os }})
