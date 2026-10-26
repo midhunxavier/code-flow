@@ -32,3 +32,5 @@ In addition to the original frozen QA totals, release follow-through passed type
 The QA report's 12 partial features, one blocked feature, original unclassified phone 401 and historical possible home-registry write remain qualified.
 
 Later CI receipts additionally exposed hydration, platform select-all, desktop VM startup-event ordering and settings navigation timing in test fixtures. Their corrections retain the content/visibility assertions and wait for the actual readiness condition. Original raw failures remain preserved.
+
+The saved macOS job also showed a paused-watchdog fixture measuring its pause before child startup, and a multi-stage SSH fine-tuning case exceeding its overall 30-second test cap. The watchdog fixture now resumes on a child event while preserving its production watchdog thresholds and cancellation check. The SSH case has a 90-second overall test cap; operation limits remain unchanged. Both focused cases and typecheck pass locally (`release-macos-timing.log`, `release-macos-typecheck.log`).

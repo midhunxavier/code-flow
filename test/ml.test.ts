@@ -393,7 +393,7 @@ test("LLM model preparation, immutable input scope, progress and worker upgrade 
   } finally { await service.close(); }
 });
 
-test("SSH fine-tuning transfers JSONL, retains model identity and cancels after reconnect", { timeout: 30000 }, async () => {
+test("SSH fine-tuning transfers JSONL, retains model identity and cancels after reconnect", { timeout: 90000 }, async () => {
   const f = await sshFixture();
   const options = { home: f.localHome, bundlePath, enabled: () => true, authorize: async (_p: string, repo: string) => ({ repo, commit: "a".repeat(40) }) };
   let service = new MlService({ ...options, transport: new TrainingTransport(bundlePath, f.ssh) }); await service.load();
