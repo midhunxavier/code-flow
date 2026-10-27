@@ -45,7 +45,7 @@ test("scoped events deduplicate across snapshots and restart while public metada
   assert.equal((await value.observe(snapshot)).queued, 1);
   await value.drain();
   assert.equal(requests.length, 1);
-  assert.equal(requests[0]!.options.redirect, "error");
+  assert.equal(requests[0]!.options.redirect, "manual");
   assert.equal(requests[0]!.options.method, "POST");
   assert.equal(new Headers(requests[0]!.options.headers).get("authorization"), `Bearer ${environment.OUTBOUND_CREDENTIAL}`);
   assert.equal(requests[0]!.body.title, "A title containing [REDACTED]");

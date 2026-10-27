@@ -17,7 +17,8 @@ export function JoinProject({ token }: { token: string }) {
   const accept = async (event: Event) => {
     event.preventDefault(); if (busy) return; setBusy(true); setError("");
     try {
-      const result = await localApi<{ projectId: string }>("/api/auth/invitations/accept", { method: "POST", body: JSON.stringify({ token, existing, username, displayName: name, password }) });
+      const result = await localApi<{ projectId: string; granted: boolean; user: { roles: Record<string, SharedRole> } }>("/api/auth/invitations/accept", { method: "POST", body: JSON.stringify({ token, existing, username, displayName: name, password }) });
+      if (!result.granted) try { sessionStorage.setItem("sharedJoinNotice", `You already have ${roleLabel(result.user.roles[result.projectId]!)} access to ${invitation?.project.name ?? "this project"}. Your other sessions remain signed in.`); } catch {}
       history.replaceState(null, "", `/#/team/project/${encodeURIComponent(result.projectId)}`); location.reload();
     } catch (err) { setError((err as Error).message); } finally { setPassword(""); setBusy(false); }
   };

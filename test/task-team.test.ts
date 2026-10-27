@@ -54,7 +54,7 @@ test("Agent → Team → Agent retains one task, native session and unsaved edit
     const session = run.steps[0]!.sessionId, tree = run.worktrees[0]!;
     writeFileSync(join(tree.path, "draft.txt"), "Preserve me\n");
     await manager.configureTaskTeam(run.id, config);
-    await assert.rejects(manager.configureTaskTeam(run.id, { ...config, maxCalls: 0 }), /maxCalls/);
+    await assert.rejects(manager.configureTaskTeam(run.id, { ...config, maxCalls: 0 }), /Agent calls.*between 4 and 200/);
     assert.deepEqual(run.taskTeam, config, "invalid settings do not replace the configured team");
     await manager.followUp(run.id, { kind: "reply", agent: "claude", worktree: "solo", message: "Implement the result" }); await done(run);
     assert.equal(readFileSync(join(tree.path, "result.txt"), "utf8"), "Team result\n");

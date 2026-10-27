@@ -72,7 +72,8 @@ test("the instructions keep the author's intent, say how to work, and end with t
   });
   assert.match(repo, /look around the repository first \(read-only/);
   assert.match(repo, /Name only files you've seen/);
-  assert.match(repo, /GitHub issue #6: Login is slow/);
+  assert.match(repo, /GitHub issue #6\./);
+  assert.doesNotMatch(repo, /Login is slow/);
   assert.match(repo, /- src\/login\.ts\n- notes\.pdf/);
   assert.ok(repo.endsWith("## Task to improve\n\nfix it"));
 });
@@ -81,7 +82,7 @@ test("Quick asks Claude for a schema answer in a private empty repository; Repo 
   const repo = makeRepo();
   const quick = await recorded(() => improvePrompt("claude", { text: "add rate limits", repo, mode: "quick" }));
   assert.equal(quick.result.prompt, "Goal: add rate limits\n\nDone when: the tests pass.");
-  assert.equal(quick.result.summary, "Stated the goal and when it's done (quick, claude). Context: text only; empty private repository.");
+  assert.equal(quick.result.summary, "Stated the goal and when it's done (quick, claude). Context: your text only; the project was not read.");
   const [call] = quick.calls;
   assert.ok(call);
   assert.notEqual(call.cwd, execFileSync("git", ["rev-parse", "--show-toplevel"], { cwd: repo }).toString().trim()); assert.equal(existsSync(call.cwd), false, "private context is removed after completion");

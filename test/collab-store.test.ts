@@ -93,7 +93,7 @@ test("unknown attempts retain ownership until reconciliation or an authorized, a
   await f.store.attemptProgress(first.actor, id, { seq: 2, runStatus: "running" });
   current = await f.store.task(owner, task.id); assert.equal(current.attempts[0]!.state, "running", "the same runner reconciles without a second claim");
   const recovery = { revision: current.revision, reason: "Checked the laptop: the agent was stopped", confirmedStopped: true };
-  await refuses(f.store.recoverAttempt(f.actor("alice"), id, recovery), 409, /Only an unknown attempt/);
+  await refuses(f.store.recoverAttempt(f.actor("alice"), id, recovery), 409, /is connected and reports this attempt as running; recovery is only for an attempt whose runner lost contact/);
   await f.store.revokeRunner(owner, first.runner.id); current = await f.store.task(owner, task.id); recovery.revision = current.revision;
   await refuses(claim(f, second.actor, current, second.runner.id), 409, /Stop the attempt/);
   await refuses(f.store.recoverAttempt(f.actor("bob"), id, recovery), 403, /Only the task owner/);
@@ -189,25 +189,25 @@ test("claims: owner's own machine only, idempotent on the attempt id, refused wh
   const reopened = await f.store.updateTask(f.actor("alice"), finished.id, { status: "review" }, finished.revision); assert.equal((await claim(f, alice.actor, reopened, alice.runner.id)).status, "working");
 });
 
-test("a progress report revives a paused attempt only while no other attempt is busy on the task and no hand-over is offered", async () => {
+test("a progress report revives a paused attempt only while it is current and no hand-over is offered", async () => {
   const f = fixture(), task = await seeded(f), alice = await runnerFor(f, "alice"), bob = await runnerFor(f, "bob");
   const a1 = (await claim(f, alice.actor, task, alice.runner.id)).attempts[0]!.id; await f.store.attemptProgress(alice.actor, a1, { seq: 1 }); await f.store.finishAttempt(alice.actor, a1, { state: "paused" });
   let current = await f.store.task(owner, task.id); const a2 = (await claim(f, alice.actor, current, alice.runner.id, { runnerName: "desk" })).attempts[1]!.id;
-  // the older attempt is paused and a newer one is claimed: a report for the older one (a stale Resume, a reconnecting laptop) must not put two running attempts on the task
-  await refuses(f.store.attemptProgress(alice.actor, a1, { seq: 2 }), 409, /Stop the attempt running on desk before resuming this one/);
-  current = await f.store.task(owner, task.id); assert.deepEqual(current.attempts.map((a) => a.state), ["paused", "claimed"]); assert.equal(busyAttempt(current)!.id, a2);
-  assert.equal((await f.store.attemptProgress(alice.actor, a1, { seq: 1 })).attempt.state, "paused", "a stale report number stays a no-op");
+  // A newer claim permanently supersedes older paused work; even a stale report cannot revive it.
+  await refuses(f.store.attemptProgress(alice.actor, a1, { seq: 2 }), 409, /superseded/);
+  current = await f.store.task(owner, task.id); assert.deepEqual(current.attempts.map((a) => a.state), ["superseded", "claimed"]); assert.equal(busyAttempt(current)!.id, a2);
+  await refuses(f.store.attemptProgress(alice.actor, a1, { seq: 1 }), 409, /superseded/);
   await f.store.attemptProgress(alice.actor, a2, { seq: 1 }); await f.store.finishAttempt(alice.actor, a2, { state: "paused" });
-  // an offered hand-over holds both paused attempts: whoever accepts gets the task, nobody resumes under it
+  // An offered hand-over holds the current paused attempt: whoever accepts gets the task, nobody resumes under it.
   const data = Buffer.from("bundle"), checkpoint = await f.store.addCheckpoint(alice.actor, a2, manifest(data)); await f.store.storeBundle(alice.actor, checkpoint.id, Readable.from([data]), { size: data.length, sha256: checkpoint.sha256 });
   current = await f.store.task(owner, task.id); const offered = await f.store.offerHandoff(f.actor("alice"), task.id, { to: "bob", checkpointId: checkpoint.id }, current.revision);
-  await refuses(f.store.attemptProgress(alice.actor, a2, { seq: 2 }), 409, /Accept, decline or cancel the offered hand-over before resuming the attempt/); await refuses(f.store.attemptProgress(alice.actor, a1, { seq: 2 }), 409, /offered hand-over/);
-  assert.deepEqual((await f.store.task(owner, task.id)).attempts.map((a) => a.state), ["paused", "paused"]); assert.equal((await f.store.task(owner, task.id)).handoff?.state, "offered");
+  await refuses(f.store.attemptProgress(alice.actor, a2, { seq: 2 }), 409, /Accept, decline or cancel the offered hand-over before resuming the attempt/); await refuses(f.store.attemptProgress(alice.actor, a1, { seq: 2 }), 409, /superseded/);
+  assert.deepEqual((await f.store.task(owner, task.id)).attempts.map((a) => a.state), ["superseded", "paused"]); assert.equal((await f.store.task(owner, task.id)).handoff?.state, "offered");
   await f.store.respondHandoff(f.actor("alice"), task.id, offered.handoff!.id, "cancel", offered.revision);
-  const resumed = await f.store.attemptProgress(alice.actor, a1, { seq: 2 }); assert.equal(resumed.attempt.state, "running", "with nothing busy and nothing offered, the older paused attempt resumes"); assert.equal(resumed.attempt.endedAt, undefined);
-  await refuses(f.store.attemptProgress(alice.actor, a2, { seq: 2 }), 409, /Stop the attempt running on laptop before resuming this one/); await refuses(f.store.attemptProgress(bob.actor, a2, { seq: 2 }), 403, /Only the runner executing this attempt/);
-  assert.equal((await f.store.heartbeat(alice.actor, a2)).attempt.state, "paused", "a heartbeat never changes an attempt's state");
-  const reopened = f.reopen(); await reopened.load(); assert.deepEqual((await reopened.task(owner, task.id)).attempts.map((a) => a.state), ["running", "paused"], "a revive is a state change and is on disk at once");
+  const resumed = await f.store.attemptProgress(alice.actor, a2, { seq: 2 }); assert.equal(resumed.attempt.state, "running", "with nothing busy and nothing offered, the latest paused attempt resumes"); assert.equal(resumed.attempt.endedAt, undefined);
+  await refuses(f.store.attemptProgress(alice.actor, a1, { seq: 2 }), 409, /superseded/); await refuses(f.store.attemptProgress(bob.actor, a2, { seq: 2 }), 403, /Only the runner executing this attempt/);
+  assert.equal((await f.store.heartbeat(alice.actor, a2)).attempt.state, "running", "a heartbeat never changes an attempt's state");
+  const reopened = f.reopen(); await reopened.load(); assert.deepEqual((await reopened.task(owner, task.id)).attempts.map((a) => a.state), ["superseded", "running"], "a revive is a state change and is on disk at once");
 });
 
 test("a revive is refused on a Done task, and a change of hands supersedes a stopped attempt like a paused one", async () => {

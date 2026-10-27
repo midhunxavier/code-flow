@@ -14,9 +14,10 @@ export class PersistenceTracker {
     this.states.set(id, status); for (const listener of this.listeners.get(id) ?? []) listener(status);
   }
   failure(id: string, seq: number, error: string) { this.set(id, { state: "error", seq, error }); }
-  track(id: string, seq: number, durable: Promise<void>) {
+  /** `message`: what a failure tells the user, instead of the raw error (which can name private paths). */
+  track(id: string, seq: number, durable: Promise<void>, message?: string) {
     this.set(id, { state: "saving", seq });
-    void durable.then(() => this.set(id, { state: "saved", seq }), (error: Error) => this.failure(id, seq, error.message));
+    void durable.then(() => this.set(id, { state: "saved", seq }), (error: Error) => this.failure(id, seq, message ?? error.message));
   }
   delete(id: string) { this.states.delete(id); this.listeners.delete(id); }
 }

@@ -5,17 +5,21 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { SshTransport } from "../ssh-projects/transport.js";
 import { hash, syncDir } from "../training-worker/files.js";
-import { digest, InferenceInputError, type Target } from "./model.js";
+import { digest, MlError, InferenceInputError, type Target } from "./model.js";
 interface Bundle { protocol: 1; version: string; files: Record<string, string> }
 const legacyNames = ["worker.mjs", "recipe.py", "predict.py", "requirements.txt"];
 const llmNames = [...legacyNames, "llm_recipe.py", "llm_predict.py", "llm_requirements.txt"];
 const servingNames = [...llmNames, "inference.py"];
 const names = [...servingNames, "holdout.py"];
-export async function loadBundle(path = fileURLToPath(new URL("../../dist/training-worker.json", import.meta.url))): Promise<Bundle> {
-  // In the packaged backend import.meta.url is src/server.mjs.
-  let text: string;
-  try { text = await readFile(path, "utf8"); }
-  catch { text = await readFile(fileURLToPath(new URL("../dist/training-worker.json", import.meta.url)), "utf8"); }
+export async function loadBundle(path?: string): Promise<Bundle> {
+  // An explicit bundle path is authoritative; packaged/source discovery only applies by default.
+  const paths = path ? [path] : [fileURLToPath(new URL("../../dist/training-worker.json", import.meta.url)), fileURLToPath(new URL("../dist/training-worker.json", import.meta.url))];
+  let text: string | undefined;
+  for (const candidate of paths) {
+    try { text = await readFile(candidate, "utf8"); break; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  }
+  if (text === undefined) throw new MlError("The training-worker package is missing. Run npm run build:training-worker (or npm run build), then check the computer again.", 503);
   const b = JSON.parse(text) as Bundle;
   if (b.protocol !== 1 || ![names.join(), servingNames.join(), llmNames.join(), legacyNames.join()].includes(Object.keys(b.files).join()) || hash(JSON.stringify(b.files)) !== digest(b.version)) throw new Error("Training-worker package is invalid; rebuild it");
   return b;

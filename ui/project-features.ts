@@ -2,7 +2,7 @@ import { useState } from "preact/hooks";
 import { api, usePoll } from "./lib.js";
 import type { Board } from "../src/collab/model.js";
 import type { Automation } from "./automations.js";
-import type { DeferredRunJob } from "../src/deferred-runs.js";
+import { readDeferredRuns } from "./deferred-queue.js";
 import type { ProjectTeam } from "../src/project-team-model.js";
 
 /** Presentation only. Explicit routes and server authorization remain available independently. */
@@ -12,7 +12,7 @@ export function useProjectFeatures(projectId: string) {
     const results = await Promise.allSettled([
       api<Board>("/api/team/board?teamConnection=local"),
       api<Automation[]>("/api/automations"),
-      api<DeferredRunJob[]>("/api/deferred-runs"),
+      readDeferredRuns({ background: true }),
       api<{ teams: ProjectTeam[] }>(`/api/project-teams?project=${encodeURIComponent(projectId)}`),
       api<{ enabled: boolean; configured: boolean }>(`/api/ml/summary?project=${encodeURIComponent(projectId)}`),
     ]);

@@ -1,3 +1,4 @@
+import { runProviderProblem } from "./run-permissions.js";
 import { execFile, spawn } from "node:child_process";
 import { closeSync, openSync } from "node:fs";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
@@ -90,8 +91,8 @@ const NEEDS: Record<BuiltinAgentId, { args: string[]; needs: Need[] }[]> = {
         { name: "--input-format", when: "every step" },
         { name: "--output-format", when: "every step" },
         { name: "--print-timeout", when: "every step" },
-        { name: "--sandbox", when: "every step" },
-        { name: "--dangerously-skip-permissions", when: "every step (unless CODEFLOW_AGY_SKIP_PERMISSIONS=0)" },
+        { name: "--sandbox", when: "isolated steps, prompt improvement and other legacy calls" },
+        { name: "--dangerously-skip-permissions", when: "unrestricted Antigravity steps, and legacy calls unless CODEFLOW_AGY_SKIP_PERMISSIONS=0" },
         { name: "--conversation", when: "follow-ups in the same conversation" },
         { name: "--json-schema", when: "structured answers (plans, reviews, verdicts)" },
         { name: "--model", when: "steps with a model chosen" },
@@ -121,7 +122,12 @@ export interface GitHealth {
 export async function doctor(quota: Partial<Record<AgentId, HealthEntry["quota"]>>): Promise<HealthEntry[]> {
   return Promise.all(AGENT_IDS.map(async (id) => {
     const entry = await check(id, quota[id]);
-    if (id === "agy" && entry.installed) entry.managedCompatible = !await getAdapter(id).managedAvailability?.();
+    if (id === "agy" && entry.installed) {
+      // Runs use isolated Antigravity unless one explicitly opts out, so say up front when it can't start.
+      const problem = await getAdapter(id).managedAvailability?.();
+      entry.managedCompatible = !problem;
+      if (problem) entry.warnings = [...entry.warnings ?? [], `Runs use isolated Antigravity by default, which isn't available here. ${problem} To run it anyway, turn on Run options → Advanced → Use unrestricted Antigravity (no Code Flow sandbox).`];
+    }
     return entry;
   }));
 }
@@ -145,13 +151,13 @@ async function check(id: AgentId, quota: HealthEntry["quota"]): Promise<HealthEn
   const entry: HealthEntry = { id, name: adapter.displayName, installed: false, signedIn: null, quota };
   if (id.startsWith("acp:")) {
     entry.installed = await adapter.available().catch(() => false);
-    entry.warnings = ["ACP connection: use Check connection in Settings. Authentication and inference are verified only when the agent runs. Full access is required."];
+    entry.warnings = [runProviderProblem(id, adapter.displayName)!, "Check connection in Settings probes protocol and models without sending a prompt. Authentication and inference are not verified."];
     if (!entry.installed) entry.fix = "Install this CLI or edit its executable path in Settings → Agents & models.";
     return entry;
   }
   if (id.startsWith("plugin:")) {
     entry.installed = await adapter.available().catch(() => false);
-    entry.warnings = ["Owner-configured provider plugin; authentication, sandbox and live provider compatibility are not verified by built-in CLI probes."];
+    entry.warnings = [runProviderProblem(id, adapter.displayName)!];
     return entry;
   }
   const builtin = id as BuiltinAgentId;

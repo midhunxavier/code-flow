@@ -6,7 +6,7 @@ import type { Readable } from "node:stream";
 import { CODEFLOW_HOME } from "../config.js";
 import { logError, logWarn } from "../log.js";
 import type { SharedRole } from "../shared-accounts.js";
-import { actorRole, assertCanChangeOwner, assignOwner, ATTEMPT_ID, ATTEMPT_STATES, busyAttempt, CHECKPOINT_ID, clone, CollabError, COMMIT_ID, isTaskOwner, latestCheckpoint, MAX, mentionsIn, newCheckpointId, newId, newRunnerId, newRunnerToken, newTaskId, ownerChangedMessage, PATH_ID, PREFIXED_ID, pushBounded, recordAudit, REPO_KEY, roleAtLeast, RUNNER_ID, RUNNER_TOKEN, SHA256_HEX, summarize, TASK_ID, TASK_STATUSES, transition, truncateText, validateCheckpointInput, validateCommit, validateProgress, validateProgressReport, validateRepoRefs, validateTaskInput, validateTaskPatch, validateText, validateUserRef, whoOf } from "./model.js";
+import { actorRole, assertCanChangeOwner, assertLatestAttempt, assignOwner, ATTEMPT_ID, ATTEMPT_STATES, attemptIsLive, attemptLostContact, busyAttempt, CHECKPOINT_ID, clone, CollabError, COMMIT_ID, isTaskOwner, latestCheckpoint, MAX, mentionsIn, newCheckpointId, newId, newRunnerId, newRunnerToken, newTaskId, ownerChangedMessage, PATH_ID, PREFIXED_ID, pushBounded, recordAudit, REPO_KEY, roleAtLeast, RUNNER_ID, RUNNER_TOKEN, SHA256_HEX, STALE_REVISION, summarize, supersedeAttempt, TASK_ID, TASK_STATUSES, transition, truncateText, validateCheckpointInput, validateCommit, validateProgress, validateProgressReport, validateRepoRefs, validateTaskInput, validateTaskPatch, validateText, validateUserRef, whoOf } from "./model.js";
 import type { Attempt, AttemptState, Board, BoardProject, Checkpoint, CollabActor, Comment, Handoff, InboxItem, InboxKind, Instruction, RandomSource, RepoRef, RunnerPublic, Task, Who } from "./model.js";
 
 /**
@@ -45,7 +45,7 @@ interface Draft { board: BoardDocument; readonly runners: RunnersDocument; reado
 export const RUNNER_LOCAL = "local";
 const READ_LIMIT = 16 * 1024 * 1024, RING = 1000, TOUCH_MS = 10_000, FLUSH_MS = 30_000, RETENTION_MS = 30 * 24 * 60 * 60_000, STALE_ATTEMPT_MS = 24 * 60 * 60_000;
 const TERMINAL: readonly AttemptState[] = ["finished", "failed", "superseded"], FINISH_STATES: readonly FinishState[] = ["finished", "failed", "stopped", "paused", "unknown"];
-const INBOX_KINDS: readonly InboxKind[] = ["assigned", "mention", "review-requested", "review-recorded", "handoff-offered", "handoff-accepted", "handoff-declined", "handoff-cancelled", "instruction-proposed", "blocked", "attempt-finished", "attempt-failed", "comment"];
+const INBOX_KINDS: readonly InboxKind[] = ["assigned", "mention", "review-requested", "review-recorded", "handoff-offered", "handoff-accepted", "handoff-declined", "handoff-cancelled", "instruction-proposed", "instruction-approved", "instruction-declined", "blocked", "attempt-finished", "attempt-failed", "comment"];
 const sha256Hex = (value: string) => createHash("sha256").update(value).digest("hex");
 const short = (commit: string) => commit.slice(0, 12);
 const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
@@ -251,11 +251,15 @@ export class CollabStore {
   private project(projectId: unknown, actor: CollabActor): ProjectRecord { const project = typeof projectId === "string" ? this.options.projects().find((entry) => entry.id === projectId) : undefined; if (!project || actorRole(actor, project.id) === undefined) throw new CollabError("Project not found", 404); return project; }
   private need(actor: CollabActor, projectId: string, role: SharedRole, action: string): SharedRole { const held = actorRole(actor, projectId); if (!roleAtLeast(held, role)) throw new CollabError(`A project ${role} role is required to ${action}`, 403); return held!; }
   /** Progress, heartbeats, finishes and checkpoints come only from the machine executing the attempt: the owner process for "local" attempts, otherwise the very runner credential the attempt was claimed with, used by the same account. */
-  private assertAttemptRunner(attempt: Attempt, actor: CollabActor): void {
+  private assertAttemptRunner(attempt: Attempt, actor: CollabActor, projectId: string): void {
+    this.need(actor, projectId, "contributor", "report on an executing attempt");
     const ok = actor.kind === "owner" ? attempt.runnerId === RUNNER_LOCAL && attempt.user.userId === "owner" : actor.via === "runner" && actor.runnerId !== undefined && actor.runnerId === attempt.runnerId && actor.userId === attempt.user.userId;
     if (!ok) throw new CollabError("Only the runner executing this attempt may report on it", 403);
   }
-  private cas(task: Task, revision: unknown): void { if (revision === undefined || revision === null) throw new CollabError("Send the task's current revision with the change"); if (!integer(revision) || revision !== task.revision) throw new CollabError("Task changed; reload before saving", 409); }
+  private cas(task: Task, revision: unknown): void { if (revision === undefined || revision === null) throw new CollabError("Send the task's current revision with the change"); if (!integer(revision) || revision !== task.revision) throw new CollabError("Task changed; reload before saving", 409, STALE_REVISION); }
+  private assertIndependentReviewer(task: Task): void {
+    if (task.reviewer && (task.reviewer.userId === task.owner?.userId || task.reviewer.userId === latestCheckpoint(task)?.createdBy.userId)) throw new CollabError("Ask a teammate other than the task owner or checkpoint author to review");
+  }
   private resolveWho(projectId: string, userId: unknown, minRole: SharedRole, label: string): Who {
     const id = validateUserRef(userId, label); if (id === "owner") return { userId: "owner", displayName: this.ownerName };
     const member = this.options.members().find((entry) => entry.userId === id); if (!member || !member.enabled || !Object.hasOwn(member.roles, projectId)) throw new CollabError(`Choose the ${label} from the project's members`);
@@ -351,6 +355,7 @@ export class CollabStore {
       const task: Task = { id: newTaskId(this.random), projectId: project.id, repository: data.repository, title: data.title, goal: data.goal, acceptance: data.acceptance, status: "planned", collaborators: data.collaborators.map((id) => this.resolveWho(project.id, id, "viewer", "collaborator")), dependsOn: this.dependencies(draft.board, project.id, data.dependsOn, undefined), labels: data.labels, revision: 1, createdAt: now, updatedAt: now, createdBy: by, attempts: [], checkpoints: [], decisions: [], discussion: [], instructions: [], reviews: [], handoffs: [], audit: [] };
       if (data.baseRef) task.baseRef = data.baseRef; if (data.reviewer) task.reviewer = this.resolveWho(project.id, data.reviewer, "reviewer", "reviewer");
       if (data.owner) { const owner = this.resolveWho(project.id, data.owner, "contributor", "owner"); assertCanChangeOwner(task, actor, owner); assignOwner(task, owner, now); }
+      this.assertIndependentReviewer(task);
       if (data.status !== "planned") transition(task, data.status, actor, data.blocker, now);
       recordAudit(task, by, "created", undefined, now); pushBounded(draft.board.tasks, task, MAX.tasks, "tasks"); draft.board.revision++; draft.dirty.add("board"); draft.events.push({ kind: "task", taskId: task.id, projectId: task.projectId }, { kind: "board", projectId: task.projectId });
       if (task.owner) this.notify(draft, task, actor, [task.owner.userId], "assigned", `${actor.displayName} assigned you “${task.title}”`);
@@ -372,6 +377,7 @@ export class CollabStore {
       if (changes.collaborators !== undefined) { task.collaborators = changes.collaborators.map((userId) => this.resolveWho(task.projectId, userId, "viewer", "collaborator")); changed.push("collaborators"); }
       if (changes.reviewer !== undefined) { if (changes.reviewer === null) delete task.reviewer; else task.reviewer = this.resolveWho(task.projectId, changes.reviewer, "reviewer", "reviewer"); changed.push("reviewer"); }
       if (changes.owner !== undefined) { const next = changes.owner === null ? undefined : this.resolveWho(task.projectId, changes.owner, "contributor", "owner"); assertCanChangeOwner(task, actor, next); assignOwner(task, next, now); changed.push("owner"); }
+      if (changes.owner !== undefined || changes.reviewer !== undefined) this.assertIndependentReviewer(task);
       if (changes.status !== undefined || changes.blocker !== undefined) { transition(task, changes.status ?? task.status, actor, changes.blocker, now); changed.push(changes.status !== undefined ? "status" : "blocker"); }
       this.commit(draft, task, whoOf(actor), "updated", changed.join(", ") || undefined, now);
       if (task.owner && task.owner.userId !== before.owner) this.notify(draft, task, actor, [task.owner.userId], "assigned", `${actor.displayName} assigned you “${task.title}”`);
@@ -396,7 +402,7 @@ export class CollabStore {
     const refs = validateRepoRefs(repositories);
     return this.change((draft) => {
       const project = this.project(projectId, actor); this.need(actor, project.id, "maintainer", "define repositories");
-      if (revision === undefined || revision === null) throw new CollabError("Send the board's current revision with the change"); if (!integer(revision) || revision !== draft.board.revision) throw new CollabError("Team board changed; reload before saving", 409);
+      if (revision === undefined || revision === null) throw new CollabError("Send the board's current revision with the change"); if (!integer(revision) || revision !== draft.board.revision) throw new CollabError("Team board changed; reload before saving", 409, STALE_REVISION);
       const keys = new Set(refs.map((repo) => repo.key)), used = draft.board.tasks.find((task) => task.projectId === project.id && !keys.has(task.repository));
       if (used) throw new CollabError(`Task “${used.title}” still uses repository ${used.repository}; move it to another repository before removing that key`, 409);
       draft.board.projects[project.id] = { repositories: refs }; draft.board.revision++; draft.dirty.add("board"); draft.events.push({ kind: "board", projectId: project.id });
@@ -433,7 +439,7 @@ export class CollabStore {
   async requestReview(actor: CollabActor, taskId: string, reviewerUserId: unknown, revision: unknown): Promise<Task> {
     return this.change((draft) => {
       const now = this.now(), current = this.findTask(draft.board, actor, taskId); this.need(actor, current.projectId, "contributor", "request reviews"); this.cas(current, revision);
-      const task = draft.task(current.id)!, reviewer = this.resolveWho(task.projectId, reviewerUserId, "reviewer", "reviewer"); task.reviewer = reviewer;
+      const task = draft.task(current.id)!, reviewer = this.resolveWho(task.projectId, reviewerUserId, "reviewer", "reviewer"); task.reviewer = reviewer; this.assertIndependentReviewer(task);
       this.system(task, whoOf(actor), `${actor.displayName} asked ${reviewer.displayName} to review this task`, now, "review-request"); this.commit(draft, task, whoOf(actor), "review-requested", reviewer.displayName, now);
       this.notify(draft, task, actor, [reviewer.userId], "review-requested", `${actor.displayName} asked you to review “${task.title}”`);
       return clone(task);
@@ -444,6 +450,7 @@ export class CollabStore {
     return this.change((draft) => {
       const now = this.now(), current = this.findTask(draft.board, actor, taskId); this.need(actor, current.projectId, "reviewer", "record reviews"); this.cas(current, revision);
       if (!object(input)) throw new CollabError("Send the review as { checkpointId, verdict, text }"); const checkpoint = current.checkpoints.find((entry) => entry.id === input.checkpointId); if (!checkpoint) throw new CollabError("Checkpoint not found", 404);
+      if (actor.userId === current.owner?.userId || actor.userId === checkpoint.createdBy.userId) throw new CollabError("Your own task or checkpoint needs a teammate’s review", 403);
       if (input.verdict !== "approve" && input.verdict !== "request-changes") throw new CollabError('Choose a verdict: "approve" or "request-changes"'); const body = validateText(input.text, MAX.text, "review");
       const task = draft.task(current.id)!, latest = latestCheckpoint(task)!, mentions = mentionsIn(body, this.mentionTargets(task.projectId));
       pushBounded(task.reviews, { id: newId("review", this.random), checkpointId: checkpoint.id, commit: checkpoint.commit, by: whoOf(actor), verdict: input.verdict, text: body, at: now, stale: checkpoint.id !== latest.id }, MAX.reviews, "reviews");
@@ -468,17 +475,19 @@ export class CollabStore {
   }
   async decideInstruction(actor: CollabActor, taskId: string, instructionId: string, action: "approve" | "decline"): Promise<Task> {
     return this.change((draft) => {
-      const now = this.now(), current = this.findTask(draft.board, actor, taskId); if (!isTaskOwner(current, actor) && !roleAtLeast(actorRole(actor, current.projectId), "maintainer")) throw new CollabError("Only the task owner or a project maintainer may approve or decline instructions", 403);
+      const now = this.now(), current = this.findTask(draft.board, actor, taskId); if (!(isTaskOwner(current, actor) && roleAtLeast(actorRole(actor, current.projectId), "contributor")) && !roleAtLeast(actorRole(actor, current.projectId), "maintainer")) throw new CollabError("Only the task owner or a project maintainer may approve or decline instructions", 403);
       if (action !== "approve" && action !== "decline") throw new CollabError('Choose an action: "approve" or "decline"'); const existing = current.instructions.find((entry) => entry.id === instructionId); if (!existing) throw new CollabError("Instruction not found", 404);
       if (existing.state !== "proposed") throw new CollabError(`This instruction was already ${existing.state}`, 409);
       const task = draft.task(current.id)!, instruction = task.instructions.find((entry) => entry.id === instructionId)!, by = whoOf(actor); instruction.state = action === "approve" ? "approved" : "declined"; instruction.decidedBy = by; instruction.decidedAt = now;
-      this.commit(draft, task, by, `instruction-${instruction.state}`, truncateText(instruction.text, 120), now); return clone(task);
+      this.commit(draft, task, by, `instruction-${instruction.state}`, truncateText(instruction.text, 120), now);
+      this.notify(draft, task, actor, [instruction.by.userId], `instruction-${instruction.state}` as InboxKind, `${actor.displayName} ${instruction.state} your instruction for the agent on “${task.title}”: ${instruction.text}`);
+      return clone(task);
     });
   }
   /** The runner records delivery so a reconnect never hands the agent the same instruction twice. */
   async markInstructionDelivered(actor: CollabActor, taskId: string, instructionId: string, attemptId: string): Promise<Task> {
     return this.change((draft) => {
-      const now = this.now(), current = this.findTask(draft.board, actor, taskId), attempt = current.attempts.find((entry) => entry.id === attemptId); if (!attempt) throw new CollabError("Attempt not found", 404); this.assertAttemptRunner(attempt, actor);
+      const now = this.now(), current = this.findTask(draft.board, actor, taskId), attempt = current.attempts.find((entry) => entry.id === attemptId); if (!attempt) throw new CollabError("Attempt not found", 404); this.assertAttemptRunner(attempt, actor, current.projectId);
       const existing = current.instructions.find((entry) => entry.id === instructionId); if (!existing) throw new CollabError("Instruction not found", 404);
       if (existing.state === "delivered" && existing.attemptId === attempt.id) return clone(current); if (existing.state !== "approved") throw new CollabError(`Only approved instructions can be delivered; this one is ${existing.state}`, 409);
       const task = draft.task(current.id)!, instruction = task.instructions.find((entry) => entry.id === instructionId)!; instruction.state = "delivered"; instruction.attemptId = attempt.id;
@@ -505,6 +514,7 @@ export class CollabStore {
       if (current.status === "done") throw new CollabError("Move the task out of Done before starting an attempt", 409);
       if (fromCheckpointId !== undefined) { const checkpoint = current.checkpoints.find((entry) => entry.id === fromCheckpointId); if (!checkpoint) throw new CollabError("Checkpoint not found", 404); const latest = latestCheckpoint(current)!; if (checkpoint.id !== latest.id && !roleAtLeast(actorRole(actor, current.projectId), "maintainer")) throw new CollabError(`Continue from the latest checkpoint (${short(latest.commit)}); only a project maintainer may start from an older one`, 409); }
       const task = draft.task(current.id)!, attempt: Attempt = { id: attemptId, taskId: task.id, runnerId, runnerName, user: whoOf(actor), state: "claimed", baseCommit, createdAt: now, lastSeq: 0, lastHeartbeatAt: now, progress: { updatedAt: now } };
+      for (const older of task.attempts) if (older.state === "paused" || older.state === "stopped") supersedeAttempt(older, "Superseded by a newer attempt; work continues from the task's latest checkpoint", now);
       if (fromCheckpointId !== undefined) attempt.fromCheckpointId = fromCheckpointId; pushBounded(task.attempts, attempt, MAX.attempts, "attempts");
       if (task.status !== "working") transition(task, "working", actor, undefined, now);
       this.commit(draft, task, whoOf(actor), "attempt-claimed", `${runnerName} from ${short(baseCommit)}`, now); return clone(task);
@@ -519,7 +529,7 @@ export class CollabStore {
   async attemptProgress(actor: CollabActor, attemptId: string, report: unknown): Promise<{ attempt: Attempt }> {
     const parsed = validateProgressReport(report, this.now());
     return this.change((draft) => {
-      const now = this.now(), found = this.findAttempt(draft.board, actor, attemptId); this.assertAttemptRunner(found.attempt, actor); this.assertNotEnded(found.attempt);
+      const now = this.now(), found = this.findAttempt(draft.board, actor, attemptId); this.assertAttemptRunner(found.attempt, actor, found.task.projectId); this.assertNotEnded(found.attempt);
       if (parsed.seq <= found.attempt.lastSeq) return { attempt: clone(found.attempt) };
       if (found.attempt.state !== "claimed" && found.attempt.state !== "running") {
         // Every rule of a claim applies to a revive. A change of hands supersedes what the previous owner left (assignOwner), but a board written before that rule, or any path that misses it, must not let the old owner's machine put a run back on a task that is no longer theirs; and Done stays the owner's decision, as for a claim.
@@ -527,6 +537,7 @@ export class CollabStore {
         if (found.task.status === "done") throw new CollabError("Move the task out of Done before resuming the attempt", 409);
         const busy = busyAttempt(found.task); if (busy && busy.id !== found.attempt.id) throw new CollabError(`Stop the attempt running on ${busy.runnerName} before resuming this one`, 409);
         if (found.task.handoff?.state === "offered") throw new CollabError("Accept, decline or cancel the offered hand-over before resuming the attempt", 409);
+        assertLatestAttempt(found.task, found.attempt);
       }
       const task = draft.task(found.task.id, found.attempt.state === "running" ? "telemetry" : "board")!, attempt = task.attempts.find((entry) => entry.id === found.attempt.id)!;
       attempt.progress = parsed.progress; attempt.lastSeq = parsed.seq; attempt.lastHeartbeatAt = now; attempt.state = "running"; attempt.startedAt ??= now; delete attempt.endedAt; delete attempt.reason;
@@ -536,39 +547,45 @@ export class CollabStore {
   }
   async heartbeat(actor: CollabActor, attemptId: string): Promise<{ attempt: Attempt; instructions: Instruction[] }> {
     return this.change((draft) => {
-      const found = this.findAttempt(draft.board, actor, attemptId); this.assertAttemptRunner(found.attempt, actor); this.assertNotEnded(found.attempt);
+      const found = this.findAttempt(draft.board, actor, attemptId); this.assertAttemptRunner(found.attempt, actor, found.task.projectId); this.assertNotEnded(found.attempt);
       const task = draft.task(found.task.id, "telemetry")!, attempt = task.attempts.find((entry) => entry.id === found.attempt.id)!; attempt.lastHeartbeatAt = this.now();
       draft.events.push({ kind: "task", taskId: task.id, projectId: task.projectId }); return { attempt: clone(attempt), instructions: clone(task.instructions.filter((entry) => entry.state === "approved")) };
     });
   }
-  private assertNotEnded(attempt: Attempt): void { if (TERMINAL.includes(attempt.state)) throw new CollabError(`This attempt ${attempt.state === "superseded" ? "was superseded by a change of owner or recovery" : `already ended as ${attempt.state}`}; start a new attempt instead`, 409); }
+  private assertNotEnded(attempt: Attempt): void { if (TERMINAL.includes(attempt.state)) throw new CollabError(`This attempt ${attempt.state === "superseded" ? "was superseded by a change of owner, recovery or newer attempt" : `already ended as ${attempt.state}`}; start a new attempt instead`, 409); }
   /** Idempotent for the runner's retries: finishing again with the same state returns the attempt unchanged. paused/stopped/unknown attempts can be resumed, finished/failed cannot. */
   async finishAttempt(actor: CollabActor, attemptId: string, input: FinishInput): Promise<{ attempt: Attempt }> {
     return this.change((draft) => {
-      const now = this.now(), found = this.findAttempt(draft.board, actor, attemptId); this.assertAttemptRunner(found.attempt, actor);
+      const now = this.now(), found = this.findAttempt(draft.board, actor, attemptId); this.assertAttemptRunner(found.attempt, actor, found.task.projectId);
       if (!object(input) || !(FINISH_STATES as readonly unknown[]).includes(input.state)) throw new CollabError('Choose the final state: "finished", "failed", "stopped", "paused" or "unknown"'); const state = input.state as FinishState;
       const head = input.head === undefined || input.head === null ? undefined : validateCommit(input.head, "head"), summary = validateText(input.summary, MAX.summary, "summary"), reason = validateText(input.reason, MAX.reason, "reason");
       if (found.attempt.state === state) return { attempt: clone(found.attempt) }; this.assertNotEnded(found.attempt);
       const task = draft.task(found.task.id)!, attempt = task.attempts.find((entry) => entry.id === found.attempt.id)!;
       attempt.state = state; if (state === "unknown") delete attempt.endedAt; else attempt.endedAt = now; attempt.lastHeartbeatAt = now; if (head) attempt.head = head; if (summary) { attempt.progress.summary = summary; attempt.progress.updatedAt = now; } if (reason) attempt.reason = reason;
       this.commit(draft, task, whoOf(actor), `attempt-${state}`, truncateText(reason || summary, 200) || undefined, now);
-      const label = state === "finished" ? "finished" : state === "failed" ? "failed" : state === "stopped" ? "stopped at a limit" : state === "paused" ? "paused" : "lost contact";
-      if (task.owner) this.notify(draft, task, actor, [task.owner.userId], state === "failed" || state === "unknown" ? "attempt-failed" : "attempt-finished", `The attempt on ${attempt.runnerName} ${label}${reason ? `: ${reason}` : ""}`);
+      // An ending reaches the task's people, never the person whose runner reported it (notify skips the actor, and only the owner's own machine executes). A pause is the owner stopping their own run, so it tells nobody. The reviewer of a checkpoint this finish leaves unreviewed is asked for a review instead.
+      if (state !== "paused") {
+        const label = state === "finished" ? "finished" : state === "failed" ? "failed" : state === "stopped" ? "stopped at a limit" : "lost contact", latest = latestCheckpoint(task);
+        const toReview = state === "finished" && task.reviewer && latest && latest.id === attempt.checkpointId && !task.reviews.some((review) => review.checkpointId === latest.id && !review.stale) ? latest : undefined;
+        this.notify(draft, task, actor, this.stakeholders(task).filter((id) => !toReview || id !== task.reviewer!.userId), state === "failed" || state === "unknown" ? "attempt-failed" : "attempt-finished", `The attempt on ${attempt.runnerName} ${label}${toReview ? ` with checkpoint ${short(toReview.commit)}` : ""}${reason ? `: ${reason}` : ""}`);
+        if (toReview) this.notify(draft, task, actor, [task.reviewer!.userId], "review-requested", `New checkpoint ${short(toReview.commit)} of “${task.title}” is ready for your review${task.reviews.some((review) => review.stale && review.by.userId === task.reviewer!.userId) ? "; your earlier review is now stale" : ""}`);
+      }
       return { attempt: clone(attempt) };
     });
   }
 
-  /** A human recovery decision, never a heartbeat timeout: confirm the original execution has stopped before releasing its reservation. */
+  /** A human recovery decision, never a heartbeat timeout: confirm the original execution has stopped before releasing its reservation. It is offered once the runner lost contact, as soon as the "Connection lost" 90 s are up rather than after the 24 h sweep, and checked here at commit time: a runner that reported again in the meantime keeps its attempt, and once superseded the old runner's reports are refused and it stops its agent. */
   async recoverAttempt(actor: CollabActor, attemptId: string, input: { revision?: unknown; reason?: unknown; confirmedStopped?: unknown }): Promise<Task> {
     return this.change((draft) => {
       const found = this.findAttempt(draft.board, actor, attemptId), role = actorRole(actor, found.task.projectId);
       if (!(isTaskOwner(found.task, actor) && roleAtLeast(role, "contributor")) && !roleAtLeast(role, "maintainer")) throw new CollabError("Only the task owner or a project maintainer may recover an attempt", 403);
       this.cas(found.task, input.revision);
-      if (found.attempt.state !== "unknown") throw new CollabError("Only an unknown attempt can be recovered; reconcile or stop its runner first", 409);
+      const now = this.now();
+      if (!attemptLostContact(found.attempt, now)) throw new CollabError(attemptIsLive(found.attempt, now) ? `Runner ${found.attempt.runnerName} is connected and reports this attempt as ${found.attempt.state}; recovery is only for an attempt whose runner lost contact, so stop it from that computer instead` : `This attempt is ${found.attempt.state}; only an attempt whose runner lost contact can be recovered`, 409);
       if (input.confirmedStopped !== true) throw new CollabError("Confirm that the original agent has stopped before releasing this task");
-      const reason = validateText(input.reason, MAX.reason, "recovery reason", { required: true }), now = this.now();
+      const reason = validateText(input.reason, MAX.reason, "recovery reason", { required: true });
       const task = draft.task(found.task.id)!, attempt = task.attempts.find((entry) => entry.id === attemptId)!;
-      attempt.state = "superseded"; attempt.endedAt = now; attempt.reason = reason;
+      supersedeAttempt(attempt, reason, now);
       this.commit(draft, task, whoOf(actor), "attempt-recovered", reason, now);
       this.system(task, whoOf(actor), `${actor.displayName} confirmed execution on ${attempt.runnerName} has stopped: ${reason}`, now);
       return clone(task);
@@ -580,7 +597,7 @@ export class CollabStore {
   async addCheckpoint(actor: CollabActor, attemptId: string, input: unknown): Promise<Checkpoint> {
     const manifest = validateCheckpointInput(input);
     return this.change((draft) => {
-      const now = this.now(), found = this.findAttempt(draft.board, actor, attemptId); this.assertAttemptRunner(found.attempt, actor);
+      const now = this.now(), found = this.findAttempt(draft.board, actor, attemptId); this.assertAttemptRunner(found.attempt, actor, found.task.projectId);
       if (found.attempt.state === "superseded") throw new CollabError("This attempt was superseded by a change of owner; its work can no longer be checkpointed", 409);
       if (manifest.id !== undefined && draft.board.tasks.some((entry) => entry.checkpoints.some((checkpoint) => checkpoint.id === manifest.id))) throw new CollabError("A checkpoint with this id already exists; create the bundle again under a new id", 409);
       const task = draft.task(found.task.id)!, attempt = task.attempts.find((entry) => entry.id === found.attempt.id)!, id = manifest.id ?? newCheckpointId(this.random);
@@ -592,7 +609,7 @@ export class CollabStore {
   }
   /** Streams to a temp file while hashing and counting (outside the mutation queue, so a slow upload blocks nobody), then moves it into place and marks the bundle available in one durable step. */
   async storeBundle(actor: CollabActor, checkpointId: string, stream: AsyncIterable<Uint8Array> | Readable, info: BundleInfo): Promise<Checkpoint> {
-    await this.load(); this.require(); const found = this.findCheckpoint(this.state.board, actor, checkpointId); this.assertAttemptRunner(found.attempt, actor); this.assertPendingBundle(found.checkpoint);
+    await this.load(); this.require(); const found = this.findCheckpoint(this.state.board, actor, checkpointId); this.assertAttemptRunner(found.attempt, actor, found.task.projectId); this.assertPendingBundle(found.checkpoint);
     if (!object(info) || info.size !== found.checkpoint.size || typeof info.sha256 !== "string" || info.sha256.toLowerCase() !== found.checkpoint.sha256) throw new CollabError("The upload's size and sha256 must match the checkpoint manifest");
     await mkdir(this.bundleDir, { recursive: true, mode: 0o700 });
     const temp = `${this.bundleFile(found.checkpoint.id)}.${this.random(6).toString("hex")}.tmp`, hash = createHash("sha256"); let received = 0;

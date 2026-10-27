@@ -49,7 +49,8 @@ export async function checkpointHunks(repo: GitCwd, input: { source: string; pat
 export async function applyCheckpointHunks(repo: GitCwd, input: { source: string; path: string; expectedHead: string; hunks: string[] }) {
   if (!Array.isArray(input.hunks) || input.hunks.length < 1 || input.hunks.length > 200 || input.hunks.some((id) => typeof id !== "string" || !/^[a-f0-9]{64}$/.test(id)) || new Set(input.hunks).size !== input.hunks.length) throw new Error("Choose 1–200 distinct checkpoint hunks");
   return withRepoLock(typeof repo === "string" ? repo : repo.path, async () => {
-    if (await resolveCommit(repo) !== input.expectedHead) throw new WorkspaceConflictError(await resolveCommit(repo));
+    const head = await resolveCommit(repo);
+    if (head !== input.expectedHead) throw new WorkspaceConflictError(head, "The worktree HEAD changed since these hunks were compared. Compare hunks again.");
     const status = await git(["status", "--porcelain"], repo);
     if (status.code || status.stdout.trim()) throw new Error("Commit or save existing changes before applying checkpoint hunks");
     const preview = await checkpointHunks(repo, input);

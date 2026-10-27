@@ -5,6 +5,7 @@ import { classifyError, cliErrorLine } from "./errors.js";
 import { startJsonlProcess, stderrTail, stringify, truncate, type ProcessOutcome } from "./process.js";
 import type { AgentApprovalRequest, AgentQuestion, ApprovalDecision, ErrorKind } from "./types.js";
 import type { AgentContainer } from "../agent-container.js";
+import { approvalTimeout, isApprovalTimeout } from "../approvals.js";
 
 /**
  * One Codex turn through `codex app-server`: JSON-RPC over stdio (one JSON object per line, no
@@ -12,7 +13,8 @@ import type { AgentContainer } from "../agent-container.js";
  * you send reaches the agent mid-turn (`turn/steer`) instead of waiting for its next turn.
  *
  * Notifications are translated into the events `codex exec --json` prints, so the adapter has
- * one handler for both transports. Protocol: `codex app-server generate-ts` (codex-cli 0.162).
+ * one handler for both transports. Protocol: `codex app-server generate-ts` (codex-cli 0.162;
+ * approvals and questions also as codex-cli 0.164 sends them).
  */
 
 export interface AppServerTurn {
@@ -49,6 +51,8 @@ export interface AppServerTurn {
   onQuestion?: (questions: AgentQuestion[], signal: AbortSignal) => Promise<Record<string, string> | undefined>;
   /** Upper bounded independently of the process timeout. Defaults to two minutes. */
   approvalTimeoutMs?: number;
+  /** How long a question waits for an answer, at most ten minutes (the default). */
+  questionTimeoutMs?: number;
   agentContainer?: AgentContainer;
 }
 
@@ -158,6 +162,13 @@ export async function runAppServerTurn(turn: AppServerTurn): Promise<ProcessOutc
   let exit: ProcessOutcome | undefined;
   const approvalRequests = new Map<string, { controller: AbortController; replyAllowed: boolean }>();
   const approvalItems = new Map<string, any>();
+  /**
+   * The environments the thread reports for this turn's worktree. codex-cli 0.164 names one on every
+   * command approval ("local" for the thread's own machine); a command bound for any other runs elsewhere.
+   * Undefined when the thread reports none (an older Codex): then only "local" is this machine.
+   */
+  let localEnvironments: Set<string> | undefined;
+  const localEnvironment = (id: unknown) => id === undefined || id === null || typeof id === "string" && (localEnvironments ? localEnvironments.has(id) : id === "local");
 
   // Cancelling interrupts the turn first (so Codex records it, and a resume picks up from there),
   // then stops the server: the process gets its own signal, aborted only after that.
@@ -350,17 +361,22 @@ export async function runAppServerTurn(turn: AppServerTurn): Promise<ProcessOutc
     if (duplicate) { duplicate.controller.abort(); return; }
     const params = msg.params ?? {};
     const item = approvalItems.get(params.itemId);
-    const action = approvalAction(msg, item, turn.cwd, turn.sandbox);
-    if (!action || approvalRequests.size >= 32 || !threadId || !turnId || params.threadId !== threadId || params.turnId !== turnId || turnEnded || exit || turn.signal?.aborted) {
-      turn.onText(`Codex approval declined: the action is outside this turn's supported scope`);
+    const thisTurn = !!threadId && !!turnId && params.threadId === threadId && params.turnId === turnId && !turnEnded && !exit && !turn.signal?.aborted;
+    const action = !thisTurn ? "it isn't for this turn" : approvalRequests.size >= 32 ? "too many requests are already waiting" : approvalAction(msg, item, turn.cwd, turn.sandbox, localEnvironment);
+    if (typeof action === "string") {
+      // Codex reads a plain decline as yours: say in the thread, and to Codex, that code-flow declined it unasked.
+      const command = typeof (params.command ?? item?.command) === "string" ? String(params.command ?? item?.command).trim().replace(/\s+/g, " ") : "";
+      const what = msg.method === "item/fileChange/requestApproval" ? "to change files" : command ? `to run \`${command.length > 160 ? `${command.slice(0, 160)}…` : command}\`` : "to run a command";
+      turn.onText(`code-flow declined Codex's request ${what} without asking you: ${action}`);
       proc.send({ id: msg.id, result: { decision: "decline" } });
+      if (thisTurn) void steer(`code-flow declined your approval request ${what} on its own, because ${action}. The user was not asked and did not reject it. Continue without it, and say in your answer what you couldn't do.`);
       return;
     }
     const approval = { controller: new AbortController(), replyAllowed: true };
     approvalRequests.set(id, approval);
     proc.pauseIdle(true);
     const timeout = Number.isFinite(turn.approvalTimeoutMs) && turn.approvalTimeoutMs! > 0 ? Math.min(10 * 60_000, turn.approvalTimeoutMs!) : 2 * 60_000;
-    const timer = setTimeout(() => approval.controller.abort(), timeout);
+    const timer = setTimeout(() => approval.controller.abort(approvalTimeout()), timeout);
     turn.onText(`Codex is waiting for approval of this ${action.kind === "command" ? "command" : "file change"}`);
     let decision: ApprovalDecision = "decline";
     try {
@@ -377,7 +393,8 @@ export async function runAppServerTurn(turn: AppServerTurn): Promise<ProcessOutc
     if (approval.replyAllowed && !exit && !turnEnded) {
       const accepted = decision === "approve" && !approval.controller.signal.aborted && !turn.signal?.aborted;
       proc.send({ id: msg.id, result: { decision: accepted ? "accept" : "decline" } });
-      turn.onText(`Codex ${action.kind === "command" ? "command" : "file change"} ${accepted ? "approved once" : "declined"}`);
+      const what = action.kind === "command" ? "command" : "file change";
+      turn.onText(!accepted && isApprovalTimeout(approval.controller.signal.reason) ? `Codex ${what} request expired: nobody answered within ${waited(timeout)}, so it was declined` : `Codex ${what} ${accepted ? "approved once" : "declined"}`);
     }
     approval.controller.abort();
   }
@@ -387,14 +404,18 @@ export async function runAppServerTurn(turn: AppServerTurn): Promise<ProcessOutc
     if (approvalRequests.has(id) || approvalRequests.size >= 32 || turnEnded || exit) { proc.send({ id: msg.id, result: { answers: {} } }); return; }
     const approval = { controller: new AbortController(), replyAllowed: true };
     approvalRequests.set(id, approval); proc.pauseIdle(true);
-    const timer = setTimeout(() => approval.controller.abort(), 600_000);
+    const timeout = Number.isFinite(turn.questionTimeoutMs) && turn.questionTimeoutMs! > 0 ? Math.min(10 * 60_000, turn.questionTimeoutMs!) : 10 * 60_000;
+    const timer = setTimeout(() => approval.controller.abort(approvalTimeout()), timeout);
     let answers: Record<string, string> | undefined;
     try {
-      const questions = msg.params.questions.map((q: any) => ({ id: q.id, question: q.question, options: q.options?.map((o: any) => o.label) }));
+      const questions = msg.params.questions.map(codexQuestion);
       answers = await Promise.race([turn.onQuestion!(questions, approval.controller.signal), new Promise<undefined>(resolve => approval.controller.signal.addEventListener("abort", () => resolve(undefined), { once: true }))]);
     } catch { /* A failed UI request returns an empty answer, never a guessed response. */ }
     finally { clearTimeout(timer); approvalRequests.delete(id); proc.pauseIdle(approvalRequests.size > 0); }
-    if (approval.replyAllowed && !exit && !turnEnded) proc.send({ id: msg.id, result: { answers: Object.fromEntries(Object.entries(answers ?? {}).map(([key, value]) => [key, { answers: [value] }])) } });
+    if (approval.replyAllowed && !exit && !turnEnded) {
+      proc.send({ id: msg.id, result: { answers: Object.fromEntries(Object.entries(answers ?? {}).map(([key, value]) => [key, { answers: [value] }])) } });
+      if (!answers && isApprovalTimeout(approval.controller.signal.reason)) turn.onText(`Codex's question expired: nobody answered within ${waited(timeout)}, so Codex continues without an answer`);
+    }
     approval.controller.abort();
   }
 
@@ -481,6 +502,12 @@ export async function runAppServerTurn(turn: AppServerTurn): Promise<ProcessOutc
       throw err;
     }
     threadId = thread?.thread?.id ?? turn.resumeThreadId;
+    const environments = thread?.thread?.environments;
+    if (Array.isArray(environments)) {
+      localEnvironments = new Set(environments.slice(0, 32)
+        .filter((env: any) => typeof env?.environmentId === "string" && env.environmentId.length <= 240 && typeof env.cwd === "string" && isAbsolute(env.cwd) && workspacePath(turn.cwd, env.cwd))
+        .map((env: any) => env.environmentId as string));
+    }
     turn.onMessage({ type: "thread.started", thread_id: threadId });
 
     turnStarted = true;
@@ -539,25 +566,53 @@ export async function runAppServerTurn(turn: AppServerTurn): Promise<ProcessOutc
   }
 }
 
-/** Normalize only approval kinds whose effect and complete scope can be shown in the UI. */
-function approvalAction(msg: any, item: any, cwd: string, sandbox: AppServerTurn["sandbox"]): AgentApprovalRequest | undefined {
+/**
+ * Normalize only approval kinds whose effect and complete scope can be shown in the UI. Anything
+ * else comes back as why it can't be shown, worded to follow "because".
+ */
+function approvalAction(msg: any, item: any, cwd: string, sandbox: AppServerTurn["sandbox"], localEnvironment: (id: unknown) => boolean): AgentApprovalRequest | string {
   const params = msg.params ?? {};
-  if ([params.sandboxPermissions, params.sandbox_permissions, item?.sandboxPermissions, item?.sandbox_permissions].some(value => value !== undefined && value !== "use_default") || item?.additionalPermissions) return;
-  if (sandbox === "read-only" || params.grantRoot || params.networkApprovalContext || params.additionalPermissions || (params.kind && params.kind !== "command") || (params.environmentId !== undefined && params.environmentId !== null)) return;
+  if ([params.sandboxPermissions, params.sandbox_permissions, item?.sandboxPermissions, item?.sandbox_permissions].some(value => value !== undefined && value !== "use_default") || item?.additionalPermissions || params.additionalPermissions) return "it asks for permissions beyond this run's sandbox";
+  if (sandbox === "read-only") return "this turn is read-only";
+  if (params.grantRoot) return "it asks for a lasting write grant";
+  if (params.networkApprovalContext) return "it asks for network access";
+  if (params.kind && params.kind !== "command") return "it would send input to a running command";
+  if (!localEnvironment(params.environmentId)) return "it would run in another Codex environment";
+  // Never a decision that amends Codex's policy: only a one-time accept can be offered.
+  if (Array.isArray(params.availableDecisions) && !params.availableDecisions.includes("accept")) return "Codex offers no one-time approval for it";
   const reason = typeof params.reason === "string" ? params.reason.slice(0, 4_000) : undefined;
   const id = String(msg.id);
-  if (!id || id.length > 240) return;
+  if (!id || id.length > 240) return "its request id is invalid";
   if (msg.method === "item/commandExecution/requestApproval") {
     const command = params.command ?? item?.command;
     const requestedCwd = params.cwd ?? item?.cwd ?? cwd;
-    if (typeof command !== "string" || !command.trim() || command.length > 16_000 || command.includes("\0") || typeof requestedCwd !== "string" || !isAbsolute(requestedCwd) || !workspacePath(cwd, requestedCwd)) return;
+    if (typeof command !== "string" || !command.trim() || command.length > 16_000 || command.includes("\0") || typeof requestedCwd !== "string" || !isAbsolute(requestedCwd)) return "its command can't be shown in full";
+    if (!workspacePath(cwd, requestedCwd)) return "it would run outside this run's worktree";
     return { id, kind: "command", command, cwd: requestedCwd, ...(reason ? { reason } : {}) };
   }
-  if (!item || item.type !== "fileChange" || !Array.isArray(item.changes) || !item.changes.length || item.changes.length > 200) return;
-  if (item.changes.some((change: any) => !["add", "delete", "update"].includes(change.kind?.type ?? change.kind))) return;
+  if (!item || item.type !== "fileChange" || !Array.isArray(item.changes) || !item.changes.length || item.changes.length > 200) return "its file changes can't be shown in full";
+  if (item.changes.some((change: any) => !["add", "delete", "update"].includes(change.kind?.type ?? change.kind))) return "its file changes can't be shown in full";
   const paths = item.changes.flatMap((change: any) => [change.path, ...(change.kind?.move_path ? [change.kind.move_path] : [])]);
-  if (paths.some((path: unknown) => typeof path !== "string" || !path || path.length > 4_096 || path.includes("\0") || !workspacePath(cwd, path))) return;
+  if (paths.some((path: unknown) => typeof path !== "string" || !path || path.length > 4_096 || path.includes("\0"))) return "its file changes can't be shown in full";
+  if (paths.some((path: string) => !workspacePath(cwd, path))) return "it changes files outside this run's worktree";
   return { id, kind: "file-change", paths, cwd, ...(reason ? { reason } : {}) };
+}
+
+/** A wait, for a status line: "2 minutes", "45s". */
+function waited(ms: number): string {
+  return ms >= 60_000 ? `${Math.round(ms / 60_000)} minute${Math.round(ms / 60_000) === 1 ? "" : "s"}` : seconds(ms);
+}
+
+/** A Codex `item/tool/requestUserInput` question with what the inbox shows of it. */
+function codexQuestion(q: any): AgentQuestion {
+  const options = Array.isArray(q?.options) ? q.options : undefined;
+  const descriptions = options?.map((o: any) => typeof o?.description === "string" ? o.description : "");
+  return {
+    id: q?.id, question: q?.question,
+    ...(typeof q?.header === "string" && q.header ? { header: q.header } : {}),
+    ...(options ? { options: options.map((o: any) => o?.label) } : {}),
+    ...(descriptions?.some(Boolean) ? { optionDescriptions: descriptions } : {}),
+  };
 }
 
 /** Resolve the nearest existing ancestor to catch links escaping the workspace. */

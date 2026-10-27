@@ -1,7 +1,7 @@
 import { execFile, spawn } from "node:child_process";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { uptime } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { CODEFLOW_HOME, timerMs } from "../config.js";
 import { childEnv } from "../env.js";
 import type { ErrorKind } from "./types.js";
@@ -33,8 +33,11 @@ export interface JsonlProcessOptions {
 
 export interface ProcessOutcome {
   exitCode: number | null;
+  /** The process failed to start, rather than returning an exit code. */
+  spawnError?: { code?: string; message: string; command: string };
   stderr: string;
   aborted: boolean;
+  abortReason?: "shutdown";
   timedOut: boolean;
   /** Stopped for printing nothing for `idleMs`. */
   stalled: boolean;
@@ -75,11 +78,12 @@ const dyingGroups = new Map<number, GroupRecord>();
 const GROUPS_FILE = join(CODEFLOW_HOME, "processes.json");
 
 process.once("exit", () => {
+  const pending = liveGroups.size + dyingGroups.size > 0;
   for (const record of [...liveGroups.values(), ...dyingGroups.values()]) if (record.containerName) stopAgentContainerSync(record.containerName);
   for (const pid of [...liveGroups.keys(), ...dyingGroups.keys()]) signalGroup(pid, "SIGKILL");
   liveGroups.clear();
   dyingGroups.clear();
-  persistGroups();
+  if (pending) persistGroups();
 });
 
 /** When this machine booted (ms since epoch); pids from before a reboot belong to someone else now. */
@@ -246,6 +250,7 @@ export function startJsonlProcess(opts: JsonlProcessOptions): JsonlProcess {
 
   const outcome = new Promise<ProcessOutcome>((resolve) => {
     let stderr = "";
+    let spawnError: ProcessOutcome["spawnError"];
     let aborted = false;
     let timedOut = false;
     let stalled = false;
@@ -353,7 +358,7 @@ export function startJsonlProcess(opts: JsonlProcessOptions): JsonlProcess {
       clearTimeout(grace);
       untrackGroup(child.pid);
       opts.signal?.removeEventListener("abort", onAbort);
-      const outcome = { exitCode, stderr, aborted, timedOut, stalled, idleMs: stalled ? idleMs : undefined, resultSeen, killedAfterResult };
+      const outcome = { exitCode, ...(spawnError ? { spawnError } : {}), stderr, aborted, ...(aborted && opts.signal?.reason === "codeflow-shutdown" ? { abortReason: "shutdown" as const } : {}), timedOut, stalled, idleMs: stalled ? idleMs : undefined, resultSeen, killedAfterResult };
       if (container) {
         void (async () => {
           await stopAgentContainer(container.name);
@@ -367,6 +372,7 @@ export function startJsonlProcess(opts: JsonlProcessOptions): JsonlProcess {
     };
 
     child.on("error", (err) => {
+      spawnError = { code: (err as NodeJS.ErrnoException).code, message: err.message, command: opts.command };
       stderr += `\n${err.message}`;
       finish(null);
     });
@@ -486,10 +492,36 @@ export async function commandExists(binary: string): Promise<boolean> {
   });
 }
 
+/** What the Docker client says when it can't reach its daemon (stopped, or no access to it). */
+export const DOCKER_UNREACHABLE = /Cannot connect to the Docker daemon|Is the docker daemon running\?|permission denied while trying to connect to the Docker daemon|^(?:docker: )?error during connect\b/im;
+
+/**
+ * Whether Docker can run a container here: its CLI is on the PATH commands get (`missing`), and
+ * its daemon answers (`running`). `unreachable` only when the client says it can't reach the
+ * daemon, with the line that says so; a probe that fails some other way (slow to answer, an
+ * unusual client) is `unknown`, and the container run itself then says what's wrong.
+ */
+export function dockerStatus(): Promise<{ state: "running" | "unreachable" | "missing" | "unknown"; detail?: string }> {
+  return new Promise((resolve) => {
+    execFile("docker", ["info", "--format", "{{.ServerVersion}}"], { timeout: 5_000, maxBuffer: 64 * 1024, env: childEnv() }, (error, stdout, stderr) => {
+      if ((error as NodeJS.ErrnoException | null)?.code === "ENOENT") return resolve({ state: "missing" });
+      const unreachable = `${stdout}\n${stderr}`.split("\n").map((line) => line.trim()).find((line) => DOCKER_UNREACHABLE.test(line));
+      if (unreachable) return resolve({ state: "unreachable", detail: unreachable.slice(0, 200) });
+      resolve({ state: !error && /^\d+\.\d+/.test(String(stdout).trim()) ? "running" : "unknown" });
+    });
+  });
+}
+
 export function describeFailure(name: string, outcome: ProcessOutcome): string {
-  if (outcome.aborted) return `${name} was cancelled`;
+  if (outcome.aborted) return outcome.abortReason === "shutdown" ? `${name} was interrupted because Code Flow shut down. Resume to continue.` : `${name} was cancelled`;
   if (outcome.timedOut) return `${name} timed out`;
   if (outcome.stalled) return `${name} printed nothing for ${duration(outcome.idleMs ?? 0)} and was stopped (stalled)`;
+  if (outcome.spawnError) {
+    const { code, command, message } = outcome.spawnError;
+    if (code === "ENOENT") return isAbsolute(command) ? `${name} could not start: the executable was not found at ${command}. Choose its installed path.` : `${name} could not start: ${command} was not found on this computer's PATH. Install it or enter its absolute path.`;
+    if (code === "EACCES") return `${name} could not start: ${command} is not executable. Check its permissions or choose the CLI's executable.`;
+    return `${name} could not start: ${message}`;
+  }
   const tail = stderrTail(outcome);
   return `${name} exited with code ${outcome.exitCode}${tail ? `: ${tail}` : ""}`;
 }
@@ -499,6 +531,7 @@ export function processErrorKind(outcome: ProcessOutcome): ErrorKind | undefined
   if (outcome.aborted) return "cancelled";
   if (outcome.timedOut) return "timeout";
   if (outcome.stalled) return "stalled";
+  if (outcome.spawnError) return "cli_incompatible";
   return undefined;
 }
 

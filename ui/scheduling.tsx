@@ -1,5 +1,5 @@
 import { useState } from "preact/hooks";
-import { hashFor } from "./navigation.js";
+import { hashFor, AUTOMATION_KINDS } from "./navigation.js";
 import { computerLabel } from "./ssh-projects.js";
 import { AutomationsView } from "./automations.js";
 import { DeferredRunsPanel } from "./deferred-runs.js";
@@ -8,15 +8,16 @@ import { ProjectButton } from "./projects.js";
 import { Templates } from "./github.js";
 import { activeProject, currentProject, NONE, openComposer, projects, draftsReady, composerLoading } from "./state.js";
 
-export const SCHEDULE_KINDS = [
+const SCHEDULE_DETAILS = [
   { id: "once", label: "Run once later", description: "Start a task at a chosen time or when its providers have capacity." },
   { id: "repeat", label: "Repeat", description: "Run a configured task on a schedule or from a webhook." },
   { id: "backlog", label: "Process a backlog", description: "Choose issues, dependency updates or security alerts, with one run per item." },
   { id: "missions", label: "Pursue a mission", description: "Give agents an ongoing goal and review their proposals and verified drafts." },
 ] as const;
-export type ScheduleKind = typeof SCHEDULE_KINDS[number]["id"];
+export const SCHEDULE_KINDS = AUTOMATION_KINDS.map(id => SCHEDULE_DETAILS.find(item => item.id === id)!);
+export type ScheduleKind = typeof AUTOMATION_KINDS[number];
 export function SchedulingView({ kind = "repeat", projectId }: { kind?: string; projectId?: string }) {
-  const selected = SCHEDULE_KINDS.find(item => item.id === kind) ?? SCHEDULE_KINDS[1];
+  const selected = SCHEDULE_KINDS.find(item => item.id === kind) ?? SCHEDULE_KINDS[1]!;
   const project = projectId ? projects.value.find(p => p.id === projectId) : activeProject.value;
   const [repository, setRepository] = useState("");
   const chosen = project?.repos.includes(repository) ? repository : project?.repos.length === 1 ? project.repos[0] : "";

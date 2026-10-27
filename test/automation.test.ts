@@ -62,7 +62,7 @@ test("schedules: every N minutes, or at a time on chosen days; missed times are 
   assert.equal(new Date(nextFire({ at: "07:30", days: [6] }, monday9)).getDay(), 6, "only on Saturdays");
   assert.equal(describeSchedule({ at: "07:30", days: [1, 2, 3, 4, 5] }), "Mon, Tue, Wed, Thu, Fri at 07:30 (server local time)");
   assert.equal(describeSchedule({ every: 120 }), "every 2 h");
-  assert.throws(() => validateSchedule({ every: 1 }), /every 5 minutes/);
+  assert.throws(() => validateSchedule({ every: 1 }), /at least 5 minutes apart/);
   assert.throws(() => validateSchedule({ at: "25:00" }), /07:30/);
   assert.throws(() => validateSchedule({ at: "07:30", days: [] }), /at least one/);
   assert.throws(() => validateSchedule({ at: "07:30", days: [-1] }), /valid day/);
@@ -385,7 +385,8 @@ test("editing an automation keeps the project it was saved in, through a restart
   await first.load();
   const t = await first.create({ name: "In a project", enabled: true, webhook: true, isolate: false, schedule: { every: 60 }, run: { repo, project: "p-saved", pattern: "pipeline", task: "Scoped", roles: team } });
   await first.update(t.id, { name: "Renamed", enabled: false, webhook: false, isolate: true, image: "node:22-slim", schedule: { at: "07:00" }, rotateToken: true });
-  await first.update(t.id, { enabled: true, schedule: undefined });
+  // Removing the schedule now requires a webhook; retain this test's project-placement intent.
+  await first.update(t.id, { enabled: true, schedule: undefined, webhook: true });
   assert.equal(first.get(t.id)!.run.project, "p-saved");
 
   const reloaded = make();

@@ -96,9 +96,9 @@ interface Raw {
   body: Buffer;
 }
 /** A request as a browser sends it, with nothing decompressed: what's on the wire. */
-const get = (port: number, path: string, headers: Record<string, string> = {}) =>
+const get = (port: number, path: string, headers: Record<string, string> = {}, method = "GET") =>
   new Promise<Raw>((resolve, reject) => {
-    request({ host: "127.0.0.1", port, path, headers: { host: `localhost:${port}`, ...headers } }, (res) => {
+    request({ host: "127.0.0.1", port, path, method, headers: { host: `localhost:${port}`, ...headers } }, (res) => {
       const chunks: Buffer[] = [];
       res.on("data", (c: Buffer) => chunks.push(c));
       res.on("end", () => resolve({ status: res.statusCode ?? 0, headers: res.headers, body: Buffer.concat(chunks) }));
@@ -125,7 +125,10 @@ test("signing in with the link, or with a cookie a browser already has, ends the
 
   const cookie = await get(byCookie.port, "/", { cookie: `codeflow_session=${TOKEN}` });
   assert.equal(cookie.status, 200);
-  assert.equal(cookie.headers["set-cookie"], undefined);
+  assert.deepEqual(cookie.headers["set-cookie"], [
+    `codeflow_session_${byCookie.port}=${TOKEN}; HttpOnly; SameSite=Strict; Path=/; Max-Age=2592000`,
+    "codeflow_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0",
+  ], "a matching legacy cookie migrates to this instance's cookie");
   assert.equal((await get(byCookie.port, "/")).status, 401, "nor once a browser opened it with its cookie");
 });
 
@@ -133,7 +136,7 @@ test("the app page: never in a frame, compressed when the browser takes it, and 
   // The first browser claims the session: it gets the page itself (never a 304) with the cookie.
   const claimed = await get(a.port, "/", { "accept-encoding": "gzip, deflate, br" });
   assert.equal(claimed.status, 200);
-  assert.match(String(claimed.headers["set-cookie"]), /^codeflow_session=/);
+  assert.match(String(claimed.headers["set-cookie"]), /^codeflow_session_\d+=/);
   noFrames(claimed, "claimed");
   const cookie = { cookie: String(claimed.headers["set-cookie"]).split(";")[0]! };
 
@@ -191,7 +194,7 @@ test("the app page: never in a frame, compressed when the browser takes it, and 
   // The phone's whole app on the network listener: the same, behind the phone's own cookie.
   const info = (await api(a, "/api/remote", { enabled: true, lan: true, control: true })).body;
   try {
-    const signIn = await get(a.remotePort, info.phonePath);
+    const signIn = await get(a.remotePort, `${info.phonePath}/pair`, { origin: `http://localhost:${a.remotePort}` }, "POST");
     const phone = { cookie: String(signIn.headers["set-cookie"]).split(";")[0]! };
     const app = await get(a.remotePort, "/", { ...phone, "accept-encoding": "gzip" });
     assert.equal(app.status, 200);
@@ -262,7 +265,8 @@ test("Snapshot keeps away from this computer, code-flow included, and metadata a
   const snap = (url: string) => api(a, "/api/snapshot", { url, width: 800 });
   const own = await snap(`http://localhost:${a.port}/`);
   assert.equal(own.status, 403);
-  assert.match(own.body.error, new RegExp(`localhost:${a.port} is this computer, and snapshots don't open those\\. For an app running here, open its http://localhost address in the Browser tab`));
+  // Cluster 27 gives a specific Code Flow self-capture explanation.
+  assert.match(own.body.error, /This address is Code Flow itself, which cannot be captured/);
   assert.equal((await snap(`http://127.0.0.1:${a.remotePort}/`)).status, 403, "nor its network listener");
   const metadata = await snap("http://169.254.169.254/latest/meta-data/");
   assert.equal(metadata.status, 403);

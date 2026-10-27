@@ -14,6 +14,9 @@ function terminalEvidence(run: Run) {
   return { id: run.id, repo: run.repo, project: run.project, base: run.baseRef, contract: run.projectTeam, status: run.status, createdAt: run.createdAt, endedAt: run.endedAt!, calls, turns: turns.map(step => ({ id: step.id, status: step.status, invocations: step.invocations, endedAt: step.endedAt })) };
 }
 
+/** False once a run can never supply a receipt: it was interrupted, or a killed turn's count is unknown. */
+export const projectTeamUsageProvable = (run: Run) => !!terminalEvidence(run);
+
 /** Refund only the unused allocation proved by the exact, fsynced terminal run. */
 export async function persistProjectTeamUsage(run: Run, launch: ProjectTeamLaunch): Promise<ProjectTeamUsageReceipt | undefined> {
   const evidence = terminalEvidence(run);

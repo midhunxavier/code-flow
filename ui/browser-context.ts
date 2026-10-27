@@ -10,7 +10,10 @@ export interface BrowserContext {
   rect?: { x: number; y: number; w: number; h: number };
   tried?: Record<string, string>;
   snapshot?: string;
+  snapshotUnavailable?: boolean;
   console?: string[];
+  /** Retained errors and older console entries omitted from this attachment. */
+  consoleOmitted?: number;
   source?: "snapshot";
   selection?: number;
   snapshotPage?: { url: string; width: number; height: number; full: boolean };
@@ -91,4 +94,14 @@ export function editBrowserText(message: string, text: string): string {
 }
 export function browserImageNames(message: string): Set<string> {
   return new Set(parseBrowserMessage(message).contexts.flatMap(c => c.snapshot ? [c.snapshot] : []));
+}
+
+/** A draft must never promise an attachment that could not be restored. */
+export function reconcileSnapshots(text: string, images: readonly { name: string }[]): string {
+  const parsed = parseBrowserMessage(text); let changed = false;
+  const contexts = parsed.contexts.map(context => {
+    if (!context.snapshot || images.some(image => image.name === context.snapshot)) return context;
+    const { snapshot, ...rest } = context; changed = true; return { ...rest, snapshotUnavailable: true };
+  });
+  return changed ? composeBrowserMessage(parsed.text, contexts) : text;
 }

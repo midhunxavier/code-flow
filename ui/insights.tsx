@@ -1,11 +1,11 @@
 import { confirmAction } from "./confirm-state.js";
 import { pollVisible } from "./polling.js";
 import { OutcomeMetrics } from "./experience.js";
-import { comparisonDraft } from "./workflow-ui.js";
+import { comparisonDraft, comparisonDraftProblem } from "./workflow-ui.js";
 import { CompareDialog, startProblem } from "./composer.js";
 import { useEffect, useState } from "preact/hooks";
 import { AgentTag } from "./bits.js";
-import { api, baseName, duration, fmtCost, fmtSize, fmtTokens, pct, post, showToast, STATUS_TEXT } from "./lib.js";
+import { api, baseName, duration, fmtCost, fmtSize, fmtTokens, pct, post, showToast, showError, STATUS_TEXT } from "./lib.js";
 import { activeProject, currentProject, NONE, patterns, repo, route, runState } from "./state.js";
 import type { AgentId, Stats } from "./types.js";
 import { ProjectButton } from "./projects.js";
@@ -22,7 +22,7 @@ export function InsightsView({ group }: { group?: string }) {
   // The project you're in (or the runs in none), one repo, or everything.
   const [comparing, setComparing] = useState(false);
   const draft = comparisonDraft.value;
-  const comparisonProblem = !draft ? "Configure a task in New run first." : startProblem(patterns.value.find(p => p.id === draft.pattern), draft.roles) || (!draft.task.trim() ? "Describe a task in New run first." : "");
+  const comparisonProblem = comparisonDraftProblem.value || (!draft ? "Configure a task in New run first." : startProblem(patterns.value.find(p => p.id === draft.pattern), draft.roles, true, undefined, draft.antigravityExecution) || (!draft.task.trim() ? "Describe a task in New run first." : ""));
   const project = activeProject.value;
   const inProject = !!project || currentProject.value === NONE;
   // A repo is worth its own button when it isn't simply the whole project.
@@ -316,23 +316,65 @@ interface Disk {
   runs: { id: string; task: string; repo: string; status: string; archived: boolean; endedAt?: number; bytes: number }[];
 }
 
+interface CleanUp {
+  runs: number;
+  worktrees: number;
+  archived: number;
+  folders: number;
+  /** Runs left as they were, and why (uncommitted changes, a lock, a shared chat workspace…). */
+  kept: { id: string; task: string; reason: string }[];
+}
+
+/** What a Clean up did, in a sentence. */
+function cleanUpSummary(result: CleanUp): string {
+  const done = result.worktrees
+    ? `Removed ${result.worktrees} worktree(s) from ${result.runs} run(s)${result.archived === result.runs ? " and archived them" : result.archived ? `; archived ${result.archived} of them` : ""}`
+    : result.folders ? `Removed ${result.folders} leftover run folder(s)` : "";
+  const kept = result.kept.length ? `kept ${result.kept.length} run(s) as they are (see below)` : "";
+  return done && kept ? `${done}; ${kept}` : done || (kept ? `Nothing removed: ${kept}` : "Nothing to clean up");
+}
+
 /** Every worktree is a full checkout (often with its own node_modules): see what they take, clean up. */
 function DiskPanel({ scope }: { scope: URLSearchParams }) {
   const key = scope.toString();
   const [disk, setDisk] = useState<Disk | null>(null);
   const [busy, setBusy] = useState(false);
-  const [days, setDays] = useState(7);
+  const [cleaning, setCleaning] = useState(false);
+  const [kept, setKept] = useState<CleanUp["kept"]>([]);
+  // What's typed, as typed: a blank, negative or partial value isn't a number of days, so it's
+  // never sent as one (the field doesn't turn it into 0, which means every finished run).
+  const [daysText, setDaysText] = useState("7");
+  const days = /^\d{1,3}$/.test(daysText.trim()) && Number(daysText) <= 365 ? Number(daysText) : null;
   const measure = async () => {
     setBusy(true);
     try {
       setDisk(await api<Disk>(`/api/disk${key ? `?${key}` : ""}`));
     } catch (err) {
-      showToast((err as Error).message, 5000);
+      showError((err as Error).message, 5000);
     } finally {
       setBusy(false);
     }
   };
-  useEffect(() => setDisk(null), [key]);
+  useEffect(() => {
+    setDisk(null);
+    setKept([]);
+  }, [key]);
+  const cleanUp = async () => {
+    if (days === null) return;
+    const which = days === 0 ? "all finished runs that" : `runs that finished more than ${days} day${days === 1 ? "" : "s"} ago and`;
+    if (!await confirmAction(`Remove the worktrees of ${which} need nothing from you, and archive those runs?\n\nBranches are kept, so you can still merge or resume them. Runs with uncommitted changes, a locked worktree or a workspace shared with other chats are left as they are.`, {"title":"Remove old worktrees?","confirmLabel":"Remove worktrees","danger":true})) return;
+    setCleaning(true);
+    try {
+      const result = await post<CleanUp>("/api/cleanup", { olderThanDays: days, repo: scope.get("repo") ?? undefined, project: scope.get("project") ?? undefined });
+      setKept(result.kept);
+      showToast(cleanUpSummary(result), result.kept.length ? 8000 : 4000);
+      if (disk) void measure();
+    } catch (err) {
+      showError((err as Error).message, 5000);
+    } finally {
+      setCleaning(false);
+    }
+  };
   return (
     <section class="ins-section" aria-labelledby="ins-disk">
       <h2 id="ins-disk">Disk</h2>
@@ -349,24 +391,34 @@ function DiskPanel({ scope }: { scope: URLSearchParams }) {
         )}
         <span class="spacer" />
         <span>Remove worktrees of finished runs older than</span>
-        <input class="field inline num" type="number" min={0} max={365} value={days} aria-label="Days" onInput={(e) => setDays(Number(e.currentTarget.value) || 0)} />
+        <input class="field inline num" type="number" min={0} max={365} step={1} value={daysText} aria-label="Days" aria-invalid={days === null} aria-describedby={days === null ? "ins-days-error" : undefined} onInput={(e) => setDaysText(e.currentTarget.value)} />
         <span>days</span>
-        <button
-          class="btn small"
-          onClick={async () => {
-            if (!await confirmAction(`Remove the worktrees of runs that finished more than ${days} days ago and need nothing from you? Branches are kept, so you can still merge or resume them.`, {"title":"Remove old worktrees?","confirmLabel":"Remove worktrees","danger":true})) return;
-            try {
-              const result = await post<{ runs: number; worktrees: number }>("/api/cleanup", { olderThanDays: days, repo: scope.get("repo") ?? undefined, project: scope.get("project") ?? undefined });
-              showToast(result.worktrees ? `Removed ${result.worktrees} worktree(s) from ${result.runs} run(s)` : "Nothing to clean up", 4000);
-              if (disk) void measure();
-            } catch (err) {
-              showToast((err as Error).message, 5000);
-            }
-          }}
-        >
-          Clean up
+        {days === null ? <span id="ins-days-error" class="msg err inline" role="alert">Enter a whole number of days from 0 to 365</span> : null}
+        <button class="btn small" disabled={days === null || cleaning} onClick={cleanUp}>
+          {cleaning ? "Cleaning up…" : "Clean up"}
         </button>
       </div>
+      {kept.length ? <p class="help ins-kept">Clean up left these runs as they were, so nothing in them is lost:</p> : null}
+      {kept.length ? (
+        <div class="table-wrap" tabIndex={0} role="region" aria-label="Runs Clean up kept">
+          <table class="ins-table">
+            <thead>
+              <tr>
+                <th>Run</th>
+                <th>Kept because</th>
+              </tr>
+            </thead>
+            <tbody>
+              {kept.map((r) => (
+                <tr key={r.id} class="clickable" tabIndex={0} onClick={() => (route.value = { view: "run", id: r.id })} onKeyDown={(e) => e.key === "Enter" && (route.value = { view: "run", id: r.id })}>
+                  <td>{r.task}</td>
+                  <td class="help">{r.reason}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
       {disk?.runs.length ? (
         <div class="table-wrap" tabIndex={0} role="region" aria-label="Scrollable results table">
           <table class="ins-table">

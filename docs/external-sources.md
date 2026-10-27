@@ -49,7 +49,7 @@ Use credentials restricted to reading the configured project or team. Authentica
 
 GitLab's default API base is `https://gitlab.com/api/v4/`; a self-managed instance can provide its own HTTPS API base. Bitbucket uses the Cloud API at `https://api.bitbucket.org/2.0/`; Bitbucket Data Center is not supported by this adapter. Linear uses `https://api.linear.app/`; `project` is the team's key or UUID. Jira requires the site API base and a project key. Its adapter uses enhanced `/rest/api/3/search/jql`, rather than the older search endpoint being removed.
 
-The external-sources screen lists a page of up to 50 items. Selecting **Use as task context** imports the full description, up to 20,000 characters. Server-held imports expire after 30 minutes and a restart; reimport if necessary. A run stores its accepted source snapshot for later inspection and recovery.
+Open a project’s **Connections**, then **Choose issue or PR** (or **Choose issue** for Linear/Jira). The picker lists pages of up to 50 items and shows a limit notice when more results are omitted. **Choose issue** loads the full description, up to 20,000 characters; **Start task from issue** prepares a Fix & review draft with the source attached and clears earlier PR-template criteria. Review it and send when ready. Server-held imports expire after 30 minutes and a restart; reimport if necessary. A run stores its accepted source snapshot for later inspection and recovery.
 
 Imported content is always untrusted. The browser sends a server-issued `externalSourceId` when starting a run. The server resolves that ID to its own saved snapshot and the engine applies the same restrictions as other untrusted sources: safe agent permissions, no copied secrets, and isolation for commands unless the user explicitly permits host execution. A client-provided body, `trusted` field or text marker cannot establish source authority.
 
@@ -69,7 +69,7 @@ Connections require HTTPS. Requests remain within the configured API origin and 
 | Import full source | `POST /api/integrations/:id/import` with `{ "kind": "issue", "key": "123" }` |
 | Attach imported context to a run | Include the returned `id` as `externalSourceId` in `POST /api/runs` |
 
-The API requires the normal code-flow session. Service credentials are configured on the server and cannot be changed through this interface.
+These direct API routes remain available for integrations and scripts; the current UI uses the project-scoped connection routes. The API requires the normal code-flow session. Service credentials are configured on the server and cannot be changed through this interface.
 
 ## Provider references
 

@@ -129,7 +129,9 @@ test("memory editor merges independent changes, resolves overlap, and preserves 
 test("memory analysis publishes canonical source revisions and deletion preview explains retained descendants", { timeout: 30_000 }, async () => {
   for (const existing of await api<MemoryEntry[]>(endpoint)) await api(endpoint + "/commands", { op: "delete", id: existing.id, expectedRevision: existing.revision });
   let source = await api<MemoryEntry>(endpoint + "/commands", { op: "create", repo, title: "Setup database", body: "Configure bounded database connection retries with exponential backoff and jitter.", paths: ["README.md"] });
-  const copy = await api<MemoryEntry>(endpoint + "/commands", { op: "create", repo, title: "Setup duplicate", body: source.body });
+  const copy = await api<MemoryEntry>(endpoint + "/commands", { op: "create", repo, title: "Setup duplicate", body: source.body, paths: source.paths });
+  assert.deepEqual(copy.paths, source.paths);
+  assert.deepEqual(copy.applicability, source.applicability);
   const initial = await api<MemoryAnalysis>(endpoint + "/analysis");
   source = await api<MemoryEntry>(endpoint + "/commands", { op: "update", id: source.id, expectedRevision: source.revision, title: "Setup database safely" });
   const stale = await fetch(base + endpoint + "/analysis/publish", { method: "POST", headers, body: JSON.stringify({ repo, expectedSources: initial.onboarding.sourceRefs }) });
@@ -150,14 +152,15 @@ test("memory analysis publishes canonical source revisions and deletion preview 
   const summary = saved.find((entry) => entry.tags.includes("onboarding-summary"))!;
   assert.ok(summary);
   assert.equal(summary.acceptedBy, "user");
-  assert.deepEqual(summary.derivedFrom, [{ id: source.id, revision: source.revision }, { id: copy.id, revision: copy.revision }].sort((a, b) => a.id.localeCompare(b.id)));
+  // Exact duplicates no longer enter curated guidance; provenance cites only the retained source.
+  assert.deepEqual(summary.derivedFrom, [{ id: source.id, revision: source.revision }]);
   assert.match(summary.body, /Setup database safely/);
-  assert.equal((await api<MemoryAnalysis>(endpoint + "/analysis")).onboarding.sourceRefs.length, 2, "published summary is not recursively summarized");
+  assert.equal((await api<MemoryAnalysis>(endpoint + "/analysis")).onboarding.sourceRefs.length, 1, "published summary is not recursively summarized and exact text is included once");
   await panel.getByText("Source and derived-entry graph", { exact: true }).click();
   // Publication completes before the panel's asynchronous analysis refresh.
   // Inspect source edges only after the newly published node is rendered.
-  await panel.getByRole("button", { name: `${summary.title}, revision ${summary.revision}`, exact: true }).waitFor();
-  await panel.getByRole("button", { name: `Setup database safely, revision ${source.revision}`, exact: true }).click();
+  await panel.getByRole("button", { name: new RegExp(`Revision ${summary.revision}.*${summary.title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`) }).waitFor();
+  await panel.getByRole("button", { name: new RegExp(`^Setup database safely Revision ${source.revision}`) }).click();
   assert.match(await panel.getByRole("status").innerText(), /1 derived references/);
   const card = page.locator(`#memory-${source.id}`);
   await card.getByRole("button", { name: "Delete…", exact: true }).click();

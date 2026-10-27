@@ -55,11 +55,17 @@ export function createRunPermissions(trust: Trust, tools: boolean, solo: boolean
   return validateRunPermissions({ version: 1, revision: 1, trust, toolApprovals: tools, delegation: solo ? "none" : "managed", required: permissionRequirements(required), ...(execution !== undefined ? { antigravityExecution: antigravityExecution(execution) } : {}) });
 }
 export const supportsRunPermissions = (provider: string): boolean => provider === "claude" || provider === "codex" || provider === "agy";
+/** Connections may be inspected before their adapter can enforce a run's policy. */
+export function runProviderProblem(provider: string, displayName = provider): string | undefined {
+  if (!supportsRunPermissions(provider)) return `${displayName} is unavailable for runs: this adapter cannot enforce Code Flow's native-delegation restriction. Choose Claude Code, Codex or Antigravity.`;
+}
 /** A sandbox flag or a custom-agent tool list alone is not an inherited run policy. */
 export const AGY_MANAGED_PERMISSION_PROBLEM = "Antigravity managed execution requires the verified local macOS executor and existing Keychain login. Remote/container execution and interactive approvals are unsupported. Choose Claude or Codex for other environments.";
-export function permissionProviderProblem(provider: AgentId, policy?: RunPermissionPolicy): string | undefined {
+/** The common case on a working Mac: the run's "Ask for approval", not the executor, is what Antigravity can't do. */
+export const AGY_APPROVALS_PROBLEM = "Antigravity can't take interactive approvals. Turn off Ask for approval for this run, or choose Claude or Codex instead of Antigravity.";
+export function permissionProviderProblem(provider: AgentId, policy?: RunPermissionPolicy, displayName: string = provider): string | undefined {
   if (policy && provider === "agy" && policy.antigravityExecution !== "native" && (typeof process === "undefined" || process.platform !== "darwin")) return AGY_MANAGED_PERMISSION_PROBLEM;
-  if (policy && !supportsRunPermissions(provider)) return `${provider} cannot enforce Code Flow's native-delegation restriction. Choose Claude or Codex for this run.`;
+  if (policy) return runProviderProblem(provider, displayName);
 }
 export function resolveRunPermissions(input: {
   policy: RunPermissionPolicy; provider: AgentId; mode: AccessMode; currentTrust: Trust;
@@ -79,7 +85,8 @@ export function resolveRunPermissions(input: {
       limitations: [AGY_NATIVE_LIMITATION, "Each managed turn starts fresh using portable context; native sessions are not resumed."] };
   }
   if (provider === "agy") {
-    if (input.remote || input.container || policy.toolApprovals && input.currentTools && input.tools !== false && mode === "write") throw new Error(AGY_MANAGED_PERMISSION_PROBLEM);
+    if (input.remote || input.container) throw new Error(AGY_MANAGED_PERMISSION_PROBLEM);
+    if (policy.toolApprovals && input.currentTools && input.tools !== false && mode === "write") throw new Error(AGY_APPROVALS_PROBLEM);
     const shared = !policy.required.includes("no-external-tools");
     return {
       required: [...policy.required], delegation: policy.delegation, policyRevision: policy.revision,

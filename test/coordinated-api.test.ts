@@ -53,15 +53,15 @@ test("bridge snapshots required real-check configuration and stamps bounded exac
 });
 
 test("revoked membership blocks creation, dispatch, result acceptance, and shipping without rejoining a project", async () => {
-  const f = await fixture(); let job = await f.api.create(f.body()); f.revoke(); await f.api.service.tick(); assert.equal(f.inputs.length, 0); assert.equal((await f.latest()).nodes[0]!.attempts, 0); await assert.rejects(f.api.create(f.body()), /membership changed/);
-  const g = await fixture(); job = await g.completed(); g.revoke(); await assert.rejects(g.api.service.previewShipping(job.id, job.revision, { api: "main", web: "main" }), /verification receipt changed/); await g.api.service.tick(); assert.equal((await g.latest()).nodes[0]!.status, "blocked"); assert.equal(g.merges.length, 0);
+  const f = await fixture(); let job = await f.api.create(f.body()); f.revoke(); await f.api.service.tick(); assert.equal(f.inputs.length, 0); assert.equal((await f.latest()).nodes[0]!.attempts, 0); await assert.rejects(f.api.create(f.body()), /not in project/);
+  const g = await fixture(); job = await g.completed(); g.revoke(); await assert.rejects(g.api.service.previewShipping(job.id, job.revision, { api: "main", web: "main" }), /membership changed/); await g.api.service.tick(); assert.equal((await g.latest()).nodes[0]!.status, "blocked"); assert.equal(g.merges.length, 0);
 });
 
 test("incorrect verification HEAD or missing required checks never release downstream tasks", async () => {
   for (const mode of ["head", "missing-check", "stale-review", "profile-mutation"] as const) {
     const f = await fixture(); await f.api.create(f.body()); await f.api.service.tick(); const run = [...f.runs.values()][0]!;
     if (mode === "head") run.verification!.head = "f".repeat(40); else if (mode === "missing-check") run.verification!.checks = []; else if (mode === "profile-mutation") run.loop.verification!.checks[0]!.command = "true"; else f.options.manager.reviewCoverage = async () => ({ head: run.verification!.head!, workingChanges: false, files: [], reviewed: [], coverage: { changed: 0, reviewed: 0, percent: 100, unreviewed: [] }, risk: { level: "low", reasons: [], sensitiveFiles: [] }, stale: true, rework: [] });
-    await f.api.service.tick(); assert.equal(f.inputs.length, 1); assert.equal((await f.latest()).nodes[0]!.status, "failed"); assert.equal((await f.latest()).nodes[1]!.attempts, 0);
+    await f.api.service.tick(); assert.equal(f.inputs.length, 1); assert.equal((await f.latest()).nodes[0]!.status, mode === "head" || mode === "stale-review" ? "blocked" : "failed"); assert.equal((await f.latest()).nodes[1]!.attempts, 0);
   }
 });
 

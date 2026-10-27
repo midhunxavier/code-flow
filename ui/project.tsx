@@ -16,16 +16,19 @@ import type { ComponentChildren } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { Icon } from "./icons.js";
 import { api, enc, usePoll, fmtCost, ago, baseName, STATUS_TEXT, collaborationHref, selectedTeamConnection } from "./lib.js";
-import { editProject, patterns, projectFor, projects, projectsLoaded, route, runs, runState, openComposer, composerProject, composerLoading, draftsReady, task } from "./state.js";
+import { editProject, patterns, projectFor, projects, projectsLoaded, route, runs, isRunDeleted, runState, openComposer, composerProject, composerLoading, draftsReady, task, savedDraftTask } from "./state.js";
 import { hashFor, type ProjectSection, type RepositoryTool } from "./navigation.js";
 import { computerLabel } from "./ssh-projects.js";
-import { openRepository } from "./projects.js";
+import { addRepositoryToProject } from "./projects.js";
 import { WorkbenchView } from "./workbench.js";
 import { Menu, MenuItem } from "./panel-bits.js";
 import type { RunSummary } from "./types.js";
 
 export function ProjectView({ id, section, repository, tool, kind }: { id: string; section?: ProjectSection; repository?: string; tool?: RepositoryTool; kind?: string }) {
   const features = useProjectFeatures(id);
+  const [savedTask, setSavedTask] = useState("");
+  useEffect(() => { let live = true; setSavedTask(""); if (draftsReady.value) void savedDraftTask(id).then(value => { if (live) setSavedTask(value); }, () => {}); return () => { live = false; }; }, [id, draftsReady.value, composerProject.value]);
+  const draftTask = composerProject.value === id ? task.value : savedTask;
   const p = projects.value.find(item => item.id === id);
   if (!p) return <div class="project-page"><p role="status">{projectsLoaded.value ? "This project is unavailable. Its existing runs and saved draft are retained." : "Loading project…"}</p><a class="btn" href="#/">Open new run</a></div>;
   const destination = (section?: ProjectSection) => {
@@ -51,15 +54,15 @@ export function ProjectView({ id, section, repository, tool, kind }: { id: strin
     </header>
     <nav class="project-tabs" aria-label="Project navigation">{([[undefined, "Overview"], ["runs", "Runs"], ["repositories", "Repositories"], ["connections", "Connections"]] as const).map(([value, label]) => <a class={`btn ${section === value ? "primary" : ""}`} href={destination(value)} aria-current={section === value ? "page" : undefined}>{label}</a>)}{features.board || section === "board" ? <a class="btn" href={destination("board")} aria-current={section === "board" ? "page" : undefined}>Board</a> : null}{features.automation || section === "automation" ? <a class="btn" href={destination("automation")} aria-current={section === "automation" ? "page" : undefined}>Automation</a> : null}{features.ml || section === "ml" ? <a class="btn" href={destination("ml")} aria-current={section === "ml" ? "page" : undefined}>ML</a> : null}<a class="btn" href={destination("settings")} aria-current={section === "settings" ? "page" : undefined}>Project settings</a><Menu label="More project tools" icon="more" trigger={<span>More</span>} class="project-more">{close => <>{(["board", "people", "automation", "ml"] as const).filter(value => value !== "ml" || features.ml || section === "ml").map(value => <MenuItem onClick={() => { close(); if (value === "board" || value === "people") location.assign(destination(value)); else route.value = { view: "project", id, section: value }; }}>{({ board: "Board", people: "People", automation: "Automation", ml: "ML" })[value]}</MenuItem>)}</>}</Menu></nav>
     {!section ? <>
-      <section class="project-start pp-card" aria-label="Start work"><h2>{composerProject.value === id && task.value.trim() ? "Continue your draft" : "What would you like to work on?"}</h2><p>{p.repos.length ? "Describe the outcome, choose your agents, and review the result here." : "Add a repository to start a run in this project."}</p>
-        {composerProject.value === id && task.value.trim() ? <p class="draft-preview">{task.value.slice(0, 240)}</p> : null}
-        <button class="btn primary" disabled={!draftsReady.value || composerLoading.value} onClick={() => p.repos.length ? void openComposer(id) : openRepository(id)}>{p.repos.length ? composerProject.value === id && task.value.trim() ? "Continue draft" : "Describe a task" : "Add repository"}</button>
+      <section class="project-start pp-card" aria-label="Start work"><h2>{draftTask.trim() ? "Continue your draft" : "What would you like to work on?"}</h2><p>{p.repos.length ? "Describe the outcome, choose your agents, and review the result here." : "Add a repository to start a run in this project."}</p>
+        {draftTask.trim() ? <p class="draft-preview">{draftTask.slice(0, 240)}</p> : null}
+        <button class="btn primary" disabled={!draftsReady.value || composerLoading.value} onClick={() => p.repos.length ? void openComposer(id) : addRepositoryToProject(id)}>{p.repos.length ? draftTask.trim() ? "Continue draft" : "Describe a task" : "Add repository"}</button>
       </section>
       <ProjectTeamsInbox projectId={id} />
       <ProjectOverview key={id} id={id} />
       <a class="btn" href={destination("runs")}>View run history</a>
     </> : section === "ml" ? <MlWorkspace key={id} project={p} /> : section === "board" ? <TeamBoardView project={id} embedded navigate={navigateTeam} /> : section === "people" ? <TeamPeopleView project={id} embedded navigate={navigateTeam} /> : section === "connections" ? <IntegrationsScreen key={id} projectId={id} /> : section === "automation" ? <SchedulingView key={id} projectId={id} kind={kind} /> : section === "runs" ? <ProjectRuns key={id} projectId={id} /> : section === "repositories" ? <>
-      <div class="project-repository-head"><h2>Repositories</h2><button class="btn" onClick={() => openRepository(id)}><Icon name="plus" />Add repository</button></div>
+      <div class="project-repository-head"><h2>Repositories</h2><button class="btn" onClick={() => addRepositoryToProject(id)}><Icon name="plus" />Add repository</button></div>
       {!p.repos.length ? <p class="help">No repositories yet. Add a repository from {computerLabel()} to use its files and tools.</p> : <div class="project-repository-list">{p.repos.map(folder => <a class={`pp-card project-repository ${selectedRepository === folder ? "selected" : ""}`} href={hashFor({ view: "project", id, section: "repositories", repository: folder, tool: "code" })}><strong>{baseName(folder)}</strong><code>{folder}</code><span>Open repository tools →</span></a>)}</div>}
       {selectedRepository ? <WorkbenchView key={`${id}:${selectedRepository}`} projectId={id} initialFolder={selectedRepository} initialTool={tool} onNavigate={(folder, nextTool) => { route.value = { view: "project", id, section: "repositories", repository: folder, tool: nextTool }; }} /> : p.repos.length ? <p class="help">Choose a repository to inspect its files, checks, services and history.</p> : null}
     </> : <>
@@ -125,23 +128,38 @@ function Card({ label, value, hint }: { label: string; value: string; hint?: str
 function ProjectRuns({ projectId }: { projectId: string }) {
   const [query, setQuery] = useState(""), [archived, setArchived] = useState(false);
   const [history, setHistory] = useState<RunSummary[]>([]), [cursor, setCursor] = useState<string | null>(null);
+  const [total, setTotal] = useState<number | null>(null), [archivedMatches, setArchivedMatches] = useState(0);
   const [historyQuery, setHistoryQuery] = useState<string | null>(null);
   const [loading, setLoading] = useState(false), [error, setError] = useState("");
-  const generation = useRef(0);
+  const generation = useRef(0), retainedPages = useRef(1), reading = useRef(false);
   const read = async (next?: string) => {
     const current = ++generation.current;
-    setLoading(true); setError("");
+    setLoading(true); reading.current = true; setError("");
     try {
-      const params = new URLSearchParams({ project: projectId, limit: "100", q: query.trim() });
+      const params = new URLSearchParams({ project: projectId, limit: "100", q: query.trim(), archived: archived ? "include" : "exclude" });
       if (next) params.set("cursor", next);
-      const page = await api<{ runs: RunSummary[]; nextCursor?: string }>(`/api/runs?${params}`);
+      let page = await api<HistoryPage>(`/api/runs?${params}`);
+      // A live refresh preserves every history page the user already requested.
+      for (let loaded = 1; !next && page.nextCursor && loaded < retainedPages.current && current === generation.current; loaded++) {
+        params.set("cursor", page.nextCursor);
+        const more = await api<HistoryPage>(`/api/runs?${params}`);
+        page = { ...more, runs: [...page.runs, ...more.runs] };
+      }
       if (current !== generation.current) return;
-      setHistory(previous => next ? [...previous, ...page.runs] : page.runs); setHistoryQuery(query.trim()); setCursor(page.nextCursor ?? null);
+      if (next) retainedPages.current++;
+      setHistory(previous => next ? [...previous, ...page.runs] : page.runs); setHistoryQuery(query.trim()); setCursor(page.nextCursor ?? null); setTotal(page.total); setArchivedMatches(page.archivedMatches ?? 0);
     } catch (error) { if (current === generation.current) setError((error as Error).message); }
-    finally { if (current === generation.current) setLoading(false); }
+    finally { if (current === generation.current) { setLoading(false); reading.current = false; } }
   };
-  useEffect(() => { const timer = setTimeout(() => void read(), 150); return () => { clearTimeout(timer); generation.current++; }; }, [projectId, query]);
-  const merged = new Map(history.map(run => [run.id, runs.value.get(run.id) ?? run]));
+  useEffect(() => { retainedPages.current = 1; setTotal(null); setArchivedMatches(0); const timer = setTimeout(() => void read(), 150); return () => { clearTimeout(timer); generation.current++; }; }, [projectId, query, archived]);
+  const liveRuns = runs.value;
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout>;
+    const refresh = () => { if (reading.current) timer = setTimeout(refresh, 250); else void read(); };
+    timer = setTimeout(refresh, 250);
+    return () => clearTimeout(timer);
+  }, [liveRuns, projectId, query, archived]);
+  const merged = new Map(history.filter(run => !isRunDeleted(run.id)).map(run => [run.id, liveRuns.get(run.id) ?? run]));
   for (const run of runs.value.values()) if (projectFor(run)?.id === projectId) merged.set(run.id, run);
   const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
   // Cold summaries can omit text the server searched in the full run. Retain
@@ -151,7 +169,9 @@ function ProjectRuns({ projectId }: { projectId: string }) {
     (run.cold && serverMatches.has(run.id) || words.every(word => runSearchText(run).includes(word)))).sort((a,b) => b.createdAt - a.createdAt);
   return <section aria-label="Project run history"><div class="project-history-controls"><label>Search this project's runs<input class="field" type="search" value={query} onInput={event => setQuery(event.currentTarget.value)} /></label><label class="check"><input type="checkbox" checked={archived} onChange={event => setArchived(event.currentTarget.checked)} />Include archived runs</label></div>
     {error ? <p class="msg err" role="alert">{error} <button class="btn small" onClick={() => void read()}>Retry</button></p> : null}
-    <Section title="Run history" count={list.length} runs={list} empty={loading ? "Loading runs…" : "No runs match this view."} />
+    <Section title="Run history" count={total === null ? undefined : Math.max(total, list.length)} runs={list} empty={loading ? "Loading runs…" : "No runs match this view."} />
+    {total !== null ? <p class="help">{list.length} loaded of {Math.max(total, list.length)} matching runs</p> : null}
+    {!archived && !list.length && archivedMatches ? <p class="help">{archivedMatches} archived {archivedMatches === 1 ? "run matches" : "runs match"}. Include archived runs to see {archivedMatches === 1 ? "it" : "them"}.</p> : null}
     {cursor ? <button class="btn" disabled={loading} onClick={() => void read(cursor)}>{loading ? "Loading…" : "Load older runs"}</button> : null}
   </section>;
 }

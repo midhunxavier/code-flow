@@ -25,6 +25,8 @@ let m: any;
 before(async () => {
   Object.assign(globalThis, {
     window: globalThis,
+    // This stand-in window has no browser message channel; Node's channel would keep the test process alive.
+    BroadcastChannel: undefined,
     innerWidth: 1400,
     addEventListener: (type: string, fn: (e: unknown) => void) => (listeners[type] ??= []).push(fn),
     removeEventListener: () => {},

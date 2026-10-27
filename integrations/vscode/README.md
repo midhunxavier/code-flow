@@ -33,6 +33,8 @@ and approval state but does not approve permissions from the editor. Open the fu
 run for those decisions. Stopping a task asks for confirmation. Creating a task can
 consume the configured provider's quota; the extension never starts one on activation.
 
+Forgetting the server token immediately updates the view to disconnected. Start Task checks the connection before asking for task text; if submission later fails, the Code Flow output channel keeps that text for retry.
+
 From the Code Flow repository:
 
 ```sh

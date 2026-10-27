@@ -9,7 +9,7 @@ export const fixReviewPattern: Pattern = {
   description: "For GitHub issues and failing dependency updates. Diagnose and fix in one turn, then keep the full verification and review loop. Choose a planning workflow for broader work.",
   roles: [
     { id: "builder", label: "Builder", description: "Diagnoses the failure and implements a focused fix", default: ["codex"] },
-    { id: "reviewer", label: "Reviewer", description: "Independently checks the result with fresh context", default: ["claude"] },
+    { id: "reviewer", label: "Reviewer", description: "Independently checks the result with fresh context", default: ["claude"], independentOf: ["builder"] },
   ],
   options: pipelinePattern.options,
   run: (ctx) => runPipeline(ctx, false),

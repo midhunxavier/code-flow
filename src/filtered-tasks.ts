@@ -5,13 +5,14 @@ import { lstat, mkdir, open, readdir, realpath, rename, rm } from "node:fs/promi
 import { dirname, join } from "node:path";
 import { CODEFLOW_HOME } from "./config.js";
 import { childEnv } from "./env.js";
-import { allowsFilePolicy, normalizePolicyPath, validateFilePolicySnapshot, type FilePolicySnapshot } from "./filesystem-policy.js";
+import { allowsFilePolicy, allowsFilePolicyDirectory, normalizePolicyPath, validateFilePolicySnapshot, type FilePolicySnapshot } from "./filesystem-policy.js";
 import { sensitiveContextPath } from "./context-inspection.js";
 import { getAdapter, type AgentEvent, type RunResult } from "./adapters/index.js";
 import { filteredTaskContainer } from "./agent-container.js";
 import { redactExport } from "./privacy.js";
 import { inspectFilteredWorkspace, monitorFilteredWorkspace } from "./filtered-task-limits.js";
 import { durableWorkerDirectory } from "./remote-workers/durability.js";
+import { FILTERED_TASK_BYTES, filteredTaskCancellable } from "./filtered-task-state.js";
 
 const MAX_FILES = 500, MAX_FILE = 512 * 1024, MAX_TOTAL = 16 * 1024 * 1024, MAX_JOBS = 100;
 const sha = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
@@ -58,6 +59,8 @@ export const dockerFilteredRuntime: FilteredTaskRuntime = {
 interface Options { home?: string; runtime?: FilteredTaskRuntime; authorize: (project: string, repo: string) => Promise<FilePolicySnapshot[]>; withRepository: <T>(repo: string, operation: () => Promise<T>) => Promise<T> }
 const policyIdentity = (policies: readonly FilePolicySnapshot[]) => sha(JSON.stringify(policies.map((policy) => [policy.projectId, policy.revision, policy.hash]).sort()));
 const permitted = (policies: readonly FilePolicySnapshot[], operation: "read" | "write", path: string) => !sensitiveContextPath(path) && policies.every((policy) => allowsFilePolicy(policy, operation, path));
+/** Result paths are untrusted container output: redacted and bounded before they reach an error. */
+const listed = (paths: readonly string[]) => { const shown = paths.slice(0, 5).map((path) => String(redactExport(path)).slice(0, 200)).join(", "); return paths.length > 5 ? `${shown} and ${paths.length - 5} more` : shown; };
 const resultIdentity = (files: readonly FileRecord[]) => sha(JSON.stringify(files.map(({ path, hash, mode, bytes }) => ({ path, hash, mode, bytes })).sort((a, b) => a.path.localeCompare(b.path))));
 export class FilteredTasks {
   private jobs = new Map<string, FilteredTask>(); private controllers = new Map<string, AbortController>(); private work = new Map<string, Promise<void>>(); private writes = new Map<string, Promise<unknown>>(); private preparations = new Map<string, Promise<void>>(); private importClaims = new Set<string>(); private importWork = new Map<string, Promise<unknown>>(); private mutations = new Map<string, Promise<unknown>>(); private reservations = 0; private loaded = false; private closing = false;
@@ -106,8 +109,17 @@ export class FilteredTasks {
   }
   async create(raw: { project: unknown; repo: unknown; task: unknown; agent: unknown; image: unknown; network?: unknown; maxMinutes?: unknown }) {
     if (!this.loaded || this.closing) throw new FilteredTaskError("Filtered task service is unavailable or closing", 503);
-    if (this.jobs.size + this.reservations >= MAX_JOBS || this.reservations || this.active()) throw new FilteredTaskError("Wait for the current filtered task; history is bounded to 100 tasks");
-    if (typeof raw.project !== "string" || typeof raw.repo !== "string" || !raw.repo.startsWith("/") || typeof raw.task !== "string" || !raw.task.trim() || Buffer.byteLength(raw.task) > 24 * 1024 || !["claude", "codex", "agy"].includes(String(raw.agent)) || typeof raw.image !== "string" || raw.network !== undefined && typeof raw.network !== "boolean" || raw.maxMinutes !== undefined && (!Number.isInteger(raw.maxMinutes) || (raw.maxMinutes as number) < 1 || (raw.maxMinutes as number) > 30)) throw new FilteredTaskError("Choose a project, repository, task, supported provider, prepared image and 1–30 minute limit", 400);
+    if (this.reservations || this.active()) throw new FilteredTaskError("Another filtered task is still preparing, running, importing or awaiting a confirmed container stop; wait for it or cancel it before starting another");
+    if (this.jobs.size >= MAX_JOBS) throw new FilteredTaskError(`Filtered task history is full (${MAX_JOBS} tasks); delete a finished task before starting another`);
+    const invalid = (message: string) => new FilteredTaskError(message, 400);
+    if (typeof raw.project !== "string" || !raw.project) throw invalid("Choose a project for the filtered task");
+    if (typeof raw.repo !== "string" || !raw.repo.startsWith("/")) throw invalid("Choose a repository by its absolute path");
+    if (typeof raw.task !== "string" || !raw.task.trim()) throw invalid("Enter the filtered task instructions");
+    if (Buffer.byteLength(raw.task) > FILTERED_TASK_BYTES) throw invalid(`Filtered task instructions exceed ${FILTERED_TASK_BYTES / 1024} KB (UTF-8 bytes); shorten them`);
+    if (!["claude", "codex", "agy"].includes(String(raw.agent))) throw invalid("Choose a supported provider: claude, codex or agy");
+    if (typeof raw.image !== "string" || !raw.image.trim()) throw invalid("Enter a prepared local Docker image");
+    if (raw.network !== undefined && typeof raw.network !== "boolean") throw invalid("Network access must be true or false");
+    if (raw.maxMinutes !== undefined && (!Number.isInteger(raw.maxMinutes) || (raw.maxMinutes as number) < 1 || (raw.maxMinutes as number) > 30)) throw invalid("Choose a time limit of 1–30 whole minutes");
     this.reservations++;
     const id = `filtered-${randomBytes(12).toString("hex")}`, folder = this.directoryFor(id); let repo = raw.repo;
     const controller = new AbortController(); this.controllers.set(id, controller); let preparationDone!: () => void; this.preparations.set(id, new Promise<void>((resolve) => { preparationDone = resolve; }));
@@ -142,9 +154,11 @@ export class FilteredTasks {
     const files: FileRecord[] = []; let bytes = 0;
     const walk = async (relative: string, depth: number) => {
       if (depth > 30) throw new FilteredTaskError("Result directory depth exceeds its bound"); const folder = join(this.workspace(job.id), relative); const entries = await readdir(folder, { withFileTypes: true }); if (entries.length > 1000) throw new FilteredTaskError("Result directory exceeds its entry bound");
-      for (const entry of entries) { const path = normalizePolicyPath(relative ? `${relative}/${entry.name}` : entry.name); const absolute = join(this.workspace(job.id), path), info = await lstat(absolute); if (info.isSymbolicLink()) throw new FilteredTaskError("Result symlinks are refused"); if (info.isDirectory()) { if (sensitiveContextPath(path) || !job.policies.every((policy) => allowsFilePolicy(policy, "read", path) || policy.read.allow.some((root) => root.startsWith(`${path}/`)) && !policy.read.deny.some((root) => path === root || path.startsWith(`${root}/`)))) throw new FilteredTaskError("Result contains a forbidden directory"); await walk(path, depth + 1); continue; } if (!permitted(job.policies, "read", path)) throw new FilteredTaskError("Result contains a forbidden path; no changes will be imported"); if (!info.isFile() || info.nlink !== 1 || info.size > MAX_FILE || files.length >= MAX_FILES || (bytes += info.size) > MAX_TOTAL) throw new FilteredTaskError("Result contains a special/hard-linked file or exceeds its bounded file count/size"); const handle = await open(absolute, constants.O_RDONLY | constants.O_NOFOLLOW); let content: Buffer; try { content = await handle.readFile(); } finally { await handle.close(); } if (content.length !== info.size || content.length > MAX_FILE) throw new FilteredTaskError("Result file changed during validation"); files.push({ path, hash: sha(content), mode: info.mode & 0o111 ? "100755" : "100644", bytes: content.length }); }
+      for (const entry of entries) { const path = normalizePolicyPath(relative ? `${relative}/${entry.name}` : entry.name); const absolute = join(this.workspace(job.id), path), info = await lstat(absolute); if (info.isSymbolicLink()) throw new FilteredTaskError("Result symlinks are refused"); if (info.isDirectory()) { if (!job.policies.every((policy) => allowsFilePolicyDirectory(policy, path))) throw new FilteredTaskError(`Result contains a forbidden directory: ${listed([path])}`); await walk(path, depth + 1); continue; } if (!permitted(job.policies, "read", path)) throw new FilteredTaskError(`Result contains a forbidden path; no changes will be imported: ${listed([path])}`); if (!info.isFile() || info.nlink !== 1 || info.size > MAX_FILE || files.length >= MAX_FILES || (bytes += info.size) > MAX_TOTAL) throw new FilteredTaskError("Result contains a special/hard-linked file or exceeds its bounded file count/size"); const handle = await open(absolute, constants.O_RDONLY | constants.O_NOFOLLOW); let content: Buffer; try { content = await handle.readFile(); } finally { await handle.close(); } if (content.length !== info.size || content.length > MAX_FILE) throw new FilteredTaskError("Result file changed during validation"); files.push({ path, hash: sha(content), mode: info.mode & 0o111 ? "100755" : "100644", bytes: content.length }); }
     }; await walk("", 0);
-    for (const path of new Set([...job.base, ...files].map((file) => file.path))) { const before = job.base.find((file) => file.path === path), after = files.find((file) => file.path === path); if ((!before || !after || before.hash !== after.hash || before.mode !== after.mode) && !permitted(job.policies, "write", path)) throw new FilteredTaskError("Result modified a path outside the write policy; nothing will be imported"); }
+    const denied: string[] = [];
+    for (const path of new Set([...job.base, ...files].map((file) => file.path))) { const before = job.base.find((file) => file.path === path), after = files.find((file) => file.path === path); if ((!before || !after || before.hash !== after.hash || before.mode !== after.mode) && !permitted(job.policies, "write", path)) denied.push(path); }
+    if (denied.length) throw new FilteredTaskError(`Result modified ${denied.length === 1 ? "a path" : "paths"} outside the write policy; nothing will be imported: ${listed(denied.sort())}`);
     return files.sort((a, b) => a.path.localeCompare(b.path));
   }
   private async launch(job: FilteredTask, controller: AbortController) {
@@ -166,6 +180,7 @@ export class FilteredTasks {
   }
   async cancel(id: string, revision: unknown) { return this.mutation(id, async () => {
     const job = this.require(id); if (revision !== job.revision) throw new FilteredTaskError("Filtered task changed; refresh its current state"); if (this.importClaims.has(id) || job.status === "importing" || job.importCommit && job.status === "unknown") throw new FilteredTaskError("Inspect the interrupted import receipt before changing this job");
+    if (!filteredTaskCancellable(job)) throw new FilteredTaskError("This filtered task has finished and its container is confirmed stopped, so there is nothing to cancel; delete it to discard its result");
     this.controllers.get(id)?.abort(); await this.preparations.get(id); await this.work.get(id); await this.runtime.stop(id); await this.save(job, { status: "cancelled", containerStopped: true, error: "Owner cancelled; daemon container absence confirmed" }); return this.get(id);
   }); }
   async preview(id: string) {

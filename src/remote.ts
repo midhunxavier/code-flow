@@ -7,6 +7,8 @@ import { CODEFLOW_HOME } from "./config.js";
 import type { Run, RunManager, RunSummary } from "./engine.js";
 import { logError } from "./log.js";
 import { projectOf, type Project } from "./projects.js";
+import { needsYou, teamStatusLabel } from "./run-status.js";
+import { approvals } from "./approvals.js";
 
 /**
  * code-flow on your phone, behind a secret link. By default it's a read-only view: what's
@@ -172,7 +174,7 @@ const STATUS: Record<string, string> = {
 };
 
 function badge(run: RunSummary): string {
-  if (run.awaiting || (run.status === "running" && run.team?.awaitingRequestId)) return `<span class="b warn">Waiting for you</span>`;
+  if (run.awaiting || (run.status === "running" && (run.team?.awaitingRequestId || run.approvalPending))) return `<span class="b warn">Waiting for you</span>`;
   if (run.team?.status === "blocked") return `<span class="b warn">Team needs attention</span>`;
   if (run.triage?.state === "pending") return `<span class="b warn">In your inbox</span>`;
   const watch = Object.values(run.watches ?? {}).find((w) => w.state === "needs-you");
@@ -209,7 +211,7 @@ a{color:var(--link);text-decoration:none;font-weight:500}a:hover{text-decoration
 pre{white-space:pre-wrap;word-break:break-word;font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;background:var(--sunken);border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin:8px 0}
 ul,ol{padding-left:20px}li{margin:6px 0}li b{font-weight:600}.foot{font-size:12px;color:var(--muted);margin-top:32px}
 @media (min-width:640px){h1{font-size:26px}}
-</style></head><body><main>${body}<p class="foot">Read-only view of code-flow · refreshes every 15 s</p></main></body></html>`;
+</style></head><body><main>${body}<p class="foot">Read-only view of code-flow${refresh ? " · refreshes every 15 s" : " · refresh this page for updates"}</p></main></body></html>`;
 }
 
 /**
@@ -219,7 +221,7 @@ ul,ol{padding-left:20px}li{margin:6px 0}li b{font-weight:600}.foot{font-size:12p
 export function renderRemote(manager: RunManager, projects: Project[], base: string, path: string): string | null {
   if (path === "" || path === "/") {
     const runs = manager.list().filter((r) => !r.archived);
-    const needs = runs.filter((r) => r.awaiting || (r.status === "running" && r.team?.awaitingRequestId) || r.team?.status === "blocked" || r.triage?.state === "pending" || Object.values(r.watches ?? {}).some((w) => w.state === "needs-you") || (r.status !== "running" && !r.seen));
+    const needs = runs.filter(needsYou);
     const running = runs.filter((r) => r.status === "running" && !needs.includes(r));
     const recent = runs.filter((r) => !needs.includes(r) && !running.includes(r)).slice(0, 15);
     const card = (r: RunSummary) =>
@@ -244,6 +246,7 @@ export function renderRemote(manager: RunManager, projects: Project[], base: str
 
 /** A run's page; it names the run's project, unless that's just named after the repo. */
 function renderRun(run: Run, base: string, project?: Project): string {
+  const approvalPending = !run.archived && run.status === "running" && approvals.pendingRunIds().has(run.id);
   const steps = run.steps
     .map((s) => `<li>${s.status === "done" ? "✓" : s.status === "running" ? "…" : s.status === "failed" ? "✕" : "■"} ${esc(s.title)} <span class="m">${esc(s.agent ?? s.kind)}${s.endedAt ? ` · ${Math.round((s.endedAt - s.startedAt) / 1000)}s` : ""}</span></li>`)
     .join("");
@@ -259,7 +262,7 @@ function renderRun(run: Run, base: string, project?: Project): string {
   const team = run.team;
   const memberName = (id: string) => id === "user" ? "You" : team?.members.find((member) => member.id === id)?.name ?? id;
   const teamView = team ? [
-    `<h2>Team and workflow</h2><p>${esc(team.status)} · revision ${team.revision} · ${team.metrics.invocations} lifetime calls (${team.metrics.coordinatorInvocations} coordinating)</p>`,
+    `<h2>Team and workflow</h2><p>${esc(teamStatusLabel(run))} · revision ${team.revision} · ${team.metrics.invocations} lifetime calls (${team.metrics.coordinatorInvocations} coordinating)</p>`,
     `<ul>${team.tasks.map((task) => `<li><b>${esc(task.title)}</b> · ${esc(memberName(task.owner))} · ${esc(task.status ?? "planned")}${task.dependsOn.length ? `<br><span class="m">Needs ${task.dependsOn.map((id) => esc(team.tasks.find((item) => item.id === id)?.title ?? id)).join(", ")}</span>` : ""}</li>`).join("")}</ul>`,
     team.messages.some((message) => message.kind === "question" && message.status === "open") ? `<h2>Open questions</h2><ul>${team.messages.filter((message) => message.kind === "question" && message.status === "open").map((message) => `<li><b>${esc(memberName(message.sender))} → ${esc(memberName(message.recipient))}</b>: ${esc(message.body)}${message.recipient === "user" ? `<br><span class="m">Open the full-control app or code-flow on your computer to answer.</span>` : ""}${message.deadlineAt ? `<br><span class="m">Deadline ${esc(new Date(message.deadlineAt).toLocaleString())}</span>` : ""}</li>`).join("")}</ul>` : "",
     team.gaps.length ? `<h2>Unresolved work</h2><ul>${team.gaps.map((gap) => `<li>${esc(gap)}</li>`).join("")}</ul>` : "",
@@ -268,8 +271,9 @@ function renderRun(run: Run, base: string, project?: Project): string {
   return [
     `<p><a href="${base}/">← All runs</a></p>`,
     `<h1>${esc(run.task.split("\n")[0])}</h1>`,
-    `<p class="m">${badge(run)} · ${esc(run.pattern)} · ${project && project.name !== run.repo.split("/").pop() ? `${esc(project.name)} · ` : ""}${esc(run.repo.split("/").pop())} · started ${ago(run.createdAt)}${run.trigger ? ` · by ${run.trigger.via === "sweep" ? "sweep" : "automation"} “${esc(run.trigger.name)}”` : ""}</p>`,
+    `<p class="m">${badge({ ...run, approvalPending })} · ${esc(run.pattern)} · ${project && project.name !== run.repo.split("/").pop() ? `${esc(project.name)} · ` : ""}${esc(run.repo.split("/").pop())} · started ${ago(run.createdAt)}${run.trigger ? ` · by ${run.trigger.via === "sweep" ? "sweep" : "automation"} “${esc(run.trigger.name)}”` : ""}</p>`,
     run.awaiting ? `<h2>Waiting for you</h2><p>${esc(run.awaiting.title)} — open code-flow on your computer to answer.</p><pre>${esc(run.awaiting.content.slice(0, 4_000))}</pre>` : "",
+    approvalPending ? "<h2>Tool approval is waiting</h2><p>Open the full-control app or code-flow on your computer to answer.</p>" : "",
     run.triage?.state === "pending" ? "<h2>In your inbox</h2><p>Approve, revise or reject it in code-flow on your computer.</p>" : "",
     run.error ? `<h2>Error</h2><pre>${esc(run.error)}</pre>` : "",
     run.checkCantRun ? `<h2>Check</h2><p>${esc(cantRunMessage(run.checkCantRun.reason))}.</p>` : "",

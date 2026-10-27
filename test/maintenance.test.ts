@@ -83,7 +83,7 @@ test("encrypted backups round-trip application data while excluding live session
   assert.equal(await lstat(join(restored, "shared-accounts.json")).then(() => true, () => false), false);
   assert.equal(await lstat(join(restored, "outside-link")).then(() => true, () => false), false);
   await assert.rejects(restoreEncryptedBackup({ input: archive, destination: restored, password: PASSWORD }), /already exists/);
-  await assert.rejects(createEncryptedBackup({ home, output: archive, password: PASSWORD }), /EEXIST/);
+  await assert.rejects(createEncryptedBackup({ home, output: archive, password: PASSWORD }), /Backup file already exists/);
   await mkdir(join(home, "..safe"));
   await assert.rejects(createEncryptedBackup({ home, output: join(home, "..safe", "nested.cfb"), password: PASSWORD }), /outside/);
 });

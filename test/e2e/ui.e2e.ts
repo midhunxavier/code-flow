@@ -266,7 +266,7 @@ test("a message sent while Codex is working reaches its running turn", async () 
   await page.locator("main .convo select").selectOption("codex");
   await page.locator("main .convo textarea").fill("Prefer tabs over spaces");
   await page.locator("main .convo textarea").press("Enter");
-  const delivered = page.locator(".note-history .note-chip", { hasText: "✓ Delivered to codex mid-turn (Implement plan): Prefer tabs over spaces" });
+  const delivered = page.locator(".note-history .note-chip", { hasText: "✓ Delivered to Codex mid-turn (Implement plan): Prefer tabs over spaces" });
   await delivered.waitFor({ state: "attached", timeout: 10_000 });
   assert.equal(await delivered.isVisible(), false, "delivered messages are collapsed by default");
   await page.locator(".note-history > summary").click();
@@ -420,7 +420,7 @@ test("phone: with full control, the phone link signs a phone in to the whole app
   // Full control has a link of its own: the read-only one never becomes a full-control link.
   const { phonePath } = await api("/api/remote", { control: true });
   assert.notEqual(phonePath, remote.path);
-  const signIn = await fetch(`${PHONE}${phonePath}`, { redirect: "manual" });
+  const signIn = await fetch(`${PHONE}${phonePath}/pair`, { method: "POST", headers: { origin: PHONE }, redirect: "manual" });
   assert.equal(signIn.status, 200);
   assert.match(await signIn.text(), /location\.replace\("\/"\)/);
   const cookie = signIn.headers.get("set-cookie")!.split(";")[0]!;
@@ -588,11 +588,11 @@ test("side panel: chat with one agent, read a file, run a command, keep a note",
 
   // Chat: a question to Claude starts a Single-agent run; its answer shows in the panel.
   await side.getByRole("tab", { name: "Chat" }).click();
-  await side.getByRole("button", { name: "Provider", exact: true }).click();
+  await side.getByRole("button", { name: /^Provider:/ }).click();
   await side.getByRole("menuitem", { name: /^Claude Code/ }).click();
-  await side.getByRole("button", { name: "Model", exact: true }).click();
+  await side.getByRole("button", { name: /^Model:/ }).click();
   await side.getByRole("option", { name: /^Sonnet/ }).click();
-  await side.getByRole("button", { name: "Effort", exact: true }).click();
+  await side.getByRole("button", { name: /^Effort:/ }).click();
   await side.getByRole("menuitem", { name: "high", exact: true }).click();
   await side.getByLabel("Message").fill("E2E: what does check.mjs do?");
   await side.getByLabel("Message").press("Enter");
@@ -694,7 +694,7 @@ test("side panel: follows the run you open, side chats in its worktree, its chan
   assert.match(await chats.first().innerText(), /E2E: what did this run change\?/);
 
   // Change: committed on the run's branch; the run's thread gets a line about it.
-  await side.getByRole("button", { name: "Chat mode", exact: true }).click();
+  await side.getByRole("button", { name: /^Chat mode:/ }).click();
   await side.getByRole("menuitem", { name: /^Change/ }).click();
   await side.getByLabel("Message").fill("E2E: add a note");
   await side.getByLabel("Message").press("Enter");
@@ -837,7 +837,7 @@ test("side panel browser: the live app is annotated and sent to main chat, with 
       await page.setViewportSize({ width, height: 900 });
       await page.evaluate(theme => document.documentElement.dataset.theme = theme, theme);
       await page.waitForTimeout(250); // Let the theme transition finish before contrast measurements.
-      const audit = await page.evaluate(async () => (window as unknown as { axe: typeof axe }).axe.run(".browser-context-draft", { runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21aa"] } }));
+      const audit = await page.evaluate(async () => (window as unknown as { axe: typeof axe }).axe.run(".browser-context-draft", { runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"] } }));
       assert.deepEqual(audit.violations.map(v => v.id), []);
       assert.ok(await page.locator(".browser-context-draft").evaluate(el => el.scrollWidth <= el.clientWidth + 1));
       mkdirSync(join(root, "output/playwright"), { recursive: true });
@@ -870,8 +870,14 @@ test("projects: the Automations page and its inbox follow the project you're in;
   const side = await api("/api/projects", { name: "E2E scoped", repos: [root] });
   assert.ok(side.id, side.error);
   const projects: { id: string; name: string; repos: string[] }[] = await api("/api/projects");
-  const own = projects.find((p) => p.repos.includes(root))!; // the repo's first project: earlier runs and automations are in it
+  const own = projects.find((p) => p.id !== side.id && p.repos.includes(root)) ?? await api("/api/projects", { name: "E2E schedule owner", repos: [root] });
   assert.notEqual(own.id, side.id);
+  // Keep this scope regression runnable on its own; do not depend on previous
+  // scenarios leaving a legacy automation whose project can be inferred.
+  await api("/api/automations", { name: "E2E owner hook", webhook: true, run: { repo, project: own.id, pattern: "solo", task: "Owner schedule fixture", roles: { agent: ["claude"] }, loop: { check: "" } } });
+  const ownerRun = await api("/api/runs", { repo, project: own.id, pattern: "solo", task: "E2E: owner scope result", roles: { agent: ["claude"] }, trust: "standard" });
+  for (let attempt = 0; attempt < 100; attempt++) { if ((await api(`/api/runs/${ownerRun.id}`)).status !== "running") break; await new Promise(resolve => setTimeout(resolve, 100)); }
+  assert.equal((await api(`/api/runs/${ownerRun.id}`)).status, "done");
   const automation = await api("/api/automations", {
     name: "E2E side hook",
     webhook: true,
@@ -881,13 +887,13 @@ test("projects: the Automations page and its inbox follow the project you're in;
   const fired = await fetch(`${BASE}/hooks/${automation.id}`, { method: "POST", headers: { authorization: `Bearer ${automation.token}`, "content-type": "application/json" }, body: "{}" });
   assert.equal(fired.status, 202);
 
-  await page.goto(`${BASE}/#/inbox`);
+  await page.goto(`${BASE}/?token=${TOKEN}#/inbox`);
   await page.locator(".project-btn").click(); // start from every project, whichever one earlier tests left selected
   await page.locator(".project-row", { hasText: "All projects" }).locator(".pr-main").click();
   await page.locator(".inbox-item", { hasText: "E2E: side chore" }).waitFor({ timeout: 30_000 });
   const pending = prioritizedReviewRuns(await api("/api/runs")).length;
-  const total = (await api("/api/automations")).length;
-  assert.ok(pending > 1 && total > 1, "earlier tests left results and automations in the repo's own project");
+  const total = (await api("/api/automations")).filter((automation: any) => !automation.sweep && !automation.target).length;
+  assert.ok(pending > 1 && total > 1, "both projects have results and repeating automations");
 
   await page.locator(".project-btn").click();
   await page.locator(".project-row", { hasText: "E2E scoped" }).locator(".pr-main").click();
@@ -902,15 +908,17 @@ test("projects: the Automations page and its inbox follow the project you're in;
   const under = (name: string) => sections.find((s) => s.startsWith(`<h2 class="project">${name}</h2>`)) ?? "";
   assert.match(under("E2E scoped"), /E2E: side chore/);
   assert.doesNotMatch(under(own.name), /E2E: side chore/);
-  assert.match(under(own.name), /E2E: check can&#39;t run/);
+  assert.match(under(own.name), /E2E: owner scope result/);
   await api("/api/remote", { enabled: false });
 
   // Schedules are a separate destination but keep the same project scope.
   await page.goto(`${BASE}/#/automations`);
   await page.locator(".auto-row b", { hasText: "E2E side hook" }).waitFor();
   assert.deepEqual(await page.locator(".auto-row b").allInnerTexts(), ["E2E side hook"]);
-  // "Show all" goes back to every project, as the sidebar's does.
-  await page.locator(".automations .rail-hint", { hasText: "more in other projects" }).getByRole("button", { name: "Show all" }).click();
+  // Scheduling exposes its scope in the shared project picker. Legacy records
+  // without a project have their own notice and do not imply another project.
+  await page.locator(".scheduling-hub .project-btn").click();
+  await page.locator(".project-row", { hasText: "All projects" }).locator(".pr-main").click();
   await page.locator(".project-btn", { hasText: "All projects" }).waitFor();
   assert.equal(await page.locator(".auto-row").count(), total);
   await page.goto(`${BASE}/#/inbox`);
@@ -950,7 +958,13 @@ test("simple composer supports reusable teams, parameterized tasks, readiness an
     await fresh.getByText("✓ This folder is a git repository").waitFor();
     assert.equal(listedPaths.at(-1), repo, "a delayed default listing cannot supersede same-tick explicit navigation");
     await fresh.getByRole("button", { name: "Use this folder", exact: true }).click();
-    await fresh.getByRole("dialog", { name: "Open repository in a project" }).getByRole("button", { name: /^Open / }).first().click();
+    // Prior scope tests can put this repository in more than one project. That
+    // deliberately requires choosing a destination instead of silently guessing.
+    const destinations = await fetch(`${BASE}/api/projects`, { headers: bearer }).then(response => response.json());
+    const matches = destinations.filter((project: any) => project.repos.includes(realpathSync(repo)));
+    if (matches.length > 1) await fresh.getByRole("dialog", { name: "Open repository in a project", exact: true }).getByRole("button", { name: `Open ${matches[0].name}`, exact: true }).click();
+    else if (!matches.length) await fresh.getByRole("dialog", { name: "Open repository in a project", exact: true }).getByRole("button", { name: "Create project", exact: true }).click();
+    await fresh.locator(".repo-btn:not(.project-btn) .name", { hasText: repo.split("/").pop()! }).waitFor();
     await fresh.waitForFunction(() => (document.querySelector("#checkCmd") as HTMLInputElement | null)?.value === "npm test");
     await openAdvanced(fresh);
   await fresh.getByLabel("Workflow", { exact: true }).selectOption("pipeline");
@@ -1058,13 +1072,13 @@ test("chat menus apply model, effort and permissions to the next reply and survi
   assert.ok(model);
   await page.goto(`${BASE}/?token=${TOKEN}#/run/${created.id}`);
   const main = page.getByRole("main");
-  await main.getByRole("button", { name: "Provider", exact: true }).waitFor();
-  assert.match(await main.getByRole("button", { name: "Provider", exact: true }).innerText(), /Codex/, "the provider selector opens another conversation without mutating this one");
-  await main.getByRole("button", { name: "Model", exact: true }).click();
+  await main.getByRole("button", { name: /^Provider:/ }).waitFor();
+  assert.match(await main.getByRole("button", { name: /^Provider:/ }).innerText(), /Codex/, "the provider selector opens another conversation without mutating this one");
+  await main.getByRole("button", { name: /^Model:/ }).click();
   await main.getByRole("option", { name: model.label, exact: true }).click();
-  await main.getByRole("button", { name: "Effort", exact: true }).click();
+  await main.getByRole("button", { name: /^Effort:/ }).click();
   await main.getByRole("menuitem", { name: "high", exact: true }).click();
-  await main.getByRole("button", { name: "Permissions", exact: true }).click();
+  await main.getByRole("button", { name: /^Permissions:/ }).click();
   await main.getByRole("menuitem", { name: /^Ask for approval/ }).click();
   await main.getByRole("textbox", { name: "Message agent", exact: true }).fill("Use the chosen settings");
   await main.getByRole("button", { name: "Send", exact: true }).click();
@@ -1074,14 +1088,14 @@ test("chat menus apply model, effort and permissions to the next reply and survi
   assert.equal(run.followUps.at(-1).tools, true);
   assert.equal(run.followUps.at(-1).trust, "standard");
   await page.reload();
-  await main.getByRole("button", { name: "Permissions", exact: true }).waitFor();
-  assert.match(await main.getByRole("button", { name: "Permissions", exact: true }).innerText(), /Ask for approval/);
-  assert.match(await main.getByRole("button", { name: "Effort", exact: true }).innerText(), /high/);
-  await main.getByRole("button", { name: "Model", exact: true }).click();
+  await main.getByRole("button", { name: /^Permissions:/ }).waitFor();
+  assert.match(await main.getByRole("button", { name: /^Permissions:/ }).innerText(), /Ask for approval/);
+  assert.match(await main.getByRole("button", { name: /^Effort:/ }).innerText(), /high/);
+  await main.getByRole("button", { name: /^Model:/ }).click();
   await main.getByRole("option", { name: /^Default model/ }).click();
-  await main.getByRole("button", { name: "Effort", exact: true }).click();
+  await main.getByRole("button", { name: /^Effort:/ }).click();
   await main.getByRole("menuitem", { name: /^Default effort/ }).click();
-  await main.getByRole("button", { name: "Permissions", exact: true }).click();
+  await main.getByRole("button", { name: /^Permissions:/ }).click();
   await main.getByRole("menuitem", { name: /^Full access/ }).click();
   await main.getByRole("textbox", { name: "Message agent", exact: true }).fill("Use defaults for this reply");
   await main.getByRole("button", { name: "Send", exact: true }).click();
@@ -1107,20 +1121,20 @@ test("provider selection waits for a message and confirmation before forking wit
   await page.goto(`${BASE}/?token=${TOKEN}#/run/${source.id}`);
   const main = page.getByRole("main");
   assert.equal(await main.getByRole("button", { name: "Chat actions", exact: true }).count(), 0);
-  await main.getByRole("button", { name: "Permissions", exact: true }).click();
+  await main.getByRole("button", { name: /^Permissions:/ }).click();
   await main.getByRole("menuitem", { name: /^Ask for approval/ }).click();
   await main.getByRole("textbox", { name: "Message agent", exact: true }).fill("Keep the original draft");
-  await main.getByRole("button", { name: "Provider", exact: true }).click();
+  await main.getByRole("button", { name: /^Provider:/ }).click();
   await main.getByRole("menuitem", { name: /^Codex/ }).click();
   const dialog = page.getByRole("dialog", { name: "Fork chat" });
   assert.equal(await dialog.getByPlaceholder("What should the new chat do?").inputValue(), "Keep the original draft");
   assert.equal((await api(`/api/runs/${source.id}/chats`)).length, 1, "same-provider selection waits for Send");
   await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
-  assert.match(await main.getByRole("button", { name: "Permissions", exact: true }).innerText(), /Ask for approval/, "cancel does not change the original permission choice");
+  assert.match(await main.getByRole("button", { name: /^Permissions:/ }).innerText(), /Ask for approval/, "cancel does not change the original permission choice");
   assert.equal(await main.getByRole("textbox", { name: "Message agent", exact: true }).inputValue(), "Keep the original draft");
-  await main.getByRole("button", { name: "Provider", exact: true }).click();
+  await main.getByRole("button", { name: /^Provider:/ }).click();
   await main.getByRole("menuitem", { name: /Claude Code/ }).click();
-  await dialog.getByRole("button", { name: "Provider", exact: true }).click();
+  await dialog.getByRole("button", { name: /^Provider:/ }).click();
   assert.equal(await dialog.getByRole("menuitem", { name: "Codex", exact: true }).count(), 1, "same-provider forks are available");
   await dialog.getByRole("menuitem", { name: /Claude Code/ }).click();
   await dialog.getByPlaceholder("What should the new chat do?").fill("Review the previous answer");
@@ -1153,12 +1167,12 @@ test("Agent setup is inline and completed replies keep automatic workflow contro
     }, { repository: repo, project: destination.id });
     await fresh.goto(`${BASE}/?token=${TOKEN}`);
     const box = fresh.locator(".taskbox");
-    await box.getByRole("button", { name: "Model", exact: true }).waitFor();
+    await box.getByRole("button", { name: /^Model:/ }).waitFor();
     assert.equal(await fresh.locator(".composer-options").getAttribute("open"), null);
-    assert.match(await box.getByRole("button", { name: "Model", exact: true }).innerText(), /opus/i);
-    await box.getByRole("button", { name: "Model", exact: true }).click();
+    assert.match(await box.getByRole("button", { name: /^Model:/ }).innerText(), /opus/i);
+    await box.getByRole("button", { name: /^Model:/ }).click();
     await box.getByRole("option", { name: /^Haiku/ }).click();
-    await box.getByRole("button", { name: "Effort", exact: true }).click();
+    await box.getByRole("button", { name: /^Effort:/ }).click();
     await box.getByRole("menuitem", { name: "high", exact: true }).click();
     assert.equal(await fresh.evaluate(() => JSON.parse(localStorage.getItem("agentSettings") || "{}").claude?.model), undefined, "run model choices do not change the provider default in Settings");
     assert.equal(await fresh.getByLabel("Workflow", { exact: true }).isVisible(), false);
@@ -1166,7 +1180,7 @@ test("Agent setup is inline and completed replies keep automatic workflow contro
     await fresh.getByLabel("Workflow", { exact: true }).selectOption("supervisor");
     assert.equal(await box.locator(".chat-controls").count(), 0);
     await fresh.getByLabel("Workflow", { exact: true }).selectOption("solo");
-    assert.match(await box.getByRole("button", { name: "Model", exact: true }).innerText(), /Haiku/);
+    assert.match(await box.getByRole("button", { name: /^Model:/ }).innerText(), /Haiku/);
     await box.getByRole("switch", { name: "AI team", exact: true }).click();
     await box.getByRole("button", { name: "Advanced", exact: true }).click();
     const setup = fresh.getByRole("dialog", {name:"AI team setup"});
@@ -1179,7 +1193,7 @@ test("Agent setup is inline and completed replies keep automatic workflow contro
     await box.getByRole("switch", { name: "AI team", exact: true }).click();
     await openAdvanced(fresh);
     await fresh.getByLabel("Workflow", { exact: true }).selectOption("solo");
-    await fresh.getByLabel("Done when this passes", { exact: true }).fill('node -e "setTimeout(() => {}, 4000)"');
+    await fresh.getByLabel("Check command for merge validation", { exact: true }).fill('node -e "setTimeout(() => {}, 4000)"');
     await fresh.locator(".composer-options > summary").click();
     await fresh.getByRole("textbox", { name: "Task", exact: true }).fill("Inline single-agent fixture");
     await box.getByRole("button", { name: "Send", exact: true }).click();
@@ -1219,7 +1233,7 @@ test("project defaults stay repository-scoped and a run creates its worktree fro
     assert.equal(await fresh.locator(".composer-options").getAttribute("open"), null);
     assert.equal(await fresh.locator('.composer-library, [aria-label="Default check command"], [aria-label="Default verification profile"]').count(), 0, "project-wide default editors and library management stay in settings");
     assert.equal(await fresh.getByLabel("Worktree setup command", { exact: true }).isVisible(), false, "per-run setup is inside the collapsed run options");
-    await fresh.getByRole("button", { name: "Start from branch", exact: true }).click();
+    await fresh.getByRole("button", { name: /^Start from branch:/ }).click();
     await fresh.getByRole("combobox", { name: "Search Start from branch", exact: true }).fill("origin/feature");
     await fresh.getByRole("option", { name: /^origin\/feature/ }).click();
     await fresh.locator(".composer-options > summary").click();
@@ -1232,7 +1246,7 @@ test("project defaults stay repository-scoped and a run creates its worktree fro
     assert.equal(await fresh.getByLabel("Worktree setup command", { exact: true }).inputValue(), "node -e \"process.exit(0)\"");
     await fresh.getByLabel("Worktree setup command", { exact: true }).fill("node -e \"process.exit(0); /* setup override */\"");
     assert.equal(await fresh.evaluate((path) => localStorage.getItem(`setup:${path}`), realpathSync(repo)), "node -e \"process.exit(0)\"", "setup overrides do not overwrite the project default");
-    await fresh.getByLabel("Done when this passes", { exact: true }).fill("node -e \"process.exit(0); /* run override */\"");
+    await fresh.getByLabel("Check command for merge validation", { exact: true }).fill("node -e \"process.exit(0); /* run override */\"");
     assert.equal(await fresh.evaluate((path) => localStorage.getItem(`check:${path}`), realpathSync(repo)), "node -e \"process.exit(0)\"", "run overrides do not overwrite the project default");
     await fresh.getByLabel("Task", { exact: true }).fill("Verify selected branch and project defaults");
     await fresh.locator(".taskbox").getByRole("button", { name: "Run actions", exact: true }).click();
@@ -1251,7 +1265,7 @@ test("project defaults stay repository-scoped and a run creates its worktree fro
     assert.equal(run.loop.setup, "node -e \"process.exit(0); /* setup override */\"");
     assert.equal(run.loop.agentContainer, undefined);
     assert.ok(!run.loop.verification);
-    await fresh.getByRole("button", { name: "Provider", exact: true }).waitFor({ timeout: 30000 });
+    await fresh.getByRole("button", { name: /^Provider:/ }).waitFor({ timeout: 30000 });
   } finally { await fresh.close(); }
 });
 
@@ -1412,12 +1426,12 @@ test("sidebar archives, hides and deletes runs with confirmation across tabs", a
     const search = rail.getByRole("searchbox");
     await search.fill(task);
     assert.equal(await row.count(), 0, "search respects hidden archives");
-    await rail.getByRole("button", { name: "Show archived runs", exact: true }).click();
+    await rail.getByRole("button", { name: /^Show archived runs(?: \d+)?$/ }).click();
     await row.waitFor();
     await row.hover();
     await row.getByRole("button", { name: "Run actions", exact: true }).click();
     await row.getByRole("menuitem", { name: "Unarchive", exact: true }).click();
-    await fresh.getByRole("main").getByRole("button", { name: "Provider", exact: true }).waitFor();
+    await fresh.getByRole("main").getByRole("button", { name: /^Provider:/ }).waitFor();
     await row.hover();
     await row.getByRole("button", { name: "Run actions", exact: true }).click();
     await row.getByRole("menuitem", { name: "Delete…", exact: true }).click();
@@ -1468,7 +1482,7 @@ test("bulk run selection archives and deletes with partial failure recovery", as
     await rail.getByRole("button", { name: "Archive", exact: true }).click();
     await rail.getByRole("status").filter({ hasText: /^0 selected$/ }).waitFor();
     assert.equal(await rail.locator(".rail-run-row").count(), 0);
-    await rail.getByRole("button", { name: "Show archived runs", exact: true }).click();
+    await rail.getByRole("button", { name: /^Show archived runs(?: \d+)?$/ }).click();
     await rail.getByRole("button", { name: "Select loaded", exact: true }).click();
     await rail.getByRole("button", { name: "Delete…", exact: true }).click();
     const dialog = fresh.getByRole("dialog", { name: "Delete 2 runs?", exact: true });
@@ -1510,7 +1524,7 @@ test("searchable model picker filters names and IDs, supports keyboard, resets a
       await route.fulfill({ response, json: catalogs });
     });
     await fresh.goto(`${BASE}/?token=${TOKEN}`);
-    const trigger = fresh.locator(".taskbox").getByRole("button", { name: "Model", exact: true });
+    const trigger = fresh.locator(".taskbox").getByRole("button", { name: /^Model:/ });
     await trigger.click();
     const search = fresh.getByRole("combobox", { name: "Search Model", exact: true });
     const options = fresh.getByRole("listbox", { name: "Model", exact: true }).getByRole("option");
@@ -1582,13 +1596,13 @@ test("free model ordering, multiple provider models and dark team selectors", as
     await fresh.locator(".composer-options > summary").click();
     await fresh.locator(".advanced-controls > summary").click();
     const role = fresh.locator(".role").filter({ has: fresh.locator(".rl", { hasText: /^Reviewers/ }) });
-    const model = role.getByLabel("Claude Code model for the reviewers", { exact: true });
+    const model = role.getByRole("button", { name: /^Claude Code model for the reviewers:/ });
     await model.click();
     assert.deepEqual(await fresh.getByRole("listbox").locator(".model-option-name").allTextContents(), ["Default model", "First (free)", "Second (free)", "Paid model"]);
     await fresh.getByRole("combobox", { name: /^Search / }).press("Escape");
     await role.getByRole("button", { name: "Select all free", exact: true }).click();
     assert.equal((await model.textContent())?.trim(), "First (free)");
-    assert.equal((await role.getByLabel("Claude Code additional model 1 for the reviewers", { exact: true }).textContent())?.trim(), "Second (free)");
+    assert.equal((await role.getByRole("button", { name: /^Claude Code additional model 1 for the reviewers:/ }).textContent())?.trim(), "Second (free)");
     await role.getByText("2 agents · each model runs separately", { exact: true }).waitFor();
     const colors = await model.evaluate(element => { const css = getComputedStyle(element); return [css.color, css.backgroundColor]; });
     assert.notEqual(colors[0], colors[1]); assert.notEqual(colors[1], "rgba(0, 0, 0, 0)");
@@ -1604,10 +1618,10 @@ test("free model ordering, multiple provider models and dark team selectors", as
     await fresh.screenshot({ path: join(root, "output/team-models-mobile.png"), animations: "disabled" });
     assert.ok(await fresh.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
     await role.getByRole("button", { name: "Remove Claude Code model second-free", exact: true }).click();
-    await role.getByLabel("Add Claude Code model for the reviewers", { exact: true }).click();
+    await role.getByRole("button", { name: /^Add Claude Code model for the reviewers:/ }).click();
     await fresh.getByRole("combobox", { name: /^Search / }).fill("PAID");
     await fresh.getByRole("option", { name: "Paid model", exact: true }).click();
-    assert.equal((await role.getByLabel("Claude Code additional model 1 for the reviewers", { exact: true }).textContent())?.trim(), "Paid model");
+    assert.equal((await role.getByRole("button", { name: /^Claude Code additional model 1 for the reviewers:/ }).textContent())?.trim(), "Paid model");
     const saved = await fresh.evaluate(() => JSON.parse(localStorage.getItem("roleModels")!).council.reviewers.claude);
     assert.deepEqual(saved.variants, [{ model: "paid" }]);
   } finally { await fresh.close(); }
@@ -1630,13 +1644,13 @@ test("Auto team selects all free models into a persistent bounded model pool", a
     await fresh.locator(".composer-options > summary").click();
     await fresh.locator(".advanced-controls > summary").click();
     const role = fresh.locator(".role").filter({ has: fresh.locator(".rl", { hasText: /^Available providers/ }) });
-    const model = role.getByLabel("Claude Code model for the available providers", { exact: true });
+    const model = role.getByRole("button", { name: /^Claude Code model for the available providers:/ });
     await model.click();
     assert.deepEqual(await fresh.getByRole("listbox").locator(".model-option-name").allTextContents(), ["Automatic · coordinator chooses", "First (free)", "Second (free)", "Paid model"]);
     await fresh.getByRole("combobox", { name: /^Search / }).press("Escape");
     await role.getByRole("button", { name: "Select all free", exact: true }).click();
     assert.equal((await model.textContent())?.trim(), "First (free)");
-    assert.equal((await role.getByLabel("Claude Code additional model 1 for the available providers", { exact: true }).textContent())?.trim(), "Second (free)");
+    assert.equal((await role.getByRole("button", { name: /^Claude Code additional model 1 for the available providers:/ }).textContent())?.trim(), "Second (free)");
     await role.getByText("2 model choices · coordinator selects within the member limit", { exact: true }).waitFor();
     assert.equal(await fresh.locator(".role").filter({ has: fresh.locator(".rl", { hasText: /^Coordinator/ }) }).getByRole("button", { name: "Codex", exact: true }).getAttribute("aria-pressed"), "true", "pool choices preserve the coordinator");
     const colors = await model.evaluate(element => { const css = getComputedStyle(element); return [css.color, css.backgroundColor]; });
@@ -1645,10 +1659,10 @@ test("Auto team selects all free models into a persistent bounded model pool", a
     await fresh.setViewportSize({ width: 390, height: 844 });
     assert.ok(await fresh.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
     await role.getByRole("button", { name: "Remove Claude Code model second-free", exact: true }).click();
-    await role.getByLabel("Add Claude Code model for the available providers", { exact: true }).click();
+    await role.getByRole("button", { name: /^Add Claude Code model for the available providers:/ }).click();
     await fresh.getByRole("combobox", { name: /^Search / }).fill("PAID");
     await fresh.getByRole("option", { name: "Paid model", exact: true }).click();
-    assert.equal((await role.getByLabel("Claude Code additional model 1 for the available providers", { exact: true }).textContent())?.trim(), "Paid model");
+    assert.equal((await role.getByRole("button", { name: /^Claude Code additional model 1 for the available providers:/ }).textContent())?.trim(), "Paid model");
     const saved = await fresh.evaluate(() => JSON.parse(localStorage.getItem("roleModels")!)["auto-team"].pool.claude);
     assert.deepEqual(saved.variants, [{ model: "paid" }]);
   } finally { await fresh.close(); }

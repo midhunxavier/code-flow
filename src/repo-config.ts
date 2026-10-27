@@ -3,7 +3,7 @@ import { randomBytes } from "node:crypto";
 import { lstat, readdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import type { AgentSettings } from "./adapters/types.js";
-import { COPIED_FILES, git, gitWithInput, worktreeGit } from "./git.js";
+import { COPIED_FILES, git, gitWithInput, resolveCommit, worktreeGit } from "./git.js";
 
 /**
  * Optional per-repo settings, committed with the project at `.codeflow/config.json`, so every
@@ -43,11 +43,33 @@ export interface RepoConfig {
 
 export const CONFIG_PATH = ".codeflow/config.json";
 
-export async function readRepoConfig(repo: string): Promise<{ config: RepoConfig; found: boolean; error?: string }> {
+export interface RepoConfigFile { config: RepoConfig; found: boolean; error?: string }
+
+export async function readRepoConfig(repo: string): Promise<RepoConfigFile> {
   const file = join(repo, CONFIG_PATH);
   if (!existsSync(file)) return { config: {}, found: false };
+  const text = await readFile(file, "utf8").catch((err: Error) => err);
+  return text instanceof Error ? { config: {}, found: true, error: `${CONFIG_PATH}: ${text.message}` } : parseRepoConfig(text, CONFIG_PATH);
+}
+
+/**
+ * The config committed at `ref`, for a run that starts there (a branch you chose). Permissions and
+ * the files to copy from your checkout stay your checkout's: they are about this computer, and a
+ * branch (one an agent wrote, say) mustn't widen them. A ref that doesn't resolve reads the checkout.
+ */
+export async function readRepoConfigAt(repo: string, ref: string): Promise<RepoConfigFile> {
+  const checkout = await readRepoConfig(repo);
+  const commit = ref.startsWith("-") ? undefined : await resolveCommit(repo, ref).catch(() => undefined);
+  if (!commit) return checkout;
+  const file = await git(["show", "--no-textconv", `${commit}:${CONFIG_PATH}`], repo);
+  const committed: RepoConfigFile = file.code === 0 ? parseRepoConfig(file.stdout, `${CONFIG_PATH} at ${ref}`) : { config: {}, found: false };
+  const { trust, copy, ...config } = committed.config;
+  return { ...committed, config: { ...config, ...(checkout.config.trust ? { trust: checkout.config.trust } : {}), ...(checkout.config.copy ? { copy: checkout.config.copy } : {}) } };
+}
+
+function parseRepoConfig(text: string, where: string): RepoConfigFile {
   try {
-    const raw = JSON.parse(await readFile(file, "utf8"));
+    const raw = JSON.parse(text);
     const config: RepoConfig = {};
     const str = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : undefined);
     config.check = str(raw.check);
@@ -68,7 +90,7 @@ export async function readRepoConfig(repo: string): Promise<{ config: RepoConfig
     if (typeof raw.prove === "boolean") config.prove = raw.prove;
     return { config, found: true };
   } catch (err) {
-    return { config: {}, found: true, error: `${CONFIG_PATH}: ${(err as Error).message}` };
+    return { config: {}, found: true, error: `${where}: ${(err as Error).message}` };
   }
 }
 
@@ -79,31 +101,51 @@ export async function readRepoConfig(repo: string): Promise<{ config: RepoConfig
  * a symlink could point anywhere (a cloned repo's `.env` → your cloud credentials), and a file
  * git doesn't ignore would be committed with the agents' work and pushed in a pull request.
  * Nor is anything written through a link in the worktree. The copied paths are recorded so
- * commits leave them out (commitAll). Returns the copied paths and the ones refused (with why).
+ * commits leave them out (commitAll). Returns the copied paths, the ones refused (with why), and
+ * the patterns that copied nothing (with why): `invalid` for one that can never match (an absolute
+ * path, one reaching out of the repo), otherwise there's no such file in your checkout, which is
+ * fine for an optional one like `.env.local`.
  */
 export async function copyIntoWorktree(
   repo: string,
   worktree: string,
   patterns: string[],
-): Promise<{ copied: string[]; refused: { path: string; why: string }[] }> {
+): Promise<{ copied: string[]; refused: { path: string; why: string }[]; skipped: { path: string; why: string; invalid?: true }[] }> {
   const copied: string[] = [];
   const refused: { path: string; why: string }[] = [];
+  const skipped: { path: string; why: string; invalid?: true }[] = [];
   const root = await realpath(repo);
   const destination = resolve(worktree);
   const destinationRoot = await realpath(worktree);
   const candidates = new Set<string>();
   for (const raw of patterns) {
     const pattern = raw.replace(/\\/g, "/").replace(/^\.\//, "");
-    if (!pattern || pattern.startsWith("/") || pattern.includes("\0") || pattern.split("/").some((part) => !part || part === ".." || part === ".")) continue;
-    for (const rel of await expand(repo, pattern)) {
+    const plain = (p: string) => !!p && !p.includes("\0") && !p.split("/").some((part) => !part || part === ".." || part === ".");
+    let invalid = !pattern || pattern.includes("\0") ? "it's empty or not a path"
+      : pattern.startsWith("/") ? "it's an absolute path, and copy patterns are relative to the repository's root"
+      : !plain(pattern) ? "a pattern can't use `.`, `..` or an empty part: it names a file inside the repository, from its root"
+      : undefined;
+    // `/.env` is how .gitignore anchors a file to the root: when there's such a file, say how to write it.
+    const anchored = pattern.replace(/^\/+/, "");
+    if (invalid && pattern.startsWith("/") && plain(anchored) && (await expand(repo, anchored)).some((rel) => existsSync(join(repo, rel)))) invalid += ` (for the one in the repository, write \`${anchored}\`)`;
+    if (invalid) { skipped.push({ path: raw, why: invalid, invalid: true }); continue; }
+    const matches = await expand(repo, pattern);
+    if (!matches.length) skipped.push({ path: raw, why: "no file in your checkout matches it" });
+    for (const rel of matches) {
       const from = join(repo, rel);
       const info = await lstat(from).catch(() => null);
-      if (!info) continue;
+      if (!info) {
+        skipped.push({ path: rel, why: "it isn't in your checkout" });
+        continue;
+      }
       if (info.isSymbolicLink()) {
         refused.push({ path: rel, why: "it's a symbolic link" });
         continue;
       }
-      if (!info.isFile()) continue;
+      if (!info.isFile()) {
+        skipped.push({ path: rel, why: info.isDirectory() ? "it's a folder; list the files in it, or match them with *" : "it isn't a regular file", invalid: true });
+        continue;
+      }
       // A folder on the way could itself be a link out of the repo.
       const real = await realpath(from).catch(() => "");
       if (!real.startsWith(root + sep)) {
@@ -128,7 +170,7 @@ export async function copyIntoWorktree(
     else if (result !== "exists") refused.push({ path: rel, why: result });
   }
   await recordCopied(repo, worktree, copied);
-  return { copied, refused };
+  return { copied, refused, skipped };
 }
 
 /**

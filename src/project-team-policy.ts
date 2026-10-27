@@ -12,12 +12,17 @@ export function managedPlanProblem(plan: Pick<TeamPlan, "tasks">, contract?: Pro
 }
 export const managedRevisionProblem = (revision: TeamRevision, contract?: ProjectTeamRun) => managedPlanProblem({ tasks: revision.addTasks }, contract);
 
-/** Covers committed, staged, unstaged, untracked and both sides of renames. */
-export async function assertProjectTeamChanges(at: string, run: { baseRef: string; projectTeam?: ProjectTeamRun; loop: { verification?: unknown } }) {
+/**
+ * Covers committed, staged, unstaged, untracked and both sides of renames in the worktree `at`.
+ * With `commit`, `at` is the repository and only that committed result counts: its worktree
+ * may be gone (archived), and nothing uncommitted ships from a branch.
+ */
+export async function assertProjectTeamChanges(at: string, run: { baseRef: string; projectTeam?: ProjectTeamRun; loop: { verification?: unknown } }, commit?: string) {
   const c = run.projectTeam; if (!c) return;
   if (digest(run.loop.verification ?? null) !== c.verificationHash) throw new Error("The managed verification profile changed");
-  const commands = [["diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--name-only", "-z", run.baseRef, "--"], ["ls-files", "--others", "--exclude-standard", "-z"], ["diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--numstat", run.baseRef, "--"]];
-  const results = await Promise.all(commands.map((args) => git(args, at)));
+  const range = commit ? [run.baseRef, commit] : [run.baseRef];
+  const commands = [["diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--name-only", "-z", ...range, "--"], ["ls-files", "--others", "--exclude-standard", "-z"], ["diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--numstat", ...range, "--"]];
+  const results = await Promise.all(commands.map((args, i) => commit && i === 1 ? { code: 0, stdout: "", stderr: "" } : git(args, at)));
   if (results.some((r) => r.code !== 0)) throw new Error("Cannot establish the managed result's changed files");
   const untracked = results[1]!.stdout.split("\0").filter(Boolean);
   const files = [...new Set([...results[0]!.stdout.split("\0"), ...untracked].filter(Boolean))];

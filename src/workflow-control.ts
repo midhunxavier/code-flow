@@ -1,4 +1,4 @@
-import { planProblem, type TeamPolicy } from "./patterns/auto-team-model.js";
+import { normalizeOwnedPath, planProblem, type TeamPolicy } from "./patterns/auto-team-model.js";
 import type { AgentId } from "./adapters/types.js";
 import type { TeamPlan, TeamState, TeamTask } from "./teams.js";
 
@@ -34,14 +34,19 @@ export function validateTeamPlanEdit(value: unknown, team: TeamState, policy: Te
   if (!Array.isArray(value.tasks) || value.tasks.length < 1 || value.tasks.length > policy.maxTasks) throw new TeamPlanEditError(`Keep between 1 and ${policy.maxTasks} tasks.`);
   const tasks = value.tasks.map((item, index): TeamTask => {
     if (!object(item) || Object.keys(item).some((key) => !["id", "title", "instructions", "owner", "kind", "dependsOn", "dependencyTypes", "requirements", "acceptance", "paths"].includes(key))) throw new TeamPlanEditError(`Task ${index + 1} contains unsupported or runtime fields.`);
-    if (typeof item.id !== "string" || !identifiers.test(item.id) || typeof item.owner !== "string" || !identifiers.test(item.owner) || !boundedText(item.title, 180) || !boundedText(item.instructions, 16000) || !["implementation", "investigation"].includes(String(item.kind))) throw new TeamPlanEditError(`Task ${index + 1} needs a valid ID, owner, title, kind and instructions.`);
+    const validId = typeof item.id === "string" && identifiers.test(item.id), validOwner = typeof item.owner === "string" && identifiers.test(item.owner), validKind = ["implementation", "investigation"].includes(String(item.kind));
+    if (typeof item.id !== "string" || !validId || typeof item.owner !== "string" || !validOwner || !boundedText(item.title, 180) || !boundedText(item.instructions, 16000) || !validKind) {
+      // Name what's missing: a combined message hides which field of a new task still needs filling.
+      const missing = [validId ? "" : "a valid ID", validOwner ? "" : "an owner", boundedText(item.title, 180) ? "" : "a title", validKind ? "" : "a kind", boundedText(item.instructions, 16000) ? "" : "instructions"].filter(Boolean);
+      throw new TeamPlanEditError(`Task ${index + 1} needs ${missing.length > 1 ? `${missing.slice(0, -1).join(", ")} and ${missing.at(-1)}` : missing[0]}.`);
+    }
     const dependsOn = strings(item.dependsOn, policy.maxTasks, 40, `${item.id} dependencies`);
     let dependencyTypes: TeamTask["dependencyTypes"];
     if (item.dependencyTypes !== undefined) {
       if (!object(item.dependencyTypes) || Object.keys(item.dependencyTypes).length > policy.maxTasks || Object.entries(item.dependencyTypes).some(([id, kind]) => !dependsOn.includes(id) || !["completion", "artifact", "knowledge"].includes(String(kind)))) throw new TeamPlanEditError(`${item.id} contains invalid dependency types.`);
       dependencyTypes = { ...item.dependencyTypes } as NonNullable<TeamTask["dependencyTypes"]>;
     }
-    return { id: item.id, title: item.title, instructions: item.instructions, owner: item.owner, kind: item.kind as TeamTask["kind"], dependsOn, ...(dependencyTypes ? { dependencyTypes } : {}), requirements: strings(item.requirements, 48, 40, `${item.id} requirements`), acceptance: strings(item.acceptance, 16, 2000, `${item.id} acceptance criteria`), paths: strings(item.paths, 64, 500, `${item.id} paths`), status: "pending", attempts: 0 };
+    return { id: item.id, title: item.title, instructions: item.instructions, owner: item.owner, kind: item.kind as TeamTask["kind"], dependsOn, ...(dependencyTypes ? { dependencyTypes } : {}), requirements: strings(item.requirements, 48, 40, `${item.id} requirements`), acceptance: strings(item.acceptance, 16, 2000, `${item.id} acceptance criteria`), paths: [...new Set(strings(item.paths, 64, 500, `${item.id} paths`).map(normalizeOwnedPath))], status: "pending", attempts: 0 };
   });
   if (!boundedText(value.rationale, 4000, true)) throw new TeamPlanEditError("Rationale must be text of at most 4,000 characters.");
   const plan: TeamPlan = { requirements: structuredClone(team.requirements), members: structuredClone(team.members), tasks, contracts: strings(value.contracts, 24, 8000, "Shared contracts"), rationale: value.rationale };

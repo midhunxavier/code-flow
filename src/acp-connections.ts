@@ -20,11 +20,12 @@ export function assertAcpBindings(run: { roles: Record<string, readonly string[]
 const object = (value: unknown): value is Record<string, any> => !!value && typeof value === "object" && !Array.isArray(value);
 const text = (value: unknown, limit: number): value is string => typeof value === "string" && value.length > 0 && value.length <= limit && !/[\x00-\x1f\x7f]/.test(value);
 export function validateAcpConnection(value: unknown): AcpConnection {
-  if (!object(value) || Object.keys(value).some((key) => !["id", "name", "command", "args", "enabled"].includes(key)) || typeof value.id !== "string" || !/^acp:[a-z][a-z0-9-]{0,40}$/.test(value.id)
-    || !text(value.name, 100) || !value.name.trim() || !text(value.command, 4000) || !(isAbsolute(value.command) || /^[a-zA-Z0-9_][a-zA-Z0-9._-]*$/.test(value.command))
-    || !Array.isArray(value.args) || value.args.length > 32 || value.args.some((arg: unknown) => typeof arg !== "string" || arg.length > 4000 || /[\x00-\x1f\x7f]/.test(arg)) || typeof value.enabled !== "boolean") {
-    throw new Error("Use a unique connection ID, a name, an executable name or absolute path, and at most 32 arguments. Shell command strings are not supported.");
-  }
+  if (!object(value) || Object.keys(value).some(key => !["id", "name", "command", "args", "enabled"].includes(key))) throw new Error("Use only the connection ID, name, executable, arguments and enabled setting");
+  if (typeof value.id !== "string" || !/^acp:[a-z][a-z0-9-]{0,40}$/.test(value.id)) throw new Error("Connection ID must be acp: followed by a lowercase letter and up to 40 lowercase letters, digits or hyphens");
+  if (!text(value.name, 100) || !value.name.trim()) throw new Error("Connection name must contain 1–100 characters");
+  if (!text(value.command, 4000) || !(isAbsolute(value.command) || /^[a-zA-Z0-9_][a-zA-Z0-9._-]*$/.test(value.command))) throw new Error("Executable must be a name on PATH or an absolute path. Enter arguments separately; shell command strings are not supported.");
+  if (!Array.isArray(value.args) || value.args.length > 32 || value.args.some((arg: unknown) => typeof arg !== "string" || arg.length > 4000 || /[\x00-\x1f\x7f]/.test(arg))) throw new Error("Arguments must be a list of at most 32 strings without control characters, each at most 4000 characters");
+  if (typeof value.enabled !== "boolean") throw new Error("Enabled must be true or false");
   return { id: value.id as AcpConnection["id"], name: value.name.trim(), command: value.command, args: [...value.args], enabled: value.enabled };
 }
 

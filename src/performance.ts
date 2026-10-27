@@ -4,7 +4,8 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 /** Bounded diagnostics: no URLs, query strings, prompts, or individual request records. */
 export class PerformanceMetrics {
   private delay = monitorEventLoopDelay({ resolution: 20 });
-  private utilization = performance.eventLoopUtilization();
+  private readonly utilization = performance.eventLoopUtilization();
+  private readonly startedAt = performance.now();
   private samples: number[] = [];
   private requests = 0;
   private errors = 0;
@@ -21,9 +22,9 @@ export class PerformanceMetrics {
   }
   snapshot() {
     const samples = [...this.samples].sort((a, b) => a - b);
-    const utilization = performance.eventLoopUtilization(this.utilization); this.utilization = performance.eventLoopUtilization();
-    const loop = { p95Ms: this.delay.percentile(95) / 1e6, maxMs: this.delay.max / 1e6, utilization: utilization.utilization };
-    this.delay.reset();
+    const utilization = performance.eventLoopUtilization(this.utilization);
+    const count = this.delay.count;
+    const loop = { p95Ms: count ? this.delay.percentile(95) / 1e6 : null, maxMs: count ? this.delay.max / 1e6 : null, utilization: utilization.utilization, samples: count, window: "since-start" as const, windowSeconds: (performance.now() - this.startedAt) / 1000 };
     return { memory: process.memoryUsage(), uptimeSeconds: process.uptime(), eventLoop: loop,
       http: { requests: this.requests, errors: this.errors, active: this.active, samples: samples.length, p50Ms: samples[Math.floor(samples.length * .5)] ?? 0, p95Ms: samples[Math.floor(samples.length * .95)] ?? 0 } };
   }

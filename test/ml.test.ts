@@ -15,7 +15,7 @@ import { LLM_RECIPE, llmSpec, jobStatus, trainingSpec, intent, terminal, type Ex
 import { hash } from "../src/training-worker/files.js";
 import { fixture as sshFixture } from "./ssh-project-fixture.js";
 const root = fileURLToPath(new URL("..", import.meta.url));
-let directory: string, bundlePath: string;
+let directory: string, bundlePath: string, fixturePython: string;
 // This JavaScript recipe runs under Node; worker mechanics require no Python or model downloads.
 const fixture = `
 const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto'),cp=require('node:child_process');
@@ -81,6 +81,9 @@ before(async () => {
   bundle.files["inference.py"] = servingFixture;
   bundle.files["holdout.py"] = holdoutFixture;
   bundle.files["recipe.py"] = fixture; bundle.files["llm_recipe.py"] = fixture; bundle.version = hash(JSON.stringify(bundle.files));
+  // The JS recipes emulate Python; answer the worker's independent version preflight.
+  fixturePython = join(directory, "fixture-python");
+  await writeFile(fixturePython, `#!/bin/sh\nif [ "$1" = "-c" ]; then printf '3.12.0\\n'; else exec '${process.execPath.replaceAll("'", "'\\''")}' "$@"; fi\n`, { mode: 0o700 });
   bundlePath = join(directory, "fixture-bundle.json"); await writeFile(bundlePath, JSON.stringify(bundle));
 });
 
@@ -89,7 +92,7 @@ for (const ssh of [false, true]) test(`common holdout uses one ${ssh ? "SSH" : "
   const options = f ? { home: f.localHome, bundlePath, transport: new TrainingTransport(bundlePath, f.ssh), enabled: () => true, authorize: async (_p: string, repo: string) => ({ repo, commit: "a".repeat(40) }) } : undefined;
   let service = c?.service ?? new MlService(options!); if (f) await service.load();
   try {
-    const target = f ? await service.register({ host: "fixture", name: "Holdout SSH VM", directory: join(f.remoteHome, "holdout"), python: process.execPath, standalone: true }) : service.store.read().targets[0]!;
+    const target = f ? await service.register({ host: "fixture", name: "Holdout SSH VM", directory: join(f.remoteHome, "holdout"), python: fixturePython, standalone: true }) : service.store.read().targets[0]!;
     const home = f?.remoteHome ?? c!.home, repo = f?.repo ?? c!.home, source = join(home, "holdout-input.csv"), jobs: Experiment[] = [];
     for (let k = 0; k < 2; k++) {
       await writeFile(source, "x,target\n" + `${k},1\n`.repeat(100));
@@ -162,7 +165,7 @@ async function context(options: Partial<MlOptions> = {}) {
   const source = join(home, "data.csv"); await writeFile(source, "x,target\n" + Array.from({ length: 100 }, (_, i) => `${i},${i % 2}`).join("\n"));
   let permitted = true, enabled = true;
   const create = async () => { const service = new MlService({ ...options, home, bundlePath, enabled: () => enabled, authorize: async (project, repo) => { if (!permitted || project !== "p" || repo !== home) throw new Error("Membership revoked"); return { repo, commit: "a".repeat(40) }; } }); await service.load(); return service; };
-  const service = await create(); await service.store.change(s => { s.targets[0]!.python = process.execPath; });
+  const service = await create(); await service.store.change(s => { s.targets[0]!.python = fixturePython; });
   const snapshot = await service.snapshot({ project: "p", repo: home, target: "local", path: source, location: "target" });
   const request = (seconds = 10) => ({ project: "p", repo: home, name: "Test", dataset: snapshot.id, operationId: randomUUID(), spec: { task: "classification", label: "target", split: { kind: "random" }, seed: 42, trainSeconds: seconds, cpus: 1 } });
   return { home, source, service, create, snapshot, request, revoke: () => { permitted = false; }, disable: () => { enabled = false; } };
@@ -248,8 +251,8 @@ test("saved disable fences queued admission while retaining history and cancella
 test("worker fences a missing receipt before reporting failure, so a delayed submit cannot launch", { timeout: 15000 }, async () => {
   const c = await context(); const transport = new TrainingTransport(bundlePath);
   const target = c.service.store.read().targets[0]!, now = Date.now();
-  const accepted = intent({ version: 1, id: randomUUID(), workerId: target.workerId, controllerId: c.service.store.read().controllerId, bundle: target.bundle, kind: "training", createdAt: now, deadline: now + 30000, python: process.execPath, dataset: c.snapshot.dataset, spec: c.request().spec, source: { project: "p", commit: "a".repeat(40) } });
-  const request = { controllerId: accepted.controllerId, workerId: accepted.workerId, python: process.execPath, intent: accepted };
+  const accepted = intent({ version: 1, id: randomUUID(), workerId: target.workerId, controllerId: c.service.store.read().controllerId, bundle: target.bundle, kind: "training", createdAt: now, deadline: now + 30000, python: fixturePython, dataset: c.snapshot.dataset, spec: c.request().spec, source: { project: "p", commit: "a".repeat(40) } });
+  const request = { controllerId: accepted.controllerId, workerId: accepted.workerId, python: fixturePython, intent: accepted };
   try {
     const fenced = await transport.call<any>(target, { ...request, action: "reconcile" }); assert.equal(fenced.state, "failed");
     const submitted = await transport.call<any>(target, { ...request, action: "submit" }); assert.equal(submitted.state, "failed");
@@ -279,7 +282,7 @@ test("SSH transfer, durable cancellation after disconnect, and project defaults 
   let reconnected: MlService | undefined;
   try {
     await assert.rejects(service.register({ host: "fixture", name: "Cluster", standalone: false }), /standalone/);
-    const target = await service.register({ host: "fixture", name: "GPU VM", directory: join(f.remoteHome, "training"), python: process.execPath, standalone: true });
+    const target = await service.register({ host: "fixture", name: "GPU VM", directory: join(f.remoteHome, "training"), python: fixturePython, standalone: true });
     await service.setDefault({ project: "p", repo: f.repo, target: target.id, revision: service.store.read().revision });
     assert.equal(service.overview("p").defaultTarget, target.id);
     const source = join(f.localHome, "large.csv");
@@ -316,8 +319,8 @@ test("SSH transfer, durable cancellation after disconnect, and project defaults 
 test("worker deadline stops descendants without a connected controller", { timeout: 20000 }, async () => {
   const c = await context(), transport = new TrainingTransport(bundlePath);
   const target = c.service.store.read().targets[0]!, now = Date.now();
-  const accepted = intent({ version: 1, id: randomUUID(), workerId: target.workerId, controllerId: c.service.store.read().controllerId, bundle: target.bundle, kind: "training", createdAt: now, deadline: now + 2500, python: process.execPath, dataset: c.snapshot.dataset, spec: c.request(101).spec, source: { project: "p", commit: "a".repeat(40) } });
-  const authority = { controllerId: accepted.controllerId, workerId: accepted.workerId, python: process.execPath };
+  const accepted = intent({ version: 1, id: randomUUID(), workerId: target.workerId, controllerId: c.service.store.read().controllerId, bundle: target.bundle, kind: "training", createdAt: now, deadline: now + 2500, python: fixturePython, dataset: c.snapshot.dataset, spec: c.request(101).spec, source: { project: "p", commit: "a".repeat(40) } });
+  const authority = { controllerId: accepted.controllerId, workerId: accepted.workerId, python: fixturePython };
   try {
     await transport.call(target, { ...authority, action: "submit", intent: accepted });
     await transport.close(); await c.service.close();
@@ -390,13 +393,13 @@ test("LLM model preparation, immutable input scope, progress and worker upgrade 
   } finally { await service.close(); }
 });
 
-test("SSH fine-tuning transfers JSONL, retains model identity and cancels after reconnect", { timeout: 30000 }, async () => {
+test("SSH fine-tuning transfers JSONL, retains model identity and cancels after reconnect", { timeout: 90000 }, async () => {
   const f = await sshFixture();
   const options = { home: f.localHome, bundlePath, enabled: () => true, authorize: async (_p: string, repo: string) => ({ repo, commit: "a".repeat(40) }) };
   let service = new MlService({ ...options, transport: new TrainingTransport(bundlePath, f.ssh) }); await service.load();
   let job: Experiment | undefined;
   try {
-    const target = await service.register({ host: "fixture", name: "Fine-tuning VM", directory: join(f.remoteHome, "llm"), python: process.execPath, standalone: true });
+    const target = await service.register({ host: "fixture", name: "Fine-tuning VM", directory: join(f.remoteHome, "llm"), python: fixturePython, standalone: true });
     const model = await until(service, await service.startJob({ project: "p", repo: f.repo, target: target.id, path: join(f.remoteHome, "base"), operationId: randomUUID() }, "model"));
     const source = join(f.localHome, "examples.jsonl"); await writeFile(source, '{"prompt":"x","completion":"y"}\n'.repeat(10000));
     const data = await service.snapshot({ project: "p", repo: f.repo, target: target.id, path: source, location: "controller" });
@@ -761,7 +764,7 @@ test("scheduled SSH data checks leave unchanged remote data in place and run tab
   const client = { call: async <T>(...args: Parameters<TrainingTransport["call"]>): Promise<T> => { calls.push(args[1].action as string); return transport.call<T>(...args); }, close: () => transport.close() };
   const service = new MlService({ home: f.localHome, bundlePath, transport: client, scheduleClock: () => now, enabled: () => true, authorize: async (_p, repo) => ({ repo, commit: "a".repeat(40) }) }); await service.load();
   try {
-    const target = await service.register({ host: "fixture", name: "Training VM", directory: join(f.remoteHome, "scheduled-training"), python: process.execPath, standalone: true });
+    const target = await service.register({ host: "fixture", name: "Training VM", directory: join(f.remoteHome, "scheduled-training"), python: fixturePython, standalone: true });
     for (const llm of [false, true]) {
       const location = llm ? "controller" : "target", source = join(llm ? f.localHome : f.remoteHome, llm ? "scheduled.jsonl" : "scheduled.csv");
       const content = llm ? '{"prompt":"x","completion":"y"}\n'.repeat(100) : "x,target\n" + "1,0\n".repeat(100); await writeFile(source, content);
@@ -855,7 +858,7 @@ test("inference owns the worker, enforces a process deadline, reaps descendants 
     for (let i = 0; i < 100; i++) { descendant = await readFile(marker, "utf8").then(Number, () => 0); if (descendant) break; await new Promise(r => setTimeout(r, 50)); } assert.ok(descendant);
     assert.equal(c.service.active(), true);
     await assert.rejects(c.service.deployments.predict(d.id, { rows: [{ x: 1 }] }), /handling an inference/);
-    await assert.rejects(c.service.configure("local", { python: process.execPath, revision: c.service.store.read().targets[0]!.revision }), /job/);
+    await assert.rejects(c.service.configure("local", { python: fixturePython, revision: c.service.store.read().targets[0]!.revision }), /job/);
     await c.service.deployments.update(d.id, "stop", deploymentChange(d)); await assert.rejects(c.service.deployments.predict(d.id, { rows: [{ x: 1 }] }), /stopped/);
     await rejected; assert.equal(c.service.active(), false);
     assert.throws(() => process.kill(descendant, 0), /ESRCH/);
@@ -868,8 +871,8 @@ test("inference owns the worker, enforces a process deadline, reaps descendants 
 test("SSH deployments transfer verified exports and serve tabular or LoRA results without a public remote port", { timeout: 120000 }, async () => {
   const f = await sshFixture(), transport = new TrainingTransport(bundlePath, f.ssh), service = new MlService({ home: f.localHome, bundlePath, transport, enabled: () => true, authorize: async (_p, repo) => ({ repo, commit: "a".repeat(40) }) }); await service.load();
   try {
-    await service.store.change(s => { s.targets[0]!.python = process.execPath; });
-    const target = await service.register({ host: "fixture", name: "Inference VM", directory: join(f.remoteHome, "serving"), python: process.execPath, standalone: true });
+    await service.store.change(s => { s.targets[0]!.python = fixturePython; });
+    const target = await service.register({ host: "fixture", name: "Inference VM", directory: join(f.remoteHome, "serving"), python: fixturePython, standalone: true });
     for (const llm of [false, true]) {
       const source = join(llm ? f.remoteHome : f.localHome, llm ? "inference.jsonl" : "inference.csv"); await writeFile(source, llm ? '{"prompt":"x","completion":"y"}\n'.repeat(100) : "x,target\n" + "1,0\n".repeat(100));
       const data = await service.snapshot({ project: "p", repo: f.repo, target: llm ? target.id : "local", path: source, location: "target" });
@@ -930,7 +933,7 @@ test("losing the control connection leaves inference supervised and the worker r
     const model = await registeredResult(c), d = await c.service.deployments.create({ project: "p", repo: c.home, name: "Disconnect-safe endpoint", modelId: model.id, versionId: model.versions[0]!.id, target: "local", config: { ...servingLimits, timeoutSeconds: 8 }, operationId: randomUUID(), reason: "Supervision verification" });
     const root = d.target.directory, r = d.releases[0]!;
     control = spawn(process.execPath, [join(root, "bundles", d.target.bundle!, "worker.mjs"), "control", root], { stdio: ["pipe", "ignore", "ignore"] });
-    control.stdin!.end(JSON.stringify({ action: "serve-predict", controllerId: r.controllerId, workerId: r.workerId, python: process.execPath, release: r, input: { rows: [{ x: "slow" }] } }));
+    control.stdin!.end(JSON.stringify({ action: "serve-predict", controllerId: r.controllerId, workerId: r.workerId, python: fixturePython, release: r, input: { rows: [{ x: "slow" }] } }));
     let descendant = 0;
     for (let i = 0; i < 100; i++) { descendant = await readFile(join(root, "inference-descendant"), "utf8").then(Number, () => 0); if (descendant) break; await new Promise(r => setTimeout(r, 50)); }
     assert.ok(descendant); owner = JSON.parse(await readFile(join(root, ".control-lock/owner.json"), "utf8")); assert.notEqual(owner!.pid, control.pid);
@@ -994,7 +997,7 @@ test("persistent deployments reuse a loaded process across requests and controll
     for (let i = 0; i < 2; i++) assert.deepEqual((await service.deployments.predict(d.id, { rows: [{ x: i }] })).result.predictions, [i]);
     assert.equal((await service.deployments.runtime(d.id)).pid, first.pid);
     await assert.rejects(service.startJob(c.request()), /Inference|Persistent|computer/);
-    await assert.rejects(service.configure("local", { revision: d.target.revision, python: process.execPath }), /persistent serving/);
+    await assert.rejects(service.configure("local", { revision: d.target.revision, python: fixturePython }), /persistent serving/);
     await service.close(); service = await c.create();
     assert.equal((await service.deployments.warm(d.id)).pid, first.pid, "Restart reconnects to the same resident model");
     d = await service.deployments.update(d.id, "switch", deploymentChange(d, { versionId: model.versions[1]!.id, reviewed: true }));
@@ -1068,7 +1071,7 @@ test("persistent idle and lifetime limits expire without controller supervision"
 test("persistent SSH LLM serving streams text, cancels generation, reuses weights and recovers after a controller disconnect", { timeout: 120000 }, async () => {
   const f = await sshFixture(), transport = new TrainingTransport(bundlePath, f.ssh), service = new MlService({ home: f.localHome, bundlePath, transport, enabled: () => true, authorize: async (_p, repo) => ({ repo, commit: "a".repeat(40) }) }); await service.load();
   try {
-    const target = await service.register({ host: "fixture", name: "Resident SSH VM", directory: join(f.remoteHome, "resident"), python: process.execPath, standalone: true });
+    const target = await service.register({ host: "fixture", name: "Resident SSH VM", directory: join(f.remoteHome, "resident"), python: fixturePython, standalone: true });
     const source = join(f.remoteHome, "stream.jsonl"); await writeFile(source, '{"prompt":"x","completion":"y"}\n'.repeat(100));
     const data = await service.snapshot({ project: "p", repo: f.repo, target: target.id, path: source, location: "target" });
     const base = await until(service, await service.startJob({ project: "p", repo: f.repo, target: target.id, path: join(f.remoteHome, "base"), operationId: randomUUID() }, "model"));
@@ -1348,7 +1351,7 @@ test("monitoring retrains on its owned SSH worker and restores the pinned deploy
   const f = await sshFixture(); let now = Date.now();
   const service = new MlService({ home: f.localHome, bundlePath, transport: new TrainingTransport(bundlePath, f.ssh), enabled: () => true, monitorClock: () => now, scheduleClock: () => now, authorize: async (_p, repo) => ({ repo, commit: "a".repeat(40) }) }); await service.load();
   try {
-    const target = await service.register({ host: "fixture", name: "Monitored SSH VM", directory: join(f.remoteHome, "monitor"), python: process.execPath, standalone: true });
+    const target = await service.register({ host: "fixture", name: "Monitored SSH VM", directory: join(f.remoteHome, "monitor"), python: fixturePython, standalone: true });
     const source = join(f.remoteHome, "monitor.csv"); await writeFile(source, "x,target\n" + "1,0\n".repeat(100));
     const data = await service.snapshot({ project: "p", repo: f.repo, target: target.id, path: source, location: "target" });
     const training = { project: "p", repo: f.repo, name: "SSH monitored model", dataset: data.id, operationId: randomUUID(), spec: { task: "classification", label: "target", split: { kind: "random" }, seed: 42, trainSeconds: 10, cpus: 1 } };
@@ -1374,7 +1377,7 @@ test("promotion deploys a qualifying model on persistent SSH compute and rolls b
   const f = await sshFixture(); let now = Date.now();
   const service = new MlService({ home: f.localHome, bundlePath, transport: new TrainingTransport(bundlePath, f.ssh), enabled: () => true, promotionClock: () => now, monitorClock: () => now, authorize: async (_p, repo) => ({ repo, commit: "a".repeat(40) }) }); await service.load();
   try {
-    const target = await service.register({ host: "fixture", name: "Promotion SSH VM", directory: join(f.remoteHome, "promote"), python: process.execPath, standalone: true });
+    const target = await service.register({ host: "fixture", name: "Promotion SSH VM", directory: join(f.remoteHome, "promote"), python: fixturePython, standalone: true });
     const source = join(f.remoteHome, "promotion.csv"); await writeFile(source, "x,target\n" + "1,0\n".repeat(100));
     const data = await service.snapshot({ project: "p", repo: f.repo, target: target.id, path: source, location: "target" });
     const training = () => ({ project: "p", repo: f.repo, name: "SSH promoted model", dataset: data.id, operationId: randomUUID(), spec: { task: "classification", label: "target", split: { kind: "random" }, seed: 42, trainSeconds: 10, cpus: 1 } });

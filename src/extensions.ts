@@ -13,11 +13,12 @@ export const EXTENSION_API = { major: 1, minor: 0, capabilities: ["provider-adap
 export interface ExtensionManifest { id: string; version: string; module: string; sha256: string; api: { major: number; minimumMinor: number }; requires: string[] }
 export interface CodeFlowExtension { api: { major: 1; minor: number }; providers?: AgentAdapter[]; workflows?: Pattern[] }
 export interface ExtensionStatus { id: string; version: string; sha256: string; state: "loaded" | "rejected"; api?: { major: number; minor: number }; providers: string[]; workflows: string[]; error?: string }
+export interface ExtensionConfiguration { state: "none" | "loaded" | "deferred" | "error"; source?: "file" | "json"; error?: string }
 export interface ExtensionBinding { id: string; version: string; sha256: string }
 const bindings = new Map<string, ExtensionBinding>();
 export function extensionBindings(pattern: string, roles: Record<string, readonly string[]>): ExtensionBinding[] {
   const used = [...new Set([pattern, ...Object.values(roles).flat()].filter((id) => id.startsWith("plugin:")))];
-  const result = used.map((id) => { const binding = bindings.get(id); if (!binding) throw new Error(`Restore the pinned extension for ${id} before running this workflow`); return binding; });
+  const result = used.map((id) => { const binding = bindings.get(id); if (!binding) throw new Error(`Restore the exact reviewed extension bundle and SHA-256 pin for ${id}, then restart; or create a new run. Check Settings → Extensions`); return binding; });
   return [...new Map(result.map((value) => [value.id, value])).values()].sort((a, b) => a.id.localeCompare(b.id)).map((value) => ({ ...value }));
 }
 export function assertExtensionBindings(run: { pattern: string; roles: Record<string, readonly string[]>; extensions?: ExtensionBinding[] }) {
@@ -48,17 +49,34 @@ function parseManifests(value: unknown): ExtensionManifest[] {
 /** Explicit local trusted-code plugins. Never discovers or executes a repository's plugin files. */
 export class Extensions {
   private statuses: ExtensionStatus[] = [];
+  private config: ExtensionConfiguration = { state: "none" };
   constructor(private readonly options: { home?: string; environment?: NodeJS.ProcessEnv; register: (providers: AgentAdapter[], workflows: Pattern[]) => void }) {}
   list() { return redactExport(structuredClone(this.statuses)); }
+  configuration(): ExtensionConfiguration { return redactExport(structuredClone(this.config)); }
+  defer(reason: string) {
+    const environment = this.options.environment ?? process.env;
+    const source = environment.CODEFLOW_EXTENSIONS_FILE ? "file" : environment.CODEFLOW_EXTENSIONS_JSON ? "json" : undefined;
+    this.config = source ? { state: "deferred", source, error: reason.slice(0, 1000) } : { state: "none" };
+  }
   async load() {
+    this.statuses = [];
+    try { await this.loadConfigured(); }
+    catch (error) { this.config = { ...this.config, state: "error", error: (error as Error).message.slice(0, 1000) }; throw error; }
+  }
+  private async loadConfigured() {
     const environment = this.options.environment ?? process.env;
     registerPrivateEnvNames(["CODEFLOW_EXTENSIONS_FILE", "CODEFLOW_EXTENSIONS_JSON"]);
+    this.config = { state: "none", ...(environment.CODEFLOW_EXTENSIONS_FILE ? { source: "file" as const } : environment.CODEFLOW_EXTENSIONS_JSON ? { source: "json" as const } : {}) };
     if (environment.CODEFLOW_EXTENSIONS_FILE && environment.CODEFLOW_EXTENSIONS_JSON) throw new Error("Choose one extension configuration source");
     let text = environment.CODEFLOW_EXTENSIONS_JSON;
-    if (environment.CODEFLOW_EXTENSIONS_FILE) { const path = environment.CODEFLOW_EXTENSIONS_FILE; if (!isAbsolute(path)) throw new Error("Extension configuration must have an absolute path"); text = (await readBundle(path, 128 * 1024)).toString("utf8"); }
-    if (!text) return;
+    if (environment.CODEFLOW_EXTENSIONS_FILE) { const path = environment.CODEFLOW_EXTENSIONS_FILE; if (!isAbsolute(path)) throw new Error("Extension configuration must have an absolute path"); try { text = (await readBundle(path, 128 * 1024)).toString("utf8"); } catch (error) { throw new Error(`Extension configuration could not be read (${(error as NodeJS.ErrnoException).code ?? "file bounds"}). Use a readable regular file under 128 KiB.`); } }
+    if (!text && !this.config.source) return;
+    text ??= "";
     if (Buffer.byteLength(text) > 128 * 1024) throw new Error("Extension configuration exceeds 128 KiB");
-    const manifests = parseManifests(JSON.parse(text));
+    let parsed: unknown;
+    try { parsed = JSON.parse(text); } catch { throw new Error("Extension configuration is not valid JSON. Repair the configured document and restart."); }
+    const manifests = parseManifests(parsed);
+    this.config = { ...this.config, state: "loaded" };
     for (const manifest of manifests) {
       const status: ExtensionStatus = { id: manifest.id, version: manifest.version, sha256: manifest.sha256, state: "rejected", providers: [], workflows: [] };
       this.statuses.push(status);

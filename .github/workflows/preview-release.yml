@@ -25,7 +25,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:
@@ -42,8 +42,19 @@ jobs:
           git config --global user.name "Code Flow release tests"
           git config --global user.email "release-tests@code-flow.invalid"
       - run: npm ci
+      - name: Configure isolated Chrome on macOS
+        if: runner.os == 'macOS'
+        run: |
+          wrapper="$RUNNER_TEMP/codeflow-qa-chrome"
+          printf '#!/bin/sh\nexec "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --use-mock-keychain "$@"\n' > "$wrapper"
+          chmod 700 "$wrapper"
+          echo "CODEFLOW_CHROME=$wrapper" >> "$GITHUB_ENV"
       - run: npm run typecheck
       - run: npm test
+        if: runner.os != 'macOS'
+      - name: Run full macOS suite with bounded fixture concurrency
+        if: runner.os == 'macOS'
+        run: npx tsx --test --test-concurrency=2 test/*.test.ts test/desktop/*.test.mjs
       - run: npm run release:prepare
       - run: npm run test:package
       - uses: actions/upload-artifact@v4

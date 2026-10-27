@@ -1,4 +1,15 @@
-import type { ProjectTeam } from "./project-team-model.js";
+import type { ProjectTeam, ProjectTeamMission } from "./project-team-model.js";
+
+/** One table for the mission validator and the editor's inputs, so the form never offers a value the server refuses. */
+export const PROJECT_TEAM_BUDGET_RANGES = {
+  discoveryCalls: { min: 8, max: 40, default: 8, label: "discovery calls" },
+  discoveryMinutes: { min: 1, max: 60, default: 15, label: "discovery minutes" },
+  buildCalls: { min: 4, max: 80, default: 16, label: "build calls" },
+  buildMinutes: { min: 1, max: 120, default: 45, label: "build minutes" },
+  weeklyCalls: { min: 4, max: 500, default: 48, label: "weekly calls" },
+  weeklyMinutes: { min: 1, max: 1440, default: 120, label: "weekly minutes" },
+} as const satisfies Record<keyof ProjectTeamMission["budget"], { min: number; max: number; default: number; label: string }>;
+export const defaultProjectTeamBudget = (): ProjectTeamMission["budget"] => Object.fromEntries(Object.entries(PROJECT_TEAM_BUDGET_RANGES).map(([field, range]) => [field, range.default])) as ProjectTeamMission["budget"];
 
 /** Unknown launches retain their full allocation until an exact terminal receipt exists. */
 export function projectTeamUsage(team: ProjectTeam, now = Date.now()) {

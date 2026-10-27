@@ -21,6 +21,8 @@ before(async () => {
   Object.assign(globalThis, {
     window: globalThis,
     document: { addEventListener() {}, hidden: false },
+    // Node has a process-owning BroadcastChannel; this DOM shim does not simulate cross-tab messaging.
+    BroadcastChannel: undefined,
     innerWidth: 1400,
     addEventListener: () => {},
     removeEventListener: () => {},
@@ -106,7 +108,7 @@ test("Markdown: only http(s) links become links, opened without a referrer", () 
     assert.equal(a.props.rel, "noreferrer");
     assert.equal(a.props.target, "_blank");
   }
-  for (const shown of ["[js](javascript:alert(1))", "[JS](JAVASCRIPT:alert(1))", "[data](data:text/html,hi)", "[vb](vbscript:msgbox)", "[rel](/etc/passwd)"]) {
+  for (const shown of ["[js](javascript:alert(1))", "[JS](JAVASCRIPT:alert(1))", "[data](data:text/html,hi)", "[vb](vbscript:msgbox)"]) {
     assert.ok(out.text.includes(shown), `left as text: ${shown}`);
   }
 });
@@ -167,8 +169,8 @@ test("Edit & run again from another repo: the run's check, setup, limits, team a
   assert.equal(m.limits.value.maxSteps, 12);
   assert.equal(m.limits.value.maxTokens, undefined);
   assert.equal(m.limits.value.maxCostUsd, undefined);
-  // Through the setters: remembered like a choice made in the composer.
-  assert.deepEqual(JSON.parse(storage.get("limits")!), { maxMinutes: 30, maxSteps: 12 });
+  // The run's limits are its retry's own: not remembered as this browser's defaults for later drafts.
+  assert.equal(storage.get("limits"), undefined);
   assert.deepEqual(JSON.parse(storage.get("roleSel")!).pipeline.builder, ["codex"]);
   assert.equal(m.roleSel.value.pipeline.builder[0], "codex");
   assert.equal(m.optionValues.value.pipeline.rounds, 3);

@@ -86,8 +86,8 @@ test("a process that prints nothing for idleTimeoutMs is stopped as stalled; any
 });
 
 test("explicit shared-tool waits pause both process watchdogs without disabling cancellation", async () => {
-  const end = Date.now() + 1600;
-  const outcome = await startJsonlProcess({ ...node("setTimeout(() => {}, 1900)"), timeoutMs: 1200, idleTimeoutMs: 1000, isPaused: () => Date.now() < end, onJson: () => {} }).outcome;
+  let paused = true;
+  const outcome = await startJsonlProcess({ ...node('setTimeout(() => console.log(JSON.stringify({ type: "resume" })), 1600); setTimeout(() => {}, 1900)'), timeoutMs: 1200, idleTimeoutMs: 1000, isPaused: () => paused, onJson: event => { if (event.type === "resume") paused = false; } }).outcome;
   assert.deepEqual([outcome.timedOut, outcome.stalled, outcome.exitCode], [false, false, 0]);
   const abort = new AbortController();
   const waiting = startJsonlProcess({ ...node("setTimeout(() => {}, 30000)"), signal: abort.signal, timeoutMs: 1000, isPaused: () => true, onJson: () => {} });

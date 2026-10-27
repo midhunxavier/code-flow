@@ -108,75 +108,51 @@ export function parseHelpRequest(body: any): HelpRequest {
     settings: { model: settings.model, effort: settings.effort },
   };
 }
-export function selectGuides(
-  guides: Guide[],
-  question: string,
-  page?: string,
-): Guide[] {
-  const words = [
-    ...new Set(question.toLowerCase().match(/[\p{L}\p{N}-]{3,}/gu) ?? []),
-  ].filter(
-    (w) =>
-      ![
-        "the",
-        "and",
-        "for",
-        "how",
-        "what",
-        "can",
-        "with",
-        "this",
-        "that",
-        "does",
-      ].includes(w),
-  );
-  return guides
-    .filter((g) => g.group !== "Engineering records")
-    .map((g) => ({
-      g,
-      score:
-        (g.id === page ? 12 : 0) +
-        words.reduce(
-          (score, w) =>
-            score +
-            (g.title.toLowerCase().includes(w) ? 10 : 0) +
-            (g.body.toLowerCase().includes(w) ? 1 : 0),
-          0,
-        ),
-    }))
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 5)
-    .map(({ g }) => ({ ...g, body: guideExcerpt(g.body, words) }));
+const HELP_STOP_WORDS = new Set("the and for how what can with this that does from into have has are was were will would should could about please tell explain answer question sentence sentences briefly two three another there their then than use using want need your you its our".split(" "));
+function helpTerms(text: string): Set<string> {
+  return new Set((text.toLowerCase().match(/[\p{L}\p{N}_]{3,}/gu) ?? []).filter(word => !HELP_STOP_WORDS.has(word)).map(word => {
+    // A small retrieval normalizer: move/moving/moved and run/running share a term.
+    if (word.length > 4 && word.endsWith("ies")) word = word.slice(0, -3) + "y";
+    else if (word.length > 3 && word.endsWith("s") && !word.endsWith("ss")) word = word.slice(0, -1);
+    if (word.length > 4 && /(?:ing|ed)$/.test(word)) { word = word.replace(/(?:ing|ed)$/, ""); if (/(.)\1$/.test(word)) word = word.slice(0, -1); }
+    return word.length > 3 && word.endsWith("e") ? word.slice(0, -1) : word;
+  }));
 }
-/** Keep relevant later sections (for example environment variables), not just a guide's opening. */
-function guideExcerpt(body: string, words: string[]): string {
+export function selectGuides(guides: Guide[], question: string, page?: string, history: string[] = []): Guide[] {
+  const weights = new Map<string, number>();
+  for (const text of history) for (const term of helpTerms(text)) weights.set(term, 0.25);
+  for (const term of helpTerms(question)) weights.set(term, 1);
+  return guides.filter(g => g.group !== "Engineering records").map(g => {
+    const title = helpTerms(g.title), body = helpTerms(g.body);
+    return { g, score: (g.id === page ? 24 : 0) + [...weights].reduce((score, [term, weight]) => score + weight * ((title.has(term) ? 10 : 0) + (body.has(term) ? 1 : 0)), 0) };
+  }).sort((a, b) => b.score - a.score).slice(0, 5).map(({ g }) => ({ ...g, body: guideExcerpt(g.body, weights) }));
+}
+/** Rank complete paragraphs and bullets so a later matching instruction survives the budget. */
+function guideExcerpt(body: string, weights: Map<string, number>): string {
   if (body.length <= 10000) return body;
-  const sections = body.split(/\n(?=## )/);
-  const ranked = sections
-    .map((text, index) => ({
-      text,
-      index,
-      score: words.reduce(
-        (n, word) =>
-          n +
-          (text.split("\n")[0]!.toLowerCase().includes(word) ? 10 : 0) +
-          (text.toLowerCase().includes(word) ? 1 : 0),
-        0,
-      ),
-    }))
-    .sort((a, b) => b.score - a.score || a.index - b.index);
+  const blocks = body.split(/\n(?=#{1,6} )/).flatMap((section, sectionIndex) => {
+    const newline = section.indexOf("\n"), heading = section.startsWith("#") ? section.slice(0, newline < 0 ? section.length : newline) : "";
+    const contents = heading ? section.slice(heading.length).trim() : section;
+    return contents.split(/\n\s*\n|\n(?= {0,3}(?:[-*+]|\d+\.) )/).filter(text => text.trim()).map((text, index) => ({
+      sectionIndex, index, heading, text: text.trim(), terms: helpTerms(text), headingTerms: helpTerms(heading),
+    }));
+  });
+  const frequency = new Map<string, number>();
+  for (const block of blocks) for (const term of block.terms) frequency.set(term, (frequency.get(term) ?? 0) + 1);
+  const ranked = blocks.map(block => ({ ...block, score: [...weights].reduce((score, [term, weight]) => {
+    const rarity = Math.log(1 + blocks.length / (1 + (frequency.get(term) ?? 0)));
+    return score + weight * rarity * ((block.terms.has(term) ? 3 : 0) + (block.headingTerms.has(term) ? 1 : 0));
+  }, 0) })).sort((a, b) => b.score - a.score || a.sectionIndex - b.sectionIndex || a.index - b.index);
   let remaining = 10000;
-  const excerpts = [];
-  for (const section of ranked) {
-    if (remaining <= 0) break;
-    const text = section.text.slice(0, remaining);
-    excerpts.push({ index: section.index, text });
-    remaining -= text.length + 2;
+  const selected = [];
+  for (const block of ranked) {
+    const text = [block.heading, block.text].filter(Boolean).join("\n");
+    // Skip an oversized block and continue with smaller complete matches. Cutting
+    // its opening used to erase the actual matching bullet at the section's end.
+    if (text.length + (selected.length ? 2 : 0) > remaining) continue;
+    selected.push({ ...block, text }); remaining -= text.length + (selected.length > 1 ? 2 : 0);
   }
-  return excerpts
-    .sort((a, b) => a.index - b.index)
-    .map((s) => s.text)
-    .join("\n\n");
+  return selected.sort((a, b) => a.sectionIndex - b.sectionIndex || a.index - b.index).map(block => block.text).join("\n\n");
 }
 export function helpPrompt(req: HelpRequest, guides: Guide[]): string {
   return [
@@ -209,8 +185,9 @@ export async function answerHelp(
   signal?.throwIfAborted();
   const sources = selectGuides(
     guides,
-    `${req.history.map((h) => h.question).join(" ")} ${req.question}`,
+    req.question,
     req.page,
+    req.history.map(h => h.question),
   );
   if (!sources.length)
     throw new HttpError(

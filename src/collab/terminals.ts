@@ -86,6 +86,13 @@ export class TeamTerminals {
     this.state.grants = [...this.state.grants.filter((g) => g.projectId !== next.projectId), next]; this.state.revision++;
     await this.persist(); await this.reapNow(); this.options.changed(next.projectId); return this.view({ kind: "owner", userId: "owner", displayName: "Owner" });
   }); }
+  removeAccount(userId: string) { return this.serial(async () => {
+    this.require();
+    const changed = this.state.grants.filter(grant => grant.userIds.includes(userId));
+    for (const grant of changed) grant.userIds = grant.userIds.filter(id => id !== userId);
+    if (changed.length) { this.state.revision++; await this.persist(); }
+    await this.reapNow(); for (const grant of changed) this.options.changed(grant.projectId);
+  }); }
   open(actor: CollabActor, raw: Record<string, unknown>, authorize: () => void) { return this.serial(async () => {
     this.require(); authorize(); keys(raw, ["projectId", "repository", "cols", "rows"]);
     if (actor.kind !== "member" || actor.via !== "browser") throw new CollabError("Use your teammate account to open a team terminal", 403);

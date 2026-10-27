@@ -10,7 +10,7 @@ ui/*.tsx                 UI: Preact + TypeScript, compiled against the server's 
                           · project: a project's page · side: the side panel, its files and notes · side-chat, changes, terminal, browser: its other tabs
                           · panel-bits: what the tabs share (folders, the strip of open sessions, menus))
 ui/bits.tsx              small shared pieces: agent tags, the Markdown renderer, QR codes
-ui/collab-*.tsx          the Team page: the board and its inbox (collab-board), a task with its attempt, checkpoints, reviews and discussion (collab-task), Settings → Connections → Share access → People (collab-settings); collab-state.ts holds their signals and API helpers
+ui/collab-*.tsx          the Team page: the board and its inbox (collab-board), a task with its attempt, checkpoints, reviews and discussion (collab-task), Settings → Connections → Share access → Manage existing connections and access → People (collab-settings); collab-state.ts holds their signals and API helpers
 ui/styles.css, ui/fonts  the stylesheet (the paper theme, light and dark) and its font (Inter; licence included)
 ui/theme.ts              light or dark: follows the system until you pick one with the top bar's theme button
 scripts/build-ui.mjs     builds hashed ESM chunks and CSS, then atomically publishes public/index.html (npm start builds it)
@@ -57,8 +57,9 @@ src/adapters/*.ts        AgentAdapter per CLI → normalized AgentEvent stream
 src/git.ts               every git call (bounded, never prompts), worktrees with their submodules, branches, commits, diffs, merges
 src/repo-tree.ts         file tree, search and file contents for the Files tab
 src/shell.ts             the side panel's Terminal: shells kept open, in a pseudo-terminal through scripts/pty.py (busy while a program other than the shell is in the foreground; never closed to make room while it has jobs in the background, found with ps); line-based with a marker after each command when there's no python3
-src/preview.ts           the side panel's Browser: a proxy per local app, on a port of its own, that adds the overlay (src/preview-overlay.js: pick, box, console, adjust), rewrites the app's Content-Security-Policy so only code-flow (and the app itself) can frame it, and keeps code-flow's cookies from the app
-src/snapshot.ts          the Browser's Snapshot: a screenshot of any address in a headless Chrome with a fresh profile, driven over its DevTools pipe (no debugging port), one at a time
+src/agent-browser.ts     the live Browser shared by the panel and agents: dedicated Chrome profile, CDP input and frames, per-tab console history and annotations
+src/preview.ts           local-app proxy used by alternative previews; isolates code-flow cookies and adds the annotation overlay where embedded
+src/snapshot.ts          visual-comparison capture: a screenshot of an allowed address in a headless Chrome with a fresh profile, driven over its DevTools pipe (no debugging port), one at a time
 src/notes.ts             the side panel's Notes, ~/.codeflow/notes.json
 src/context.ts           validates and stages task context for agents
 ```
@@ -141,13 +142,13 @@ Reliability has tests of its own:
 - `test/ui-review.test.ts`: the run's own check winning over the repo's on Edit & run again, stale Files answers dropped, `safeHref`, and the Markdown renderer keeping raw HTML and `javascript:` links as text;
 - `test/adapters-reliability.test.ts` and `test/health-routing.test.ts`: the stall watchdog, the grace after a result, crashes mid-stream, dead sessions, unknown flags, huge lines, typed errors, Health's flag checks, and Auto skipping a signed-out CLI. The fakes simulate these with `FAKE_SLEEP_VENDOR`, `FAKE_HANG_AFTER_RESULT_VENDOR`, `FAKE_CRASH_VENDOR`, `FAKE_UNKNOWN_FLAG`, `FAKE_HUGE_LINE_MB`, `FAKE_CLAUDE_RESETS_AT`, and for app-server `FAKE_CODEX_SLOW_INIT_MS`, `FAKE_CODEX_INIT_CRASH`, `FAKE_CODEX_HANG_METHOD` and `FAKE_CODEX_SERVER_REQUEST`.
 
+PR follow-through reads conversation comments, review summaries and bounded inline comments with location context; incomplete histories require human review.
+
 The GitHub tests cover untrusted issues (lockdown, fenced text, Docker or your confirmation) and PR watches that act only on comments from you and the people you allow. The e2e test also covers sign-in, Insights and run search. Its terminals run bash with a home of their own, so your dotfiles and shell history stay out of it.
 
 ## What's next
 
-- Real approvals through `codex app-server` (it already declines approval requests): ask you in the UI instead.
 - A container option for the agents themselves (today only checks and setup run in Docker).
-- Read PR line comments (review threads), not just conversation comments and review summaries.
 - Linear as a source, next to GitHub issues.
 
 ## Dynamic team control and replay

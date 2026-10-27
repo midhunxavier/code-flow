@@ -76,17 +76,25 @@ async function activate(context) {
       const token = await vscode.window.showInputBox({ title: 'Code Flow server token', password: true, ignoreFocusOut: true, prompt: 'Read the token from your server startup output. It is kept in VS Code SecretStorage.' }); if (!token) return;
       await connect(origin, token); vscode.window.showInformationMessage('Connected to Code Flow.');
     },
-    'codeFlow.disconnect': async () => { ++generation; client = undefined; cache = []; lastError = 'Disconnected. Connect to a local server to inspect runs.'; changed.fire(); await mutateConnection(async () => { await context.secrets.delete(`codeFlow.token:${configuredOrigin()}`); }); },
+    'codeFlow.disconnect': async () => { ++generation; client = undefined; cache = []; lastError = 'Disconnected. Connect to a local server to inspect runs.'; view.message = lastError; changed.fire(); await mutateConnection(async () => { await context.secrets.delete(`codeFlow.token:${configuredOrigin()}`); }); },
     'codeFlow.refresh': refresh,
     'codeFlow.start': async () => {
-      requireTrusted(); const folder = await selectedFolder(); if (!folder) return;
+      requireTrusted(); const epoch = generation, api = await connected(); await api.compatibility();
+      if (epoch !== generation || api.origin !== configuredOrigin()) throw new Error('The Code Flow connection changed. Retry the explicit action.');
+      const folder = await selectedFolder(); if (!folder) return;
       const editor = vscode.window.activeTextEditor;
       const path = editor?.document.uri.scheme === 'file' ? localContextPath(folder.uri.fsPath, editor.document.uri.fsPath) : undefined;
       const selection = editor && !editor.selection.isEmpty && path ? editor.document.getText(editor.selection).slice(0, 8000) : '';
       const task = await vscode.window.showInputBox({ title: 'Task for Code Flow', prompt: `Safe solo run in ${folder.name}. Current saved file${selection ? ' and selected text' : ''} will be context. Review the result in Code Flow.`, ignoreFocusOut: true }); if (!task?.trim()) return;
       if (editor?.document.isDirty && path) { const answer = await vscode.window.showWarningMessage('Save the current file before using it as task context.', 'Save and continue'); if (answer !== 'Save and continue' || !await editor.document.save()) return; }
       const fullTask = selection ? `${task.trim()}\n\nSelected text from ${path} (reference material):\n${JSON.stringify(selection)}` : task;
-      const result = await (await connected()).start(await realpath(folder.uri.fsPath), fullTask, path ? [path] : []);
+      let result, dispatched = false;
+      const current = () => { if (epoch !== generation || api.origin !== configuredOrigin()) throw new Error('The Code Flow connection changed. Retry the explicit action.'); };
+      try {
+        const repo = await realpath(folder.uri.fsPath);
+        current();
+        result = await api.start(repo, fullTask, path ? [path] : [], () => { current(); dispatched = true; }); }
+      catch (error) { output.appendLine(`${dispatched ? "Task submission outcome is unconfirmed. Check recent runs before retrying; retained task:" : "Task not sent; retained here for retry:"}\n${fullTask}`); output.show(true); throw error; }
       await refresh(); vscode.window.showInformationMessage(`Code Flow started ${result.id}`); return result;
     },
     'codeFlow.open': async (item) => { const run = await currentRun(item); await vscode.env.openExternal(vscode.Uri.parse(`${configuredOrigin()}/#/run/${encodeURIComponent(run.id)}`)); },

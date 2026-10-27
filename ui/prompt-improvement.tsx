@@ -1,4 +1,5 @@
 import { agents, catalogs } from "./state.js";
+import { POLICY_PAUSED } from "./policy-pause.js";
 import { improveSettings, setImproveSettings } from "./improve-settings.js";
 import { defaultImproveChoice, improveEfforts, IMPROVE_AGENTS, IMPROVE_NAMES, type ImproveAgent, type ImproveChoice, type ImproveMode } from "../src/improve-settings.js";
 
@@ -15,8 +16,8 @@ export function PromptImprovementSettings() {
     <div class="settings-row"><div><strong>Default mode</strong><p>Quick uses your text only. Repo also reads a private snapshot of committed files; uncommitted changes are excluded.</p></div><div class="settings-row-control"><select class="field" aria-label="Default improvement mode" value={settings.defaultMode} onChange={event => setImproveSettings({ ...settings, defaultMode: event.currentTarget.value as ImproveMode })}><option value="quick">Quick</option><option value="repo">Repo</option></select></div></div>
     {(settings.agent === "auto" ? IMPROVE_AGENTS : [settings.agent]).map(agent => {
       const value = catalogs.value[agent], catalog = value && !("error" in value) ? value : undefined;
-      const installed = agents.value.find(item => item.id === agent)?.available;
-      return <fieldset class="improve-provider" key={agent}><legend>{IMPROVE_NAMES[agent]}{installed === false ? " · Not installed" : ""}</legend>
+      const entry = agents.value.find(item => item.id === agent), installed = entry?.available;
+      return <fieldset class="improve-provider" key={agent}><legend>{IMPROVE_NAMES[agent]}{installed === false ? entry?.unavailableReason === "filesystem-policy" ? ` · ${POLICY_PAUSED}` : " · Not installed" : ""}</legend>
         {(["quick", "repo"] as const).map(mode => {
           const choice = settings.providers[agent]?.[mode] ?? {}, defaults = defaultImproveChoice(agent, mode);
           const model = choice.model ?? defaults.model ?? "";

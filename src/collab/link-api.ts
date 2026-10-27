@@ -1,16 +1,15 @@
+import { TEAM_JOIN_SETTINGS } from "./settings-location.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { isAbsolute } from "node:path";
 import { isAgentId, validateAgentSettings } from "../adapters/index.js";
 import type { AgentId, AgentSettings } from "../adapters/index.js";
 import type { LoopSettings, Pattern, RunManager } from "../engine.js";
 import { readJson, send } from "../http.js";
-import { logError } from "../log.js";
 import type { Trust } from "../repo-config.js";
 import type { TeamLink, TeamLinkState } from "./link.js";
-import { CHECKPOINT_ID, CollabError, validatePathId } from "./model.js";
+import { CHECKPOINT_ID, CollabError, collabErrorBody, currentAttempt, validatePathId } from "./model.js";
 import type { RunnerPublic } from "./model.js";
 import type { CollabRunner, DraftTaskInput, LocalAttemptRecord, StartAttemptInput } from "./runner.js";
-import { ownerActor } from "./store.js";
 import type { CollabStore } from "./store.js";
 
 /**
@@ -26,8 +25,6 @@ export interface TeamLinkApiHost {
   agents: () => AgentId[];
   /** The name this instance shows as a hub (its owner's display name), reported while not linked. */
   hubName?: string;
-  /** The server swaps the runner's hub (LocalHub ↔ RemoteHub), starts or stops the event relay and reconciles after a connect or disconnect. */
-  onLinkChanged?: (state: TeamLinkState) => void | Promise<void>;
 }
 export interface TeamLinkInfo extends TeamLinkState { runner?: RunnerPublic }
 export type LocalAttemptView = LocalAttemptRecord & { runStatus?: string };
@@ -89,23 +86,15 @@ export function validateDraftBody(raw: Record<string, unknown>, installed: reado
 export async function linkInfo(host: TeamLinkApiHost): Promise<TeamLinkInfo> {
   const state = host.link.state(), info: TeamLinkInfo = { ...state };
   if (!state.linked && host.hubName && !info.hubName) info.hubName = host.hubName;
-  if (state.linked) { try { const me = await host.runner.hub.me(); const runner = me.runners.find((entry) => entry.id === state.runnerId); if (runner) info.runner = runner; else info.error ??= "The team server no longer lists this computer's runner; reconnect in Settings → Team"; } catch (error) { info.error ??= error instanceof Error ? error.message : String(error); } }
+  if (state.linked) { try { const me = await host.runner.hub.me(); const runner = me.runners.find((entry) => entry.id === state.runnerId); if (runner) info.runner = runner; else { info.revoked = true; info.connection = "offline"; info.error = `The team server no longer lists this computer's runner; connect this computer again in ${TEAM_JOIN_SETTINGS}`; } } catch (error) { if (error instanceof CollabError && error.status === 401) { info.revoked = true; info.connection = "offline"; info.error = error.message; } else info.error ??= error instanceof Error ? error.message : String(error); } }
   return info;
 }
 async function dispatch(req: IncomingMessage, res: ServerResponse, _url: URL, parts: readonly string[], host: TeamLinkApiHost): Promise<void> {
   const method = (req.method ?? "GET").toUpperCase(), [, , head, id, action] = parts;
   if (head === undefined && parts.length === 2) {
     if (method === "GET") return send(res, 200, await linkInfo(host));
-    if (method === "DELETE") { await host.link.disconnect(); const state = host.link.state(); await host.onLinkChanged?.(state); return send(res, 200, { ...state }); }
   }
-  if (head === "connect" && parts.length === 3 && method === "POST") {
-    const raw = await body(req); assertKeys(raw, ["url", "username", "password", "name"], "connect");
-    if (host.link.linked) throw new CollabError(`This computer is already connected to ${host.link.state().url}; disconnect it first`, 409);
-    const local = await host.store.board(ownerActor(host.store.ownerName)); if (local.tasks.length) throw new CollabError(`This computer's own team board holds ${local.tasks.length} task${local.tasks.length === 1 ? "" : "s"}; delete them (or keep using this computer as the team server) before connecting it to another team server`, 409);
-    const state = await host.link.connect({ url: raw.url, username: raw.username, password: raw.password, name: raw.name });
-    await host.onLinkChanged?.(state); host.runner.reconcile().catch((error) => logError("Local attempts could not be reconciled after connecting to the team server", error));
-    return send(res, 201, await linkInfo(host));
-  }
+  // Connection enrollment and removal belong to TeamConnections in the HTTP router.
   if (head === "draft" && parts.length === 3 && method === "POST") return send(res, 201, await host.runner.draftTask(validateDraftBody(await body(req, START_BODY_LIMIT), host.agents())));
   // On demand what the recovery timer does every minute: a board that shows this computer's attempt as busy with nothing running behind it is settled without waiting for a restart or a reconnect.
   if (head === "reconcile" && parts.length === 3 && method === "POST") return send(res, 200, await host.runner.reconcile());
@@ -116,7 +105,8 @@ async function dispatch(req: IncomingMessage, res: ServerResponse, _url: URL, pa
     switch (action) {
       case "start": { const input = validateStartBody(await body(req, START_BODY_LIMIT), host); return send(res, 201, await runner.startAttempt(taskId, input)); }
       case "stop": { const record = await runner.attemptForTask(taskId, ["claimed", "running"]); if (!record) throw new CollabError("No attempt of this task is running on this computer", 409); return send(res, 200, await runner.stopAttempt(record.attemptId)); }
-      case "resume": { const record = await runner.attemptForTask(taskId, ["paused", "stopped", "unknown"]); if (!record) throw new CollabError("No paused attempt of this task is on this computer; start a new attempt instead", 409); return send(res, 200, await runner.resumeAttempt(record.attemptId)); }
+      // Resume continues the attempt the task page shows (the current one, else the latest), never an older paused record of this computer behind a newer attempt: that line of work is history, and reviving it would continue from an older base past the task's latest outcome.
+      case "resume": { const task = await runner.hub.task(taskId), shown = currentAttempt(task) ?? task.attempts[task.attempts.length - 1], record = shown ? (await runner.attempts()).find((entry) => entry.attemptId === shown.id && (entry.state === "paused" || entry.state === "stopped" || entry.state === "unknown")) : undefined; if (!record) throw new CollabError("No paused attempt of this task is on this computer; start a new attempt instead", 409); return send(res, 200, await runner.resumeAttempt(record.attemptId)); }
       case "handover": { const raw = await body(req); assertKeys(raw, ["to", "note", "includeUncommitted"], "hand-over"); if (typeof raw.to !== "string" || !raw.to) throw new CollabError("Choose the teammate to hand over to"); if (raw.includeUncommitted !== undefined && typeof raw.includeUncommitted !== "boolean") throw new CollabError("Send includeUncommitted as true or false"); if (raw.note !== undefined && raw.note !== null && typeof raw.note !== "string") throw new CollabError("Enter the note as text"); return send(res, 200, await runner.handOver(taskId, { to: raw.to, note: typeof raw.note === "string" ? raw.note : "", includeUncommitted: raw.includeUncommitted === true })); }
       case "accept": { const raw = await body(req); assertKeys(raw, ["handoffId", "repo"], "accept"); const handoffId = validatePathId(raw.handoffId, "hand-over id"), repo = repoPath(raw.repo, false); return send(res, 200, await runner.acceptHandoff(taskId, handoffId, repo ? { repo } : {})); }
     }
@@ -127,5 +117,5 @@ async function dispatch(req: IncomingMessage, res: ServerResponse, _url: URL, pa
 /** CollabError (from the link, the runner, the store or the checkpoint helpers) answers with its status; anything else is the server's to report. */
 export async function handleTeamLinkApi(req: IncomingMessage, res: ServerResponse, url: URL, parts: readonly string[], host: TeamLinkApiHost): Promise<void> {
   try { await dispatch(req, res, url, parts, host); }
-  catch (error) { if (error instanceof CollabError) return send(res, error.status, { error: error.message }); throw error; }
+  catch (error) { if (error instanceof CollabError) return send(res, error.status, collabErrorBody(error)); throw error; }
 }

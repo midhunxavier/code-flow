@@ -1,6 +1,6 @@
 # ACP coding agents
 
-Open Settings → Agents & models, select a preset and check the executable and arguments. Run Check connection before saving, then select a discovered model for an eligible run.
+ACP connections can be saved and checked in Settings → Agents & models, but cannot start new runs or provider forks. Code Flow cannot enforce their managed permission policy, including native delegation restrictions. The provider menus show this limitation. Use Claude Code, Codex or Antigravity for runs; Full access does not enable ACP execution.
 
 ## Connect your CLI
 
@@ -21,29 +21,23 @@ Use a current CLI version with native ACP support. The Kilo preset uses the curr
 1. Install and sign in with the commands above. Complete provider/model setup in the CLI.
 2. Open Settings → Agents & models and choose the CLI's **Connect** button. If code-flow cannot find it, enter its absolute executable path. Reopening a saved preset edits its existing settings, preserving custom paths and arguments.
 3. Choose **Check connection**. This initializes ACP and creates a session in a temporary directory without sending a prompt. The result shows protocol compatibility, available models and advertised session loading. It does not verify inference, account quota or access to every advertised model.
-4. Choose **Save connection**. It appears immediately in provider and model selection; no server restart is needed.
-5. Select the agent for a run and choose **Full access** in Settings → Run defaults or the composer's permissions controls.
-
-Cline asks for approval before tools, including reads, edits and commands, by default. Enable **Ask me for tool permissions** in the run's permissions controls and approve requests in the approval inbox. Without it, requests are declined. The preset does not enable Cline's auto-approval flag. Cline starts new ACP sessions in Act mode; read-only code-flow turns still apply the boundaries below. Provider selection stays in the CLI's authentication setup; code-flow's model picker changes the model within that provider.
+4. Choose **Save connection**. The connection and discovered models are retained immediately; no server restart is needed. The provider remains disabled for runs.
 
 The CLI keeps its own authentication. code-flow does not read or copy its credential files. A connection check can perform the CLI's normal startup work, including loading the user's configured plugins. Use executable invocations you trust.
 
 ## Other compatible CLIs
 
-Enter a stable connection ID, display name, executable, and arguments, one argument per line. For example, an agent whose documented ACP invocation is `my-agent --acp` uses executable `my-agent` and one argument `--acp`. Executables must be names on the server's PATH or absolute paths. Arguments are passed directly with no shell expansion; paths with spaces need no quoting. Do not place credentials in these fields.
+Enter a stable connection ID, display name, executable, and arguments, one argument per line. For example, an agent whose documented ACP invocation is `my-agent --acp` uses executable `my-agent` and one argument `--acp`. Executables must be names on the server's PATH or absolute paths. Blank and whitespace-only lines in the form are ignored. Nonblank arguments retain their spaces and are passed directly with no shell expansion; paths with spaces need no quoting. Do not place credentials in these fields.
 
-Use **Edit**, **Disable**, **Enable**, or **Remove** to manage connections. Disabled connections retain their settings but are unavailable for new dispatch. **Reload connections** recovers after an edit in another window. The API rejects saves based on an older settings revision.
+Use **Edit**, **Disable**, **Enable**, or **Remove** to manage connections. Remove asks for confirmation and clears its last probe result after success. Cancelling removal keeps the saved invocation unchanged. Disabled connections retain their settings but are unavailable for new dispatch. **Reload connections** recovers after an edit in another window. The API rejects saves based on an older settings revision.
 
-Models and effort options are discovered from ACP session configuration; legacy `models` responses are also supported. Only advertised model/effort choices can be selected. Agents without model discovery can still use their CLI default. Changes to the command or arguments invalidate cached catalogs and the connection identity pinned by existing runs. Restore the original invocation to resume those runs, or start a new run. An already-running process retains its original invocation; subsequent operations check its pin again. This pin covers the invocation, not the executable's bytes or external CLI configuration.
+Models and effort options are discovered from ACP session configuration; legacy `models` responses are also supported. Only advertised model/effort choices can be selected. Agents without model discovery can still use their CLI default. Changes to the command or arguments invalidate cached catalogs and the connection identity pinned by existing runs. Older runs retain their invocation pin; restore that invocation before attempting recovery. Managed execution restrictions still apply. Editing a form that previously saved blank argument lines removes those lines and changes its pin. An already-running process retains its original invocation; subsequent operations check its pin again. This pin covers the invocation, not the executable's bytes or external CLI configuration.
 
 ## Execution boundaries
 
-- ACP connections require **Full access** on the current application host. ACP does not provide a standard sandbox contract. Safe, Standard and Trusted permission profiles, SSH workers, agent containers, automated triggers and locked-down external-source runs are unavailable for these connections. Auto role selection excludes ACP unless Full access is selected.
-- Read-only turns request read-only behavior and decline permission requests for file changes and execution. The engine's existing worktree change checks still apply. This is not OS-level read-only isolation; the CLI may allow actions without consulting the client.
-- With **Ask me for tool permissions** enabled for an interactive run, ACP permission requests enter the existing approval inbox. Only `allow_once` can be approved; persistent permission grants are never selected. Requests are otherwise declined. Cancellation aborts pending approvals and sends `session/cancel` before bounded process cleanup.
-- The client advertises no filesystem or terminal capabilities. The agent uses its own tools. Agents that require host-provided file or terminal operations are not supported by this first version.
-- Session loading is used only when advertised. Replayed history is excluded from new turn output. Live mid-turn steering and the scoped code-flow team-tool bridge are unavailable; normal subsequent turns and structured team outcomes remain available.
-- ACP has no standard constrained-JSON output option. The adapter adds the requested schema to the prompt and the engine validates the returned result. Context-window occupancy and cumulative session costs are not reported as per-turn token usage or cost.
+- Every new ACP run is refused before a run is created, at every permission level. Provider forks and automatic selection follow the same restriction. Connection availability and model discovery do not imply run support.
+- **Check connection** initializes the protocol and creates a temporary session without sending a coding prompt. It can perform the CLI's normal startup work. It does not establish model access, inference quality or managed permission enforcement.
+- The retained adapter implementation is covered by process fixtures for streaming, model discovery, session loading, approvals and cancellation. Those adapter-level checks do not bypass the engine's execution restriction.
 
 ## Storage and API
 
@@ -60,21 +54,15 @@ Custom filesystem restrictions block connection mutation/probing and agent execu
 
 Protocol references: [ACP v1](https://agentclientprotocol.com/protocol/v1/initialization), [session configuration](https://agentclientprotocol.com/protocol/v1/session-config-options). Cline's [native ACP implementation](https://github.com/cline/cline/blob/main/apps/cli/src/acp/acpAgent.ts) advertises both provider and model selectors in the model category; the adapter selects the model control explicitly.
 
-Validation includes process fixtures for streaming, session replay, model selection, permissions, cancellation, failures and timeouts; an engine run that changes a worktree and passes its check; and browser tests covering the Settings lifecycle.
+Validation includes process fixtures for streaming, session replay, model selection, permissions, cancellation, failures and timeouts; engine rejection before creating an unprotected run; and browser tests covering the Settings lifecycle.
 
 ## Real CLI acceptance test
 
-Run the acceptance script explicitly with an installed, authenticated CLI:
+`npm run test:acp:live` currently exits with the managed-permission explanation before it looks for or starts a provider, creates a repository, or consumes model usage. `--help` describes this state. The historical inference harness remains in the script for a future verified adapter contract; it does not run under the current restriction.
 
-```sh
-npm run test:acp:live                         # OpenCode (default)
-npm run test:acp:live -- --agent kilo
-npm run test:acp:live -- --agent cline
-```
+## Historical acceptance evidence
 
-This is outside the default test suite and consumes normal model usage. Set `CODEFLOW_LIVE_OPENCODE`, `CODEFLOW_LIVE_KILO` or `CODEFLOW_LIVE_CLINE` to an absolute executable path if needed; `CODEFLOW_LIVE_MODEL` optionally selects an advertised model ID. Otherwise the test uses the CLI's discovered default. Missing executables fail before creating a test repository or starting code-flow. Use `--help` for options.
-
-The script creates a temporary repository and a separate code-flow home, saves the connection through the Settings API, and starts a real coding task. It verifies failing baseline tests become passing without test edits, streamed text and tool events, and a clean commit. It then restarts code-flow and sends a follow-up that must reuse the same CLI session and remember a phrase from the first turn. Both code-flow's check and an independent test run must pass. Only reads of the task files and tests, searches for fixture names, edits to the two task files, and the exact `node --test` command can be approved automatically; unrecognized permission requests stop the test for inspection. Temporary run logs, commits, and a `receipt.json` remain at the printed evidence path; the server stops automatically. The original project and code-flow settings are unchanged.
+The following October 19 observations predate the managed-permission restriction and do not establish current run availability.
 
 This two-turn test passed locally on October 19, 2026 with OpenCode 1.18.30 and `opencode/big-pickle`, including session loading after restart and two committed changes. This establishes compatibility for the observed installation, not every ACP agent or OpenCode release.
 

@@ -79,10 +79,10 @@ export class ConventionsStore {
       await this.safeDirectory(); await rename(temporary, file); await syncDirectory(this.directory);
     } finally { await rm(temporary, { force: true }); }
   }
-  private expect(document: StoredDocument, revision: unknown) {
+  private expect(document: StoredDocument, revision: unknown, action: "save" | "restore" | "publish" = "save") {
     if (!validRevision(revision)) throw new ConventionsError("Send the exact current conventions revision.");
     const current = projection(document);
-    if (current.revision !== revision) throw new ConventionsError(`Conventions changed to revision ${current.revision}. Your draft was not saved.`, 409, current);
+    if (current.revision !== revision) throw new ConventionsError(`Conventions changed to revision ${current.revision}. ${action === "restore" ? "Nothing was restored; preview the revision again." : action === "publish" ? "Nothing was published; review the latest revision again." : "Your draft was not saved."}`, 409, current);
     if (revision >= Number.MAX_SAFE_INTEGER) throw new ConventionsError("Conventions revision limit reached.");
   }
   private async append(document: StoredDocument, text: string, note: string, restoredFrom?: number) {
@@ -108,7 +108,7 @@ export class ConventionsStore {
   }
   restore(projectId: string, input: { revision: number; version: number; hash: string }): Promise<ConventionsDocument> {
     return serialized(this.file(projectId), async () => {
-      const document = await this.read(projectId); this.expect(document, input.revision);
+      const document = await this.read(projectId); this.expect(document, input.revision, "restore");
       const found = document.revisions.find((entry) => entry.revision === input.version);
       if (!found || !validHash(input.hash) || found.hash !== input.hash) throw new ConventionsError("Preview the retained revision again before restoring it.", 409);
       return this.append(document, found.text, `Restored revision ${found.revision}`, found.revision);
@@ -121,7 +121,7 @@ export class ConventionsStore {
   publish(projectId: string, input: { repo: string; revision: number; sourceHash: string | null; head: string }, guard: { repos: readonly string[]; isIdle: () => boolean | Promise<boolean>; actor: "user" }) {
     return serialized(this.file(projectId), async () => {
       if (!guard || guard.actor !== "user" || !Array.isArray(guard.repos) || typeof guard.isIdle !== "function") throw new ConventionsError("Only an explicit user action can publish project guidance.", 403);
-      const document = await this.read(projectId); this.expect(document, input.revision); const current = projection(document);
+      const document = await this.read(projectId); this.expect(document, input.revision, "publish"); const current = projection(document);
       if (!current.revision) throw new ConventionsError("Save a conventions revision before publishing it.");
       if (input.sourceHash !== null && !validHash(input.sourceHash) || typeof input.head !== "string" || !/^[a-f0-9]{40,64}$/.test(input.head)) throw new ConventionsError("Inspect the repository file before publishing.");
       const root = await regularRepository(input.repo);

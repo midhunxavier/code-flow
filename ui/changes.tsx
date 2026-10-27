@@ -1,10 +1,11 @@
 import { pollVisible } from "./polling.js";
 import { useEffect, useRef, useState } from "preact/hooks";
-import { changeCommentDrafts, commentDrafts, commentsMessage, FileDiff, lastWriter } from "./review.js";
+import { changeCommentDrafts, commentDrafts, commentsMessage, FileDiff, lastWriter, MergedBadge, MergedNote } from "./review.js";
 import { AgentPicker } from "./run.js";
-import { api, enc, post, showToast } from "./lib.js";
+import { api, enc, post, showToast, showError } from "./lib.js";
 import { navigate, sideOpen, sideTab } from "./state.js";
 import type { AgentId, DiffFile, Run, RunSummary } from "./types.js";
+import { chatProvider } from "./run-experience.js";
 import { ReviewCoveragePanel } from "./review-coverage.js";
 import { CollaborationPanel } from "./collaboration.js";
 
@@ -15,7 +16,8 @@ const STATUS = { added: "A", modified: "M", deleted: "D", renamed: "R" } as cons
  * just its last step; line comments go back to the agent, and share their drafts with the Review page.
  */
 export function ChangesTab({ run }: { run: RunSummary }) {
-  const branches = [...new Set([...run.artifacts.map((a) => a.branch), ...run.worktrees.map((w) => w.branch)])];
+  // Not a branch that was deleted: its changes are gone.
+  const branches = [...new Set([...run.artifacts.map((a) => a.branch), ...run.worktrees.map((w) => w.branch)])].filter((b) => run.worktrees.some((w) => w.branch === b) || !run.deletedWorktrees?.some((w) => w.branch === b));
   const [picked, setPicked] = useState<string | null>(null);
   const branch = picked && branches.includes(picked) ? picked : branches[0] ?? "";
   const [last, setLast] = useState(false);
@@ -26,6 +28,7 @@ export function ChangesTab({ run }: { run: RunSummary }) {
   // Shared with the Review page, which can be open next to this tab.
   const comments = commentDrafts(draftKey);
   const [full, setFull] = useState<Run | null>(null);
+  const [fullError, setFullError] = useState("");
   const [agent, setAgent] = useState<AgentId | null>(null);
   const [sending, setSending] = useState(false);
 
@@ -59,31 +62,38 @@ export function ChangesTab({ run }: { run: RunSummary }) {
   useEffect(() => {
     if (!shown) return;
     let alive = true;
-    const stop = pollVisible(() => api<Run>(`/api/runs/${enc(run.id)}`).then(value => { if (alive) setFull(value); }, () => { if (alive) setFull(null); }), 0);
+    const stop = pollVisible(() => api<Run>(`/api/runs/${enc(run.id)}`).then(value => { if (alive) { setFull(value); setFullError(""); } }, (e) => { if (alive) setFullError((e as Error).message); }), 0);
     return () => { alive = false; stop(); };
   }, [run.id, run.followUps.length, shown]);
 
   const worktree = run.worktrees.find((w) => w.branch === branch);
-  const target: AgentId = agent ?? lastWriter(full, worktree?.name) ?? "claude";
+  // An Agent chat's comments go to its provider, which the summary names; other runs' wait for the
+  // steps to say who wrote here (or for you to choose), and never go to someone by default.
+  const provider = chatProvider(run);
+  const recipient = provider ?? agent ?? lastWriter(full, worktree?.name);
   const file = files?.find((f) => f.path === open);
   const totals = files?.reduce((t, f) => ({ add: t.add + f.additions, del: t.del + f.deletions }), { add: 0, del: 0 });
-  const canSend = run.status === "done" && !!worktree && comments.length > 0 && !sending;
+  const canSend = run.status === "done" && !!worktree && !!recipient && comments.length > 0 && !sending;
 
   const send = async () => {
-    if (!worktree) return;
+    if (!worktree || !recipient) return;
     setSending(true);
     try {
-      await post(`/api/runs/${enc(run.id)}/followups`, { kind: "comments", worktree: worktree.name, agent: target, message: commentsMessage(comments) });
+      // Each comment names the line its code is on now: in the branch's whole diff, or the last step's
+      // when you're looking at that (a comment can be on either).
+      const whole = last ? await api<DiffFile[]>(`/api/runs/${enc(run.id)}/diff?branch=${enc(branch)}`).catch(() => undefined) : files ?? undefined;
+      const now = last && whole && files ? [...whole, ...files] : whole;
+      await post(`/api/runs/${enc(run.id)}/followups`, { kind: "comments", worktree: worktree.name, agent: recipient, message: commentsMessage(comments, "", now) });
       changeCommentDrafts(draftKey, () => []);
       showToast("Sent — the agent is working on your comments");
     } catch (err) {
-      showToast((err as Error).message, 5000);
+      showError((err as Error).message, 5000);
     } finally {
       setSending(false);
     }
   };
 
-  if (!branches.length) return <div class="side-empty help">This run has no branch yet: its changes show here once an agent has worked.</div>;
+  if (!branches.length) return <div class="side-empty help">{run.deletedWorktrees?.length ? "This run's branches were deleted, so there are no changes to show." : "This run has no branch yet: its changes show here once an agent has worked."}</div>;
   return (
     <>
       <div class="side-toolbar">
@@ -167,6 +177,7 @@ export function ChangesTab({ run }: { run: RunSummary }) {
                       {f.path.slice(cut)}
                     </bdi>
                   </span>
+                  <MergedBadge file={f} />
                   {n ? <span class="count">{n}</span> : null}
                   <span class="fn">
                     <span class="add">+{f.additions}</span> <span class="del">−{f.deletions}</span>
@@ -174,21 +185,23 @@ export function ChangesTab({ run }: { run: RunSummary }) {
                 </button>
               );
             })}
+            <MergedNote files={files} />
           </>
         ) : null}
       </div>
       {comments.length ? (
         <div class="changes-send">
-          <span class="help">
+          <span class="help" title={fullError || undefined}>
             {comments.length} comment{comments.length === 1 ? "" : "s"}
+            {!recipient && fullError && run.status === "done" ? " · Couldn't load who wrote this: choose who gets them" : ""}
           </span>
           {run.status === "done" ? (
             <>
               <label class="to">
                 <span class="to-lbl">To</span>
-                <AgentPicker value={target} onChange={setAgent} />
+                <AgentPicker value={recipient} fixed={!!provider} placeholder={full || fullError ? "Choose an agent…" : "Loading recipient…"} onChange={setAgent} />
               </label>
-              <button type="button" class="btn primary small" disabled={!canSend} onClick={send}>
+              <button type="button" class="btn primary small" disabled={!canSend} title={recipient ? undefined : "Choose who gets these comments"} onClick={send}>
                 {sending ? "Sending…" : "Send"}
               </button>
             </>

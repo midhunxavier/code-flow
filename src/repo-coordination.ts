@@ -5,6 +5,8 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { CODEFLOW_HOME } from "./config.js";
 import { sanitizeDeferredRequest, type DeferredReadiness, type DeferredRunRequest } from "./deferred-runs.js";
 import { redactText } from "./privacy.js";
+import { COORDINATION_LIMITS, coordinationRetryProblem, downstreamTasks } from "./repo-coordination-policy.js";
+export { COORDINATION_LIMITS } from "./repo-coordination-policy.js";
 import { repositoryIdentity } from "./repository-identity.js";
 
 export interface CoordinationResult { nodeId: string; runId: string; repo: string; branch: string; commit: string; verificationId: string; verifiedAt: number }
@@ -25,7 +27,7 @@ export interface CoordinatedChange {
   operationId?: string; operationHash?: string;
   history: { id: string; at: number; nodeId?: string; detail: string; runId?: string; claimId?: string; commit?: string }[];
 }
-export type CoordinationObservation = { status: "running" | "failed" | "cancelled" | "missing"; reason?: string } | { status: "verified"; runId: string; repo: string; branch: string; commit: string; verificationId: string; verifiedAt: number };
+export type CoordinationObservation = { status: "running" | "failed" | "blocked" | "cancelled" | "missing"; reason?: string } | { status: "verified"; runId: string; repo: string; branch: string; commit: string; verificationId: string; verifiedAt: number };
 export interface CoordinatedChangesOptions {
   file?: string; now?: () => number; operationTimeoutMs?: number; launchTimeoutMs?: number;
   /** Canonical, authorized repository and the exact requested starting commit. No mutation. */
@@ -44,7 +46,6 @@ export interface CoordinatedChangesOptions {
 export class CoordinationConflictError extends Error { readonly status = 409; constructor(readonly current: CoordinatedChange) { super("This coordinated change changed. Refresh before acting."); } }
 /** Only for definite pre-start rejection; ordinary launch errors can follow side effects. */
 export class CoordinationRejectedError extends Error {}
-export const COORDINATION_LIMITS = { nodes: 10, active: 10, retained: 20, attempts: 3, history: 100, fileBytes: 32 * 1024 * 1024, previewMs: 30 * 60_000 };
 export interface CoordinationDocument { version: 1; jobs: CoordinatedChange[] }
 const queues = new Map<string, Promise<unknown>>();
 const states: CoordinationNodeStatus[] = ["pending", "waiting", "claimed", "running", "verified", "failed", "unknown", "blocked", "cancelled", "shipping", "shipping-unknown", "shipped"];
@@ -82,6 +83,13 @@ function validation(value: unknown): ShippingValidation {
 function refresh(job: CoordinatedChange) {
   const nodes = job.nodes; job.status = job.cancelRequested ? "cancelled" : nodes.every((node) => node.status === "shipped") ? "shipped" : nodes.some((node) => ["shipped", "shipping", "shipping-unknown"].includes(node.status)) ? "partial-shipped" : nodes.every((node) => node.status === "verified") ? "ready" : nodes.some((node) => ["failed", "unknown", "blocked", "cancelled"].includes(node.status)) ? "blocked" : "running";
 }
+function blockDependentResults(job: CoordinatedChange, nodeId: string, now: number) {
+  const downstream = downstreamTasks(job, nodeId);
+  for (const node of job.nodes) if (node.id !== nodeId && downstream.has(node.id) && node.status === "verified") {
+    node.status = "blocked"; node.reason = `Dependency ${nodeId}'s verified result changed. Retry ${nodeId} first to refresh downstream evidence.`;
+    history(job, now, node.reason, node);
+  }
+}
 function invalidatePreview(job: CoordinatedChange) { if (!job.nodes.some((node) => ["shipping", "shipping-unknown"].includes(node.status))) delete job.shipping; }
 function history(job: CoordinatedChange, now: number, detail: string, node?: CoordinatedNode, fields: { runId?: string; claimId?: string; commit?: string } = {}) { job.updatedAt = now; job.history.push({ id: randomUUID(), at: now, detail: diagnostic(detail), ...(node ? { nodeId: node.id } : {}), ...fields }); job.history = job.history.slice(-COORDINATION_LIMITS.history); refresh(job); }
 function current(document: CoordinationDocument, name: string, revision: number) { const job = document.jobs.find((item) => item.id === name); if (!job) throw new Error("Coordinated change not found"); if (!Number.isSafeInteger(revision) || job.revision !== revision) throw new CoordinationConflictError(copy(job)); return job; }
@@ -90,12 +98,14 @@ const sameResult = (left: CoordinationResult, right: CoordinationResult) => left
 
 /** Single-owner durable local coordinator. Mutations serialize across local instances. */
 export class CoordinatedChanges {
-  readonly file: string; private readonly now: () => number; private loaded = false; private stopped = false;
+  readonly file: string; private readonly now: () => number; private loaded = false; private stopped = false; private loadFault?: Error;
+  private readonly schedule = new Map<string, number>();
   private timer?: ReturnType<typeof setInterval>; private ticking?: Promise<void>; private readonly controllers = new Map<string, AbortController>();
   constructor(private readonly options: CoordinatedChangesOptions) { this.file = resolve(options.file ?? join(CODEFLOW_HOME, "coordinated-changes.json")); this.now = options.now ?? Date.now; }
-  async load() { if (this.loaded) return; await this.change((document) => { for (const job of document.jobs) for (const node of job.nodes) { if (node.status === "claimed" || node.status === "shipping") { node.status = node.status === "claimed" ? "unknown" : "shipping-unknown"; node.reason = "The application stopped after claiming an operation. Inspect its exact receipt before recovery."; history(job, this.now(), node.reason, node); } } }); this.loaded = true; }
-  async list(): Promise<CoordinatedChange[]> { await queues.get(this.file); return copy((await readDocument(this.file)).jobs).sort((a, b) => b.createdAt - a.createdAt || a.id.localeCompare(b.id)); }
+  async load() { if (this.loaded) return; try { await this.change((document) => { for (const job of document.jobs) for (const node of job.nodes) { if (node.status === "claimed" || node.status === "shipping") { node.status = node.status === "claimed" ? "unknown" : "shipping-unknown"; node.reason = "The application stopped after claiming an operation. Inspect its exact receipt before recovery."; history(job, this.now(), node.reason, node); } } }); this.loaded = true; } catch (error) { this.loadFault = error as Error; throw error; } }
+  async list(): Promise<CoordinatedChange[]> { if (this.loadFault) throw this.loadFault; await queues.get(this.file); return copy((await readDocument(this.file)).jobs).sort((a, b) => b.createdAt - a.createdAt || a.id.localeCompare(b.id)); }
   async create(raw: { project: string; name: string; nodes: { id: string; run: unknown; dependsOn: string[] }[]; operationId?: string }): Promise<CoordinatedChange> {
+    if (this.loadFault) throw this.loadFault;
     const project = text(raw.project, 240, "project"), name = text(raw.name, 120, "name"); if (!Array.isArray(raw.nodes) || raw.nodes.length < 2 || raw.nodes.length > COORDINATION_LIMITS.nodes) throw new Error("Coordinate 2–10 repositories");
     const nodes = raw.nodes.map((node) => { if (!object(node) || !Array.isArray(node.dependsOn) || Object.keys(node).some((key) => !["id", "run", "dependsOn"].includes(key))) throw new Error("Unsupported coordinated task fields"); return { id: node.id, dependsOn: [...node.dependsOn], run: safeRun(node.run, project) }; }); checkGraph(nodes);
     const operationId = raw.operationId === undefined ? undefined : text(raw.operationId, 240, "operation identity"), operationHash = digest({ project, name, nodes });
@@ -114,9 +124,9 @@ export class CoordinatedChanges {
     });
   }
   async cancel(name: string, revision: number) {
-    const job = await this.change((document) => { const job = current(document, name, revision); job.cancelRequested = true; for (const node of job.nodes) { node.cancelRequested = true; if (["pending", "waiting", "blocked", "failed"].includes(node.status)) node.status = "cancelled"; } history(job, this.now(), "Cancellation requested for all unshipped tasks"); return copy(job); });
+    const job = await this.change((document) => { const job = current(document, name, revision); job.cancelRequested = true; invalidatePreview(job); for (const node of job.nodes) { node.cancelRequested = true; if (node.status === "verified") { node.status = "cancelled"; history(job, this.now(), "Withdrew this verified result from shipping; its run, branch and commits are kept", node, { runId: node.runId }); } else if (["pending", "waiting", "blocked", "failed"].includes(node.status)) node.status = "cancelled"; } history(job, this.now(), "Cancellation requested for all unshipped tasks"); return copy(job); });
     for (const [key, controller] of this.controllers) if (key.startsWith(job.id + ":")) controller.abort();
-    for (const node of job.nodes.filter((node) => node.runId && ["running", "verified", "unknown"].includes(node.status))) {
+    for (const node of job.nodes.filter((node) => node.runId && ["running", "unknown"].includes(node.status))) {
       try { if (!this.options.cancelRun) throw new Error("Stop the known run separately; cancellation is not configured"); await this.options.cancelRun(node.runId!); await this.updateNode(job.id, node.id, node.claimId, (latest, item) => { item.status = "cancelled"; history(latest, this.now(), "Sent cancellation to this exact owned run", item, { runId: node.runId }); }); }
       catch (error) { await this.updateNode(job.id, node.id, node.claimId, (latest, item) => { item.reason = diagnostic(error); history(latest, this.now(), "Run cancellation could not be confirmed: " + item.reason, item, { runId: node.runId }); }); }
     }
@@ -124,14 +134,14 @@ export class CoordinatedChanges {
   }
   async retryNode(name: string, nodeId: string, revision: number, options: { acknowledgeUnknown?: boolean } = {}) {
     return this.change((document) => {
-      const job = current(document, name, revision), node = getNode(job, nodeId); if (!["failed", "unknown", "blocked", "cancelled"].includes(node.status)) throw new Error("Retry an explicitly failed, unknown, blocked or cancelled task"); if (node.status === "unknown" && options.acknowledgeUnknown !== true) throw new Error("Inspect existing runs and acknowledge possible duplicate work before retrying an unknown claim"); if (node.attempts >= COORDINATION_LIMITS.attempts) throw new Error("This task reached its three-attempt limit");
-      const closure = new Set([nodeId]); for (let changed = true; changed;) { changed = false; for (const item of job.nodes) if (!closure.has(item.id) && item.dependsOn.some((dependency) => closure.has(dependency))) { closure.add(item.id); changed = true; } }
+      const job = current(document, name, revision), node = getNode(job, nodeId); if (!["failed", "unknown", "blocked", "cancelled"].includes(node.status)) throw new Error("Retry an explicitly failed, unknown, blocked or cancelled task"); if (node.status === "unknown" && options.acknowledgeUnknown !== true) throw new Error("Inspect existing runs and acknowledge possible duplicate work before retrying an unknown claim");
+      const problem = coordinationRetryProblem(job, nodeId); if (problem) throw new Error(problem);
+      const closure = downstreamTasks(job, nodeId);
       if (job.nodes.some((item) => ["shipping", "shipping-unknown"].includes(item.status))) throw new Error("Resolve every claimed or unknown shipping operation before retrying tasks");
       if (job.nodes.some((item) => closure.has(item.id) && item.status === "unknown") && options.acknowledgeUnknown !== true) throw new Error("Inspect every unknown dependent launch and acknowledge possible duplicate work before invalidating it");
-      if (job.nodes.some((item) => closure.has(item.id) && item.attempts >= COORDINATION_LIMITS.attempts)) throw new Error("A dependent task reached its three-attempt limit");
       if (job.nodes.some((item) => closure.has(item.id) && ["claimed", "running", "shipping", "shipping-unknown", "shipped"].includes(item.status))) throw new Error("Stop active dependent work and resolve shipping before invalidating its inputs");
       job.cancelRequested = false; delete job.shipping;
-      for (const item of job.nodes.filter((item) => closure.has(item.id))) { history(job, this.now(), "Explicit retry invalidated this task's prior result and downstream evidence", item, { ...(item.runId ? { runId: item.runId } : {}), ...(item.claimId ? { claimId: item.claimId } : {}) }); for (const key of ["claimId", "claimedAt", "runId", "dependencies", "result", "reason", "nextCheckAt", "cancelRequested"] as const) delete item[key]; item.status = "pending"; }
+      for (const item of job.nodes.filter((item) => closure.has(item.id))) { history(job, this.now(), "Explicit retry invalidated this task's prior result and downstream evidence", item, { ...(item.runId ? { runId: item.runId } : {}), ...(item.claimId ? { claimId: item.claimId } : {}) }); for (const key of ["claimId", "claimedAt", "runId", "dependencies", "result", "reason", "nextCheckAt", "cancelRequested"] as const) delete item[key]; item.status = "pending"; this.schedule.delete(`${job.id}:${item.id}`); }
       refresh(job); return copy(job);
     });
   }
@@ -167,7 +177,7 @@ export class CoordinatedChanges {
     if (!await this.withOperation(`${name}:${nodeId}:recover-ship`, (signal) => this.options.confirmShipping!(copy(node), copy(entry.validation), commit, signal))) throw new Error("That commit does not prove the exact reviewed source/target/tree shipping operation");
     return this.change((document) => { const latest = current(document, name, revision), item = getNode(latest, nodeId); if (item.status !== "shipping-unknown" || item.shippingClaimId !== node.shippingClaimId) throw new Error("Shipping recovery claim changed"); item.status = "shipped"; item.shippedCommit = commit; history(latest, this.now(), "Recovered this exact shipping commit after manual review", item, { commit }); return copy(latest); });
   }
-  start(intervalMs = 5000) { if (!this.loaded) throw new Error("Load coordinated changes before dispatch"); if (this.timer) return; if (!Number.isInteger(intervalMs) || intervalMs < 100 || intervalMs > 60_000) throw new Error("Invalid coordination interval"); this.stopped = false; this.timer = setInterval(() => { void this.tick().catch(() => undefined); }, intervalMs); this.timer.unref?.(); }
+  start(intervalMs = 5000) { if (this.loadFault) return; if (!this.loaded) throw new Error("Load coordinated changes before dispatch"); if (this.timer) return; if (!Number.isInteger(intervalMs) || intervalMs < 100 || intervalMs > 60_000) throw new Error("Invalid coordination interval"); this.stopped = false; this.timer = setInterval(() => { void this.tick().catch(() => undefined); }, intervalMs); this.timer.unref?.(); }
   async stop() { this.stopped = true; if (this.timer) clearInterval(this.timer); this.timer = undefined; for (const controller of this.controllers.values()) controller.abort(); await this.ticking; await queues.get(this.file); }
   tick(): Promise<void> { if (!this.loaded) return Promise.reject(new Error("Load coordinated changes before dispatch")); if (this.stopped) return Promise.resolve(); if (this.ticking) return this.ticking; const work = this.tickOnce().finally(() => { if (this.ticking === work) this.ticking = undefined; }); this.ticking = work; return work; }
   private async tickOnce() {
@@ -179,13 +189,16 @@ export class CoordinatedChanges {
         catch { continue; } // An unavailable read is not evidence of failure or permission to launch.
         await this.updateNode(jobSnapshot.id, node.id, node.claimId, (job, latest) => {
           if (job.cancelRequested || !["running", "verified"].includes(latest.status)) return;
+          const staleInput = latest.dependencies?.find(input => { const parent = getNode(job, input.nodeId); return !parent.result || !["verified", "shipped"].includes(parent.status) || !sameResult(input, parent.result); });
+          if (observed.status === "verified" && staleInput) { latest.status = "blocked"; latest.reason = `Dependency ${staleInput.nodeId}'s verified result changed. Retry ${staleInput.nodeId} first to refresh downstream evidence.`; invalidatePreview(job); history(job, this.now(), latest.reason, latest); blockDependentResults(job, latest.id, this.now()); return; }
           if (observed.status === "verified") { const checked = result({ ...observed, nodeId: node.id }, node.id); if (checked.runId !== latest.runId || checked.repo !== latest.run.repo) throw new Error("Verified result does not match its claimed run and repository"); if (latest.result && !sameResult(latest.result, checked)) { latest.status = "blocked"; latest.reason = "The result branch or verification evidence changed after it was pinned"; invalidatePreview(job); history(job, this.now(), latest.reason, latest); } else if (latest.status !== "verified") { latest.result = checked; latest.status = "verified"; delete latest.reason; history(job, this.now(), "Pinned the current immutable result and genuine verification receipt", latest, { runId: latest.runId, commit: checked.commit }); } }
           else if (observed.status !== "running" || latest.status === "verified") { latest.status = observed.status === "cancelled" ? "cancelled" : observed.status === "failed" ? "failed" : "blocked"; latest.reason = diagnostic(observed.reason ?? "The result or verification evidence is unavailable or no longer current"); invalidatePreview(job); history(job, this.now(), latest.reason, latest); }
+          if (latest.status !== "verified" && latest.result) blockDependentResults(job, latest.id, this.now());
         });
       }
       const job = (await this.list()).find((item) => item.id === jobSnapshot.id)!; if (job.cancelRequested) continue;
       for (const node of job.nodes.filter((item) => ["pending", "waiting"].includes(item.status))) {
-        if ((node.nextCheckAt ?? 0) > this.now()) continue;
+        if (Math.max(node.nextCheckAt ?? 0, this.schedule.get(`${job.id}:${node.id}`) ?? 0) > this.now()) continue;
         try { if (await repositoryIdentity(node.run.repo) !== node.repositoryId) throw new Error("The pinned repository metadata was replaced"); }
         catch (error) { await this.updateNode(job.id, node.id, undefined, (latest, item) => { if (!latest.cancelRequested && ["pending", "waiting"].includes(item.status)) { item.status = "blocked"; item.reason = diagnostic(error); history(latest, this.now(), item.reason, item); } }); continue; }
         const dependencies = node.dependsOn.map((name) => getNode(job, name));
@@ -213,12 +226,13 @@ export class CoordinatedChanges {
     for (const node of job.nodes.filter((node) => closure.has(node.id))) {
       if (!node.result || !["verified", "shipped"].includes(node.status)) throw new Error("A dependency or result is not currently verified");
       const observation = await this.withOperation(`${job.id}:${node.id}:verify-pin`, (signal) => this.observe(copy(node), signal));
-      if (observation.status !== "verified" || !sameResult(node.result, result({ ...observation, nodeId: node.id }, node.id))) throw new Error("A dependency result or its genuine verification receipt changed; review it before continuing");
+      if (observation.status !== "verified") throw new Error(observation.reason ?? `${node.id} no longer has a current verified result`);
+      if (!sameResult(node.result, result({ ...observation, nodeId: node.id }, node.id))) throw new Error(`${node.id} changed after its result was pinned; retry it before continuing`);
       for (const input of node.dependencies ?? []) { const parent = getNode(job, input.nodeId); if (!parent.result || !sameResult(input, parent.result) || !["verified", "shipped"].includes(parent.status)) throw new Error("Downstream evidence refers to an invalidated dependency result"); }
     }
   }
   private async observe(node: CoordinatedNode, signal: AbortSignal): Promise<CoordinationObservation> { try { if (await repositoryIdentity(node.run.repo) !== node.repositoryId) return { status: "missing", reason: "The pinned repository metadata was replaced" }; } catch (error) { return { status: "missing", reason: diagnostic(error) }; } signal.throwIfAborted(); return this.options.validateResult(node, signal); }
-  private async wait(jobId: string, nodeId: string, reason: string, retryAt?: number) { await this.updateNode(jobId, nodeId, undefined, (job, node) => { if (job.cancelRequested || !["pending", "waiting"].includes(node.status)) return; const next = date(retryAt) ? Math.max(this.now() + 100, Math.min(this.now() + 24 * 60 * 60_000, retryAt)) : this.now() + 1000; if (node.status === "waiting" && node.reason === reason) { node.nextCheckAt = next; return; } node.status = "waiting"; node.reason = reason; node.nextCheckAt = next; history(job, this.now(), reason, node); }); }
+  private async wait(jobId: string, nodeId: string, reason: string, retryAt?: number) { await this.updateNode(jobId, nodeId, undefined, (job, node) => { if (job.cancelRequested || !["pending", "waiting"].includes(node.status)) return; const next = date(retryAt) ? Math.max(this.now() + 100, Math.min(this.now() + 24 * 60 * 60_000, retryAt)) : this.now() + 1000; this.schedule.set(`${jobId}:${nodeId}`, next); if (node.status === "waiting" && node.reason === reason) return; node.status = "waiting"; node.reason = reason; node.nextCheckAt = next; history(job, this.now(), reason, node); }); }
   private async recordReceipt(jobId: string, nodeId: string, claimId: string, runId: string) {
     if (!id(runId)) throw new Error("Invalid coordinated run receipt"); let cancel = false;
     await this.change((document) => { const job = document.jobs.find((item) => item.id === jobId); if (!job) return; const node = getNode(job, nodeId); if (node.claimId !== claimId) { if (!job.history.some((entry) => entry.claimId === claimId && entry.runId === runId)) history(job, this.now(), "Late receipt for an earlier explicitly retried claim; stopping duplicate work", node, { claimId, runId }); cancel = true; return; } if (node.runId === runId && !["claimed", "unknown"].includes(node.status)) return; if (!["claimed", "unknown"].includes(node.status)) throw new Error("The current launch no longer accepts a receipt"); node.runId = runId; node.status = "running"; delete node.reason; cancel = job.cancelRequested || node.cancelRequested === true; history(job, this.now(), "Recorded the durable matching run receipt", node, { claimId, runId }); });
@@ -231,6 +245,7 @@ export class CoordinatedChanges {
   private updateNode(jobId: string, nodeId: string, claimId: string | undefined, mutate: (job: CoordinatedChange, node: CoordinatedNode) => void) { return this.change((document) => { const job = document.jobs.find((item) => item.id === jobId); if (!job) return; const node = getNode(job, nodeId); if (claimId && node.claimId !== claimId) return; mutate(job, node); }); }
   private async withOperation<T>(key: string, operation: (signal: AbortSignal) => Promise<T>, timeout = this.options.operationTimeoutMs ?? 120_000): Promise<T> { const controller = new AbortController(), uniqueKey = `${key}:${randomUUID()}`; this.controllers.set(uniqueKey, controller); try { return await bounded(Promise.resolve().then(() => operation(controller.signal)), timeout, controller); } finally { this.controllers.delete(uniqueKey); } }
   private change<T>(mutate: (document: CoordinationDocument) => T): Promise<T> {
+    if (this.loadFault) return Promise.reject(this.loadFault);
     const work = (queues.get(this.file) ?? Promise.resolve()).then(async () => { const document = await readDocument(this.file), before = canonical(document), previous = JSON.parse(before) as CoordinationDocument, result = mutate(document); for (const job of document.jobs) { refresh(job); const prior = previous.jobs.find((item) => item.id === job.id); if (prior && canonical(prior) !== canonical(job)) job.revision = prior.revision + 1; } if (canonical(document) !== before) await writeDocument(this.file, document); return object(result) && Array.isArray(result.nodes) && typeof result.id === "string" ? copy(document.jobs.find((job) => job.id === result.id)) as T : result; });
     const tail = work.then(() => undefined, () => undefined); queues.set(this.file, tail); void tail.then(() => { if (queues.get(this.file) === tail) queues.delete(this.file); }); return work;
   }
@@ -262,5 +277,5 @@ export function validateCoordinationDocument(raw: unknown): CoordinationDocument
 }
 /** Backup restore keeps receipts for investigation and disables every implicit launch. */
 export function disableRestoredCoordinatedChanges(raw: unknown, now = Date.now()) { const document = validateCoordinationDocument(raw); let cancelled = 0; for (const job of document.jobs) { if (job.status === "shipped" || job.status === "cancelled") continue; cancelled++; job.cancelRequested = true; for (const node of job.nodes) { node.cancelRequested = true; if (!["shipped", "shipping", "shipping-unknown", "unknown", "claimed", "running"].includes(node.status)) node.status = "cancelled"; if (node.status === "claimed") node.status = "unknown"; if (node.status === "shipping") node.status = "shipping-unknown"; node.reason = "Automatic execution disabled by encrypted backup restore; inspect existing receipts before explicit recovery"; } job.revision++; history(job, now, "Cancelled automatic dispatch after encrypted backup restore; receipt metadata preserved"); } return { document, cancelled }; }
-async function readDocument(file: string): Promise<CoordinationDocument> { let handle; try { handle = await open(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0)); const info = await handle.stat(); if (!info.isFile() || info.size > COORDINATION_LIMITS.fileBytes) throw new Error("Coordinated storage must be a regular bounded file"); return validateCoordinationDocument(JSON.parse(await handle.readFile("utf8"))); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return { version: 1, jobs: [] }; throw error; } finally { await handle?.close(); } }
+async function readDocument(file: string): Promise<CoordinationDocument> { let handle; try { handle = await open(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0)); const info = await handle.stat(); if (!info.isFile() || info.size > COORDINATION_LIMITS.fileBytes) throw new Error("Coordinated storage must be a regular bounded file"); return validateCoordinationDocument(JSON.parse(await handle.readFile("utf8"))); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return { version: 1, jobs: [] }; throw new Error(`Coordinated changes storage ${file} cannot be read: ${(error as Error).message}`); } finally { await handle?.close(); } }
 async function writeDocument(file: string, document: CoordinationDocument) { const serialized = JSON.stringify(validateCoordinationDocument(document), null, 2); if (Buffer.byteLength(serialized) > COORDINATION_LIMITS.fileBytes) throw new Error("Coordinated storage reached its byte limit"); await mkdir(dirname(file), { recursive: true }); const temp = `${file}.${randomUUID()}.tmp`; try { const handle = await open(temp, "wx", 0o600); try { await handle.writeFile(serialized); await handle.sync(); } finally { await handle.close(); } await rename(temp, file); if (process.platform !== "win32") { const folder = await open(dirname(file), "r"); try { await folder.sync(); } finally { await folder.close(); } } } finally { await rm(temp, { force: true }); } }

@@ -236,8 +236,17 @@ test("disconnect, reconnect and address changes never fall back to Wi-Fi; restar
   await disconnected;
   await assertNoListener();
   await setStatus({ ...connected("100.101.102.104"), Self: { Online: true } });
+  const wrongName = await api("/api/remote?refresh=1");
+  assert.equal(wrongName.tailscaleUrl, undefined);
+  assert.equal(wrongName.secure, false);
+  assert.equal(wrongName.control, false);
+  assert.match(wrongName.tls.error, /does not cover this computer's Tailscale name/);
+  await assertNoListener();
+  // The DNS-only certificate cannot authenticate a raw IP. Reconnect the same
+  // certified identity at its new address to retain restart/session coverage.
+  await setStatus(connected("100.101.102.104"));
   const changed = await api("/api/remote?refresh=1");
-  assert.match(changed.tailscaleUrl, /^https:\/\/100\.101\.102\.104:/);
+  assert.match(changed.tailscaleUrl, /^https:\/\/codeflow\.tail-test\.ts\.net:/);
   assert.equal(changed.phonePath, before.phonePath);
   const paired = await phone(); await paired.goto(changed.tailscaleUrl);
   assert.equal((await responseFrom(paired, "/api/runs")).status, 200);

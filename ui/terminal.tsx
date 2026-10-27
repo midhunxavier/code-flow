@@ -4,10 +4,12 @@ import { FitAddon } from "@xterm/addon-fit";
 import { Terminal, type ITheme } from "@xterm/xterm";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { Icon } from "./icons.js";
-import { api, baseName, copy, enc, post, showToast, store, usePoll } from "./lib.js";
+import { api, ApiError, baseName, copy, enc, post, showToast, showError, usePoll } from "./lib.js";
 import { defaultPlace, Menu, MenuItem, MenuTitle, placeName, placesFor, Strip, type StripItem } from "./panel-bits.js";
-import { rememberSide, sideMemo, sideOpen, sideScope, sideTab } from "./state.js";
+import { PolicyPauseNotice } from "./policy-pause.js";
+import { executionPaused, rememberSide, sideMemo, sideOpen, sideScope, sideTab } from "./state.js";
 import { subscribe } from "./stream.js";
+import { terminalMemory, rememberTerminal, forgetTerminal, terminalHistoryKey, loadTerminalHistory, pushTerminalHistory } from "./terminal-memory.js";
 import { theme } from "./theme.js";
 import type { DevServer, ShellEvent, ShellInfo } from "./types.js";
 
@@ -29,31 +31,43 @@ export function TerminalTab() {
   const [focus, setFocus] = useState<"top" | "bottom">("top");
   const [ratio, setRatio] = useState(0.5);
   const panes = useRef<HTMLDivElement>(null);
-  const refresh = () => api<ShellInfo[]>("/api/shell").then(setList, () => {});
+  const [creating, setCreating] = useState(0);
+  // A filesystem restriction pauses terminals: every provider says so, or the server refuses the list
+  // (a policy applied elsewhere). Paused, nothing is asked for and nothing opens.
+  const [refused, setRefused] = useState(false);
+  const paused = executionPaused.value || refused;
+  const refresh = () => api<ShellInfo[]>("/api/shell").then((shells) => { for (const shell of shells) rememberTerminal(shell); setList(shells); setRefused(false); }, (err) => { if (err instanceof ApiError && err.status === 403) setRefused(true); });
   // Only while you can see the tab: a closed panel, another tab or a hidden window asks for nothing.
-  usePoll(() => Promise.all([refresh(), api<Omit<DevServer, "logs">[]>("/api/serve").then(setApps, () => {})]), 3_000, [], sideOpen.value && sideTab.value === "terminal");
+  usePoll(() => Promise.all([refresh(), api<Omit<DevServer, "logs">[]>("/api/serve").then(setApps, () => {})]), 3_000, [], sideOpen.value && sideTab.value === "terminal" && !paused);
 
   // The apps this run started with Run app: their logs can be shown like a terminal, an app that
   // exited too (its last output says why).
   const runApps = s.run ? apps.filter((a) => a.key.startsWith(`${s.run!.id}/`)) : [];
-  const alive = (k?: string): k is string => !!k && (k.startsWith(APP) ? runApps.some((a) => APP + a.key === k) : !!list?.some((x) => x.id === k));
+  const remembered = (id: string) => terminalMemory(id)?.shell ?? { id, cwd: defaultPlace(s, places)?.path ?? s.repo, shell: "", status: "exited" as const, busy: false, startedAt: 0, interactive: false };
+  const alive = (k?: string): k is string => !!k && (!k.startsWith(APP) || runApps.some((a) => APP + a.key === k));
   const open = (memo.shells ?? []).filter(alive);
   const top = alive(memo.shell) && open.includes(memo.shell) ? memo.shell : open[0];
   const bottom = memo.split && alive(memo.below) && memo.below !== top ? memo.below : undefined;
 
   const create = async (cwd: string): Promise<string | undefined> => {
+    const key = s.key;
+    setCreating((n) => n + 1);
     try {
       // A real terminal (the server falls back to a line-based shell without python3), about the
       // size of the pane; the terminal fits itself exactly once it's drawn.
       const box = panes.current?.getBoundingClientRect();
       const size = box?.width ? { cols: Math.floor((box.width - 16) / 7.2), rows: Math.floor(((memo.split ? box.height / 2 : box.height) - 36) / 15) } : {};
       const sh = await post<ShellInfo>("/api/shell", { cwd, pty: true, ...size });
+      rememberTerminal(sh);
       setList((l) => [...(l ?? []).filter((x) => x.id !== sh.id), sh]);
+      rememberSide({ shellsClosed: false }, key);
       void refresh(); // a shell may have closed to make room
       return sh.id;
     } catch (err) {
-      showToast((err as Error).message, 6000);
+      showError((err as Error).message, 6000);
       return undefined;
+    } finally {
+      setCreating((n) => n - 1);
     }
   };
   /** Show a session in the pane you're working in (the lower one when it has focus). */
@@ -69,34 +83,47 @@ export function TerminalTab() {
 
   // The first time here: the shell already open in the panel's folder, or a new one. Only once the
   // tab is in view: a tab behind another, or in a closed panel, stays mounted as the panel follows
-  // you from run to run, and would open a shell in each.
+  // you from run to run, and would open a shell in each. A scope seen with terminals already open
+  // (after a reload, say) counts too: closing the last one there isn't a first visit, and nor is
+  // coming back after you closed them all.
   const shown = sideOpen.value && sideTab.value === "terminal";
-  const started = useRef("");
+  const seen = useRef(new Set<string>());
+  const start = defaultPlace(s, places);
+  const firstVisit = shown && !!list && !paused && !seen.current.has(s.key) && (!!start || !!open.length);
   useEffect(() => {
-    if (!shown || !list || open.length || started.current === s.key) return;
-    const start = defaultPlace(s, places);
-    if (!start) return;
-    started.current = s.key;
+    if (!firstVisit || !list) return;
+    seen.current.add(s.key);
+    if (open.length || memo.shellsClosed || !start) return;
     const key = s.key;
     const existing = list.find((x) => x.status === "running" && x.cwd === start.path);
-    void (existing ? Promise.resolve(existing.id) : create(start.path)).then((id) => id && rememberSide({ shells: [id], shell: id }, key));
-  }, [list, s.key, open.length, shown]);
+    // A remembered terminal disappeared (closed in settings, another window, or a server restart).
+    // That is not a first visit: leave it closed until the user explicitly opens a new one.
+    if (!existing && memo.shells?.some(id => !id.startsWith(APP))) {
+      rememberSide({ shells: memo.shells.filter(id => id.startsWith(APP)), shell: undefined, below: undefined, split: false, shellsClosed: true }, key);
+      return;
+    }
+    void (existing ? Promise.resolve(existing.id) : create(start.path)).then((id) => id && rememberSide({ shells: [id], shell: id, shellsClosed: false }, key));
+  }, [firstVisit, list, s.key, open.length]);
+  // Shown again, ask again: a refusal may have been lifted meanwhile.
+  useEffect(() => { if (!shown) setRefused(false); }, [shown]);
 
   const close = async (k: string) => {
     const shell = list?.find((x) => x.id === k);
     if (shell?.busy && !await confirmAction(`Stop ${shell.running ?? "what's running"} in ${placeName(shell.cwd, places)} and close it?`, {"title":"Stop and close terminal?","confirmLabel":"Stop and close","danger":true})) return;
-    if (!k.startsWith(APP)) await api(`/api/shell/${k}`, { method: "DELETE" }).catch(() => {});
+    if (!k.startsWith(APP) && list?.some(x => x.id === k)) await api(`/api/shell/${k}`, { method: "DELETE" }).catch(() => {});
+    forgetTerminal(k);
     const rest = open.filter((x) => x !== k);
     // Closing one of the two shown leaves the other on its own: no split, nothing kept for below.
     if (bottom && (k === top || k === bottom)) rememberSide({ shells: rest, shell: k === top ? bottom : top, below: undefined, split: false });
-    else rememberSide({ shells: rest, shell: top === k ? rest[0] : top, below: bottom });
+    else rememberSide({ shells: rest, shell: top === k ? rest[0] : top, below: bottom, ...(rest.length ? {} : { shellsClosed: true }) });
     setList((l) => l?.filter((x) => x.id !== k) ?? l);
   };
   /** A fresh shell in the same folder takes a stopped one's place. */
   const replace = async (old: string, cwd: string) => {
-    await api(`/api/shell/${old}`, { method: "DELETE" }).catch(() => {});
+    if (list?.some(x => x.id === old)) await api(`/api/shell/${old}`, { method: "DELETE" }).catch(() => {});
     const id = await create(cwd);
     if (!id) return;
+    forgetTerminal(old);
     rememberSide({ shells: open.map((x) => (x === old ? id : x)), shell: top === old ? id : top, below: bottom === old ? id : bottom });
   };
   const split = async () => {
@@ -126,26 +153,32 @@ export function TerminalTab() {
       const app = runApps.find((a) => APP + a.key === k)!;
       return { key: k, label: `▶ app :${app.port}`, title: `${app.command} in ${app.cwd} (read-only log)`, note: app.status === "exited" ? "exited" : undefined, below: k === bottom };
     }
-    const sh = list!.find((x) => x.id === k)!;
+    const live = list?.find((x) => x.id === k);
+    const sh = live ?? remembered(k);
     return {
       key: k,
       label: placeName(sh.cwd, places),
       title: sh.cwd,
       state: sh.busy ? "working" : undefined,
-      note: sh.status === "exited" ? "exited" : sh.running,
+      note: list && !live ? "gone" : sh.status === "exited" ? "exited" : sh.running,
       below: k === bottom,
     };
   });
   const total = list?.length ?? 0;
+  const opening = creating > 0 || (firstVisit && !open.length && !memo.shellsClosed && !!start);
   const pane = (k: string | undefined, where: "top" | "bottom") =>
-    !k ? (
-      <div class="side-empty help">{places.length ? (list ? "Opening a shell…" : "Loading…") : "Choose a repository first."}</div>
+    paused ? (
+      <div class="side-empty">{executionPaused.value ? <PolicyPauseNotice what="Terminals are paused" /> : <p class="msg warn">Terminals are paused under filesystem restrictions.</p>}</div>
+    ) : !k ? (
+        <div class="side-empty help">
+          {!places.length ? "Choose a repository first." : !list ? "Loading…" : opening ? "Opening a shell…" : <>No terminal is open here. <button type="button" class="btn small" disabled={!start} onClick={() => start && void add(start.path)}>Open a terminal</button></>}
+        </div>
     ) : k.startsWith(APP) ? (
       <AppLog key={k} appKey={k.slice(APP.length)} split={!!bottom} focused={focus === where} onFocus={() => setFocus(where)} />
-    ) : list?.find((x) => x.id === k)?.interactive ? (
-      <TermView key={k} id={k} places={places} split={!!bottom} focused={focus === where} shown={shown} onFocus={() => setFocus(where)} onReplace={(cwd) => void replace(k, cwd)} />
+    ) : (list?.find((x) => x.id === k) ?? terminalMemory(k)?.shell)?.interactive ? (
+      <TermView key={k} gone={!!list && !list.some(x => x.id === k)} id={k} places={places} split={!!bottom} focused={focus === where} shown={shown} onFocus={() => setFocus(where)} onReplace={(cwd) => void replace(k, cwd)} />
     ) : (
-      <ShellView key={k} id={k} places={places} split={!!bottom} focused={focus === where} shown={shown} onFocus={() => setFocus(where)} onReplace={(cwd) => void replace(k, cwd)} />
+      <ShellView key={k} initial={remembered(k)} gone={!!list && !list.some(x => x.id === k)} id={k} places={places} split={!!bottom} focused={focus === where} shown={shown} onFocus={() => setFocus(where)} onReplace={(cwd) => void replace(k, cwd)} />
     );
   return (
     <>
@@ -153,10 +186,11 @@ export function TerminalTab() {
         <Menu label="New terminal" icon="plus" title={total >= MAX_SHELLS - 2 ? `${total} of ${MAX_SHELLS} terminals open: past that, the oldest idle one closes` : "A new terminal"}>
           {(done) => (
             <>
-              <MenuTitle>New terminal in</MenuTitle>
+              <MenuTitle>{paused ? "Terminals are paused under filesystem restrictions" : "New terminal in"}</MenuTitle>
               {places.map((p) => (
                 <MenuItem
                   key={p.path}
+                  disabled={paused}
                   sub={p.path}
                   onClick={() => {
                     done();
@@ -183,7 +217,7 @@ export function TerminalTab() {
             </>
           )}
         </Menu>
-        <button type="button" class={`icon-btn ${bottom ? "on" : ""}`} aria-pressed={!!bottom} aria-label="Split" title={bottom ? "One terminal" : "Two terminals, one above the other"} disabled={!top} onClick={() => void split()}>
+        <button type="button" class={`icon-btn ${bottom ? "on" : ""}`} aria-pressed={!!bottom} aria-label="Split" title={bottom ? "One terminal" : "Two terminals, one above the other"} disabled={!top || paused && !bottom} onClick={() => void split()}>
           <Icon name="split" />
         </button>
       </Strip>
@@ -202,7 +236,7 @@ export function TerminalTab() {
 
 // ---------------------------------------------------------------- one terminal
 /** `shown`: the Terminal tab is in view. Only then is the shell's output watched; shown again, it's drawn afresh. */
-type ViewProps = { id: string; places: ReturnType<typeof placesFor>; split: boolean; focused: boolean; shown: boolean; onFocus: () => void; onReplace: (cwd: string) => void };
+type ViewProps = { id: string; gone?: boolean; initial?: ShellInfo; places: ReturnType<typeof placesFor>; split: boolean; focused: boolean; shown: boolean; onFocus: () => void; onReplace: (cwd: string) => void };
 export type TerminalHello = { type: "hello"; shell: ShellInfo; history: ShellEvent[] };
 /** A terminal that can't be watched: it's gone (code-flow restarted, or it was closed). */
 export type TerminalGone = { type: "error"; status: number; message: string };
@@ -222,8 +256,8 @@ export interface TerminalTransport {
   resize: (body: { cols: number; rows: number }) => Promise<unknown>;
   watch: (receive: (event: ShellEvent | TerminalHello | TerminalGone) => void) => () => void;
 }
-export function TermView({ id, places, split, focused, shown, onFocus, onReplace, transport }: ViewProps & { transport?: TerminalTransport }) {
-  const [shell, setShell] = useState<ShellInfo | null>(null);
+export function TermView({ id, gone, places, split, focused, shown, onFocus, onReplace, transport }: ViewProps & { transport?: TerminalTransport }) {
+  const [shell, setShell] = useState<ShellInfo | null>(() => terminalMemory(id)?.shell ?? null);
   const box = useRef<HTMLDivElement>(null);
   const term = useRef<Terminal>();
   /** What to do with a message from the shell: set up with the terminal it draws in. */
@@ -250,6 +284,7 @@ export function TermView({ id, places, split, focused, shown, onFocus, onReplace
     term.current = t;
     let closed = false;
     let exited = false;
+    let connected = false, goneNotice = false;
     let replaying = false; // xterm answers queries in replayed output: those answers aren't keystrokes
 
     // Keystrokes: ~16 ms of them per request, one request at a time, so they arrive in order. Mouse
@@ -266,7 +301,7 @@ export function TermView({ id, places, split, focused, shown, onFocus, onReplace
       try {
         await (transport ? transport.input({ [kind]: text }) : post(`/api/shell/${enc(id)}/input`, { [kind]: text }));
       } catch (err) {
-        if (!exited && !closed) showToast((err as Error).message, 4000);
+        if (!exited && !closed) showError((err as Error).message, 4000);
       } finally {
         sending = false;
         if (queued.length) void flush();
@@ -299,7 +334,7 @@ export function TermView({ id, places, split, focused, shown, onFocus, onReplace
     let sizeTimer: ReturnType<typeof setTimeout> | undefined;
     const sendSize = () => {
       const next = `${t.cols}x${t.rows}`;
-      if (next === size || exited || closed) return;
+      if (next === size || !connected || exited || closed) return;
       size = next;
       (transport ? transport.resize({ cols: t.cols, rows: t.rows }) : post(`/api/shell/${enc(id)}/resize`, { cols: t.cols, rows: t.rows })).catch(() => {});
     };
@@ -329,14 +364,17 @@ export function TermView({ id, places, split, focused, shown, onFocus, onReplace
       if (closed) return;
       // The stream closed for good: the shell is gone (code-flow restarted).
       if (ev.type === "error") {
-        if (exited) return;
-        exited = true;
+        if (goneNotice) return;
+        goneNotice = true; connected = false; exited = true;
         t.options.disableStdin = true;
-        t.write(note(ev.message || GONE));
+        setShell(cur => cur ? { ...cur, status: "exited", busy: false } : cur);
+        t.write(note(ev.status === 404 || !ev.message ? GONE : ev.message));
         return;
       }
       if (ev.type === "hello") {
         // (Re)connected, or shown again: draw what the terminal showed so far, from a clean screen.
+        connected = true; goneNotice = false;
+        rememberTerminal(ev.shell, ev.history);
         setShell(ev.shell);
         exited = ev.shell.status === "exited";
         t.options.disableStdin = exited;
@@ -352,6 +390,8 @@ export function TermView({ id, places, split, focused, shown, onFocus, onReplace
         });
         return;
       }
+      const cached = terminalMemory(id);
+      if (cached) rememberTerminal(cached.shell, [...cached.history, ev]);
       if (ev.type === "output") t.write(ev.text);
       else if (ev.type === "busy") setShell((cur) => (cur ? { ...cur, busy: ev.busy, running: ev.running } : cur));
       else if (ev.type === "exit") {
@@ -361,6 +401,8 @@ export function TermView({ id, places, split, focused, shown, onFocus, onReplace
         setShell((cur) => (cur ? { ...cur, status: "exited", exitCode: ev.code, busy: false, running: undefined } : cur));
       }
     };
+    const cached = terminalMemory(id);
+    if (cached) { replaying = true; t.write(cached.history.map(e => e.type === "output" ? e.text : e.type === "exit" ? exitNote(e.code) : "").join(""), () => { replaying = false; }); }
     if (focusedRef.current) takeKeys();
     return () => {
       closed = true;
@@ -372,7 +414,8 @@ export function TermView({ id, places, split, focused, shown, onFocus, onReplace
       t.dispose();
     };
   }, [id]);
-  useEffect(() => (shown ? transport ? transport.watch((ev) => receive.current(ev)) : subscribe(`shell:${id}`, (ev) => receive.current(ev)) : undefined), [id, shown]);
+  useEffect(() => { if (gone) receive.current({ type: "error", status: 404, message: GONE }); }, [gone]);
+  useEffect(() => (shown && !gone ? transport ? transport.watch((ev) => receive.current(ev)) : subscribe(`shell:${id}`, (ev) => receive.current(ev)) : undefined), [id, shown, gone]);
 
   return (
     <div class={`term-pane ${focused && split ? "focused" : ""}`} onMouseDown={onFocus}>
@@ -441,33 +484,36 @@ type Line = ShellEvent;
  * Without python3 there's no pseudo-terminal: a shell's output and a command line. It reattaches
  * after a reload; Stop and Restart open a new one in the same folder.
  */
-function ShellView({ id, places, split, focused, shown, onFocus, onReplace }: ViewProps) {
-  const [shell, setShell] = useState<ShellInfo | null>(null);
-  const [lines, setLines] = useState<Line[]>([]);
+function ShellView({ id, gone, initial, places, split, focused, shown, onFocus, onReplace }: ViewProps) {
+  const [shell, setShell] = useState<ShellInfo | null>(() => terminalMemory(id)?.shell ?? initial ?? null);
+  const [lines, setLines] = useState<Line[]>(() => terminalMemory(id)?.history ?? []);
   const [command, setCommand] = useState("");
-  const [history, setHistory] = useState<string[]>(() => store.json("termHistory", []));
+  const historyKey = useRef<string>(terminalHistoryKey(shell?.cwd ?? "", places));
   const [at, setAt] = useState(-1);
   const [error, setError] = useState("");
   const out = useRef<HTMLPreElement>(null);
   const input = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
+    if (gone) { setError(GONE); setShell(cur => cur ? { ...cur, status: "exited", busy: false } : cur); return; }
     if (!shown) return;
     return subscribe(`shell:${id}`, (ev: ShellEvent | TerminalHello | TerminalGone) => {
-      // The shell is gone (code-flow restarted).
-      if (ev.type === "error") return setError(GONE);
+      // The shell is gone (code-flow restarted), or can't be watched: the server says why (a filesystem restriction pauses terminals).
+      if (ev.type === "error") return setError(ev.status === 404 || !ev.message ? GONE : ev.message);
       if (ev.type === "hello") {
-        setShell(ev.shell);
+        historyKey.current ??= terminalHistoryKey(ev.shell.cwd, places);
+        rememberTerminal(ev.shell, ev.history);
+        setError(""); setShell(ev.shell);
         setLines(ev.history);
         return;
       }
       if (ev.type === "busy") return;
-      setLines((l) => append(l, ev));
+      setLines((l) => { const next = append(l, ev); const cached = terminalMemory(id); if (cached) rememberTerminal(ev.type === "done" ? { ...cached.shell, cwd: ev.cwd, busy: false } : cached.shell, next); return next; });
       if (ev.type === "done") setShell((cur) => (cur ? { ...cur, busy: false, cwd: ev.cwd } : cur));
       else if (ev.type === "exit") setShell((cur) => (cur ? { ...cur, status: "exited", exitCode: ev.code, busy: false } : cur));
       else if (ev.type === "input") setShell((cur) => (cur ? { ...cur, busy: true } : cur));
     });
-  }, [id, shown]);
+  }, [id, shown, gone]);
 
   // Keep the newest output in view.
   useEffect(() => {
@@ -480,13 +526,12 @@ function ShellView({ id, places, split, focused, shown, onFocus, onReplace }: Vi
     if (!shell || !text.trim()) return;
     setCommand("");
     setAt(-1);
-    const next = [text, ...history.filter((h) => h !== text)].slice(0, 100);
-    setHistory(next);
-    store.set("termHistory", JSON.stringify(next));
+    historyKey.current ??= terminalHistoryKey(shell.cwd, places);
+    pushTerminalHistory(historyKey.current, text);
     try {
       await post(`/api/shell/${enc(id)}/input`, { text });
     } catch (err) {
-      showToast((err as Error).message, 4000);
+      showError((err as Error).message, 4000);
     }
   };
   const restart = () => shell && onReplace(shell.cwd);
@@ -532,6 +577,7 @@ function ShellView({ id, places, split, focused, shown, onFocus, onReplace }: Vi
             onFocus={onFocus}
             onInput={(e) => setCommand(e.currentTarget.value)}
             onKeyDown={(e) => {
+              const history = historyKey.current ? loadTerminalHistory(historyKey.current) : [];
               if (e.key === "Enter") {
                 e.preventDefault();
                 void send();

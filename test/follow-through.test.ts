@@ -54,6 +54,11 @@ async function fixCi(tamper?: "workflow" | "fewer") {
   const run = await idle(manager, await manager.start({ checkpointOnFinish: true, pattern: findPattern("solo")!, task: "Fix CI", repo, roles: { agent: ["claude"] }, options: {}, loop: { check: CHECK } }));
   assert.equal(run.status, "done", run.error);
   const wt = run.worktrees[0]!;
+  // A PR watch follows an existing remote branch. Seed that exact baseline locally
+  // so the full unpublished-range guard can compare the follow-up with its PR.
+  const previousHead = sh(repo, "rev-parse", wt.branch);
+  sh(origin, "fetch", "-q", "--no-tags", repo, wt.branch);
+  sh(origin, "update-ref", "refs/heads/feature", previousHead);
   if (tamper) process.env.FAKE_CI_TAMPER = tamper;
   try {
     await manager.followUp(run.id, { kind: "ci-fix", worktree: wt.name, agent: "claude", message: "Failing checks:\n- test", push: "feature", watch: wt.branch });
@@ -65,28 +70,29 @@ async function fixCi(tamper?: "workflow" | "fewer") {
   const fix = run.followUps.at(-1)!;
   assert.equal(fix.kind, "ci-fix");
   assert.ok(fix.commit, "the fix was committed");
-  return { run, fix, branch: wt.branch, pushedTo: () => sh(origin, "branch", "--list", "feature") };
+  return { run, fix, branch: wt.branch, previousHead, remoteHead: () => sh(origin, "rev-parse", "refs/heads/feature") };
 }
 
 test("an honest CI fix is pushed", async () => {
-  const { fix, pushedTo } = await fixCi();
+  const { fix, previousHead, remoteHead } = await fixCi();
   assert.equal(fix.integrity, undefined);
   assert.equal(fix.pushError, undefined);
   assert.ok(fix.pushed);
-  assert.match(pushedTo(), /feature/);
+  assert.equal(remoteHead(), fix.commit);
+  assert.notEqual(remoteHead(), previousHead);
 });
 
 test("a CI fix that comments out the failing workflow job isn't pushed, though a workflow change is only a medium issue", async () => {
-  const { fix, pushedTo } = await fixCi("workflow");
+  const { fix, previousHead, remoteHead } = await fixCi("workflow");
   assert.deepEqual(fix.integrity?.map((i) => `${i.kind}|${i.file}|${i.severity}|${i.detail}`), ["test-config|.github/workflows/ci.yml|medium|CI workflow changed"]);
   assert.equal(fix.checkPassed, true, "the local check passes either way");
   assert.equal(fix.pushed, undefined);
-  assert.match(fix.pushError!, /changes tests, their config or CI, and nobody has reviewed that/);
-  assert.equal(pushedTo(), "", "nothing reached the PR's branch");
+  assert.match(fix.pushError!, /Unpublished commits need review before pushing:.*CI workflow changed/);
+  assert.equal(remoteHead(), previousHead, "the PR branch remains at its original commit");
 });
 
 test("a CI fix that makes fewer tests run isn't pushed: the follow-up compares with the count the run kept for the branch", async () => {
-  const { run, fix, branch, pushedTo } = await fixCi("fewer");
+  const { run, fix, branch, previousHead, remoteHead } = await fixCi("fewer");
   // Nothing about it looks like a test change but the count: the run's check ran 3 before the fix, 2 after.
   assert.deepEqual(fix.integrity?.map((i) => `${i.kind}|${i.severity}|${i.detail}`), ["fewer-tests|high|3 tests ran before, 2 after"]);
   assert.equal(run.testCounts?.[branch]?.first.tests, 3);
@@ -94,5 +100,5 @@ test("a CI fix that makes fewer tests run isn't pushed: the follow-up compares w
   assert.equal(run.testCounts?.[branch]?.last.head, fix.commit);
   assert.equal(fix.pushed, undefined);
   assert.ok(fix.pushError);
-  assert.equal(pushedTo(), "");
+  assert.equal(remoteHead(), previousHead, "the PR branch remains at its original commit");
 });

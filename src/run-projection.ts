@@ -63,5 +63,5 @@ function rebuildSnapshot(snapshot: RunSummary | undefined, steps: Map<string, St
 }
 
 /** A copy prevents a persisted snapshot from changing with the live object. */
-export function strip(run: Run): RunSummary { const { steps: _steps, ...rest } = run; return structuredClone(rest); }
+export function strip(run: Run): RunSummary { const { steps: _steps, ...rest } = run; return structuredClone({ ...rest, dispatchPending: run.status === "running" && run.pauseRequested ? run.steps.some(step => step.status === "running" && !step.sideOf) : undefined }); }
 export function withoutFollowUps(summary: string): string { return summary.split("\n\n## Follow-ups\n")[0]!; }

@@ -1,3 +1,5 @@
+import { hubIdentity } from "../src/collab/hub-identity.js";
+
 /** Public connection hints only. Never accept owner tokens, pairing URLs or arbitrary deep links. */
 export function parseTeamAddress(value: string): { url: string; username?: string; project?: string; invitation?: string } {
   const hint = "Enter an HTTPS team address or the connection link your teammate shared.";
@@ -19,8 +21,15 @@ export const teamConnectionLink = (origin: string, username: string, project?: s
 /** Handoff only to a local Code Flow, carrying public hints, never session credentials. */
 export function computerSetupLink(localAddress: string, connection: string) {
   const local = new URL(localAddress.trim());
-  if (!["http:", "https:"].includes(local.protocol) || !["localhost", "127.0.0.1", "[::1]"].includes(local.hostname) || local.username || local.password || local.search || local.hash || local.pathname !== "/") throw new Error("Enter the local Code Flow address printed in its terminal, such as http://localhost:4318.");
+  if (!["http:", "https:"].includes(local.protocol) || !["localhost", "127.0.0.1", "[::1]"].includes(local.hostname) || local.username || local.password || local.search || local.hash || local.pathname !== "/") throw new Error(`Enter the local Code Flow address printed in its terminal, such as ${DEFAULT_LOCAL_CODEFLOW}.`);
   const hints = parseTeamAddress(connection);
   if (hints.invitation) throw new Error("Accept the project invitation first.");
-  return `${local.origin}/?team=local#/settings/connections/join?connection=${encodeURIComponent(teamConnectionLink(hints.url, hints.username ?? "", hints.project))}`;
+  return `${local.origin}/team-handoff#/settings/connections/join?connection=${encodeURIComponent(teamConnectionLink(hints.url, hints.username ?? "", hints.project))}`;
+}
+
+export const DEFAULT_LOCAL_CODEFLOW = "http://localhost:4317";
+export function savedConnectionFor(connections: { id: string; linked: boolean; url?: string; user?: { username: string } }[], hint: string): string | undefined {
+  const address = parseTeamAddress(hint);
+  if (address.invitation) return;
+  return connections.find(connection => connection.linked && connection.url && hubIdentity(connection.url) === hubIdentity(address.url) && (!address.username || connection.user?.username === address.username))?.id;
 }

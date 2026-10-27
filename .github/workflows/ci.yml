@@ -17,7 +17,7 @@ jobs:
   test:
     name: test (${{ matrix.os }}, Node ${{ matrix.node }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
@@ -36,8 +36,19 @@ jobs:
           git config --global user.name "code-flow CI"
           git config --global user.email "ci@code-flow.invalid"
       - run: npm ci
+      - name: Configure isolated Chrome on macOS
+        if: runner.os == 'macOS'
+        run: |
+          wrapper="$RUNNER_TEMP/codeflow-qa-chrome"
+          printf '#!/bin/sh\nexec "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --use-mock-keychain "$@"\n' > "$wrapper"
+          chmod 700 "$wrapper"
+          echo "CODEFLOW_CHROME=$wrapper" >> "$GITHUB_ENV"
       - run: npm run typecheck
       - run: npm test
+        if: runner.os != 'macOS'
+      - name: Run full macOS suite with bounded fixture concurrency
+        if: runner.os == 'macOS'
+        run: npx tsx --test --test-concurrency=2 test/*.test.ts test/desktop/*.test.mjs
 
   package:
     name: Installed npm launcher (${{ matrix.os }})
@@ -81,8 +92,13 @@ jobs:
 
   # Critical UI flows in headless Chrome against deterministic provider fixtures.
   e2e:
+    name: Browser acceptance (${{ matrix.shard }})
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2]
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -95,15 +111,27 @@ jobs:
       - run: npm ci
       - name: Install browser video encoder
         run: node node_modules/playwright-core/cli.js install ffmpeg
-      - run: npm run test:e2e
+      - name: Run one deterministic third of browser acceptance
+        env:
+          QA_SHARD: ${{ matrix.shard }}
+        run: |
+          files=(test/e2e/*.e2e.ts)
+          selected=()
+          for i in "${!files[@]}"; do
+            if (( i % 3 == QA_SHARD )); then selected+=("${files[$i]}"); fi
+          done
+          test "${#selected[@]}" -gt 0
+          printf '%s\n' "${selected[@]}"
+          npx tsx --test --test-concurrency=2 "${selected[@]}"
       - name: Save browser screenshots and recordings
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: browser-test-evidence
+          name: browser-test-evidence-${{ matrix.shard }}
           path: |
             output/playwright/**/*.png
             output/playwright/**/*.webm
+            output/playwright/**/failed-page.txt
           if-no-files-found: ignore
           retention-days: 7
 

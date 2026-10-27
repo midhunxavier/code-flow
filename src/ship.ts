@@ -8,9 +8,12 @@ import {
   assertWorktree,
   classifyGitFailure,
   describeGitFailure,
+  forgetWorktree,
   git,
   gitAtLeast,
   gitError,
+  PATCH_PATHS,
+  quoteGitPath,
   withRepoLock,
   worktreeRoot,
   type Checkout,
@@ -37,6 +40,11 @@ export interface DiffFile {
   /** Unified diff for this file (without the `diff --git` header), possibly truncated. */
   patch: string;
   truncated: boolean;
+  /**
+   * In a run's review: the branch a conflict resolution merged in, when this file differs only
+   * because that branch changed it (not the run's own change, though merging can bring it along).
+   */
+  mergedFrom?: string;
 }
 
 const MAX_PATCH = 200_000;
@@ -62,10 +70,10 @@ export async function workspaceDiff(repo: GitCwd, base: string): Promise<DiffFil
 }
 
 async function diffFiles(repo: GitCwd, range: string[], options?: GitOptions, config: string[] = []): Promise<DiffFile[]> {
-  const safeDiff = [...config, "-c", "core.fsmonitor=false", "diff", "--no-ext-diff", "--no-textconv"];
+  const safeDiff = [...config, "-c", "core.fsmonitor=false", ...PATCH_PATHS.config, "diff", "--no-ext-diff", "--no-textconv"];
   const numstat = await gitOrThrow([...safeDiff, "--numstat", "-M", "-z", ...range], repo, options);
   const status = await gitOrThrow([...safeDiff, "--name-status", "-M", "-z", ...range], repo, options);
-  const patch = await gitOrThrow([...safeDiff, "--no-color", "-M", ...range], repo, options);
+  const patch = await gitOrThrow([...safeDiff, "--no-color", "-M", ...PATCH_PATHS.prefixes, ...range], repo, options);
 
   // --name-status -z: STATUS\0path\0 (renames: R100\0old\0new\0)
   const statusTokens = status.split("\0").filter((t) => t !== "");
@@ -87,8 +95,9 @@ async function diffFiles(repo: GitCwd, range: string[], options?: GitOptions, co
   for (let i = 0; i < numTokens.length; i++) {
     const token = numTokens[i]!;
     if (!token) continue;
-    const [add = "", del = "", path = ""] = token.split("\t");
-    let file = path;
+    // (a path can have tabs of its own)
+    const [add = "", del = "", ...name] = token.split("\t");
+    let file = name.join("\t");
     if (!file) {
       file = numTokens[i + 2] ?? "";
       i += 2;
@@ -96,11 +105,18 @@ async function diffFiles(repo: GitCwd, range: string[], options?: GitOptions, co
     counts.set(file, { additions: Number(add) || 0, deletions: Number(del) || 0, binary: add === "-" });
   }
 
+  // Each file's patch, found by its exact "diff --git" line: a non-ASCII name, or one with " b/" in
+  // it, would otherwise show its counts with an empty diff.
+  const headers = new Map<string, string>();
+  for (const [path, kind] of kinds) headers.set(`${quoteGitPath(`a/${kind.oldPath ?? path}`)} ${quoteGitPath(`b/${path}`)}`, path);
   const patches = new Map<string, string>();
   for (const chunk of patch.split(/^diff --git /m).slice(1)) {
-    const header = chunk.slice(0, chunk.indexOf("\n"));
-    const target = header.match(/ b\/(.+)$/)?.[1];
-    if (target) patches.set(target, chunk.slice(chunk.indexOf("\n") + 1));
+    const end = chunk.indexOf("\n");
+    const target = headers.get(chunk.slice(0, end));
+    if (target === undefined) continue;
+    // A file that becomes a symlink (or the reverse) comes as a deletion and a creation, both under its one header.
+    const earlier = patches.get(target);
+    patches.set(target, (earlier === undefined ? "" : `${earlier}diff --git ${chunk.slice(0, end)}\n`) + chunk.slice(end + 1));
   }
 
   return [...kinds.entries()].map(([path, kind]) => {
@@ -225,30 +241,31 @@ async function mergeInCheckout(repo: string, checkout: string, branch: string, i
       const status = await git(["status", "--porcelain", "--untracked-files=no"], at);
       const stillOurCommit = (await gitOrThrow(["rev-parse", "HEAD"], at)).trim() === commit;
       const rollback = status.code === 0 && !status.stdout.trim() && stillOurCommit ? await git(["reset", "--merge", expected.target], at) : undefined;
-      throw new Error(rollback?.code === 0 ? "A commit hook changed the verified merge tree. The merge was undone; review the hook and validate again." : "A commit hook changed the verified merge tree and the checkout changed afterwards. It was retained; inspect the checkout before proceeding.");
+      throw new Error(rollback?.code === 0 ? "A hook changed the verified merge tree. The merge was undone; review the hook and validate again." : "A hook changed the verified merge tree and the checkout changed afterwards. It was retained; inspect the checkout before proceeding.");
     }
     return { ok: true, commit, method: "checkout", ...(warning ? { warning } : {}) };
   };
-  let res = await git(["merge", "--no-ff", ...(expected?.tree ? ["--no-commit"] : []), "-m", message, branch], at, options);
-  if (res.code === 0 && expected?.tree) {
-    const tree = (await gitOrThrow(["write-tree"], at)).trim();
-    if (tree !== expected.tree) {
-      if (await midMerge(at)) {
-        const abort = await git(["merge", "--abort"], at, { timeoutMs: CHECKOUT_TIMEOUT_MS });
-        if (abort.code) throw new Error("The merge tree differed from the verified tree and abort failed. Inspect the checkout before proceeding.");
-      }
-      throw new Error("The merge produced a different tree than validation. No merge was committed; validate the current result again.");
-    }
-    if (await midMerge(at)) res = await git(["commit", "-m", message], at, options);
+  // A verified merge is an ordinary `git merge`, so it runs the same hooks as any other
+  // (pre-merge-commit, post-merge; not the commit hooks). Its tree is checked before the checkout
+  // is touched (with git 2.38 or later), and again once committed (`finish`), which undoes the
+  // merge when a hook changed it.
+  if (expected?.tree && (await gitAtLeast(2, 38))) {
+    const preview = await git(["merge-tree", "--write-tree", expected.target, expected.source], at);
+    if (preview.code !== 0 || preview.stdout.split("\n")[0]!.trim() !== expected.tree) throw new Error("The merge produced a different tree than validation. No merge was committed; validate the current result again.");
   }
+  const res = await git(["merge", "--no-ff", "-m", message, branch], at, options);
   if (res.code === 0) return finish((await gitOrThrow(["rev-parse", "HEAD"], at)).trim());
   if (res.timedOut) {
     const head = (await git(["rev-parse", "HEAD"], at)).stdout.trim();
     const parents = (await git(["log", "-1", "--format=%P", head], at)).stdout.trim();
     if (head !== before && parents === `${before} ${merging}`) {
       const after = CHECKOUT_TIMEOUT_MS >= 60_000 ? `${Math.round(CHECKOUT_TIMEOUT_MS / 60_000)} min` : `${Math.round(CHECKOUT_TIMEOUT_MS / 1000)} s`;
+      // git runs post-merge before it clears its merge state: stopped in the hook, it leaves the
+      // checkout "still merging", and your next commit there would be a second merge commit.
+      const quit = (await midMerge(at)) ? await git(["merge", "--quit"], at) : undefined;
+      const still = quit && (quit.code !== 0 || (await midMerge(at))) ? `, and ${checkout} is still mid-merge: run \`git merge --quit\` there before you commit` : "";
       const left = lock && existsSync(lock) ? `, and it left ${lock} behind; remove it once no git is running there` : "";
-      const warning = `Merged into ${into}, but git was stopped after ${after}, once the merge commit was made: a post-merge hook (an install, a download) may not have finished in ${checkout}${left}.`;
+      const warning = `Merged into ${into}, but git was stopped after ${after}, once the merge commit was made: a post-merge hook (an install, a download) may not have finished in ${checkout}${still}${left}.`;
       logWarn(warning, { checkout, commit: head });
       return finish(head, warning);
     }
@@ -424,13 +441,48 @@ async function catchUpWithSquashedBase(repo: string, branch: string, into: strin
 }
 
 /**
+ * What removing the worktree at `path` would lose that its branch doesn't hold, or undefined
+ * when nothing: uncommitted or untracked files (ignored ones, such as node_modules, are rebuilt
+ * rather than written), changes git is told not to look at (assume-unchanged, skip-worktree),
+ * commits made on a detached HEAD that no branch holds (git would drop them once the worktree's
+ * HEAD no longer names them), or the lock someone put on it with `git worktree lock`.
+ */
+export async function unsavedWork(repo: string, path: string): Promise<string | undefined> {
+  const checkout = await assertWorktree(repo, { path }).catch(() => undefined);
+  return checkout ? unsavedIn(checkout) : "isn't the checkout code-flow made";
+}
+
+async function unsavedIn(checkout: Checkout): Promise<string | undefined> {
+  if (existsSync(join(checkout.gitDir, "locked"))) return "is locked";
+  const [status, flags, onBranch] = await Promise.all([
+    git(["status", "--porcelain", "--untracked-files=all", "--ignore-submodules=none"], checkout),
+    git(["ls-files", "-v", "-z"], checkout),
+    git(["symbolic-ref", "-q", "HEAD"], checkout),
+  ]);
+  if (status.code !== 0 || flags.code !== 0) return "couldn't be checked for uncommitted changes";
+  if (status.stdout.trim()) return "has uncommitted changes";
+  if (flags.stdout.split("\0").some((entry) => /^[a-zS] /.test(entry))) return "has files git is told not to check (assume-unchanged or skip-worktree)";
+  // On a branch, that branch holds every commit. Detached (`git checkout --detach`, a rebase
+  // stopped halfway), HEAD may be the only thing that does.
+  if (onBranch.code !== 0) {
+    const holder = await git(["for-each-ref", "--count=1", "--format=%(refname)", "--contains", "HEAD", "refs/heads/"], checkout);
+    if (holder.code !== 0) return "couldn't be checked for commits no branch holds";
+    if (!holder.stdout.trim()) return "has commits no branch holds (its HEAD is detached)";
+  }
+  return undefined;
+}
+
+/**
  * Remove a run's worktrees (branches are kept unless asked). Returns what was removed, and
- * what couldn't be (with git's reason) instead of quietly leaving it behind.
+ * what couldn't be (with git's reason) instead of quietly leaving it behind. `keepUnsaved`
+ * leaves a worktree holding work its branch doesn't (see unsavedWork) where it is, as failed:
+ * for removal nobody confirmed worktree by worktree.
  */
 export async function removeWorktrees(
   repo: string,
   worktrees: { path: string; branch: string }[],
   deleteBranches: boolean,
+  opts: { keepUnsaved?: boolean } = {},
 ): Promise<{ removed: string[]; deletedBranches: string[]; failed: string[] }> {
   return withRepoLock(repo, async () => {
     const removed: string[] = [];
@@ -439,19 +491,25 @@ export async function removeWorktrees(
     for (const wt of worktrees) {
       if (existsSync(wt.path)) {
         // Any branch will do: it's the folder that goes.
-        const unsafe = await assertWorktree(repo, { path: wt.path }).then(
-          () => undefined,
-          (err: Error) => err.message,
-        );
-        if (unsafe) {
-          failed.push(unsafe);
+        const checkout = await assertWorktree(repo, { path: wt.path }).catch((err: Error) => err);
+        if (checkout instanceof Error) {
+          failed.push(checkout.message);
+          continue;
+        }
+        const unsaved = opts.keepUnsaved ? await unsavedIn(checkout) : undefined;
+        if (unsaved) {
+          failed.push(`${wt.path} ${unsaved}`);
           continue;
         }
         let res = await git(["worktree", "remove", "--force", wt.path], repo);
-        // A worktree with submodules, or a locked one, takes --force twice.
-        if (res.code !== 0) res = await git(["worktree", "remove", "--force", "--force", wt.path], repo);
+        // A worktree with submodules, or a locked one, takes --force twice. Not when keeping
+        // unsaved work: the lock is someone's.
+        if (res.code !== 0 && !opts.keepUnsaved) res = await git(["worktree", "remove", "--force", "--force", wt.path], repo);
         if (res.code === 0) removed.push(wt.path);
         else failed.push(`${wt.path}: ${shortError(res)}`);
+      } else {
+        // Its folder was deleted by hand: git still lists it, and won't delete a branch it says is checked out there.
+        await forgetWorktree(repo, wt.path, wt.branch);
       }
       if (deleteBranches && (await git(["show-ref", "--verify", "--quiet", `refs/heads/${wt.branch}`], repo)).code === 0) {
         const res = await git(["branch", "-D", wt.branch], repo);
@@ -459,7 +517,6 @@ export async function removeWorktrees(
         else failed.push(`branch ${wt.branch}: ${shortError(res)}`);
       }
     }
-    await git(["worktree", "prune"], repo);
     if (failed.length) logWarn(`Couldn't remove everything in ${repo}`, { failed });
     return { removed, deletedBranches, failed };
   });

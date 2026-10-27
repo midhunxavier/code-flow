@@ -59,7 +59,9 @@ test("doctor: the flags each CLI must accept, Codex's 'Not logged in', and agy o
   const healthy = await doctor({});
   for (const h of healthy) {
     assert.equal(h.compatible, true, `${h.id}: ${h.warnings?.join(" ")}`);
-    assert.equal(h.warnings, undefined, h.id);
+    // The fake agy (1.3.6) can't run isolated, which the doctor reports; nothing else warns.
+    if (h.id === "agy") assert.deepEqual(h.warnings?.map((w) => /isolated Antigravity by default/.test(w)), [true], h.warnings?.join(" "));
+    else assert.equal(h.warnings, undefined, h.id);
     assert.ok(h.version, h.id);
   }
   assert.equal(healthy.find((h) => h.id === "codex")!.account, "ChatGPT");

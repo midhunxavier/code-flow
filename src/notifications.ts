@@ -49,13 +49,14 @@ const text = (value: unknown, max: number) => typeof value === "string" ? value.
 export function notificationEvents(run: RunSummary): { event: NotificationEvent; key: string }[] {
   if (run.archived || run.projectTeam) return [];
   const candidates: { event: NotificationEvent; key: string }[] = [];
-  if (run.endedAt && ["done", "failed", "stopped", "interrupted"].includes(run.status)) {
+  if (run.endedAt && ["done", "failed", "stopped"].includes(run.status)) {
     const failed = run.status !== "done" || ["Failed", "Blocked"].includes(checksLabel(run));
     candidates.push({ event: failed ? "failure" : "done", key: `${run.id}:ended:${run.endedAt}` });
   }
   const attention = run.awaiting ? ["approval", run.awaiting.kind, run.awaiting.at] : run.team?.awaitingRequestId ? ["question", run.team.awaitingRequestId] : run.triage?.state === "pending" ? ["triage", run.triage.at] : run.team?.status === "blocked" ? ["blocked", run.team.gaps] : undefined;
   if (attention) candidates.push({ event: "needs-attention", key: `${run.id}:attention:${digest(attention)}` });
-  for (const watch of Object.values(run.watches ?? {})) if (watch.state === "needs-you") candidates.push({ event: "needs-attention", key: `${run.id}:watch:${digest([watch.branch, watch.detail, watch.fixes])}` });
+  // Poll counters are display detail, not a new request for attention. Rearming creates a new identity.
+  for (const watch of Object.values(run.watches ?? {})) if (watch.state === "needs-you") candidates.push({ event: "needs-attention", key: `${run.id}:watch:${digest([watch.branch, watch.startedAt, watch.detail.replace(/^Couldn't check the PR \d+ times? in a row: /, "Poll failed: "), watch.fixes])}` });
   return candidates;
 }
 
@@ -87,6 +88,7 @@ export class Notifications {
   private managedEnvironment: NodeJS.ProcessEnv = {};
   private state: SavedState = EMPTY();
   private loaded = false;
+  configurationWarning?: string;
   private queue: Promise<unknown> = Promise.resolve();
   private draining?: Promise<void>;
   private timer?: ReturnType<typeof setInterval>;
@@ -101,16 +103,26 @@ export class Notifications {
     this.fetcher = options.fetch ?? fetch;
     this.now = options.now ?? Date.now;
   }
-  async load(input?: unknown): Promise<void> {
+  async load(input?: unknown, options: { allowInvalidAdministratorConfig?: boolean } = {}): Promise<void> {
     this.loaded = false;
     this.configs = [];
+    this.administratorConfigs = [];
+    this.configurationWarning = undefined;
     this.state = EMPTY();
-    if (input === undefined) {
-      const content = this.environment.CODEFLOW_NOTIFICATIONS_FILE ? await readFile(this.environment.CODEFLOW_NOTIFICATIONS_FILE, "utf8") : this.environment.CODEFLOW_NOTIFICATIONS_JSON;
-      if (content && content.length > 128_000) throw new Error("Notification configuration exceeds 128 KB");
-      try { input = content ? JSON.parse(content) : []; } catch { throw new Error("Notification configuration is not valid JSON"); }
+    const administrator = input === undefined;
+    let configs: TargetConfig[];
+    try {
+      if (administrator) {
+        const content = this.environment.CODEFLOW_NOTIFICATIONS_FILE ? await readFile(this.environment.CODEFLOW_NOTIFICATIONS_FILE, "utf8") : this.environment.CODEFLOW_NOTIFICATIONS_JSON;
+        if (content && content.length > 128_000) throw new Error("Notification configuration exceeds 128 KB");
+        try { input = content ? JSON.parse(content) : []; } catch { throw new Error("Notification configuration is not valid JSON"); }
+      }
+      configs = targetConfigs(input);
+    } catch (error) {
+      if (!administrator || !options.allowInvalidAdministratorConfig) throw error;
+      this.configurationWarning = "Administrator notification configuration (CODEFLOW_NOTIFICATIONS_JSON/FILE) is invalid or unreadable. Those destinations are unavailable; app-managed connections remain available.";
+      configs = [];
     }
-    const configs = targetConfigs(input);
     registerPrivateEnvNames(["CODEFLOW_NOTIFICATIONS_FILE", "CODEFLOW_NOTIFICATIONS_JSON", ...configs.flatMap((c) => [c.urlEnv, ...(c.secretEnv ? [c.secretEnv] : [])])]);
     this.configs = configs; this.administratorConfigs = configs;
     const saved = await readFile(this.file, "utf8").catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return undefined; throw error; });
@@ -129,7 +141,7 @@ export class Notifications {
         for (const value of parsed.deliveries.slice(-MAX_DELIVERIES)) {
           if (!value || !/^notification-[a-f0-9]{24}$/.test(value.id) || typeof value.target !== "string" || !/^[a-z][a-z0-9-]{0,63}$/.test(value.target) || !EVENTS.includes(value.event) || !["pending", "sending", "delivered", "failed", "cancelled"].includes(value.state) || !Number.isFinite(value.createdAt) || !Number.isFinite(value.updatedAt) || !Number.isInteger(value.attempts) || value.attempts < 0 || value.attempts > MAX_ATTEMPTS || !value.payload || value.payload.version !== 1 || value.payload.id !== value.id || value.payload.runId !== value.runId || value.payload.event !== value.event || value.payload.project !== value.project) throw new Error("Invalid delivery");
           const delivery: SavedDelivery = { id: value.id, target: value.target, event: value.event, runId: text(value.runId, 100), teamId: text(value.payload.teamId, 100) || undefined, cycleId: text(value.payload.cycleId, 100) || undefined, project: text(value.project, 100) || undefined, state: value.state,
-            attempts: value.attempts, totalAttempts: Number.isSafeInteger(value.totalAttempts) && value.totalAttempts >= value.attempts ? value.totalAttempts : value.attempts, retryCount: Number.isSafeInteger(value.retryCount) && value.retryCount > 0 ? value.retryCount : 0, createdAt: value.createdAt, updatedAt: value.updatedAt, nextAttemptAt: Number.isFinite(value.nextAttemptAt) ? value.nextAttemptAt : undefined,
+            attempts: value.attempts, totalAttempts: Number.isSafeInteger(value.totalAttempts) && value.totalAttempts >= value.attempts ? value.totalAttempts : value.attempts, retryCount: Number.isSafeInteger(value.retryCount) && value.retryCount > 0 ? value.retryCount : 0, createdAt: value.createdAt, updatedAt: value.updatedAt, nextAttemptAt: value.state === "pending" && Number.isFinite(value.nextAttemptAt) ? value.nextAttemptAt : undefined,
             httpStatus: Number.isInteger(value.httpStatus) && value.httpStatus >= 100 && value.httpStatus <= 599 ? value.httpStatus : undefined, reason: text(value.reason, 300) || undefined,
             manual: value.manual === true || undefined, payload: this.payload(value.payload), destinationHash: text(value.destinationHash, 64) };
           if (delivery.state === "sending") { delivery.state = "failed"; delivery.reason = "Delivery outcome is unknown after restart; retry manually if needed"; delivery.nextAttemptAt = undefined; }
@@ -180,7 +192,7 @@ export class Notifications {
     if (settings.enabled && !destination) throw new Error("Configure a valid HTTPS destination and credentials before enabling notifications");
     await this.mutate(() => {
       this.state.settings[id] = { ...this.state.settings[id], ...settings, destinationHash: destination?.hash, lastError: undefined };
-      for (const job of this.state.deliveries) if (job.target === id && job.state === "pending" && !this.allowed(job, settings)) { job.state = "cancelled"; job.updatedAt = this.now(); job.reason = "Notification settings no longer allow this delivery"; }
+      for (const job of this.state.deliveries) if (job.target === id && job.state === "pending" && !this.allowed(job, settings)) { job.state = "cancelled"; job.nextAttemptAt = undefined; job.updatedAt = this.now(); job.reason = "Notification settings no longer allow this delivery"; }
     });
     return this.list().find((target) => target.id === id)!;
   }
@@ -269,10 +281,10 @@ export class Notifications {
       const claimed = await this.mutate(() => {
         const job = this.state.deliveries.find((value) => value.id === candidate.id);
         if (!job || job.state !== "pending" || (job.nextAttemptAt ?? 0) > this.now()) return undefined;
-        if (job.attempts >= MAX_ATTEMPTS) { job.state = "failed"; job.reason = "Automatic retry limit reached"; job.updatedAt = this.now(); return undefined; }
+        if (job.attempts >= MAX_ATTEMPTS) { job.state = "failed"; job.nextAttemptAt = undefined; job.reason = "Automatic retry limit reached"; job.updatedAt = this.now(); return undefined; }
         const c = this.configs.find((config) => config.id === job.target), destination = c && this.destination(c);
         if (!c || !destination || destination.hash !== job.destinationHash || !job.manual && !this.allowed(job, this.state.settings[job.target] ?? defaults()) || this.now() - (job.nextAttemptAt ?? job.createdAt) > MAX_PENDING_AGE) {
-          job.state = "cancelled"; job.reason = "Destination or scope changed, or this pending delivery expired"; job.updatedAt = this.now(); return undefined;
+          job.state = "cancelled"; job.nextAttemptAt = undefined; job.reason = "Destination or scope changed, or this pending delivery expired"; job.updatedAt = this.now(); return undefined;
         }
         job.state = "sending"; job.attempts++; job.totalAttempts = (job.totalAttempts ?? 0) + 1; job.updatedAt = this.now(); job.nextAttemptAt = undefined;
         return { job, c, destination };
@@ -286,7 +298,7 @@ export class Notifications {
         const message = `code-flow: ${job.event}\n${job.payload.title}\n${job.payload.teamId ? `Team ${job.payload.teamId}` : `Run ${job.runId}`} · ${job.payload.status} · ${job.payload.result}`;
         const slackText = message.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
         const body = c.protocol === "slack" ? { text: slackText, blocks: [{ type: "section", text: { type: "plain_text", text: message, emoji: false } }], unfurl_links: false, unfurl_media: false } : job.payload;
-        const response = await this.fetcher(destination.url, { method: "POST", headers, body: JSON.stringify(body), redirect: "error", signal: AbortSignal.timeout(10_000) });
+        const response = await this.fetcher(destination.url, { method: "POST", headers, body: JSON.stringify(body), redirect: "manual", signal: AbortSignal.timeout(10_000) });
         status = response.status;
         retryable = status === 429 || status >= 500;
         const retry = Number(response.headers.get("retry-after"));
@@ -299,9 +311,9 @@ export class Notifications {
       }
       await this.mutate(() => {
         job.httpStatus = status; job.updatedAt = this.now();
-        job.reason = status ? `Destination returned HTTP ${status}` : "Connection, TLS or timeout failure";
+        job.reason = status && status >= 300 && status < 400 ? `Destination redirected (HTTP ${status}); redirects are not followed. Configure the final HTTPS address.` : status ? `Destination returned HTTP ${status}` : "Connection, TLS or timeout failure";
         if (retryable && job.attempts < MAX_ATTEMPTS) { job.state = "pending"; job.nextAttemptAt = this.now() + Math.min(300_000, Math.max(retryAfter, 30_000 * 2 ** (job.attempts - 1))); }
-        else job.state = "failed";
+        else { job.state = "failed"; job.nextAttemptAt = undefined; }
       });
     }
   }

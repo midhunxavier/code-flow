@@ -20,8 +20,9 @@ test("validated merges pin their tree and undo a commit hook that changes tested
     assert.equal(git("rev-parse", "HEAD"), target); assert.equal(git("status", "--porcelain"), "");
     await assert.rejects(mergeInto(repo, "result", "target-ref", "merge", { source, target, tree: "0".repeat(40) }), /different tree/);
     assert.equal(git("rev-parse", "target-ref"), target);
-    const hook = join(repo, ".git/hooks/pre-commit");
-    writeFileSync(hook, "#!/bin/sh\nprintf 'hook rewrite\\n' >> README.md\ngit add README.md\n"); chmodSync(hook, 0o700);
+    // A verified merge runs a merge's hooks: a post-merge one that commits changes what was tested.
+    const hook = join(repo, ".git/hooks/post-merge");
+    writeFileSync(hook, "#!/bin/sh\nprintf 'hook rewrite\\n' >> README.md\ngit add README.md\ngit commit -qm 'hook rewrite'\n"); chmodSync(hook, 0o700);
     await assert.rejects(mergeInto(repo, "result", "main", "merge", { source, target, tree }), /hook changed.*merge was undone/i);
     assert.equal(git("rev-parse", "HEAD"), target); assert.equal(git("status", "--porcelain"), ""); assert.equal(readFileSync(join(repo, "README.md"), "utf8"), "base\n");
     rmSync(hook);

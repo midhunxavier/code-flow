@@ -52,7 +52,7 @@ export const templates: Template[] = [
     name: "Upgrade a dependency",
     description: "Bump a package, read its changelog for breaking changes, and keep the tests green.",
     pattern: "pipeline",
-    task: "Upgrade PACKAGE to its latest version. Read its changelog for breaking changes, update every call site, and keep the tests passing.",
+    task: "Upgrade {{package}} to its latest version. Read its changelog for breaking changes, update every call site, and keep the tests passing.",
   },
   {
     id: "sweep-issues",

@@ -1,7 +1,9 @@
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { cantRunReason, detectCheckCommand, failureExcerpt, failureFingerprint, runCheck, type CheckResult, type Container } from "./checks.js";
+import { cantRunReason, detectCheckCommand, failureExcerpt, failureFingerprint, formatTimeout, runCheck, type CheckResult, type Container } from "./checks.js";
+import { readRepoConfig } from "./repo-config.js";
+import { DEFAULT_LOOP } from "./run-projection.js";
 
 export type VerificationKind = "build" | "typecheck" | "lint" | "unit" | "integration" | "browser" | "mutation" | "visual" | "accessibility" | "custom";
 export type VerificationPreset = "lightweight" | "standard" | "thorough";
@@ -85,37 +87,79 @@ export function validateVerificationProfile(value: unknown): VerificationProfile
   return { name: p.name.trim(), checks, ...(requirements ? { requirements } : {}), ...(typeof p.source === "string" ? { source: p.source.slice(0, 500) } : {}), ...(typeof p.setup === "string" && p.setup.trim() ? { setup: p.setup.trim().slice(0, 4_000) } : {}) };
 }
 
-/** Discover existing scripts only; never invent commands that are absent from a repository. */
+/**
+ * Discover existing scripts only; never invent commands that are absent from a repository. Each
+ * gate gets the time limit the repository's check gets in a run (`limits.checkTimeoutMin` in
+ * .codeflow/config.json, else ten minutes), up to the 30-minute maximum.
+ */
 export async function detectVerificationProfile(repo: string, preset: VerificationPreset = "standard"): Promise<VerificationProfile> {
   if (!["lightweight", "standard", "thorough"].includes(preset)) throw new Error("Unknown verification preset");
   const include: VerificationKind[] = preset === "lightweight" ? ["typecheck", "lint", "unit"] : preset === "standard" ? ["build", "typecheck", "lint", "unit"] : ["build", "typecheck", "lint", "unit", "integration", "browser", "mutation", "visual", "accessibility"];
   const has = (path: string) => existsSync(join(repo, path));
   const checks: VerificationCheck[] = [];
+  const { config } = await readRepoConfig(repo);
+  const timeoutMs = Math.min(MAX_CHECK_TIMEOUT, Math.max(1, Math.round((config.limits?.checkTimeoutMin ?? DEFAULT_LOOP.checkTimeoutMin) * 60_000)));
   if (has("package.json")) {
     let pkg: { scripts?: Record<string, unknown> };
-    try { pkg = JSON.parse(await readFile(join(repo, "package.json"), "utf8")); }
+    try { pkg = JSON.parse((await readFile(join(repo, "package.json"), "utf8")).replace(/^\uFEFF/, "")); }
     catch { throw new Error("Cannot detect verification: package.json is not valid JSON"); }
     const runner = has("pnpm-lock.yaml") ? "pnpm run" : has("yarn.lock") ? "yarn run" : has("bun.lock") || has("bun.lockb") ? "bun run" : "npm run";
     const scripts: [VerificationKind, string[]][] = [["build", ["build"]], ["typecheck", ["typecheck", "check:types"]], ["lint", ["lint"]], ["unit", ["test:unit", "test"]], ["integration", ["test:integration"]], ["browser", ["test:e2e", "test:browser"]], ["mutation", ["test:mutation", "mutation"]], ["visual", ["test:visual"]], ["accessibility", ["test:a11y", "test:accessibility"]]];
     for (const [kind, candidates] of scripts) {
       if (!include.includes(kind)) continue;
       const script = candidates.find((name) => typeof pkg.scripts?.[name] === "string" && String(pkg.scripts[name]).trim() && !/no test specified/i.test(String(pkg.scripts[name])));
-      if (script) checks.push({ id: kind, kind, command: `${runner} ${script}`, required: true, timeoutMs: DEFAULT_CHECK_TIMEOUT });
+      if (script) checks.push({ id: kind, kind, command: `${runner} ${script}`, required: true, timeoutMs });
     }
     if (checks.length) return { name: preset, checks, source: "package.json" };
   }
   const detected = await detectCheckCommand(repo);
-  if (detected) checks.push({ id: "unit", kind: "unit", command: detected.command, required: true, timeoutMs: DEFAULT_CHECK_TIMEOUT });
+  if (detected) checks.push({ id: "unit", kind: "unit", command: detected.command, required: true, timeoutMs });
   return { name: preset, checks, source: detected?.source, setup: detected?.setup };
 }
 
-/** Mixed repeated results stay flaky even if the latest attempt passes. */
-export function diagnoseChecks(attempts: CheckResult[], baseline?: CheckResult): { diagnosis: CheckDiagnosis; reason?: string } {
+/**
+ * The same check however it's spelled: `npm test`, `npm t` and `npm run test` (pnpm's and yarn's
+ * too) run one script, so a run's check and a profile gate that differ only so are one gate.
+ */
+export function sameCheckCommand(a: string, b: string): boolean {
+  // Only normalize the known script prefix. Whitespace in quoted arguments changes the command.
+  const normal = (command: string) => command.trim().replace(/^(npm|pnpm|yarn)[ \t]+(?:run(?:-script)?[ \t]+test|test|tst|t)(?=[ \t]|$)/, "$1 run test");
+  return normal(a) === normal(b);
+}
+
+/**
+ * The attempt that says the environment is wrong, when that alone keeps a report from verifying:
+ * every required gate that didn't pass couldn't run here (see `cantRunReason`), and none was
+ * skipped. A run treats that as a check that can't run, not as code to fix.
+ */
+export function environmentBlock(report: VerificationReport): CheckResult | undefined {
+  return environmentBlocks(report)?.[0];
+}
+
+/** Every blocked required gate must also fail on the base before the run can be set aside. */
+export function environmentBlocks(report: VerificationReport): CheckResult[] | undefined {
+  if (report.state !== "blocked" || report.skipped.some((gate) => gate.check.required)) return undefined;
+  const failing = report.checks.filter((gate) => gate.check.required && gate.diagnosis !== "passed");
+  if (!failing.length || failing.some((gate) => gate.diagnosis !== "environment")) return undefined;
+  const attempts = failing.map(gate => gate.attempts.find(attempt => cantRunReason(attempt)));
+  return attempts.every((attempt): attempt is CheckResult => !!attempt) ? attempts : undefined;
+}
+
+/**
+ * Mixed repeated results stay flaky even if the latest attempt passes. A gate its time limit
+ * (`limitMs`) stopped every time didn't finish: the reason says so, since a slow suite needs a
+ * longer limit rather than a fix.
+ */
+export function diagnoseChecks(attempts: CheckResult[], baseline?: CheckResult, limitMs?: number): { diagnosis: CheckDiagnosis; reason?: string } {
   if (!attempts.length) return { diagnosis: "failed", reason: "No check attempt completed" };
   if (attempts.some((a) => a.ok) && attempts.some((a) => !a.ok)) return { diagnosis: "flaky", reason: "The same command both passed and failed on this revision" };
   if (attempts.every((a) => a.ok)) return { diagnosis: "passed" };
   const reason = attempts.map(cantRunReason).find(Boolean);
   if (reason) return { diagnosis: "environment", reason };
+  if (attempts.every((a) => a.timedOut)) {
+    const timedOut = `Timed out${limitMs ? ` after ${formatTimeout(limitMs)}` : ""} before the check finished. If it's only slow, raise this gate's timeout (at most 30 min).`;
+    return baseline?.ok ? { diagnosis: "regression", reason: `${timedOut} It passed on the baseline revision.` } : { diagnosis: "failed", reason: timedOut };
+  }
   if (baseline?.ok) return { diagnosis: "regression", reason: "This check passed on the baseline revision" };
   if (baseline && !baseline.ok && attempts.every((a) => failureFingerprint(a) === failureFingerprint(baseline))) return { diagnosis: "pre-existing", reason: "The baseline reports the same failure; this check still requires attention" };
   return { diagnosis: "failed" };
@@ -148,7 +192,8 @@ export async function runVerification(cwd: string, input: VerificationProfile, o
   const profile = validateVerificationProfile(input);
   const repeats = opts.repeats ?? 1;
   if (!Number.isInteger(repeats) || repeats < 1 || repeats > 3) throw new Error("Verification repeats must be between 1 and 3");
-  const timeoutMs = opts.timeoutMs ?? 15 * 60_000;
+  // By default the deadline leaves every gate its own limit, each attempt, up to one hour.
+  const timeoutMs = opts.timeoutMs ?? Math.min(MAX_SUITE_TIMEOUT, Math.max(15 * 60_000, profile.checks.reduce((sum, check) => sum + check.timeoutMs, 0) * repeats));
   if (!Number.isFinite(timeoutMs) || timeoutMs < 1 || timeoutMs > MAX_SUITE_TIMEOUT) throw new Error("Verification deadline must be between 1 ms and one hour");
   const startedAt = Date.now();
   const checks: VerificationEvidence[] = [];
@@ -159,14 +204,16 @@ export async function runVerification(cwd: string, input: VerificationProfile, o
       continue;
     }
     const attempts: CheckResult[] = [];
+    let limitMs = check.timeoutMs;
     for (let i = 0; i < repeats; i++) {
       const remaining = timeoutMs - (Date.now() - startedAt);
       if (opts.signal?.aborted || remaining <= 0) break;
       const execution = { timeoutMs: Math.min(check.timeoutMs, remaining), signal: opts.signal, container: opts.container };
+      limitMs = execution.timeoutMs;
       attempts.push(await (opts.execute ? opts.execute(check, execution) : runCheck(cwd, check.command, execution)));
     }
     const baseline = opts.baseline?.[check.id];
-    const diagnosis = diagnoseChecks(attempts, baseline);
+    const diagnosis = diagnoseChecks(attempts, baseline, limitMs);
     if (["unit", "integration", "browser"].includes(check.kind) && attempts.some((attempt) => attempt.tests === 0)) {
       diagnosis.diagnosis = "failed";
       diagnosis.reason = "The test runner reported zero executed tests";
@@ -214,10 +261,11 @@ export function reviewCoverage(changed: string[], reviewed: string[]): ReviewCov
 export function renderVerificationReport(report: VerificationReport): string {
   const cell = (s: string) => s.replaceAll("|", "\\|").replaceAll("\n", " ");
   const parts = [`# Verification: ${report.state}`, "", `Profile: ${cell(report.profile)} · Duration: ${((report.endedAt - report.startedAt) / 1_000).toFixed(1)}s`, "", "| Check | Required | Result | Attempts |", "| --- | --- | --- | --- |"];
-  for (const c of report.checks) parts.push(`| ${cell(c.check.title ?? c.check.id)} | ${c.check.required ? "yes" : "no"} | ${c.diagnosis} | ${c.attempts.length} |`);
+  for (const c of report.checks) parts.push(`| ${cell(c.check.title ?? c.check.id)} | ${c.check.required ? "yes" : "no"} | ${c.diagnosis}${c.diagnosis !== "passed" && c.attempts.length && c.attempts.every((a) => a.timedOut) ? " (timed out)" : ""} | ${c.attempts.length} |`);
   for (const s of report.skipped) parts.push(`| ${cell(s.check.id)} | ${s.check.required ? "yes" : "no"} | skipped: ${cell(s.reason)} | 0 |`);
   for (const c of report.checks.filter((c) => c.diagnosis !== "passed")) {
-    const output = failureExcerpt(c.attempts.find((a) => !a.ok)?.output ?? c.reason ?? "No output");
+    const attempt = c.attempts.find((a) => !a.ok);
+    const output = failureExcerpt(attempt?.output?.trim() || (attempt ? `Exit ${attempt.exitCode}; no output.` : c.reason || "No output"));
     const fence = "`".repeat(Math.max(3, ...[...output.matchAll(/`+/g)].map((m) => m[0].length + 1)));
     parts.push("", `## ${cell(c.check.id)}: ${c.diagnosis}`, "", c.reason ?? "The check did not pass.", "", fence, output, fence);
   }

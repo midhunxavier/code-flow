@@ -119,6 +119,17 @@ export class HostExecution {
     if (raw.concurrency !== undefined) this.state.concurrency = raw.concurrency as number;
     this.state.revision++; await this.persist(); this.changed(); return this.view(ownerActor());
   }); }
+  removeAccount(userId: string) { return this.serial(async () => {
+    this.require(); let changed = false;
+    for (const policy of this.state.policies) if (policy.userIds.includes(userId)) { policy.userIds = policy.userIds.filter(id => id !== userId); changed = true; }
+    const stopping: string[] = [];
+    for (const job of this.state.jobs) if (job.userId === userId && active(job)) {
+      if (job.state === "queued") { job.state = "cancelled"; job.endedAt = Date.now(); }
+      else { job.state = "stopping"; if (job.runId) stopping.push(job.runId); }
+      job.message = "Account deleted by the owner"; changed = true;
+    }
+    if (changed) { this.state.revision++; await this.persist(); for (const id of stopping) this.options.manager.cancel(id); this.changed(); }
+  }); }
   private async authorize(job: StoredJob): Promise<Task> {
     this.require();
     if (!this.options.enabled()) throw new CollabError("Host execution is disabled or unavailable", 403);
@@ -138,13 +149,19 @@ export class HostExecution {
     const member = this.options.members().find((m) => m.userId === actor.userId && m.enabled);
     if (!member) throw new CollabError("Account unavailable", 403);
     const task = await this.options.store.task(memberActor(member, "browser"), taskId);
+    if (task.owner?.userId !== member.userId) throw new CollabError("Only the task owner can queue it on the team server; take ownership first", 409);
+    const currentPolicy = this.state.policies.find(policy => policy.projectId === task.projectId);
+    if (!this.options.enabled() || !roleAtLeast(member.roles[task.projectId], "contributor") || !currentPolicy?.enabled || !currentPolicy.userIds.includes(member.userId)) throw new CollabError("Host execution permission is unavailable; ask the owner for access", 403);
+    // A started claim changes the task revision and busy state. Repeated requests still refer to
+    // this requester's existing work, after rechecking current ownership and execution permission.
+    const duplicate = this.state.jobs.find(job => active(job) && job.taskId === taskId && job.userId === member.userId);
+    if (duplicate) return publicJob(duplicate);
     if (raw.revision !== task.revision) throw new CollabError("Task changed; reload before queuing", 409);
     const p = this.state.policies.find((p) => p.projectId === task.projectId);
     if (!p) throw new CollabError("The owner has not enabled host execution for this project", 403);
     const job: StoredJob = { id: `h-${randomBytes(8).toString("hex")}`, taskId, projectId: task.projectId, userId: member.userId, username: member.username, displayName: member.displayName, state: "queued", createdAt: Date.now(), policy: structuredClone(p), repo: this.options.resolveRepo(task.projectId, task.repository) ?? "", contentHash: taskHash(task) };
     await this.authorize(job);
     if (task.status === "done" || busyAttempt(task) || task.handoff?.state === "offered") throw new CollabError("This task cannot start while done, executing or being handed over", 409);
-    const duplicate = this.state.jobs.find((j) => active(j) && j.taskId === taskId); if (duplicate) return publicJob(duplicate);
     if (this.state.jobs.filter(active).length >= 50) throw new CollabError("The host queue is full (50 tasks)", 409);
     this.state.jobs = [...this.state.jobs.filter(active), ...this.state.jobs.filter((j) => !active(j)).slice(-199)].sort((a, b) => a.createdAt - b.createdAt);
     this.state.jobs.push(job); await this.persist(); this.changed(job); return publicJob(job);

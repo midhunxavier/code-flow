@@ -1,9 +1,10 @@
+import { automations, automationProject, loadAutomations } from "./automation-state.js";
 import { confirmAction } from "./confirm-state.js";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { HostControl, newProjectDraft } from "./ssh-projects.js";
 import { useDialog } from "./app.js";
 import { Icon } from "./icons.js";
-import { api, baseName, post, showToast } from "./lib.js";
+import { api, ApiError, baseName, post, showToast, showError, plural } from "./lib.js";
 import {
   ALL,
   composerProject,
@@ -17,9 +18,7 @@ import {
   NONE,
   activeProject,
   currentProject,
-  inScope,
   loadProjects,
-  needsYou,
   pickerChoose,
   pickerOpen,
   projectFor,
@@ -27,14 +26,15 @@ import {
   projects,
   projectsOpen,
   repo,
-  runs,
+  projectCounts,
+  projectCountsError,
+  refreshProjectCounts,
   selectProject,
 } from "./state.js";
 import type { Project, RepoInfo, RunSummary } from "./types.js";
 
 const byName = (list: Project[]) => [...list].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
 const reposText = (p: Project) => (p.repos.length ? p.repos.map(baseName).join(", ") : "no repositories yet");
-const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 /** Shortened from the left: the end of a path tells repos apart. The marks keep its slashes where they belong. */
 const Tail = ({ text }: { text: string }) => <span class="pr-path">{`\u200E${text}\u200E`}</span>;
 
@@ -44,7 +44,7 @@ const Tail = ({ text }: { text: string }) => <span class="pr-path">{`\u200E${tex
  */
 export function ProjectButton({ composer = false }: { composer?: boolean }) {
   const p = composer ? projects.value.find(item => item.id === composerProject.value) : activeProject.value;
-  const label = composer ? p?.name ?? "Choose project" : p ? p.name : currentProject.value === NONE ? "Unassigned" : "All projects";
+  const label = composer ? p?.name ?? "Choose project" : p ? p.name : currentProject.value === NONE ? "Without a project" : "All projects";
   return (
     <button type="button" class="repo-btn project-btn" disabled={composerLoading.value} title={composer ? "Choose the project's saved draft" : "Filter projects"} onClick={() => { projectPickerPurpose.value = composer ? "composer" : "filter"; projectsOpen.value = true; }}>
       <Icon name="project" />
@@ -65,33 +65,30 @@ export function ProjectsDialog() {
   const [direct] = useState<Project | "new" | null>(() => (projectEdit.value === "new" ? "new" : projects.value.find((p) => p.id === projectEdit.value) ?? null));
   const [editing, setEditing] = useState<Project | "new" | null>(direct);
   const doneEditing = () => (direct ? close() : setEditing(null));
-  const all = [...runs.value.values()];
-  const counts = (scope: string) => {
-    const list = all.filter((r) => inScope(r, scope));
-    return { runs: list.filter((r) => !r.archived).length, archived: list.filter((r) => r.archived).length, waiting: list.filter(needsYou).length };
-  };
+  useEffect(() => { void refreshProjectCounts().catch(() => {}); }, []);
+  const counts = (scope: string) => projectCounts.value?.[scope];
   const choose = async (id: string) => {
-    if (projectPickerPurpose.value === "composer") await openComposer(id);
+    if (projectPickerPurpose.value === "composer") await openComposer(id, { carryUnassigned: !!composerProject.value && !projects.value.some(item => item.id === composerProject.value) });
     else selectProject(id);
     close();
   };
   const row = (id: string, name: string, detail: string, p?: Project) => {
-    const c = counts(id);
+    const draftRow = projectPickerPurpose.value === "composer" && id === ALL;
+    const c = draftRow ? undefined : counts(id);
     const on = (projectPickerPurpose.value === "composer" ? composerProject.value : currentProject.value) === id;
     return (
       <div key={id || "all"} class={`project-row ${on ? "on" : ""}`} role="listitem">
         <button type="button" class="pr-main" aria-current={on ? "true" : undefined} onClick={() => choose(id)}>
           <span class="pr-name">
             {name}
-            {c.waiting ? (
-              <span class="count" title={`${plural(c.waiting, "run")} need you`}>
+            {c?.waiting ? (
+              <span class="count" title={`${plural(c.waiting, "run")} ${c.waiting === 1 ? "needs" : "need"} you`}>
                 {c.waiting}
               </span>
             ) : null}
           </span>
           <span class="pr-detail">
-            {detail} · {plural(c.runs, "run")}
-            {c.archived ? ` (+${c.archived} archived)` : ""}
+            {detail}{draftRow ? "" : c ? ` · ${plural(c.live, "run")}${c.archived ? ` (+${c.archived} archived)` : ""}` : " · Counts unavailable"}
           </span>
         </button>
         {p ? (
@@ -103,6 +100,8 @@ export function ProjectsDialog() {
     );
   };
   const orphans = counts(NONE);
+  const orphanAutomations = automations.value.filter(a => !automationProject(a.run)).length;
+  useEffect(() => { void loadAutomations(); }, []);
   return (
     <dialog class="picker small-dialog projects-dialog" ref={ref} aria-labelledby="projects-title">
       <div class="picker-inner">
@@ -114,10 +113,11 @@ export function ProjectsDialog() {
               <h3 id="projects-title">Projects</h3>
               <div class="help">{projectPickerPurpose.value === "composer" ? "Open a project's saved draft. Each project keeps its own task and run options." : "Choose which projects these lists show. Your saved run draft keeps its own destination."}</div>
             </div>
+            {projectCountsError.value ? <p class="msg err" role="alert">Counts unavailable: {projectCountsError.value} <button class="btn small" onClick={() => void refreshProjectCounts().catch(() => {})}>Retry counts</button></p> : null}
             <div class="picker-list" role="list">
               {row(ALL, projectPickerPurpose.value === "composer" ? "Unassigned draft" : "All projects", projectPickerPurpose.value === "composer" ? "Recover a draft that needs a destination" : "show all projects on this computer")}
               {byName(projects.value).map((p) => row(p.id, p.name, reposText(p), p))}
-              {projectPickerPurpose.value !== "composer" && (orphans.runs || orphans.archived) ? row(NONE, "Unassigned", "runs whose project was deleted") : null}
+              {projectPickerPurpose.value !== "composer" && (orphans?.live || orphans?.archived || orphanAutomations || currentProject.value === NONE) ? row(NONE, "Without a project", `${orphanAutomations} automation${orphanAutomations === 1 ? "" : "s"} without a project`) : null}
             </div>
             <div class="picker-foot">
               <span class="ps">{projects.value.length ? null : "Open a repository to create your first project."}</span>
@@ -142,17 +142,20 @@ function ProjectEditor({ project, onDone, onCreated }: { project?: Project; onDo
   const nameField = useRef<HTMLInputElement>(null);
   useEffect(() => nameField.current?.focus(), []);
   const [repos, setRepos] = useState<string[]>(project?.repos ?? []);
+  const [revision, setRevision] = useState(project?.revision ?? 0);
+  const [conflict, setConflict] = useState<Project | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const inProject = project ? [...runs.value.values()].filter((r) => projectFor(r)?.id === project.id) : [];
-  const leaving = project ? project.repos.filter((r) => !repos.includes(r) && inProject.some((run) => run.repo === r)) : [];
+  const counts = project ? projectCounts.value?.[project.id] : undefined;
+  const total = counts ? counts.live + counts.archived : undefined;
+  const leaving = project ? project.repos.filter(r => !repos.includes(r) && (!counts || counts.repositories[r])) : [];
 
   const save = async () => {
-    if (busy || !name.trim()) return;
+    if (busy || conflict || !name.trim()) return;
     setBusy(true);
     setError("");
     try {
-      const saved = await post<Project>(project ? `/api/projects/${project.id}` : "/api/projects", { name, repos });
+      const saved = await post<Project>(project ? `/api/projects/${project.id}` : "/api/projects", { name, repos, ...(project ? { revision } : {}) });
       await loadProjects();
       if (project) return onDone();
       if (projectPickerPurpose.value === "composer") await openComposer(saved.id);
@@ -160,14 +163,26 @@ function ProjectEditor({ project, onDone, onCreated }: { project?: Project; onDo
       onCreated();
       showToast(`Created the project ${saved.name}`);
     } catch (err) {
+      if (project && err instanceof ApiError && err.status === 409) {
+        await loadProjects(); setConflict(projects.value.find(item => item.id === project.id) ?? null);
+      }
       setError((err as Error).message);
     } finally {
       setBusy(false);
     }
   };
   const remove = async () => {
-    if (!project) return;
-    if (!await confirmAction(`Delete the project “${project.name}”? ${inProject.length ? `Its ${plural(inProject.length, "run")} stay, in no project.` : "It has no runs."}`, {"title":"Delete this project?","confirmLabel":"Delete project","danger":true})) return;
+    if (!project || busy) return;
+    let count: number;
+    try { const latest = (await refreshProjectCounts())[project.id]; if (!latest) throw new Error("Project counts are unavailable; retry before deleting"); count = latest.live + latest.archived; }
+    catch (error) { setError((error as Error).message); return; }
+    // Deleting archives the project's missions (see ProjectTeams.releaseProject), so name them first.
+    const missions = await api<{ teams: { name: string; projectId: string; status: string }[] }>(`/api/project-teams?project=${encodeURIComponent(project.id)}`).then((data) => data.teams.filter((t) => t.projectId === project.id && t.status !== "archived").map((t) => `“${t.name}”`), () => []);
+    await loadAutomations();
+    const remaining = automations.value.filter(a => !a.target && automationProject(a.run)?.id === project.id).length;
+    const automationWarning = remaining ? ` Its ${plural(remaining, "automation")} ${remaining === 1 ? "remains" : "remain"} saved with the current on/off settings. Future runs fall back to the repository's project (or create one if needed); saved automations will appear under Without a project.` : "";
+    const archived = missions.length ? ` Its ${missions.length === 1 ? "mission" : "missions"} ${missions.join(", ")} will be archived: ${missions.length === 1 ? "its" : "their"} history and budget records are kept, active work stops, and results waiting for approval can no longer be approved.` : "";
+    if (!await confirmAction(`Delete the project “${project.name}”? ${count ? `Its ${plural(count, "run")} ${count === 1 ? "stays" : "stay"}, in no project.` : "It has no runs."}${archived}${automationWarning}`, {"title":"Delete this project?","confirmLabel":"Delete project","danger":true})) return;
     try {
       await api(`/api/projects/${project.id}`, { method: "DELETE" });
       await loadProjects();
@@ -194,7 +209,7 @@ function ProjectEditor({ project, onDone, onCreated }: { project?: Project; onDo
     <>
       <div class="picker-head">
         <h3 id="projects-title">{project ? `Edit ${project.name}` : "New project"}</h3>
-        <div class="help">{project ? `${plural(inProject.length, "run")} in this project.` : "Name it and add the repositories its runs work in."}</div>
+        <div class="help">{project ? total === undefined ? "Loading project counts…" : `${plural(total, "run")} in this project.` : "Name it and add the repositories its runs work in."}</div>
       </div>
       <div class="dialog-body">
         {!project ? <div class="project-computer"><span class="lbl">Computer</span><HostControl projectName={name} /><p class="help">Choose where this project lives, then add repositories from that computer.</p></div> : null}
@@ -235,6 +250,7 @@ function ProjectEditor({ project, onDone, onCreated }: { project?: Project; onDo
           </button>
         </div>
         {leaving.length ? <div class="msg warn">Runs already in this project from {leaving.map(baseName).join(", ")} stay in it.</div> : null}
+        {conflict ? <div class="msg warn" role="alert"><p>The current project is “{conflict.name}” with {reposText(conflict)}. Your edits are still shown above.</p><button class="btn small" onClick={() => { setName(conflict.name); setRepos(conflict.repos); setRevision(conflict.revision ?? 0); setConflict(null); setError(""); }}>Reload current project</button><p class="help">Reload replaces this form with the saved project so you can review and reapply your changes.</p></div> : null}
         {error ? <div class="msg err">{error}</div> : null}
       </div>
       <div class="picker-foot">
@@ -247,7 +263,7 @@ function ProjectEditor({ project, onDone, onCreated }: { project?: Project; onDo
         <button type="button" class="btn" onClick={onDone}>
           Cancel
         </button>
-        <button type="button" class="btn primary" disabled={busy || !name.trim()} onClick={save}>
+        <button type="button" class="btn primary" disabled={busy || !!conflict || !name.trim()} onClick={save}>
           {busy ? "Saving…" : project ? "Save" : "Create project"}
         </button>
       </div>
@@ -299,7 +315,7 @@ function MoveDialog({ run, onClose }: { run: RunSummary; onClose: () => void }) 
       <div class="picker-inner">
         <div class="picker-head">
           <h3 id="move-title">Move to another project</h3>
-          <div class="help">The run, its branches and its worktrees stay where they are; only the project it's listed under changes.</div>
+          <div class="help">The conversation and its provider tabs, side chats and team executions move together. Branches and worktrees stay where they are.</div>
         </div>
         <div class="picker-list" role="radiogroup" aria-label="Project">
           {byName(projects.value).map((p) => (
@@ -338,7 +354,23 @@ function MoveDialog({ run, onClose }: { run: RunSummary; onClose: () => void }) 
 
 /** The same folder browser serves onboarding and explicit project membership changes. */
 export function openRepository(project?: string) {
-  pickerChoose.value = { title: "Open repository", choose: path => { void pickRepo(path, project ?? ""); } };
+  pickerChoose.value = { title: "Open repository", choose: path => pickRepo(path, project ?? "") };
+  pickerOpen.value = true;
+}
+
+/** Repository management adds membership without opening or replacing a composer draft. */
+export function addRepositoryToProject(id: string) {
+  pickerChoose.value = { title: "Add repository", choose: async path => {
+    try {
+      const info = await api<RepoInfo>(`/api/branches?repo=${encodeURIComponent(path)}`);
+      const project = projects.value.find(item => item.id === id);
+      const existing = project?.repos.includes(info.repo);
+      await post(`/api/projects/${encodeURIComponent(id)}/repositories`, { repo: info.repo });
+      await loadProjects();
+      route.value = { view: "project", id, section: "repositories", repository: info.repo, tool: "code" };
+      showToast(existing ? `This repository is already in ${project?.name ?? "the project"}` : `Added repository to ${project?.name ?? "the project"}`);
+    } catch (error) { showError((error as Error).message, 6000); }
+  } };
   pickerOpen.value = true;
 }
 
@@ -347,7 +379,7 @@ export function RepositoryChoiceDialog() {
   const [name, setName] = useState(baseName(choice.repository).slice(0, 60));
   const [busy, setBusy] = useState(false), [error, setError] = useState("");
   const close = () => { if (!busy) repositoryChoice.value = null; };
-  const ref = useDialog(true, close);
+  const ref = useDialog(true, close, () => !busy);
   const current = projects.value.find(item => item.id === choice.project);
   const matches = projects.value.filter(item => item.repos.includes(choice.repository));
   const choose = async (id?: string, add = false) => {

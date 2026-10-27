@@ -1,3 +1,4 @@
+import { ProviderStepError } from "../engine.js";
 import { getAdapter } from "../adapters/index.js";
 import type { Pattern } from "../engine.js";
 import { proofLine, section, WRITE } from "./prompts.js";
@@ -48,11 +49,11 @@ export const soloPattern: Pattern = {
       if (check) ctx.setVerdict(check.ok ? "passed" : "failing");
       await ctx.artifact("Result", wt);
       ctx.setFacts({ proof: ctx.proofOf(wt)?.status });
-      if (!turn.ok) throw new Error(turn.error || "The agent task failed");
+      if (!turn.ok) throw new ProviderStepError(turn.error || "The agent task failed", turn.errorKind, turn.agent);
       const outcome = check ? ` — \`${check.command}\` ${check.ok ? "passes" : "fails"}` : "";
       return [`**${sha ? `Changes on \`${wt.branch}\`` : "No changes"}**${outcome}`, sha ? proofLine(ctx.proofOf(wt)) : "", section(`${name}'s answer`, turn.finalText || "(no answer)")].join("\n");
     } else await ctx.conversationResult(wt);
-    if (!turn.ok) throw new Error(turn.error || "The agent turn failed");
+    if (!turn.ok) throw new ProviderStepError(turn.error || "The agent turn failed", turn.errorKind, turn.agent);
     return turn.finalText || "The turn finished without an answer.";
   },
 };

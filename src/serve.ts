@@ -25,6 +25,7 @@ const MAX_LOG_LINES = 400;
 
 export class DevServers {
   private readonly servers = new Map<string, DevServer & { child: ChildProcess }>();
+  private lastStartedAt = 0;
 
   get(key: string): DevServer | undefined {
     const s = this.servers.get(key);
@@ -45,7 +46,7 @@ export class DevServers {
       const socket = createConnection({ host: "localhost", port: server.port, autoSelectFamily: true });
       let settled = false;
       const finish = (ready: boolean) => { if (settled) return; settled = true; socket.destroy(); resolve(ready); };
-      socket.setTimeout(500, () => finish(false)); socket.once("connect", () => finish(true)); socket.once("error", () => finish(false));
+      socket.setTimeout(500, () => finish(false)); socket.once("connect", () => finish(server.status === "running" && this.servers.get(key) === server)); socket.once("error", () => finish(false));
     });
   }
 
@@ -61,7 +62,7 @@ export class DevServers {
       env: { ...childEnv(generatedEnv), PORT: String(port), BROWSER: "none", FORCE_COLOR: "0" },
     });
     trackGroup(child.pid);
-    const server = { key, command, cwd, port, url: `http://localhost:${port}`, status: "running" as const, startedAt: Date.now(), logs: [] as string[], child };
+    const server = { key, command, cwd, port, url: `http://localhost:${port}`, status: "running" as const, startedAt: this.lastStartedAt = Math.max(Date.now(), this.lastStartedAt + 1), logs: [] as string[], child };
     const collect = (chunk: Buffer) => {
       for (const line of chunk.toString().split("\n")) {
         if (!line.trim()) continue;

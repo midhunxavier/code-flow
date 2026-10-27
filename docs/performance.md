@@ -103,6 +103,11 @@ hidden tabs and refreshes when visible. Background inventories explicitly opt in
 sharing concurrent identical GETs; selection-sensitive reads always issue fresh requests.
 Mutations invalidate the request-sharing map. Writes are never automatically retried.
 
+Project and operational pages load their UI code when opened. This keeps the initial
+import graph below the existing850 KB budget; the continuation build measured837,010
+bytes after removing those eager imports. Their navigation and accessibility flows
+are covered by the existing browser suites.
+
 ## Measurement and verification
 
 `/api/health` includes bounded HTTP timing samples, event-loop delay/utilization,
@@ -110,6 +115,13 @@ process memory, disk queue depth/bytes, slow-client disconnects, storage-cache c
 and language-worker reuse counts. Settings diagnostics include this snapshot and
 browser shell-ready/long-task measurements. Metrics contain no request bodies or
 query strings. These are local diagnostic counters, not exported telemetry.
+
+Event-loop delay and utilization cover the lifetime of the metrics instance
+(`window: "since-start"`, with `windowSeconds` and `samples`). Reading diagnostics
+does not reset that window for another tab or observer. Before the first delay
+sample, `p95Ms` and `maxMs` are `null`; HTTP timings retain their bounded sample
+window. Reconnecting live updates uses the identity endpoint, so an unavailable
+or hanging diagnostics endpoint cannot prevent the stream from recovering.
 
 Run:
 

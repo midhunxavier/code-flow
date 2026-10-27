@@ -322,7 +322,7 @@ test("a side chat's question keeps the run's verdict and leaves edits you make i
     assert.equal(run.followUps.at(-1)!.status, "done", run.followUps.at(-1)!.result);
     assert.equal(readFileSync(join(wt.path, "README.md"), "utf8"), "ship, with a typo fixed\n");
     assert.equal(readFileSync(join(wt.path, "notes.md"), "utf8"), "mine\n");
-    assert.match(await logs(run), /Side chat: README \(claude\) is read-only, but build changed while it ran \(edits, 1 new file\)\. Left as it is/);
+    assert.match(await logs(run), /Side chat: README \(claude\) is read-only, but build changed while it ran \(edits: "README\.md"; 1 new file: "notes\.md"\)\. Left as it is/);
     assert.equal(run.verdict, "passed", "a question runs no check, so the verdict stands");
   } finally {
     delete process.env.FAKE_RECORD_DIR;
@@ -522,10 +522,14 @@ test("archive can remove worktrees and branches; PRs need a remote", async () =>
   const run = await runPattern("pipeline", pipelineRoles);
   const branch = run.artifacts[0]!.branch;
   await assert.rejects(manager.pullRequest(run.id, { branch, into: "main" }), /no 'origin' remote/);
+  const trees = [...run.worktrees];
   const result = await manager.archive(run.id, { cleanup: true, deleteBranches: true });
-  assert.equal(result.removed.length, run.worktrees.length);
-  assert.deepEqual(result.deletedBranches.sort(), run.worktrees.map((w) => w.branch).sort());
+  assert.equal(result.removed.length, trees.length);
+  assert.deepEqual(result.deletedBranches.sort(), trees.map((w) => w.branch).sort());
   assert.equal(git("branch", "--list", branch).trim(), "");
+  // Their branches gone, the worktrees are recorded as deleted rather than listed.
+  assert.deepEqual(run.worktrees, []);
+  assert.deepEqual(run.deletedWorktrees?.map((w) => w.branch).sort(), trees.map((w) => w.branch).sort());
 });
 
 test("merging into your checkout: only a real conflict is offered to an agent; anything else says what to do", async () => {

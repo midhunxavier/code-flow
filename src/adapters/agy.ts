@@ -287,7 +287,7 @@ return {
     // A login prompt followed by a watchdog expiry must not trigger transient retries.
     // Explicit cancellation still wins over any earlier authentication diagnostic.
     const errorKind: ErrorKind = stopped === "cancelled" ? stopped : authKind ?? stopped ?? statusKind ?? classifyError(own);
-    if (managed) error = native ? `Unrestricted Antigravity failed (${errorKind}). Check the existing login in its normal session, then resume. Code Flow never starts sign-in or changes credentials; native diagnostics are withheld.` : managedAgyFailure(errorKind);
+    if (managed) error = native ? nativeAgyFailure(errorKind) : managedAgyFailure(errorKind);
     if (isolation && deniedFile && errorKind === "other") error = "Antigravity requested a file outside its permitted source-file scope. The turn stopped with its permissions intact. Code Flow handles Git metadata and checks; continue with source files in the assigned workspace or select another team provider.";
     const resetsAt = errorKind === "usage_limit" ? resetFromText(own) : undefined;
     onEvent({ kind: "error", message: error });
@@ -335,6 +335,17 @@ function managedAgyFailure(kind: ErrorKind): string {
   if (kind === "auth") return "Antigravity could not use or refresh the existing native login. Check or unlock it in Antigravity's normal interactive session, then resume. Code Flow will start a fresh isolated turn; permissions were not widened.";
   if (kind === "usage_limit" || kind === "rate_limit") return `Isolated Antigravity reached a ${kind === "usage_limit" ? "usage" : "rate"} limit.`;
   return `Isolated Antigravity failed (${kind}). Native diagnostics were withheld because they can contain authentication data. Check the CLI in its normal interactive session before resuming; no permissive fallback was used.`;
+}
+
+/** Native diagnostics stay withheld; the advice follows the failure's kind, and the engine retries rate limits and outages itself. */
+export function nativeAgyFailure(kind: ErrorKind): string {
+  if (kind === "auth") return "Unrestricted Antigravity could not use the existing login. Check the login in its normal session, then resume. Code Flow never starts sign-in or changes credentials; native diagnostics are withheld.";
+  if (kind === "rate_limit") return "Unrestricted Antigravity hit a rate limit (too many requests in a short time). If automatic retries have ended, wait before resuming.";
+  if (kind === "usage_limit") return "Unrestricted Antigravity reached its plan's usage limit. Resume after it resets.";
+  if (kind === "transient") return "The Antigravity service was temporarily unavailable. If automatic retries have ended, resume when the service recovers.";
+  if (kind === "timeout") return "The unrestricted Antigravity turn ran out of time.";
+  if (kind === "cancelled") return "The unrestricted Antigravity turn was stopped.";
+  return `Unrestricted Antigravity failed (${kind}). Native diagnostics are withheld because they can contain authentication data; check the CLI in its normal session before resuming.`;
 }
 
 /**

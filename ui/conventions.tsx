@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import { api, ApiError, enc, post, showToast } from "./lib.js";
+import { projects, settingsProject } from "./state.js";
 import type { ConventionPublication, ConventionRestorePreview, ConventionsDocument } from "../src/conventions.js";
 
 export function ConventionsPanel({ projectId, repos }: { projectId: string; repos: string[] }) {
@@ -11,14 +12,26 @@ export function ConventionsPanel({ projectId, repos }: { projectId: string; repo
   const [published, setPublished] = useState<{ revision: number; path: string; requiresCommit: boolean } | null>(null);
   const [busy, setBusy] = useState(""); const [error, setError] = useState(""); const [conflicted, setConflicted] = useState(false);
   const draftField = useRef<HTMLTextAreaElement>(null); const publicationStatus = useRef<HTMLParagraphElement>(null);
+  const project = projects.value.find(project => project.id === projectId);
+  const paused = project?.filesystemRestricted === true;
+  const isPaused = () => projects.peek().find(project => project.id === projectId)?.filesystemRestricted === true;
+  const documentProject = useRef(projectId);
   const generation = useRef(0); const action = useRef(0); const path = `/api/projects/${enc(projectId)}/conventions`;
   const bytes = new TextEncoder().encode(draft).length; const dirty = !!document && draft !== document.text;
   useEffect(() => {
     const scope = ++generation.current; ++action.current;
-    setDocument(null); setDraft(""); setNote(""); setPreview(null); setComparison(null); setPublication(null); setPublished(null); setConflicted(false); setError(""); setBusy("load"); setRepo(repos[0] ?? "");
-    void api<ConventionsDocument>(path).then((value) => { if (scope === generation.current) { setDocument(value); setDraft(value.text); setSelectedVersion(String(value.history[0]?.revision ?? "")); setBusy(""); } }, (err) => { if (scope === generation.current) { setError(err.message); setBusy(""); } });
+    const changedProject = documentProject.current !== projectId; documentProject.current = projectId;
+    if (changedProject) { setDocument(null); setDraft(""); setNote(""); setConflicted(false); setRepo(repos[0] ?? ""); }
+    setPreview(null); setComparison(null); setPublication(null); setPublished(null); setError(""); setBusy("");
+    // Settings mounts this panel from the project inventory, including its policy. Keep it mounted when
+    // restrictions change so an already loaded draft and its CAS revision survive the pause.
+    if (!paused && (!document || changedProject)) {
+      setBusy("load");
+      const current = () => scope === generation.current && !isPaused();
+      void api<ConventionsDocument>(path).then((value) => { if (current()) { setDocument(value); setDraft(value.text); setSelectedVersion(String(value.history[0]?.revision ?? "")); setBusy(""); } }, (err) => { if (current()) { setError(err.message); setBusy(""); } });
+    }
     return () => { generation.current++; action.current++; };
-  }, [projectId]);
+  }, [projectId, paused]);
   useEffect(() => { if (!repos.includes(repo)) { setRepo(repos[0] ?? ""); setPublication(null); setPublished(null); } }, [JSON.stringify(repos)]);
   useEffect(() => {
     if (!dirty) return;
@@ -27,10 +40,10 @@ export function ConventionsPanel({ projectId, repos }: { projectId: string; repo
   }, [dirty]);
   useEffect(() => { if (published && !busy) publicationStatus.current?.focus(); }, [published, busy]);
   const perform = async (name: string, task: (current: () => boolean) => Promise<void>) => {
-    if (busy) return; const scope = generation.current; const op = ++action.current; setBusy(name); setError("");
-    const current = () => scope === generation.current && op === action.current;
+    if (busy || isPaused()) return; const scope = generation.current; const op = ++action.current; setBusy(name); setError("");
+    const current = () => scope === generation.current && op === action.current && !isPaused();
     try { await task(current); }
-    catch (err) { if (current()) { setError((err as Error).message); if (err instanceof ApiError && err.status === 409 && ["save", "restore"].includes(name)) setConflicted(true); if (name === "publish") setPublication(null); } }
+    catch (err) { if (current()) { setError((err as Error).message); if (err instanceof ApiError && err.status === 409 && name === "save") setConflicted(true); if (name === "publish") setPublication(null); if (name === "restore") setPreview(null); } }
     finally { if (current()) setBusy(""); }
   };
   const accept = (value: ConventionsDocument) => { setDocument(value); setDraft(value.text); setNote(""); setPreview(null); setComparison(null); setConflicted(false); setSelectedVersion(String(value.revision)); setPublication(null); setPublished(null); };
@@ -43,8 +56,10 @@ export function ConventionsPanel({ projectId, repos }: { projectId: string; repo
   const exportDraft = () => { const url = URL.createObjectURL(new Blob([draft], { type: "text/markdown;charset=utf-8" })); const link = window.document.createElement("a"); link.href = url; link.download = "conventions-draft.md"; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); };
   return <section class="wb-card project-conventions" aria-label="Versioned project conventions">
     <h2>Project conventions</h2><p class="help">Save shared guidance privately, review prior versions, then deliberately publish a saved revision to a project repository. Agents read only the committed repository file; private drafts and imported run text are never activated automatically.</p>
-    {!document && busy ? <p role="status">Loading private conventions…</p> : null}
-    {document ? <>
+    {paused ? <p class="msg warn policy-pause">Private conventions are paused: project “{project!.name}” has a custom filesystem restriction. Remove its restrictions to load or change private guidance. <a href="#/settings/projects" onClick={() => { settingsProject.value = projectId; }}>Review the filesystem policy</a></p> : null}
+    {paused && dirty ? <p class="help">Your unsaved draft is kept in this tab. Remove the filesystem restrictions to continue editing.</p> : null}
+    {!paused && !document && busy ? <p role="status">Loading private conventions…</p> : null}
+    {document && !paused ? <>
       <label class="lbl" for={`conventions-text-${enc(projectId)}`}>Private conventions draft</label><textarea ref={draftField} id={`conventions-text-${enc(projectId)}`} class="field" value={draft} disabled={!!busy} onInput={(event) => setDraft(event.currentTarget.value)} placeholder="Describe coding, review, and verification conventions for this project." />
       <p class="help">Saved revision {document.revision} · {bytes.toLocaleString()} / 65,536 UTF-8 bytes{dirty ? " · unsaved changes" : ""}. The latest 32 revisions are retained.</p>
       <label class="lbl" for={`conventions-note-${enc(projectId)}`}>Revision note</label><input id={`conventions-note-${enc(projectId)}`} class="field" value={note} maxLength={500} disabled={!!busy} onInput={(event) => setNote(event.currentTarget.value)} placeholder="Why should this guidance change?" />
@@ -57,7 +72,7 @@ export function ConventionsPanel({ projectId, repos }: { projectId: string; repo
       <div class="convention-actions"><button class="btn" disabled={!!busy || !repo || !document.revision} onClick={inspect}>{busy === "inspect" ? "Inspecting…" : "Inspect repository file"}</button></div>
       {publication ? <div><p class="help">{publication.clean ? "Repository is clean" : "Repository has changes; commit or save them before publishing"} · {publication.branch ?? "Detached HEAD"} · {publication.head.slice(0, 12)} · {publication.tracked ? "File is tracked" : publication.exists ? "File exists outside tracking" : "File will be created"}</p><div class="convention-compare"><div><h4>Current repository file</h4><pre>{publication.text || "No repository guidance"}</pre></div><div><h4>Saved private revision {document.revision}</h4><pre>{document.text || "Empty guidance"}</pre></div></div><button class="btn primary" disabled={!!busy || dirty || !publication.clean} onClick={publish}>{busy === "publish" ? "Publishing…" : "Publish and stage file"}</button>{dirty ? <p class="help">Save or revert your unsaved draft before publishing a saved revision.</p> : null}</div> : null}
       {published ? <p class="msg ok" role="status" ref={publicationStatus} tabIndex={-1}>Revision {published.revision} was staged at {published.path}. Commit the file in the repository to activate it for future runs.</p> : null}
-    </> : !busy ? <button class="btn" onClick={() => { void perform("reload", async (current) => { const value = await api<ConventionsDocument>(path); if (current()) accept(value); }); }}>Retry loading conventions</button> : null}
-    {error ? <p class="msg err" role="alert">{error}</p> : null}
+    </> : !paused && !busy ? <button class="btn" onClick={() => { void perform("reload", async (current) => { const value = await api<ConventionsDocument>(path); if (current()) accept(value); }); }}>Retry loading conventions</button> : null}
+    {!paused && error ? <p class="msg err" role="alert">{error}</p> : null}
   </section>;
 }

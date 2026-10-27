@@ -1,3 +1,4 @@
+import { parsePullRequestUrl } from "./github-url.js";
 import { spawn } from "node:child_process";
 import { killGroup, trackGroup, untrackGroup } from "./adapters/process.js";
 import { childEnv } from "./env.js";
@@ -231,9 +232,22 @@ export async function viewIssue(repo: string, number: number): Promise<Issue> {
   return toIssue(JSON.parse(await gh(repo, ["issue", "view", String(number), "--json", "number,title,body,url,labels,comments"])));
 }
 
-export async function listPullRequests(repo: string): Promise<PullRequest[]> {
-  const raw = await gh(repo, ["pr", "list", "--state", "open", "--limit", "50", "--json", PR_FIELDS]);
+export async function listPullRequests(repo: string, limit = 50): Promise<PullRequest[]> {
+  const raw = await gh(repo, ["pr", "list", "--state", "open", "--limit", String(limit), "--json", PR_FIELDS]);
   return JSON.parse(raw).map(toPr);
+}
+
+/** Bounded picker results with explicit truncation and server-side title/label search. */
+export async function listGitHubPicker(repo: string, kind: "issue" | "pr", query = "", cap = 50): Promise<Listed<Issue | PullRequest>> {
+  if (!Number.isInteger(cap) || cap < 1 || cap > LIST_CAP) throw new Error("Invalid GitHub picker size");
+  const q = query.trim(); if (q.length > 500) throw new Error("Keep the GitHub search under 500 characters");
+  if (/^#?[1-9]\d*$/.test(q)) {
+    const number = Number(q.replace(/^#/, "")); if (!Number.isSafeInteger(number)) throw new Error("Choose a valid issue or PR number");
+    const raw = JSON.parse(await gh(repo, [kind, "view", String(number), "--json", `${kind === "issue" ? "number,title,body,url,labels" : PR_FIELDS},state`]));
+    return { items: raw.state === "OPEN" ? [kind === "issue" ? toIssue(raw) : toPr(raw)] : [], truncated: false };
+  }
+  const raw = await gh(repo, [kind, "list", "--state", "open", "--limit", String(cap + 1), ...(q ? ["--search", q] : []), "--json", kind === "issue" ? "number,title,body,url,labels" : PR_FIELDS]);
+  return capped(JSON.parse(raw).map(kind === "issue" ? toIssue : toPr), cap);
 }
 
 export async function viewPullRequest(repo: string, pr: string | number): Promise<PullRequest> {
@@ -356,7 +370,8 @@ export interface PrMergeInfo {
 export async function prMergeInfo(repo: string, pr: string): Promise<PrMergeInfo> {
   const data = JSON.parse(await gh(repo, ["pr", "view", pr, "--json", "number,url,state,isDraft,baseRefName,headRefOid,mergeable,mergeStateStatus,reviewDecision,mergeCommit,statusCheckRollup"]));
   // The PR's own repository (its URL says which), in case it isn't the checkout's default remote.
-  const nameWithOwner = String(data.url ?? pr).match(/github\.com\/([^/]+\/[^/]+)\/pull\//)?.[1];
+  const target = parsePullRequestUrl(String(data.url ?? pr));
+  const nameWithOwner = target ? `${target.host}/${target.owner}/${target.repository}` : undefined;
   let methods = MERGE_METHODS;
   const allowed = await ghRaw(repo, ["repo", "view", ...(nameWithOwner ? [nameWithOwner] : []), "--json", "mergeCommitAllowed,squashMergeAllowed,rebaseMergeAllowed"]);
   if (allowed.code === 0) {
@@ -394,9 +409,10 @@ export async function mergePullRequest(repo: string, pr: string, method: MergeMe
 
 /** GitHub updates its branch, with an optimistic lock on the commit the user saw. */
 export async function updatePullRequestBranch(repo: string, pr: string, headSha: string): Promise<void> {
-  const match = pr.match(/^https:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/pull\/(\d+)$/);
-  if (!match || !/^[a-f0-9]{40,64}$/i.test(headSha)) throw new Error("A GitHub pull request and its current commit are required");
-  await gh(repo, ["api", `repos/${match[1]}/${match[2]}/pulls/${match[3]}/update-branch`, "--method", "PUT", "--input", "-"], JSON.stringify({ expected_head_sha: headSha }));
+  const target = parsePullRequestUrl(pr);
+  if (!target) throw new Error("This pull request URL cannot be updated. Open it on GitHub to update its branch.");
+  if (!/^[a-f0-9]{40,64}$/i.test(headSha)) throw new Error("The pull request's current commit is required. Refresh its status before updating.");
+  await gh(repo, ["api", `repos/${target.owner}/${target.repository}/pulls/${target.number}/update-branch`, "--hostname", target.host, "--method", "PUT", "--input", "-"], JSON.stringify({ expected_head_sha: headSha }));
 }
 
 /** GitHub refuses a pull request description longer than this. */

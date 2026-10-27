@@ -1,4 +1,3 @@
-import { Markdown } from "./bits.js";
 import { Icon } from "./icons.js";
 import { composeBrowserMessage, parseBrowserMessage, type BrowserContext } from "./browser-context.js";
 import type { Attachment } from "./types.js";
@@ -15,6 +14,7 @@ function ContextCard({ context, image, onRemove }: { context: BrowserContext; im
       <div class="browser-context-source"><strong title={title}>{title.length > 65 ? `${title.slice(0, 65)}…` : title}</strong><span title={context.url}>{pageLabel(context.url)}</span></div>
       {onRemove ? <button type="button" class="icon-btn" aria-label="Remove browser context" onClick={onRemove}><Icon name="close" /></button> : null}
     </div>
+    {context.snapshotUnavailable ? <p class="help" role="status">Screenshot was not retained. Pick this area again to attach a new screenshot.</p> : null}
     {context.comment ? <div class="browser-context-comment">{context.comment}</div> : null}
     <details class="browser-context-details"><summary>Page details</summary><pre>{JSON.stringify(context, null, 2)}</pre></details>
   </article>;
@@ -22,7 +22,7 @@ function ContextCard({ context, image, onRemove }: { context: BrowserContext; im
 
 export function BrowserMessage({ text }: { text: string }) {
   const message = parseBrowserMessage(text);
-  return <>{message.text ? <Markdown text={message.text} /> : null}{message.contexts.length ? <div class="browser-context-cards">{message.contexts.map((context, index) => <ContextCard key={index} context={context} />)}</div> : null}</>;
+  return <>{message.text ? <div class="user-message-text">{message.text}</div> : null}{message.contexts.length ? <div class="browser-context-cards">{message.contexts.map((context, index) => <ContextCard key={index} context={context} />)}</div> : null}</>;
 }
 
 export function BrowserDraftCards({ text, onText, images, onImages }: { text: string; onText: (text: string) => void; images: Attachment[]; onImages: (images: Attachment[]) => void }) {

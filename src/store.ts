@@ -4,7 +4,7 @@ import { createReadStream, existsSync, readFileSync, unlinkSync, type Stats } fr
 import { appendFile, link, mkdir, open, readdir, readFile, rename, rm, stat, unlink, writeFile } from "node:fs/promises";
 import { uptime } from "node:os";
 import { createInterface } from "node:readline";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { CODEFLOW_HOME } from "./config.js";
 import { childEnv } from "./env.js";
 import { logError, logWarn } from "./log.js";
@@ -158,7 +158,7 @@ async function truncateIncompleteTail(path: string): Promise<void> {
  * the line to reach the disk (fsync) before the next write: for lines that must survive a
  * power loss, not for every event (`flushWrites` syncs those at shutdown).
  */
-export function appendLine(file: string, value: unknown, opts: { sync?: boolean; strict?: boolean; checkpoint?: { seq: number; run: unknown }; onFailed?: () => void } = {}): Promise<void> {
+export function appendLine(file: string, value: unknown, opts: { sync?: boolean; strict?: boolean; checkpoint?: { seq: number; run: unknown }; onSaved?: () => void; onFailed?: () => void } = {}): Promise<void> {
   const line = `${JSON.stringify(value)}\n`;
   let checkpointWork: Promise<void> | undefined;
   // Capture now, alongside the event: the live run may change before its queued write executes.
@@ -215,7 +215,7 @@ export function appendLine(file: string, value: unknown, opts: { sync?: boolean;
   }
   // Preserve callers' checkpoint completion contract without holding the append queue.
   const complete = written.then(() => checkpointWork);
-  const observed = complete.catch((err: Error) => {
+  const observed = complete.then(() => opts.onSaved?.(), (err: Error) => {
       opts.onFailed?.();
       writeHealth.failures++;
       writeHealth.lastError = err.message;
@@ -547,9 +547,13 @@ async function takeOverLock(file: string, temp: string, judged: { text: string; 
  * numbers. Waits briefly for a previous instance that is still shutting down (a restart).
  * Returns a release function.
  */
-export async function acquireLock(waitMs = 20_000, home = CODEFLOW_HOME): Promise<() => void> {
-  const file = join(home, "server.lock");
-  await mkdir(home, { recursive: true });
+export function acquireLock(waitMs = 20_000, home = CODEFLOW_HOME): Promise<() => void> {
+  return acquireStateLock(join(home, "server.lock"), waitMs, pid => `Another code-flow server${pid ? ` (pid ${pid})` : ""} is using ${home}. Stop it, or set CODEFLOW_HOME to a different folder.`);
+}
+
+/** Cross-process state writes share the server lock's atomic creation and stale-owner recovery. */
+export async function acquireStateLock(file: string, waitMs: number, busyMessage: (pid?: number) => string): Promise<() => void> {
+  await mkdir(dirname(file), { recursive: true });
   const info: LockInfo = { pid: process.pid, started: Math.round(Date.now() - process.uptime() * 1000), ticks: startTicks(process.pid), boot: Math.round(bootTime()) };
   const content = JSON.stringify(info);
   const temp = `${file}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
@@ -568,7 +572,7 @@ export async function acquireLock(waitMs = 20_000, home = CODEFLOW_HOME): Promis
         continue;
       }
       if (Date.now() > deadline) {
-          throw new Error(`Another code-flow server${holder.pid ? ` (pid ${holder.pid})` : ""} is using ${home}. Stop it, or set CODEFLOW_HOME to a different folder.`);
+          throw new Error(busyMessage(holder.pid));
       }
       await new Promise((r) => setTimeout(r, 250));
     }

@@ -22,6 +22,8 @@ if (process.argv.includes("--fake-agents")) {
   }
   console.log("[dev] using fake agents from test/fake-bin");
 }
+const { buildTrainingWorker } = await import("./build-training-worker.mjs");
+await buildTrainingWorker();
 const ui = spawn(process.execPath, ["scripts/build-ui.mjs", "--watch"], { stdio: "inherit" });
 const stable = process.argv.includes("--stable");
 const server = spawn("npx", ["tsx", ...(stable ? [] : ["watch"]), "src/server.ts"], { stdio: "inherit", env });

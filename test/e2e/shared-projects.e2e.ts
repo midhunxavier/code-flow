@@ -25,7 +25,7 @@ async function auditShared(page: import("playwright-core").Page, screen: string)
     await page.waitForFunction(() => document.getAnimations().every((animation) => animation.playState !== "running"));
     await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
     await page.addScriptTag({ content: axe.source });
-    const result = await page.evaluate(async () => (window as unknown as { axe: typeof axe }).axe.run(document, { runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21aa", "wcag22aa"] } }));
+    const result = await page.evaluate(async () => (window as unknown as { axe: typeof axe }).axe.run(document, { runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"] } }));
     assert.deepEqual(result.violations.map((violation) => ({ id: violation.id, impact: violation.impact, nodes: violation.nodes.map((node) => ({ target: node.target, summary: node.failureSummary })) })), [], `${screen} ${mode.colorScheme} ${mode.width}`);
   }
   await page.emulateMedia({ colorScheme: "light" }); await page.setViewportSize({ width: 1280, height: 900 });

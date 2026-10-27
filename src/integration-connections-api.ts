@@ -3,7 +3,7 @@ import { IntegrationConnections, repositoryConnectionHint } from "./integration-
 import type { Integrations } from "./integrations.js";
 import type { Projects } from "./projects.js";
 import { HttpError, readJson, send } from "./http.js";
-import { listIssues, listPullRequests, viewIssue, viewPullRequest, prChecks } from "./github.js";
+import { listGitHubPicker, viewIssue, viewPullRequest, prChecks } from "./github.js";
 
 /** Mounted after owner authorization and filesystem policy checks. Shared accounts never read server credentials. */
 export function createIntegrationConnectionsApi(options: { connections: IntegrationConnections; integrations: Integrations; projects: Pick<Projects, "get"> }) {
@@ -18,7 +18,7 @@ export function createIntegrationConnectionsApi(options: { connections: Integrat
     if (parts[0] !== "integration-connections") return false;
     const body = req.method === "GET" ? {} : await readJson(req, 32 * 1024);
     let result: unknown;
-    if (parts.length === 1 && req.method === "GET") result = { connections: connections.list() };
+    if (parts.length === 1 && req.method === "GET") result = { connections: connections.list(), warnings: connections.warnings() };
     else if (parts.length === 2 && parts[1] === "test" && req.method === "POST") {
       if (body.provider === "github") context(body.projectId, body.repository);
       result = await connections.testDraft(body);
@@ -27,7 +27,7 @@ export function createIntegrationConnectionsApi(options: { connections: Integrat
     } else if (parts[1] === "projects" && parts[2]) {
       const project = projects.get(parts[2]); if (!project) throw new HttpError(404, "Project not found");
       const scope = context(project.id, req.method === "GET" ? url.searchParams.get("repository") : body.repository);
-      if (parts.length === 3 && req.method === "GET") result = { connections: connections.list(), bindings: connections.bindings(project.id), suggestion: await repositoryConnectionHint(scope.repository) };
+      if (parts.length === 3 && req.method === "GET") result = { connections: connections.list(), warnings: connections.warnings(), bindings: connections.bindings(project.id), suggestion: await repositoryConnectionHint(scope.repository) };
       else if (parts.length === 3 && req.method === "PUT") { await connections.associate({ ...scope, connectionId: body.connectionId }); result = { ok: true }; }
       else if (parts.length === 3 && req.method === "DELETE") { await connections.detach({ ...scope, connectionId: body.connectionId }); result = { ok: true }; }
       else if (parts.length === 5 && parts[3]) {
@@ -36,8 +36,8 @@ export function createIntegrationConnectionsApi(options: { connections: Integrat
         if (kind !== "issue" && kind !== "pr") throw new HttpError(400, "Choose issues or pull requests");
         if (parts[4] === "items" && req.method === "GET") {
           if (connection.provider === "github") {
-            const items = kind === "issue" ? await listIssues(scope.repository) : await listPullRequests(scope.repository);
-            result = { items: items.map(item => ({ integration: connection.id, provider: "github", kind, key: String(item.number), title: item.title, body: item.body, url: item.url })), truncated: false };
+            const listed = await listGitHubPicker(scope.repository, kind === "issue" ? "issue" : "pr", url.searchParams.get("q") ?? "");
+            result = { items: listed.items.map(item => ({ integration: connection.id, provider: "github", kind, key: String(item.number), title: item.title, body: item.body, url: item.url })), truncated: listed.truncated };
           } else result = await integrations.items(connection.id, kind, url.searchParams.get("cursor") ?? undefined);
         } else if (parts[4] === "import" && req.method === "POST") {
           if (connection.provider === "github") {

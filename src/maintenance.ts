@@ -27,22 +27,44 @@ interface BackupEntry { path: string; bytes: number; sha256: string; data: strin
 interface BackupManifest { version: 1; createdAt: number; files: BackupEntry[]; omitted: string[] }
 
 async function homePath(path: string) {
-  if (!(await lstat(path)).isDirectory()) throw new Error("Choose an existing code-flow data directory, without a symbolic link.");
+  if (!(await lstat(path).catch((error: NodeJS.ErrnoException) => error.code === "ENOENT" ? undefined : Promise.reject(error)))?.isDirectory()) throw new Error("Choose an existing code-flow data directory, without a symbolic link.");
   return realpath(path);
 }
-async function offline<T>(home: string, action: (home: string) => Promise<T>): Promise<T> {
+export async function offline<T>(home: string, action: (home: string) => Promise<T>): Promise<T> {
   const path = await homePath(home);
   const release = await acquireLock(0, path);
   try { return await action(path); } finally { release(); }
 }
-function passwordKey(password: string, salt: Buffer): Promise<Buffer> {
+function validateBackupPassword(password: string) {
   if (typeof password !== "string" || password.length < 12 || password.length > 1024) throw new Error("Use a backup password of 12 to 1,024 characters in CODEFLOW_BACKUP_PASSWORD.");
+}
+function passwordKey(password: string, salt: Buffer): Promise<Buffer> {
+  validateBackupPassword(password);
   return new Promise((accept, reject) => scrypt(password, salt, 32, { N: 32768, r: 8, p: 1, maxmem: 128 * 1024 * 1024 }, (error, key) => error ? reject(error) : accept(key)));
 }
 async function syncDirectory(path: string) {
   if (process.platform === "win32") return;
   const handle = await open(path, "r");
   try { await handle.sync(); } finally { await handle.close(); }
+}
+/** Check cheap output mistakes before reading data; the final write still rejects races. */
+export async function newMaintenanceOutput(path: string, label: string): Promise<string> {
+  const absolute = resolve(path);
+  const parent = await realpath(dirname(absolute)).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT" || error.code === "ENOTDIR") throw new Error(`${label} folder does not exist. Choose an existing folder.`);
+    throw error;
+  });
+  if (!(await lstat(parent)).isDirectory()) throw new Error(`${label} folder is not a directory. Choose an existing folder.`);
+  const output = join(parent, basename(absolute));
+  const existing = await lstat(output).catch((error: NodeJS.ErrnoException) => error.code === "ENOENT" ? undefined : Promise.reject(error));
+  if (existing) throw new Error(`${label} file already exists. Choose a new path; existing files are never overwritten.`);
+  return output;
+}
+export async function readMaintenanceInput(path: string, label: string) {
+  return readFile(path, "utf8").catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT" || error.code === "ENOTDIR") throw new Error(`${label} file not found. Choose an existing file.`);
+    throw error;
+  });
 }
 async function writeExclusive(path: string, bytes: Buffer) {
   const temp = `${path}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
@@ -51,12 +73,14 @@ async function writeExclusive(path: string, bytes: Buffer) {
     try { await handle.writeFile(bytes); await handle.sync(); } finally { await handle.close(); }
     await link(temp, path); await syncDirectory(dirname(path));
   }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new Error("Backup file already exists. Choose a new path; existing backups are never overwritten."); throw error; }
   finally { await unlink(temp).catch(() => undefined); }
 }
 
 /** Encrypted, authenticated backups; no plaintext archive or password is written to disk. */
 export async function createEncryptedBackup(input: { home: string; output: string; password: string }) {
-  const output = join(await realpath(dirname(resolve(input.output))), basename(input.output));
+  const output = await newMaintenanceOutput(input.output, "Backup");
+  validateBackupPassword(input.password);
   return offline(input.home, async (home) => {
     const inside = relative(home, output);
     if (inside !== ".." && !inside.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) && !isAbsolute(inside)) throw new Error("Save backups outside the data directory.");
@@ -73,7 +97,7 @@ export async function createEncryptedBackup(input: { home: string; output: strin
       for (const entry of await readdir(join(home, folder), { withFileTypes: true })) {
         const path = folder ? `${folder}/${entry.name}` : entry.name;
         if (sessionPath.test(path)) { omitted.push(`${path} (session or credential material)`); continue; }
-        if (path.startsWith("server.lock") || entry.name.endsWith(".tmp")) { omitted.push(path); continue; }
+        if (path.startsWith("server.lock") || path === "retention-policy.json.lock" || entry.name.endsWith(".tmp")) { omitted.push(path); continue; }
         if (entry.isSymbolicLink()) { omitted.push(`${path} (symbolic link)`); continue; }
         if (entry.isDirectory()) { await walk(path); continue; }
         if (!entry.isFile()) { omitted.push(`${path} (special file)`); continue; }
@@ -124,7 +148,8 @@ function validManifest(value: unknown): BackupManifest {
 
 /** Restores to a new directory. Existing data directories are never merged or overwritten. */
 export async function restoreEncryptedBackup(input: { input: string; destination: string; password: string }) {
-  const source = await lstat(input.input);
+  validateBackupPassword(input.password);
+  const source = await lstat(input.input).catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT" || error.code === "ENOTDIR") throw new Error("Backup file not found. Choose an existing file."); throw error; });
   if (!source.isFile() || source.size > MAX_MANIFEST_BYTES + 1024 || source.size < MAGIC.length + 45) throw new Error("Choose a valid backup file under 360 MiB.");
   const archive = await readFile(input.input);
   if (!archive.subarray(0, MAGIC.length).equals(MAGIC)) throw new Error("Unsupported backup format.");
@@ -193,9 +218,10 @@ export async function restoreEncryptedBackup(input: { input: string; destination
 interface LogData { text: string; lines: string[]; events: Array<Record<string, any>>; snapshot: Record<string, any>; bytes: number; mtimeMs: number }
 async function readRunLog(home: string, id: string): Promise<LogData> {
   if (!validId(id)) throw new Error("Choose a valid run id.");
-  if (!(await lstat(join(home, "runs"))).isDirectory()) throw new Error("Run storage must be a regular directory without a symbolic link.");
+  const missingRun = (error: NodeJS.ErrnoException): never => { if (error.code === "ENOENT") throw new Error(`Run ${id} not found.`); throw error; };
+  if (!(await lstat(join(home, "runs")).catch(missingRun)).isDirectory()) throw new Error("Run storage must be a regular directory without a symbolic link.");
   const path = join(home, "runs", `${id}.jsonl`);
-  const info = await lstat(path);
+  const info = await lstat(path).catch(missingRun);
   if (!info.isFile() || info.size > MAX_LOG_BYTES) throw new Error("Only regular run logs up to 64 MiB can be maintained by this command.");
   const text = await readFile(path, "utf8");
   if (!text.endsWith("\n")) throw new Error("Run log has an incomplete last record; repair or recover it before maintenance.");

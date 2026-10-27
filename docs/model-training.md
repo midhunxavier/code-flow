@@ -104,7 +104,7 @@ Under **Switch version, roll back or stop**, choose a version and enter a reason
 
 **Resume deployment** verifies and loads the same release again. Persistent switching requires the current request to finish first, then unloads the old model and loads the candidate without doubling residency. The endpoint changes only after loading succeeds. If loading fails, Code Flow attempts to restore the previous model; if restoration also fails, that version remains selected with an explicit recovery error. Inspect the worker and use **Warm selected model** to retry. This preview does not provide zero-downtime replacement. A missing server or changed artifact never triggers local/cloud fallback. Prepared releases retain their worker bundle and Python settings across restarts and later training-worker upgrades.
 
-Controller state retains up to 32 deployments and 200 events per deployment, reserving the final event and storage headroom for stopping requests. Workers retain up to 200 serving archives, with 2 GiB compressed and 4 GiB expanded storage limits; each expanded export is limited to 512 MiB. Back up the controller records and worker directories. Artifact cleanup and deployment deletion are not implemented yet. Removing `CODEFLOW_ML_ENABLED` blocks deployment creation, switching, resume and inference; stopping deployments remains available. Each worker also retains up to 200 deployment stop fences. Deleting receipts manually can break recovery guarantees. OpenAI-compatible APIs, deployment-specific credentials, public endpoints, automatic failover and cloud adapters remain future work.
+Controller state retains up to 32 deployments and 200 events per deployment, reserving the final event and storage headroom for stopping requests. Workers retain up to 200 serving archives, with 2 GiB compressed and 4 GiB expanded storage limits; each expanded export is limited to 512 MiB. Back up the controller records and worker directories. Artifact cleanup and deployment deletion are not implemented yet. **Disable model training** in Settings → General blocks deployment creation, switching, resume and inference; stopping deployments remains available. `CODEFLOW_ML_ENABLED` is only a startup default until Settings saves a choice; removing it later does not override that choice. Each worker also retains up to 200 deployment stop fences. Deleting receipts manually can break recovery guarantees. OpenAI-compatible APIs, deployment-specific credentials, public endpoints, automatic failover and cloud adapters remain future work.
 
 ### Stream an LLM response
 
@@ -310,6 +310,8 @@ History and prepared datasets are retained in private storage, outside Git. Auto
 Controller state is a serialized, atomically replaced and fsynced `CODEFLOW_HOME/ml/state.json` document. Workers retain immutable intents, status receipts, cancellation requests, snapshots and artifacts in their own directory. Malformed or missing authority never triggers automatic resubmission.
 
 ## Development checks
+
+Source development (`npm run dev`) builds the training worker once at startup. When running `tsx src/server.ts` directly, first run `npm run build:training-worker`.
 
 `npm test` includes the worker lifecycle and isolated SSH fixture tests without Python or model downloads. To exercise the actual pinned recipe, provision its Python environment and run:
 

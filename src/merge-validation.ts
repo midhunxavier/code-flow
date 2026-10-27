@@ -1,4 +1,5 @@
-import { assertWorktree, git, resolveCommit } from "./git.js";
+import { basename } from "node:path";
+import { assertWorktree, branchExists, git, resolveCommit } from "./git.js";
 import { inTemporaryWorktree } from "./readiness.js";
 import { runCheck, type Container } from "./checks.js";
 import { runVerification, type VerificationProfile, type VerificationReport } from "./verification.js";
@@ -7,8 +8,14 @@ import { readOnlyGitMetadata } from "./agent-container.js";
 export interface MergeValidation { branch: string; into: string; source: string; target: string; tree?: string; report?: VerificationReport; conflicts: string[]; at: number }
 
 /** Verify the actual merge result on a disposable checkout, leaving both branches untouched. */
-export async function validateMergeTarget(repo: string, input: { branch: string; into: string; profile: VerificationProfile; setup?: string; container?: Container; signal?: AbortSignal }): Promise<MergeValidation> {
-  const [source, target] = await Promise.all([resolveCommit(repo, `refs/heads/${input.branch}`), resolveCommit(repo, `refs/heads/${input.into}`)]);
+export async function validateMergeTarget(repo: string, input: { branch: string; into: string; targetCommit?: string; profile: VerificationProfile; setup?: string; container?: Container; signal?: AbortSignal }): Promise<MergeValidation> {
+  const localCommit = async (branch: string, target: boolean) => {
+    if (!branch.trim()) throw new Error(target ? "Choose a target branch" : "Choose a result branch");
+    if ((await git(["check-ref-format", "--branch", branch], repo)).code) throw new Error(`Choose a valid local ${target ? "target" : "result"} branch`);
+    if (!await branchExists(repo, branch)) throw new Error(`Branch "${branch}" does not exist in ${basename(repo)}. Choose an existing local branch.`);
+    return resolveCommit(repo, `refs/heads/${branch}`);
+  };
+  const [source, target] = await Promise.all([localCommit(input.branch, false), input.targetCommit ? resolveCommit(repo, input.targetCommit) : localCommit(input.into, true)]);
   return inTemporaryWorktree(repo, target, async (path) => {
     const checkout = await assertWorktree(repo, { path });
     const container = input.container ? { ...input.container, readOnly: [...new Set([...(input.container.readOnly ?? []), ...readOnlyGitMetadata(path)])] } : undefined;

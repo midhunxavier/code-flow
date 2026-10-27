@@ -56,6 +56,10 @@ export class DeferredRunRejectedError extends Error {}
 const AGENTS: AgentId[] = ["claude", "codex", "agy"];
 const STATUSES: DeferredRunStatus[] = ["queued", "waiting-time", "waiting-provider", "claimed", "started", "failed", "unknown", "cancelled"];
 const PENDING = new Set<DeferredRunStatus>(["queued", "waiting-time", "waiting-provider"]);
+/** A known rejection with attempts left still asks for your review, so it counts as open work. */
+const retryable = (job: DeferredRunJob) => job.status === "failed" && job.attempts < job.maxAttempts;
+/** Only records that need nothing more from you can be removed, explicitly or by retention. */
+const finished = (job: DeferredRunJob) => job.status === "started" || job.status === "cancelled" || job.status === "failed" && !retryable(job);
 export const DEFERRED_RUN_LIMITS = { active: 100, retained: 200, history: 30, attempts: 3, requestBytes: 96 * 1024, fileBytes: 32 * 1024 * 1024, futureMs: 365 * 24 * 60 * 60_000 };
 const queues = new Map<string, Promise<unknown>>();
 const object = (value: unknown): value is Record<string, any> => !!value && typeof value === "object" && !Array.isArray(value);
@@ -72,6 +76,7 @@ function record<T>(raw: unknown, max: number, parse: (value: unknown) => T, labe
   if (!object(raw) || Object.keys(raw).length > max || Object.keys(raw).some((key) => !/^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/.test(key))) throw new Error(`Invalid deferred ${label}`);
   return Object.fromEntries(Object.entries(raw).map(([key, value]) => [key, parse(value)]));
 }
+const given = (value: unknown) => value !== undefined && value !== null;
 const positiveDate = (value: unknown) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= 8.64e15;
 const diagnostic = (value: unknown) => redactText(String(value ?? "Unknown deferred run error")).replace(/\0/g, "").slice(0, 1000);
 const canonical = (value: any): string => JSON.stringify(value, (_key, item) => object(item) ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => a.localeCompare(b))) : item);
@@ -98,10 +103,11 @@ export function sanitizeDeferredRequest(value: unknown): DeferredRunRequest {
     if (typeof number !== "number" || !Number.isFinite(number) || number < min! || number > max!) throw new Error(`Invalid deferred ${key}`);
     loop[key] = number;
   }
-  if (loopRaw.remoteWorker !== undefined) loop.remoteWorker = validateWorkerSelection(loopRaw.remoteWorker);
-  if (loopRaw.verification !== undefined) loop.verification = validateVerificationProfile(loopRaw.verification);
-  if (loopRaw.contextBudget !== undefined) loop.contextBudget = validateContextBudget(loopRaw.contextBudget);
-  if (loopRaw.agentContainer !== undefined) loop.agentContainer = validateAgentContainer(loopRaw.agentContainer);
+  // The composer sends null for "none" (the single configured check, no worker or container), as POST /api/runs accepts.
+  if (given(loopRaw.remoteWorker)) loop.remoteWorker = validateWorkerSelection(loopRaw.remoteWorker);
+  if (given(loopRaw.verification)) loop.verification = validateVerificationProfile(loopRaw.verification);
+  if (given(loopRaw.contextBudget)) loop.contextBudget = validateContextBudget(loopRaw.contextBudget);
+  if (given(loopRaw.agentContainer)) loop.agentContainer = validateAgentContainer(loopRaw.agentContainer);
   if (loopRaw.container !== undefined) {
     const container = keys(loopRaw.container, ["image", "network"], "check container");
     const image = text(container.image, 200, "container image");
@@ -207,7 +213,7 @@ export class DeferredRuns {
     return this.change((document) => {
       const previous = operationId ? document.jobs.find((job) => job.operationId === operationId) : undefined;
       if (previous) { if (previous.operationHash !== operationHash) throw new Error("Deferred operation ID already names different content"); return clone(previous); }
-      if (document.jobs.filter((job) => PENDING.has(job.status) || job.status === "claimed" || job.status === "unknown").length >= DEFERRED_RUN_LIMITS.active) throw new Error("Deferred queue is full; cancel or resolve older jobs first");
+      if (document.jobs.filter((job) => PENDING.has(job.status) || job.status === "claimed" || job.status === "unknown" || retryable(job)).length >= DEFERRED_RUN_LIMITS.active) throw new Error("Deferred queue is full; cancel or resolve older jobs first");
       const job: DeferredRunJob = { id: `d-${randomUUID()}`, revision: 1, name, run, notBefore, waitForProviders: providers, createdAt: now, updatedAt: now, status: notBefore > now ? "waiting-time" : "queued", attempts: 0, maxAttempts, history: [], ...(operationId ? { operationId, operationHash } : {}) };
       this.history(job, "Explicitly queued by you");
       document.jobs.push(job); trim(document); return clone(job);
@@ -216,9 +222,11 @@ export class DeferredRuns {
 
   async cancel(id: string, expectedRevision: number): Promise<DeferredRunJob> {
     const job = await this.change((document) => {
+      // Cancelling twice (say from a second tab) already has the outcome it asked for.
+      const cancelled = document.jobs.find((job) => job.id === id && job.status === "cancelled");
+      if (cancelled) return clone(cancelled);
       const job = current(document, id, expectedRevision);
       if (job.status === "started") throw new Error("This job already started. Stop its run from the run view.");
-      if (job.status === "cancelled") return clone(job);
       if (job.status === "claimed") { job.cancelRequested = true; this.transition(job, "claimed", "Cancellation requested while launching; the outcome must still be confirmed."); }
       else this.transition(job, "cancelled", job.status === "unknown" ? "Queue recovery cancelled. An unknown launched run may still need to be stopped separately." : "Cancelled before launch");
       return clone(job);
@@ -233,6 +241,19 @@ export class DeferredRuns {
       if (job.attempts >= job.maxAttempts) throw new Error("This deferred job reached its launch attempt limit");
       delete job.claimId; delete job.claimedAt; delete job.runId; delete job.cancelRequested; delete job.nextCheckAt;
       this.transition(job, "queued", "Explicit retry requested; provider availability and configuration will be checked again"); return clone(job);
+    });
+  }
+  /** Dismiss reviewed records. Pending, launching, unknown and retryable jobs stay until resolved or cancelled. */
+  async remove(targets: { id: string; expectedRevision: number }[]): Promise<number> {
+    if (!Array.isArray(targets) || !targets.length || targets.length > DEFERRED_RUN_LIMITS.retained) throw new Error("Choose deferred records to remove");
+    return this.change((document) => {
+      const ids = new Set(targets.map((target) => {
+        const job = current(document, target?.id, target?.expectedRevision);
+        if (!finished(job)) throw new Error("Only started, cancelled or exhausted deferred jobs can be removed; cancel or resolve this job first");
+        return job.id;
+      }));
+      document.jobs = document.jobs.filter((job) => !ids.has(job.id));
+      return ids.size;
     });
   }
   /** The HTTP boundary must verify the run's persisted deferred job/claim and repository. */
@@ -346,7 +367,8 @@ export class DeferredRuns {
 }
 
 function current(document: Document, id: string, revision: number) { const job = document.jobs.find((job) => job.id === id); if (!job) throw new Error("Deferred job not found"); if (!Number.isSafeInteger(revision) || revision !== job.revision) throw new DeferredRunConflictError(clone(job)); return job; }
-function trim(document: Document) { if (document.jobs.length <= DEFERRED_RUN_LIMITS.retained) return; const removable = document.jobs.filter((job) => ["started", "failed", "cancelled"].includes(job.status)).sort((a, b) => a.updatedAt - b.updatedAt); const remove = new Set(removable.slice(0, document.jobs.length - DEFERRED_RUN_LIMITS.retained).map((job) => job.id)); document.jobs = document.jobs.filter((job) => !remove.has(job.id)); }
+/** Retryable failures count toward the active limit, so retention always finds a finished record to drop first. */
+function trim(document: Document) { if (document.jobs.length <= DEFERRED_RUN_LIMITS.retained) return; const removable = document.jobs.filter(finished).sort((a, b) => a.updatedAt - b.updatedAt); const remove = new Set(removable.slice(0, document.jobs.length - DEFERRED_RUN_LIMITS.retained).map((job) => job.id)); document.jobs = document.jobs.filter((job) => !remove.has(job.id)); }
 async function bounded<T>(promise: Promise<T>, timeoutMs: number, controller: AbortController, message: string): Promise<T> {
   if (!Number.isFinite(timeoutMs) || timeoutMs < 1 || timeoutMs > 60_000) throw new Error("Deferred callback timeout must be 1–60,000 ms");
   let timer: ReturnType<typeof setTimeout> | undefined;

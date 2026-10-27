@@ -77,6 +77,9 @@ test("one template library restores complete saved configurations and keeps lega
     const config = { pattern: "solo", roles: { agent: ["codex"] }, options: {}, agentSettings: { codex: { model: "gpt-5" } }, roleSettings: {}, trust: "safe", limits: { maxMinutes: 23, maxSteps: 17 }, approvePlan: false, toolApprovals: true, check: "node --test", setup: "", baseRef: "main" };
     localStorage.setItem("composerLibrary", JSON.stringify({ schemaVersion: 1, presets: [{ id: "legacy", name: "Old workflow", revision: 1, updatedAt: 1, config, history: [] }], templates: [{ id: "complete", name: "Full task", pattern: "solo", task: "Review {{component}}", criteria: ["Keep behavior"], config, runOptions: { verification: "", container: { enabled: false, image: "", authVolume: "" } } }] }));
   });
+  // Saved templates record the approvals the run would get: choose none, so a restored grant would show.
+  await page.locator(".taskbox").getByRole("button", { name: /^Permissions:/ }).click();
+  await page.getByRole("menuitem", { name: /^Approve for me/ }).click();
   await openAdvanced(page); await page.getByRole("button", { name: "Browser task library", exact: true }).click();
   await dialog.getByLabel("Library", { exact: true }).selectOption("personal");
   await dialog.getByLabel("Template", { exact: true }).selectOption("saved:complete");
@@ -117,7 +120,7 @@ test("templates wait for repository configuration before restoring check command
     const apply = dialog.getByRole("button", { name: "Use template", exact: true });
     await apply.click();
     await openAdvanced(page);
-    assert.equal(await page.getByLabel("Done when this passes", { exact: true }).inputValue(), "node --test");
+    assert.equal(await page.getByLabel("Check command for merge validation", { exact: true }).inputValue(), "node --test");
   } finally { release(); await page.unroute("**/api/repo-config?*"); }
 });
 
@@ -139,7 +142,7 @@ test("scheduling shares four purposes and comparisons live in Insights", { timeo
   await page.getByText("Choose a project to create or manage its missions.").waitFor();
   await page.goto(`${base}/#/`);
   await page.getByLabel("Task", { exact: true }).fill("Compare this task");
-  await page.getByRole("button", { name: "Application menu", exact: true }).click();
+  await page.getByRole("button", { name: /^Application menu:/ }).click();
   await page.getByRole("menuitem", { name: "Insights", exact: true }).click();
   await page.getByText("Experiments", { exact: true }).click();
   await page.getByRole("button", { name: "Compare setups…", exact: true }).click();
@@ -241,9 +244,15 @@ test("revised hubs and template picker fit phones and have no serious accessibil
   for (const route of ["#/automations/once", "#/automations/repeat", "#/automations/backlog", "#/settings/connections/workspace", "#/settings/connections/sharing", "#/"]) {
     await page.goto(`${base}/${route}`);
     await page.locator("#main-content").waitFor();
-    if (route === "#/") { await openAdvanced(page); await page.getByRole("button", { name: "Browser task library", exact: true }).click(); }
+    if (route === "#/") {
+      await openAdvanced(page); await page.getByRole("button", { name: "Browser task library", exact: true }).click();
+      const picker = page.getByRole("dialog", { name: "Template library", exact: true });
+      await picker.waitFor();
+      // Contrast must measure the displayed dialog, not its transparent rise animation.
+      await picker.evaluate(async element => { await Promise.all(element.getAnimations({ subtree: true }).map(animation => animation.finished)); });
+    }
     await page.addScriptTag({ content: axe.source });
-    const result = await page.evaluate(async () => (window as any).axe.run(document, { runOnly: ["wcag2a", "wcag2aa", "wcag21aa"] }));
+    const result = await page.evaluate(async () => (window as any).axe.run(document, { runOnly: ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"] }));
     assert.deepEqual(result.violations.filter((item: any) => ["serious", "critical"].includes(item.impact)).map((item: any) => ({ id: item.id, targets: item.nodes.map((node: any) => node.target) })), [], route);
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, route);
   }

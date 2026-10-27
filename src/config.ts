@@ -11,18 +11,20 @@ const warned = new Set<string>();
 
 /**
  * A number from the environment, or `fallback` when it's unset, not a number, or out of range
- * (with a warning, once): `Number("30m")` is NaN, and a NaN timeout fires after 1 ms.
+ * (with a warning, once): `Number("30m")` is NaN, and a NaN timeout fires after 1 ms. `integer`
+ * counts (how many processes may run at once) also refuse fractions.
  */
-export function envNumber(name: string, fallback: number, range: { min?: number; max?: number } = {}): number {
+export function envNumber(name: string, fallback: number, range: { min?: number; max?: number; integer?: boolean } = {}): number {
   const raw = process.env[name];
   if (raw === undefined || raw.trim() === "") return fallback;
   const value = Number(raw);
-  const { min = -Infinity, max = Infinity } = range;
-  if (!Number.isFinite(value) || value < min || value > max) {
+  const { min = -Infinity, max = Infinity, integer = false } = range;
+  if (!Number.isFinite(value) || value < min || value > max || (integer && !Number.isInteger(value))) {
     if (!warned.has(name)) {
       warned.add(name);
       const bounds = [min > -Infinity ? `at least ${min}` : "", max < Infinity ? `at most ${max}` : ""].filter(Boolean).join(", ");
-      console.warn(`code-flow: ignoring ${name}=${JSON.stringify(raw)} (${bounds ? `must be a number, ${bounds}` : "not a number"}); using ${fallback}`);
+      const kind = integer ? "a whole number" : "a number";
+      console.warn(`code-flow: ignoring ${name}=${JSON.stringify(raw)} (${bounds ? `must be ${kind}, ${bounds}` : `not ${kind}`}); using ${fallback}`);
     }
     return fallback;
   }

@@ -6,6 +6,9 @@ export type ProjectSection = typeof PROJECT_SECTIONS[number];
 export const REPOSITORY_TOOLS = ["verification", "code", "context", "history", "services", "coordination", "filtered-tasks"] as const;
 export type RepositoryTool = typeof REPOSITORY_TOOLS[number];
 
+export const AUTOMATION_KINDS = ["once", "repeat", "backlog", "missions"] as const;
+export const validAutomationKind = (kind: string) => (AUTOMATION_KINDS as readonly string[]).includes(kind);
+
 export type Route =
   | { view: "composer"; project?: string }
   | { view: "inbox" }
@@ -36,7 +39,7 @@ export function parseRouteHash(hash: string): Route {
   if (view === "settings") return { view: "settings", ...(id ? { section: settingsSection(id) } : {}), ...((id === "insights" || id === "connections") && rest[0] ? { group: rest[0] } : {}) };
   // Everyday work has standalone destinations; old Settings bookmarks remain valid.
   if (view === "workspace") return { view: "workspace" };
-  if (view === "automations") return { view, ...(id ? { kind: id } : {}) };
+  if (view === "automations") return rest.length || id && !validAutomationKind(id) ? { view: "invalid", hash } : { view, ...(id ? { kind: id } : {}) };
   if (view === "inbox") return { view };
   if (view === "insights") return { view: "insights", ...(id ? { group: id } : {}) };
   if (view === "new" && id === "unassigned" && !rest.length) return { view: "composer", project: "" };
@@ -45,7 +48,7 @@ export function parseRouteHash(hash: string): Route {
   if (view === "project" && id) {
     if (!rest.length) return { view: "project", id };
     const [section, repository, tool, ...extra] = rest;
-    if (section === "automation") return extra.length || tool || repository && !["once", "repeat", "backlog", "missions"].includes(repository) ? { view: "invalid", hash } : { view: "project", id, section, ...(repository ? { kind: repository } : {}) };
+    if (section === "automation") return rest.length > 2 || repository !== undefined && !validAutomationKind(repository) ? { view: "invalid", hash } : { view: "project", id, section, ...(repository ? { kind: repository } : {}) };
     if (!PROJECT_SECTIONS.includes(section as ProjectSection) || extra.length || (section !== "repositories" && rest.length !== 1) || (tool && !REPOSITORY_TOOLS.includes(tool as RepositoryTool))) return { view: "invalid", hash };
     return { view: "project", id, section: section as ProjectSection, ...(repository ? { repository } : {}), ...(tool ? { tool: tool as RepositoryTool } : {}) };
   }

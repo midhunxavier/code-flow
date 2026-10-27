@@ -3,7 +3,7 @@ import { lstat, mkdir, open, realpath, rename, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { CODEFLOW_HOME } from "./config.js";
-import { sensitiveContextPath } from "./context-inspection.js";
+import { sensitiveContextPath, sensitiveDirectoryPath } from "./context-inspection.js";
 import type { DiffFile } from "./ship.js";
 
 export type FileOperation = "read" | "write";
@@ -41,6 +41,12 @@ export function allowsFilePolicy(policy: FilePolicySnapshot, operation: FileOper
   const rules = policy[operation];
   return rules.allow.some((root) => contains(root, path)) && !rules.deny.some((root) => contains(folded(root), folded(path)));
 }
+/** Whether a folder may be walked to reach readable files. Only its rules and Git-internal/credential-store components count: the credential file-name pattern belongs to the files inside, which allowsFilePolicy checks one by one. */
+export function allowsFilePolicyDirectory(policy: FilePolicySnapshot, rawPath: string): boolean {
+  let path: string; try { path = normalizePolicyPath(rawPath); } catch { return false; }
+  if (path !== "." && sensitiveDirectoryPath(path)) return false;
+  return !policy.read.deny.some((root) => contains(folded(root), folded(path))) && policy.read.allow.some((root) => contains(root, path) || root.startsWith(`${path}/`));
+}
 export function assertPolicyExecution(policies: readonly FilePolicySnapshot[], surface: string) {
   const restricted = policies.filter(policyIsRestrictive); if (restricted.length) throw new FilePolicyError(`${surface} cannot enforce this project's filesystem restrictions. Host, native CLI, Docker and SSH execution remain disabled until an enforcing filtered backend is available. Review the policy deliberately before choosing unrestricted execution.`, 409);
 }
@@ -57,7 +63,7 @@ export async function filterAllowedProjectEntries<T extends { path: string; type
 }
 async function assertNoSymbolicAncestor(repo: string, path: string) {
   const root = await realpath(repo); let target = root;
-  for (const part of path === "." ? [] : path.split("/")) { target = join(target, part); let info; try { info = await lstat(target); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; } if (info.isSymbolicLink()) throw new FilePolicyError("Symbolic paths cannot bypass filesystem policy"); }
+  for (const part of path === "." ? [] : path.split("/")) { target = join(target, part); let info; try { info = await lstat(target); } catch (error) { if (["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "")) return; throw error; } if (info.isSymbolicLink()) throw new FilePolicyError("Symbolic paths cannot bypass filesystem policy"); }
 }
 export async function assertProjectFileAccess(repo: string, rawPath: string, operation: FileOperation): Promise<void> {
   if (!resolver) return;
@@ -80,6 +86,12 @@ export class ProjectFilePolicies {
   private path(projectId: string) { if (!/^[a-zA-Z0-9_-]{1,100}$/.test(projectId)) throw new FilePolicyError("Invalid project identity", 400); return resolve(this.home, "filesystem-policies", `${projectId}.json`); }
   onChange(listener: (next: FilePolicySnapshot, previous: FilePolicySnapshot) => void) { this.listeners.add(listener); return () => this.listeners.delete(listener); }
   async get(projectId: string): Promise<FilePolicySnapshot> { return this.read(projectId, this.path(projectId)); }
+  /** The saved snapshot when `input` names its revision and the same rules: saving it again would change nothing. */
+  async unchanged(projectId: string, input: { revision: unknown; read: unknown; write: unknown }): Promise<FilePolicySnapshot | undefined> {
+    const previous = await this.get(projectId);
+    if (input.revision !== previous.revision) return undefined;
+    try { return sha([rules(input.read), rules(input.write)]) === sha([previous.read, previous.write]) ? previous : undefined; } catch { return undefined; }
+  }
   async set(projectId: string, input: { revision: unknown; read: unknown; write: unknown }, activate: Activation = async (commit) => commit()): Promise<FilePolicySnapshot> {
     const file = this.path(projectId);
     const work = (queues.get(file) ?? Promise.resolve()).catch(() => undefined).then(async () => {

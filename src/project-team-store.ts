@@ -7,6 +7,8 @@ import { PT_LIMITS, validateTeamDocument, type ProjectTeam } from "./project-tea
 import { repositoryIdentity } from "./repository-identity.js";
 
 export class ProjectTeamConflict extends Error { readonly status = 409; }
+/** Where a storage fault lives and what kind it is, so the owner can repair the right file. */
+export interface ProjectTeamFault { kind: "settings" | "storage" | "record" | "ownership"; file: string; name?: string; repo?: string; projectId?: string }
 /** One serialized writer, immutable published snapshots, and fsync before acknowledgment. */
 export class ProjectTeamStore {
   private teams = new Map<string, ProjectTeam>();
@@ -28,12 +30,12 @@ export class ProjectTeamStore {
       const file = await open(join(this.directory, "settings.json"), constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
       let raw;
       try {
-        const stat = await file.stat(); if (!stat.isFile() || stat.size > 4096) throw new Error("Standing teams settings exceed their regular-file bound");
+        const stat = await file.stat(); if (!stat.isFile() || stat.size > 4096) throw new Error("Project mission settings exceed their regular-file bound");
         const buffer = Buffer.alloc(4097); const { bytesRead } = await file.read(buffer, 0, buffer.length, 0);
-        if (bytesRead > 4096) throw new Error("Standing teams settings grew beyond their limit");
+        if (bytesRead > 4096) throw new Error("Project mission settings grew beyond their limit");
         raw = JSON.parse(buffer.subarray(0, bytesRead).toString());
       } finally { await file.close(); }
-      if (!raw || raw.version !== 1 || typeof raw.enabled !== "boolean" || !Number.isSafeInteger(raw.revision) || raw.revision < 1 || Object.keys(raw).some(key => !["version", "enabled", "revision"].includes(key))) throw new Error("Invalid Standing teams setting");
+      if (!raw || raw.version !== 1 || typeof raw.enabled !== "boolean" || !Number.isSafeInteger(raw.revision) || raw.revision < 1 || Object.keys(raw).some(key => !["version", "enabled", "revision"].includes(key))) throw new Error("Invalid project mission setting");
       this.feature = raw;
     } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") this.faults.set("settings", (error as Error).message); }
     for (const name of files.filter((f) => /^pt-[a-f0-9]{24}\.json$/.test(f))) {
@@ -49,7 +51,7 @@ export class ProjectTeamStore {
       try {
         const identity = await repositoryIdentity(team.repo);
         if (team.repositoryId && team.repositoryId !== identity) throw new Error("Repository metadata was replaced; inspect ownership before dispatch");
-        if (!team.repositoryId) {
+        if (team.repositoryId !== identity) {
           // Add ownership metadata only. Never rewrite mission snapshots, launch receipts or usage.
           team.repositoryId = identity; team.revision++; team.updatedAt = Date.now();
           await this.save(team);
@@ -66,8 +68,8 @@ export class ProjectTeamStore {
   }
   setEnabled(enabled: boolean, revision: number) {
     return this.serialized(async () => {
-      if (!this.loaded || this.faults.has("settings") || this.faults.has("storage")) throw new Error("Repair Standing teams settings before changing them");
-      if (revision !== (this.feature?.revision ?? 0)) throw new ProjectTeamConflict("Standing teams settings changed. Reload before trying again.");
+      if (!this.loaded || this.faults.has("settings") || this.faults.has("storage")) throw new Error("Repair project mission settings before changing them");
+      if (revision !== (this.feature?.revision ?? 0)) throw new ProjectTeamConflict("Project mission settings changed. Reload before trying again.");
       const next = { version: 1 as const, enabled, revision: revision + 1 };
       await mkdir(this.directory, { recursive: true, mode: 0o700 });
       const temporary = join(this.directory, `.settings-${randomBytes(6).toString("hex")}.tmp`);
@@ -82,8 +84,22 @@ export class ProjectTeamStore {
     });
   }
   list() { return [...this.teams.values()].map((t) => structuredClone(t)); }
+  /** Valid history held back by an ownership fault; it still owns its repository. */
+  quarantined() { return [...this.quarantinedHistory.values()].map((t) => structuredClone(t)); }
+  faultDetails(): Record<string, ProjectTeamFault> {
+    return Object.fromEntries([...this.faults.keys()].map((id) => {
+      const held = this.quarantinedHistory.get(id);
+      const kind = id === "settings" ? "settings" : id === "storage" ? "storage" : held ? "ownership" : "record";
+      return [id, { kind, file: kind === "storage" ? this.directory : join(this.directory, `${id}.json`), ...(held ? { name: held.name, repo: held.repo, projectId: held.projectId } : {}) }];
+    }));
+  }
+  /** An unreadable record could own any repository, so it blocks every new team; quarantined history blocks only its own. */
+  creationProblem() {
+    if ([...this.faults.keys()].some((id) => !this.quarantinedHistory.has(id))) return "Repair damaged team records before creating teams; repository ownership cannot be determined";
+    if (!this.loaded) return "Load project team storage before writing";
+  }
   get(id: string): ProjectTeam {
-    const error = this.faults.get(id); if (error) throw new Error(`Standing team storage is unavailable: ${error}`);
+    const error = this.faults.get(id); if (error) throw new Error(`Project mission storage is unavailable: ${error}`);
     const team = this.teams.get(id); if (!team) throw Object.assign(new Error("Project team not found"), { status: 404 });
     return structuredClone(team);
   }
@@ -98,12 +114,13 @@ export class ProjectTeamStore {
   async flush() { await this.queue; }
   create(team: ProjectTeam) {
     return this.serialized(async () => {
-      if (!this.loaded) throw new Error("Load project team storage before writing");
-      if (this.faults.size) throw new Error("Repair damaged team records before creating teams; repository ownership cannot be determined");
+      const problem = this.creationProblem(); if (problem) throw new Error(problem);
       const existing = this.teams.get(team.id); if (existing) { if (existing.operations[0]?.hash !== team.operations[0]?.hash) throw new ProjectTeamConflict("Operation ID was reused with different content"); return structuredClone(existing); }
       team = structuredClone(team);
       team.repositoryId = await repositoryIdentity(team.repo);
-      if ([...this.teams.values()].some((t) => t.status !== "archived" && (t.repo === team.repo || t.repositoryId === team.repositoryId))) throw new ProjectTeamConflict("This repository already has a standing team (including its linked worktrees)");
+      const owner = [...this.teams.values()].find((t) => t.status !== "archived" && (t.repo === team.repo || t.repositoryId === team.repositoryId));
+      if (owner) throw new ProjectTeamConflict(`This repository already has a project mission, “${owner.name}” (including its linked worktrees). Archive that mission before creating another.`);
+      for (const held of this.quarantinedHistory.values()) if (held.repo === team.repo || await repositoryIdentity(held.repo).catch(() => undefined) === team.repositoryId) throw new ProjectTeamConflict("This repository's existing mission needs repair before another can be created");
       await this.save(team); this.publish(team); return structuredClone(team);
     });
   }
@@ -122,7 +139,7 @@ export class ProjectTeamStore {
   }
   private async save(team: ProjectTeam) {
     validateTeamDocument(team);
-    const data = JSON.stringify(team); if (Buffer.byteLength(data) > PT_LIMITS.bytes) throw new Error("Standing team history exceeds its storage limit");
+    const data = JSON.stringify(team); if (Buffer.byteLength(data) > PT_LIMITS.bytes) throw new Error("Mission history exceeds its storage limit");
     await mkdir(this.directory, { recursive: true, mode: 0o700 });
     const temporary = join(this.directory, `.${team.id}-${randomBytes(6).toString("hex")}.tmp`);
     try {

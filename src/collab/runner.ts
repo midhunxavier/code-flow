@@ -1,3 +1,4 @@
+import { TEAM_JOIN_SETTINGS } from "./settings-location.js";
 import { randomBytes } from "node:crypto";
 import { constants } from "node:fs";
 import { copyFile, mkdir, open, readdir, realpath, rename, rm } from "node:fs/promises";
@@ -15,7 +16,7 @@ import { taskDraftPattern } from "../patterns/task-draft.js";
 import { checkpointContext, checkpointRef, createCheckpointBundle, ensureCheckpointBranch, importCheckpointBundle } from "./checkpoints.js";
 import type { CheckpointContextInput } from "./checkpoints.js";
 import type { HubClient, ProgressReportBody } from "./hub-client.js";
-import { ATTEMPT_ID, busyAttempt, CHECKPOINT_ID, CollabError, COMMIT_ID, latestCheckpoint, roleAtLeast, MAX, newAttemptId, newCheckpointId, ownerChangedMessage, TASK_ID } from "./model.js";
+import { assertLatestAttempt, ATTEMPT_ID, busyAttempt, CHECKPOINT_ID, CollabError, COMMIT_ID, latestCheckpoint, roleAtLeast, MAX, newAttemptId, newCheckpointId, ownerChangedMessage, TASK_ID } from "./model.js";
 import type { AttemptProgress, Checkpoint, CheckpointInput, Instruction, Task } from "./model.js";
 import type { FinishInput, FinishState } from "./store.js";
 
@@ -241,7 +242,7 @@ export class CollabRunner {
   }
   private resolveRepo(task: Pick<Task, "projectId" | "repository">, explicit: string | undefined): Promise<string> {
     const path = explicit ?? this.options.resolveRepo?.(task.projectId, task.repository);
-    if (!path) throw new CollabError(`Map repository ${task.repository} to a folder in Settings → Team, or choose the folder when starting`);
+    if (!path) throw new CollabError(`Map repository ${task.repository} to a folder in ${TEAM_JOIN_SETTINGS}, or choose the folder when starting`);
     return this.repoAt(path, "Repository must be an absolute path");
   }
   /** Download, verify and import a checkpoint's bundle into `repo` under `refs/codeflow/team/<checkpoint id>`; idempotent, and HEAD/branches stay untouched. A bundle whose ref names another checkpoint is refused (409) rather than filed under the wrong id on this computer. */
@@ -329,9 +330,9 @@ export class CollabRunner {
       let claimed: Task; try { await this.options.beforeStart?.(); claimed = await hub.claimAttempt(task.id, { attemptId: record.attemptId, runnerId: hub.runnerId, runnerName: hub.runnerName, baseCommit: base, ...(checkpoint ? { fromCheckpointId: checkpoint.id } : {}), revision: task.revision }); } catch (error) { if (error instanceof CollabError && error.status < 500) await this.remove(record.attemptId); throw error; }
       record.state = "claimed"; await this.save(record);
       const projectName = await hub.board(task.projectId).then((board) => board.projects.find((project) => project.id === task.projectId)?.name).catch(() => undefined);
-      // A hand-over's note is written for whoever continues: when this attempt continues from the checkpoint that was handed over, the note joins the checkpoint's own (a reused checkpoint carries none of it otherwise).
+      // A hand-over's note is written for whoever accepts that offer, and travels on the offer, never in the checkpoint: when this attempt continues from a checkpoint that was handed over, the accepted offer's note reaches the agent, attributed. The manifest's own note is never read, because a checkpoint written by an older code-flow carries the note of whichever offer minted it, which may have been refused, declined or cancelled and meant for someone else.
       const handover = checkpoint ? [...claimed.handoffs].reverse().find((entry) => entry.state === "accepted" && entry.checkpointId === checkpoint.id) : undefined, handoverNote = handover?.note.trim() ?? "";
-      const context = checkpoint && handoverNote && handoverNote !== checkpoint.note.trim() ? { ...checkpoint, note: clean([checkpoint.note.trim(), `Hand-over note from ${clean(handover!.from.displayName, MAX.displayName, true) || "a teammate"}: ${handoverNote}`].filter(Boolean).join("\n\n"), MAX.note) } : checkpoint;
+      const context = checkpoint ? { ...checkpoint, note: handoverNote ? clean(`Hand-over note from ${clean(handover!.from.displayName, MAX.displayName, true) || "a teammate"}: ${handoverNote}`, MAX.note) : "" } : undefined;
       const prompt = taskPrompt(claimed, { projectName, checkpoint: context });
       let run: Run;
       try { await this.options.beforeStart?.(); run = await this.manager.start({ checkpointOnFinish: true, pattern, task: prompt, repo, baseRef: base, roles: input.roles, options: {}, agentSettings: input.agentSettings, roleSettings: input.roleSettings, trust: input.trust, loop: input.loop, project: this.options.projectFor?.(repo), beforeDispatch: async (pending) => { await this.options.beforeStart?.(); record.runId = pending.id; await this.save(record); } }); }
@@ -486,9 +487,10 @@ export class CollabRunner {
     return this.serial(attemptId, async () => {
       const task = await this.hub.task(record.taskId), attempt = task.attempts.find((entry) => entry.id === attemptId);
       if (!attempt) throw new CollabError("The team server no longer lists this attempt; start a new attempt instead", 409);
-      if (attempt.state === "superseded") throw new CollabError("This attempt was superseded by a change of owner; start a new attempt from the latest checkpoint instead", 409);
+      if (attempt.state === "superseded") throw new CollabError("This attempt was superseded by a change of owner, recovery or newer attempt; start a new attempt from the latest checkpoint instead", 409);
       if (attempt.state === "finished" || attempt.state === "failed") throw new CollabError(`This attempt already ended as ${attempt.state} on the team server; start a new attempt instead`, 409);
       if (task.status === "done") throw new CollabError("Move the task out of Done before resuming the attempt", 409);
+      assertLatestAttempt(task, attempt);
       const busy = busyAttempt(task); if (busy && busy.id !== attemptId) throw new CollabError(`Stop the attempt running on ${busy.runnerName} before resuming this one`, 409);
       if (task.handoff?.state === "offered") throw new CollabError("Accept, decline or cancel the offered hand-over before resuming an attempt", 409);
       if (task.owner?.userId !== attempt.user.userId) throw new CollabError(ownerChangedMessage(task), 409);
@@ -504,10 +506,13 @@ export class CollabRunner {
       this.attach(attemptId, record.runId!); return { attemptId, runId: record.runId! };
     });
   }
-  /** Offers the task at a checkpoint of this computer's work: the attempt's existing checkpoint when it still matches the branch, else a new one (committing uncommitted changes first only when asked). Only the task's current attempt can be checkpointed: after a hand-over round trip this computer's latest record may be a superseded attempt, whose checkpoint is older than the task's latest. */
+  /** Offers the task at a checkpoint of this computer's work: the attempt's existing checkpoint when it still matches the branch, else a new one (committing uncommitted changes first only when asked). Only the task's current attempt can be checkpointed: after a hand-over round trip this computer's latest record may be a superseded attempt, whose checkpoint is older than the task's latest. The recipient is checked first, by the hub's own rules, so an offer the hub would refuse commits and mints nothing; the note goes with the offer only, so a checkpoint reused by a later offer carries no note meant for someone else. */
   async handOver(taskId: string, input: HandOverInput): Promise<Task> {
     const hub = this.hub, task = await hub.task(taskId), busy = busyAttempt(task); if (busy) throw new CollabError(`Stop the attempt running on ${busy.runnerName} before handing the task over`, 409);
     if (task.handoff?.state === "offered") throw new CollabError(`A hand-over to ${task.handoff.to.displayName} is already offered; cancel it before offering another`, 409);
+    const recipient = (await hub.board(task.projectId)).projects.find((project) => project.id === task.projectId)?.members.find((member) => member.userId === input.to);
+    if (!recipient) throw new CollabError("Choose the teammate from the project's members"); if (!roleAtLeast(recipient.role, "contributor")) throw new CollabError("The teammate needs at least the contributor role in this project");
+    if (recipient.userId === task.owner?.userId) throw new CollabError("Choose a teammate other than the task's current owner to hand over to");
     const record = await this.attemptForTask(task.id); let checkpointId: string | undefined;
     const run = record?.runId ? this.manager.get(record.runId) : undefined, worktree = run?.worktrees[0], attempt = record ? task.attempts.find((entry) => entry.id === record.attemptId) : undefined;
     const current = attempt !== undefined && attempt.state !== "superseded" && [...task.attempts].reverse().find((entry) => entry.state !== "superseded")?.id === attempt.id;
@@ -521,7 +526,7 @@ export class CollabRunner {
         checkpointId = await this.serial(record.attemptId, async () => {
           const live = this.records.get(record.attemptId) ?? record;
           // With the bundle on the hub, a pending finish whose state the hub already shows has nothing left to report; one the hub never got (an attempt it marked unknown) keeps its retry.
-          try { const id = await this.ensureCheckpoint(live, run, task, head!, worktree.branch, input.note ?? "", files); if (live.pendingFinish && !live.pendingFinish.bundleFile && live.pendingFinish.state === attempt.state) delete live.pendingFinish; await this.save(live); return id; }
+          try { const id = await this.ensureCheckpoint(live, run, task, head!, worktree.branch, "", files); if (live.pendingFinish && !live.pendingFinish.bundleFile && live.pendingFinish.state === attempt.state) delete live.pendingFinish; await this.save(live); return id; }
           catch (error) { if (live.pendingFinish?.bundleFile) { live.pendingFinish.error = clean(message(error), 1000); live.pendingFinish.tries++; live.pendingFinish.at = this.now(); await this.save(live); } throw error; }
         });
       }

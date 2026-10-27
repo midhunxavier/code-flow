@@ -124,7 +124,7 @@ const queues = new Map<string, Promise<unknown>>();
 /** A revision conflict is actionable: show both versions, rather than overwriting one. */
 export class MemoryConflictError extends Error {
   constructor(public readonly current: MemoryEntry) {
-    super(`Memory revision conflict: ${current.id} is at revision ${current.revision}`);
+    super(`This knowledge entry changed in another session (now revision ${current.revision}).`);
     this.name = "MemoryConflictError";
   }
 }
@@ -662,4 +662,13 @@ function relatedMemories(graph: KnowledgeGraph, matches: Set<string>): Set<strin
     frontier = next;
   }
   return new Set([...visited].flatMap((id) => nodes.get(id)?.kind === "memory" ? [nodes.get(id)!.key] : []));
+}
+
+/** Run-wide provenance: included means at least one turn received this revision. */
+export function mergeMemoryManifests(...manifests: MemorySelection["manifest"][]): MemorySelection["manifest"] {
+  const key = (item: MemoryRef) => `${item.id}@${item.revision}`;
+  const unique = (items: MemorySelection["manifest"]["included"]) => [...new Map(items.map(item => [key(item), item])).values()].sort((a, b) => a.id.localeCompare(b.id) || a.revision - b.revision);
+  const included = unique(manifests.flatMap(m => m.included));
+  const received = new Set(included.map(key));
+  return { included, omitted: unique(manifests.flatMap(m => m.omitted)).filter(item => !received.has(key(item))) };
 }

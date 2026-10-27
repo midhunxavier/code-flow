@@ -144,7 +144,7 @@ test("read-only steps side by side in one worktree: snapshots don't collide on i
   const lock = join(repo, ".git", "index.lock");
   writeFileSync(lock, "");
   setTimeout(() => rmSync(lock, { force: true }), 400);
-  assert.deepEqual(await restoreSnapshot(repo, { path: repo }, snaps[0]!), ["edits"]);
+  assert.deepEqual(await restoreSnapshot(repo, { path: repo }, snaps[0]!), ['edits: "b.txt"']);
   assert.equal(readFileSync(join(repo, "b.txt"), "utf8"), "b\n");
   assert.equal(readFileSync(join(repo, "a.txt"), "utf8"), "changed\n", "the change from before the step is kept");
 });
@@ -159,7 +159,7 @@ test("restoring a snapshot puts back untracked files that were there before, edi
   writeFileSync(join(repo, "notes.md"), "half-done edit\n");
   rmSync(join(repo, "data.bin"));
   writeFileSync(join(repo, "new.txt"), "new\n");
-  assert.deepEqual(await restoreSnapshot(repo, { path: repo }, snap), ["1 new file", "2 untracked files put back"]);
+  assert.deepEqual(await restoreSnapshot(repo, { path: repo }, snap), ['1 new file: "new.txt"', '2 untracked files put back: "data.bin", "notes.md"']);
   assert.equal(readFileSync(join(repo, "notes.md"), "utf8"), "my notes\n");
   assert.deepEqual(readFileSync(join(repo, "data.bin")), binary);
   assert.ok(!existsSync(join(repo, "new.txt")));
@@ -176,7 +176,7 @@ test("a file touched but not changed doesn't make a snapshot fail", async () => 
   assert.equal(snap.changes, "");
   writeFileSync(join(repo, "sneaky.txt"), "a read-only step wrote this\n");
   utimesSync(join(repo, "b.txt"), later, later);
-  assert.deepEqual(await restoreSnapshot(repo, { path: repo }, snap), ["1 new file"]);
+  assert.deepEqual(await restoreSnapshot(repo, { path: repo }, snap), ['1 new file: "sneaky.txt"']);
 });
 
 // ---------------------------------------------------------------- a worktree's .git
@@ -451,7 +451,7 @@ test("restoring a snapshot puts untracked files back as they were, not as a filt
   writeFileSync(join(wt.path, "notes.dat"), "lower case\n");
   const snap = await snapshot(repo, wt.path);
   writeFileSync(join(wt.path, "notes.dat"), "edited\n");
-  assert.deepEqual(await restoreSnapshot(repo, wt, snap), ["1 untracked file put back"]);
+  assert.deepEqual(await restoreSnapshot(repo, wt, snap), ['1 untracked file put back: "notes.dat"']);
   assert.equal(readFileSync(join(wt.path, "notes.dat"), "utf8"), "lower case\n");
   assert.deepEqual(await changedSince(repo, wt, snap), [], "unchanged untracked files compare as unchanged");
 });

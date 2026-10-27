@@ -61,6 +61,7 @@ export class RunIndex {
     }
     return this.ordered;
   }
+  get(id: string): RunSummary | undefined { return this.records.get(id)?.summary; }
   related(repo: string): RunSummary[] { return [...this.repositories.get(repo) ?? []].map((id) => this.records.get(id)!.summary); }
   matches(id: string, words: string[]): boolean { const text = this.records.get(id)?.search ?? ""; return words.every((word) => text.includes(word)); }
 }

@@ -2,6 +2,7 @@ import type { AgentAdapter, AgentId, AgentSettings, ModelCatalog } from "./types
 import { claudeAdapter } from "./claude.js";
 import { codexAdapter } from "./codex.js";
 import { agyAdapter } from "./agy.js";
+import { validModelId } from "../model-id.js";
 
 export * from "./types.js";
 
@@ -39,18 +40,20 @@ export function replaceAcpAdapters(providers: AgentAdapter[]) {
 const CATALOG_TTL_MS = 10 * 60_000;
 const catalogCache = new Map<AgentId, { at: number; value: Promise<ModelCatalog> }>();
 
+/** Explicit refresh invalidates evidence; ordinary polling retains the ten-minute cache. */
+export function invalidateAgentCatalogs() { catalogCache.clear(); }
+
 /** Model catalog per CLI, cached because listing can take a few seconds (agy fetches it). */
 export function agentCatalog(id: AgentId): Promise<ModelCatalog> {
   const cached = catalogCache.get(id);
   if (cached && Date.now() - cached.at < CATALOG_TTL_MS) return cached.value;
   const value = getAdapter(id).catalog();
   catalogCache.set(id, { at: Date.now(), value });
-  value.catch(() => catalogCache.delete(id));
+  value.catch(() => { if (catalogCache.get(id)?.value === value) catalogCache.delete(id); });
   return value;
 }
 
 // Values end up as CLI arguments: must not look like a flag or carry quotes.
-const MODEL_RE = /^[A-Za-z0-9][\w.:/[\]@-]{0,99}$/;
 const EFFORT_RE = /^[a-z]{2,12}$/;
 
 export function validateAgentSettings(input: unknown): AgentSettings {
@@ -60,7 +63,7 @@ export function validateAgentSettings(input: unknown): AgentSettings {
     const model = typeof raw[id]?.model === "string" ? raw[id].model.trim() : "";
     const effort = typeof raw[id]?.effort === "string" ? raw[id].effort.trim() : "";
     // ACP settings are JSON-RPC values, not CLI flags; agents choose their own opaque IDs.
-    if (model && !(id.startsWith("acp:") ? model.length <= 256 && !/[\x00-\x1f\x7f]/.test(model) : MODEL_RE.test(model))) throw new Error(`Invalid model name for ${getAdapter(id).displayName}: "${model}"`);
+    if (!validModelId(id, model)) throw new Error(`Invalid model name for ${getAdapter(id).displayName}: "${model}"`);
     if (effort && !(id.startsWith("acp:") ? effort.length <= 64 && !/[\x00-\x1f\x7f]/.test(effort) : EFFORT_RE.test(effort))) throw new Error(`Invalid effort for ${getAdapter(id).displayName}: "${effort}"`);
     if (model || effort) settings[id] = { ...(model && { model }), ...(effort && { effort }) };
     if (raw[id]?.variants !== undefined) {

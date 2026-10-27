@@ -1,10 +1,11 @@
 import { confirmAction } from "./confirm-state.js";
 import { signal } from "@preact/signals";
 import { useEffect, useState } from "preact/hooks";
-import { journeyAction, journeyPrompt, journeySpec, type Journey, type JourneyAction, type JourneyReplay } from "../src/journeys.js";
-import { api, enc, post, showToast } from "./lib.js";
-import { attachments, navigate, repo, route, projects, composerProject, openComposer, setPattern, setTask } from "./state.js";
+import { journeyAction, journeyPrompt, journeySpec, journeyUrl, type Journey, type JourneyAction, type JourneyReplay } from "../src/journeys.js";
+import { api, ApiError, enc, post, showToast, showError } from "./lib.js";
+import { attachments, acceptanceCriteria, contextPaths, task, source, externalSource, baseRef, branchPrefix, composerRunOptions, navigate, repo, route, projects, composerProject, openComposer, setPattern, setTask, setAcceptanceCriteria } from "./state.js";
 
+import { rerunDraft } from "./rerun-draft.js";
 import { intentDraft } from "./experience.js";
 
 import { journeyDraft } from "./composer-draft-fields.js";
@@ -27,6 +28,9 @@ export async function fixJourney(journey: Journey) {
   const matches = projects.value.filter(project => project.repos.includes(journey.repo));
   const destination = matches.find(project => project.id === viewed) ?? matches.find(project => project.id === composerProject.value) ?? (matches.length === 1 ? matches[0] : undefined);
   if (!await openComposer(destination?.id ?? "", { repository: journey.repo })) return;
+  if ((task.value.trim() || attachments.value.length || acceptanceCriteria.value.some(value => value.trim()) || contextPaths.value.size)
+      && !await confirmAction("Replace this project's draft with the recorded scenario? Its task, browser cards, attachments and acceptance criteria will be removed.", { title: "Replace current draft?", confirmLabel: "Replace draft" })) return;
+  attachments.value = []; contextPaths.value = new Map(); setAcceptanceCriteria([]); source.value = null; externalSource.value = null; baseRef.value = ""; branchPrefix.value = ""; composerRunOptions.value = {}; rerunDraft.value = null;
   journeyDraft.value = journey;
   intentDraft.value = "bug";
   setPattern("pipeline"); setTask(journeyPrompt(journey));
@@ -76,7 +80,8 @@ export function JourneyRecorder({ pageKey, url, width, repository, ready, toggle
       {saved ? <><button class="btn small" onClick={() => void fixJourney(saved).catch(e => setError(e.message))}>Prepare verified fix</button><button class="btn small" onClick={() => downloadSpec(saved)}>Export regression test</button></> : null}
       <button class="btn ghost small" disabled={busy} onClick={() => { toggle(false); recording.value = undefined; setSaved(undefined); setError(""); }}>New recording</button></div>
       {error ? <p class="msg err" role="alert">{error}</p> : null}
-      {saved ? <ScenarioEvidence journey={saved} /> : null}
+      {error.includes("100-scenario") ? <ScenarioLibrary repository={repository} /> : null}
+      {saved ? <ScenarioEvidence journey={saved} appUrl={localJourneyUrl(url)} /> : null}
     </div> : null}
   </section>;
 }
@@ -87,19 +92,34 @@ export function Walkthrough({ replay }: { replay: JourneyReplay }) {
   const current = replay.frames[frame];
   return <div class="walkthrough"><p><b>{replay.status === "passed" ? "Expected text appeared" : "Scenario failed"}</b> · {new Date(replay.at).toLocaleString()}</p>{replay.error ? <p class="msg err">{replay.error}</p> : null}{current ? <><img src={current.image} alt={current.label} /><p>{current.label}</p><div class="experience-actions"><button class="btn small" onClick={() => { setFrame(0); setPlaying(!playing); }}>{playing ? "Pause walkthrough" : "Play walkthrough"}</button><label>Recorded step<input type="range" min={0} max={replay.frames.length - 1} value={frame} onInput={event => { setPlaying(false); setFrame(Number(event.currentTarget.value)); }} /></label></div></> : <p class="help">No screenshots were retained.</p>}</div>;
 }
+const localJourneyUrl = (value: string) => { try { return journeyUrl(value); } catch { return undefined; } };
 export function ScenarioEvidence({ journey, runId, branch, appUrl }: { journey: Journey; runId?: string; branch?: string; appUrl?: string }) {
+  const [address, setAddress] = useState(appUrl || journey.url), [editedAddress, setEditedAddress] = useState(false);
+  useEffect(() => { if (!editedAddress) setAddress(appUrl || journey.url); }, [appUrl, journey.id, editedAddress]);
   const [replays, setReplays] = useState<JourneyReplay[]>([]), [error, setError] = useState(""), [busy, setBusy] = useState(false);
   useEffect(() => { let alive = true; api<{ replays: JourneyReplay[] }>(`/api/journeys/${journey.id}`).then(value => alive && setReplays(value.replays), error => alive && setError(error.message)); return () => { alive = false; }; }, [journey.id]);
-  const replay = async () => { if (busy) return; setBusy(true); setError(""); try { const value = await post<JourneyReplay>(`/api/journeys/${journey.id}/replay`, { url: appUrl || journey.url, runId, branch }); setReplays(old => [...old.slice(-3), value]); } catch (error) { setError((error as Error).message); } finally { setBusy(false); } };
+  const replay = async () => { if (busy) return; setBusy(true); setError(""); try { const value = await post<JourneyReplay>(`/api/journeys/${journey.id}/replay`, { url: runId ? appUrl : address, runId, branch }); setReplays(old => [...old.slice(-3), value]); } catch (error) { setError((error as Error).message); } finally { setBusy(false); } };
   const baseline = replays.filter(item => !item.runId).at(-1), result = replays.filter(item => runId ? item.runId === runId && item.branch === branch : !item.runId).at(-1);
-  return <section class="scenario-evidence" aria-label="Browser scenario evidence"><h4>{journey.title}</h4><p class="help">Expected “{journey.expected.text}” in <code>{journey.expected.selector}</code>.</p><div class="experience-actions"><button class="btn small" disabled={busy || !!runId && !appUrl} onClick={replay}>{busy ? "Replaying in Chrome…" : runId ? "Replay scenario on this result" : "Replay original scenario"}</button><button class="btn ghost small" onClick={() => downloadSpec(journey)}>Export regression test</button></div>
+  return <section class="scenario-evidence" aria-label="Browser scenario evidence"><h4>{journey.title}</h4><p class="help">Expected “{journey.expected.text}” in <code>{journey.expected.selector}</code>.</p>{!runId ? <label>App address<input class="field" type="url" value={address} onInput={event => { setAddress(event.currentTarget.value); setEditedAddress(true); }} /></label> : null}<div class="experience-actions"><button class="btn small" disabled={busy || !!runId && !appUrl || !runId && !localJourneyUrl(address)} onClick={replay}>{busy ? "Replaying in Chrome…" : runId ? "Replay scenario on this result" : "Replay original scenario"}</button><button class="btn ghost small" onClick={() => downloadSpec(journey)}>Export regression test</button></div>
     <p class="help">Browser observations are separate from the run's code checks. A running app may include uncommitted changes or an older build. Only the tested assertion is checked; this does not certify the whole feature.</p>
     {error ? <p class="msg err" role="alert">{error}</p> : null}
     <div class="experience-columns">{runId && baseline ? <div><h4>Before</h4><Walkthrough replay={baseline} /></div> : null}{result ? <div><h4>{runId ? "Result" : "Recorded walkthrough"}</h4><Walkthrough replay={result} /></div> : null}</div>
   </section>;
 }
+interface ScenarioInventory { items: Journey[]; total: number; limit: number; previews: Record<string, string> }
 export function ScenarioLibrary({ repository }: { repository: string }) {
-  const [items, setItems] = useState<Journey[]>([]), [error, setError] = useState("");
-  useEffect(() => { let alive = true; if (repository) api<Journey[]>(`/api/journeys?repo=${enc(repository)}`).then(items => alive && setItems(items), error => alive && setError(error.message)); return () => { alive = false; }; }, [repository]);
-  return <details class="pp-card scenario-library"><summary>Recorded scenarios · {items.length}</summary>{error ? <p role="alert">{error}</p> : null}{!items.length ? <p class="help">Open a local app in Browser and choose Record a bug to save a reproducible scenario.</p> : items.map(item => <article key={item.id}><h4>{item.title}</h4><div class="experience-actions"><button class="btn small" onClick={() => void fixJourney(item).catch(e => showToast(e.message))}>Prepare verified fix</button><button class="btn small" onClick={() => downloadSpec(item)}>Export test</button><button class="btn ghost small" onClick={async () => { if (!await confirmAction(`Delete “${item.title}” and its replay screenshots?`, {"title":"Delete recorded scenario?","confirmLabel":"Delete scenario","danger":true})) return; try { await api(`/api/journeys/${item.id}`, { method: "DELETE" }); setItems(items.filter(value => value.id !== item.id)); } catch (e) { setError((e as Error).message); } }}>Delete scenario</button></div></article>)}</details>;
+  const [inventory, setInventory] = useState<ScenarioInventory>(), [error, setError] = useState(""), [all, setAll] = useState(false), [replay, setReplay] = useState("");
+  const load = async () => { try { setInventory(await api<ScenarioInventory>("/api/journeys?all=1")); setError(""); } catch (error) { setError((error as Error).message); } };
+  useEffect(() => { let alive = true; setInventory(undefined); setError(""); api<ScenarioInventory>("/api/journeys?all=1").then(value => alive && setInventory(value), error => alive && setError(error.message)); return () => { alive = false; }; }, [repository]);
+  const here = inventory?.items.filter(item => item.repo === repository) ?? [], items = all ? inventory?.items ?? [] : here;
+  return <details class="pp-card scenario-library"><summary>Recorded scenarios{inventory ? ` · ${here.length} (${inventory.total} of ${inventory.limit} used on this computer)` : ""}</summary>
+    {error ? <p class="msg err" role="alert">Couldn't load recorded scenarios: {error} <button class="btn small" onClick={() => void load()}>Retry</button></p> : null}
+    {inventory ? <><button class="btn small" aria-pressed={all} onClick={() => setAll(!all)}>{all ? "This repository's scenarios" : "All scenarios on this computer"}</button>
+    {!items.length && !error ? <p class="help">Open a local app in Browser and choose Record a bug to save a reproducible scenario.</p> : items.map(item => <article key={item.id}><h4>{item.title}</h4>{all ? <p class="help">{projects.value.filter(project => project.repos.includes(item.repo)).map(project => project.name).join(", ") || "No current project"} · {item.repo}</p> : null}<div class="experience-actions">
+      <button class="btn small" onClick={() => void fixJourney(item).catch(e => showError(e.message))}>Prepare verified fix</button><button class="btn small" onClick={() => setReplay(replay === item.id ? "" : item.id)}>Replay scenario…</button><button class="btn small" onClick={() => downloadSpec(item)}>Export test</button>
+      <button class="btn ghost small" onClick={async () => { if (!await confirmAction(`Delete “${item.title}” and its replay screenshots?`, { title: "Delete recorded scenario?", confirmLabel: "Delete scenario", danger: true })) return;
+        try { await api(`/api/journeys/${item.id}`, { method: "DELETE" }); await load(); }
+        catch (error) { if (error instanceof ApiError && error.status === 404) await load(); else setError((error as Error).message); }
+      }}>Delete scenario</button></div>{replay === item.id ? <ScenarioEvidence journey={item} appUrl={inventory.previews[item.repo]} /> : null}</article>)}</> : !error ? <p class="help">Loading recorded scenarios…</p> : null}
+  </details>;
 }

@@ -159,7 +159,21 @@ export class MlService {
       finally { await input.close(); await output.close(); }
       const fingerprint = hasher.digest("hex"), source = await open(temporary, "r");
       try {
-        for (let offset = 0; offset < bytes;) { const buffer = Buffer.alloc(Math.min(CHUNK_BYTES, bytes - offset)); const read = await source.read(buffer, 0, buffer.length, offset); if (!read.bytesRead) throw new Error("Snapshot ended unexpectedly"); await this.transport.call(target, this.request(target, "upload", { hash: fingerprint, format, bytes, offset, data: buffer.subarray(0, read.bytesRead).toString("base64") })); offset += read.bytesRead; }
+        const status = () => this.transport.call<{ offset: number }>(target, this.request(target, "upload-status", { hash: fingerprint, format, bytes }));
+        let offset = capability.uploadResume === 1 ? integer((await status()).offset, 0, bytes, "Transfer offset") : 0;
+        let resynced = false;
+        while (offset < bytes) {
+          const buffer = Buffer.alloc(Math.min(CHUNK_BYTES, bytes - offset));
+          const read = await source.read(buffer, 0, buffer.length, offset);
+          if (!read.bytesRead) throw new Error("Snapshot ended unexpectedly");
+          try {
+            const reply = await this.transport.call<{ offset: number }>(target, this.request(target, "upload", { hash: fingerprint, format, bytes, offset, data: buffer.subarray(0, read.bytesRead).toString("base64") }));
+            offset = integer(reply.offset, offset + read.bytesRead, bytes, "Acknowledged transfer offset");
+          } catch (error) {
+            if (capability.uploadResume !== 1 || resynced || !/^Resume this transfer at byte \d+$/.test((error as Error).message)) throw error;
+            resynced = true; offset = integer((await status()).offset, 0, bytes, "Transfer offset");
+          }
+        }
         prepared = await this.transport.call(target, this.request(target, "finish-upload", { hash: fingerprint, format, ...(v.purpose ? { purpose: v.purpose } : {}) }));
       } finally { await source.close(); await rm(temporary, { force: true }); }
     }

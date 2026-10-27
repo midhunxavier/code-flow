@@ -47,7 +47,7 @@ npm scans new uploads before they become installable. The job waits up to 20 min
 If a run fails or needs to be retried, run **Publish npm release** manually with the existing published tag:
 
 ```sh
-gh workflow run npm-publish.yml -f tag=v0.1.0-preview.7
+gh workflow run npm-publish.yml -f tag=v0.1.0-preview.8
 ```
 
 A retry checks an existing npm version's integrity before repairing its tags. It refuses different bytes for the same version and skips channel changes for older releases. Runs are serialized to prevent two releases racing to update tags. If npm is still scanning an accepted upload, wait and rerun; do not increment the version or replace the release tarball merely to retry.
@@ -58,8 +58,8 @@ For an exceptional manual publication, authenticate as the package owner and pub
 
 ```sh
 npm whoami
-npm publish output/releases/midhunxavier-code-flow-0.1.0-preview.7.tgz --tag preview --access public
-npm dist-tag add @midhunxavier/code-flow@0.1.0-preview.7 latest
+npm publish output/releases/midhunxavier-code-flow-0.1.0-preview.8.tgz --tag preview --access public
+npm dist-tag add @midhunxavier/code-flow@0.1.0-preview.8 latest
 npm view @midhunxavier/code-flow@latest version
 npm view @midhunxavier/code-flow@preview version
 ```
@@ -102,6 +102,8 @@ Before publishing the first signed updater release, install it in Applications a
 The GitHub workflow can import the following repository secrets into a temporary build keychain: `MACOS_CERTIFICATE_BASE64`, `MACOS_CERTIFICATE_PASSWORD`, `MACOS_SIGN_IDENTITY`, `APPLE_ID`, `APPLE_TEAM_ID` and `APPLE_APP_PASSWORD`. Supply all six for signed and notarized builds; with none set, it produces clearly labeled unnotarized developer builds. Partial credential configuration fails instead of silently dropping signing.
 
 ## Homebrew
+
+The generated formula uses Homebrew6.0.3 or newer. Before copying it to the tap, run `brew style output/releases/Formula/code-flow.rb`; after adding it to the tap, also run `brew audit --strict midhunxavier/code-flow/code-flow`.
 
 `release:prepare` generates `output/releases/Formula/code-flow.rb` from the actual npm tarball's SHA-256. After the GitHub prerelease assets are published, copy this formula into `Formula/code-flow.rb` in the `midhunxavier/homebrew-code-flow` repository, then test:
 

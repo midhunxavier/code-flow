@@ -3,7 +3,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { killGroup, trackGroup, untrackGroup } from "./adapters/process.js";
+import { DOCKER_UNREACHABLE, killGroup, trackGroup, untrackGroup } from "./adapters/process.js";
 import { timerMs } from "./config.js";
 import { childEnv } from "./env.js";
 
@@ -26,6 +26,8 @@ export interface CheckResult {
   tests?: number;
   /** Tests that failed (pytest: and errored), when the runner's summary says. */
   failed?: number;
+  /** Ran in a Docker container: Docker's own failures (a stopped daemon) aren't the command's. */
+  container?: boolean;
 }
 
 const KEEP_OUTPUT = 20_000;
@@ -40,26 +42,40 @@ export interface DetectedCheck {
 
 /** Best guess at the repo's test command (and setup); the user can always edit it. */
 export async function detectCheckCommand(repo: string): Promise<DetectedCheck | null> {
+  return (await detectCheck(repo)).check;
+}
+
+/**
+ * `detectCheckCommand`, and what it had to skip on the way: a package.json that isn't valid JSON
+ * says nothing about its test script, so the other runners are still tried, and the warning
+ * tells you why its script wasn't used.
+ */
+export async function detectCheck(repo: string): Promise<{ check: DetectedCheck | null; warning?: string }> {
   const has = (file: string) => existsSync(join(repo, file));
   const read = (file: string) => readFile(join(repo, file), "utf8").catch(() => "");
 
+  let warning: string | undefined;
   if (has("package.json")) {
-    const pkg = JSON.parse(await readFile(join(repo, "package.json"), "utf8").catch(() => "{}"));
+    let pkg: { scripts?: Record<string, unknown> } | undefined;
+    // npm itself reads a package.json that starts with a byte-order mark.
+    try { pkg = JSON.parse((await read("package.json")).replace(/^\uFEFF/, "") || "{}"); }
+    catch { warning = "package.json is not valid JSON, so its test script was skipped"; }
     const test: unknown = pkg?.scripts?.test;
     if (typeof test === "string" && test.trim() && !/no test specified/.test(test)) {
       const runner = has("pnpm-lock.yaml") ? "pnpm" : has("yarn.lock") ? "yarn" : has("bun.lockb") || has("bun.lock") ? "bun run" : "npm";
-      return { command: `${runner} test`, source: "package.json" };
+      return { check: { command: `${runner} test`, source: "package.json" } };
     }
   }
-  if (has("Cargo.toml")) return { command: "cargo test", source: "Cargo.toml" };
-  if (has("go.mod")) return { command: "go test ./...", source: "go.mod" };
+  const found = (check: DetectedCheck | null) => ({ check, ...(warning ? { warning } : {}) });
+  if (has("Cargo.toml")) return found({ command: "cargo test", source: "Cargo.toml" });
+  if (has("go.mod")) return found({ command: "go test ./...", source: "go.mod" });
   const pytest = await detectPytest(has, read);
-  if (pytest) return pytest;
+  if (pytest) return found(pytest);
   if (has("Makefile")) {
     const makefile = await read("Makefile");
-    if (/^test\s*:/m.test(makefile)) return { command: "make test", source: "Makefile" };
+    if (/^test\s*:/m.test(makefile)) return found({ command: "make test", source: "Makefile" });
   }
-  return null;
+  return found(null);
 }
 
 /**
@@ -198,6 +214,7 @@ export function runCheck(cwd: string, command: string, opts: { timeoutMs: number
         durationMs: Date.now() - started,
         output: timedOut ? `${trimmed}\n[timed out after ${Math.round(opts.timeoutMs / 1000)}s]` : trimmed,
         ...summary,
+        ...(opts.container ? { container: true } : {}),
       });
     };
     child.on("error", (err) => {
@@ -362,7 +379,9 @@ export function cantRunReason(result: CheckResult): string | undefined {
 /**
  * The test runner itself isn't there: the shell couldn't find (126: couldn't execute) the
  * command (`uv`, `poetry`, `pytest`…), `python3 -m pytest` without pytest, or uv or Poetry with
- * nothing installed in the environment. Returns the line that says so.
+ * nothing installed in the environment. In a container, Docker itself couldn't run it: its
+ * daemon isn't running or reachable, or `docker run` failed (exit 125: no such image, a bad
+ * mount). Returns the line that says so.
  */
 export function runnerMissing(result: CheckResult): string | undefined {
   if (result.ok || result.timedOut) return undefined;
@@ -378,6 +397,11 @@ export function runnerMissing(result: CheckResult): string | undefined {
     return undefined;
   };
   const code = result.exitCode;
+  if (result.container) {
+    const docker = first(DOCKER_UNREACHABLE, /^Docker isn't installed/);
+    if (docker) return docker;
+    if (code === 125) return first(/^docker: /i, /^Unable to find image/i) ?? "Docker couldn't start the container (exit code 125)";
+  }
   if (code === 127 || code === 126) return first(/not found/i, /cannot execute|permission denied|no such file/i) ?? `command not found (exit code ${code})`;
   return first(/No module named '?pytest'?$/, /^error: Failed to spawn: /, /^Command not found: /);
 }
@@ -433,6 +457,12 @@ function inconclusive(result: CheckResult, where: string): string | undefined {
   if (/^(code-flow couldn't run it|Cancelled before it started)/.test(result.output)) return result.output.split("\n")[0]!;
   if (result.exitCode === 5 && /\bpytest\b/.test(result.command)) return `pytest collected no tests ${where}`;
   return undefined;
+}
+
+/** A command's time limit as people read it: "45 s", "5 min", "4.5 min". */
+export function formatTimeout(ms: number): string {
+  if (ms < 60_000) return `${Math.max(1, Math.round(ms / 1000))} s`;
+  return `${Math.round(ms / 6_000) / 10} min`;
 }
 
 /** What to tell you when the check can't run; the fix is setting it up for this repo. */

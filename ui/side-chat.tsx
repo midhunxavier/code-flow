@@ -1,3 +1,4 @@
+import { useMessageDraft } from "./message-draft.js";
 import { BrowserMessage, BrowserDraftCards } from "./browser-context-cards.js";
 import { editBrowserText, parseBrowserMessage } from "./browser-context.js";
 import { chatTaskId } from "../src/chat-family.js";
@@ -5,7 +6,7 @@ import { useEffect, useRef, useState } from "preact/hooks";
 import { AgentTag, Markdown } from "./bits.js";
 import { Icon } from "./icons.js";
 import { ChatControls, type ChatPermissions, type ChatSettings } from "./chat-controls.js";
-import { baseName, post, SHORT, showToast, store, STATUS_TEXT } from "./lib.js";
+import { baseName, post, SHORT, showToast, showError, store, STATUS_TEXT } from "./lib.js";
 import { Menu, MenuItem, MenuTitle, resultWorktree, Strip, type StripItem } from "./panel-bits.js";
 import { ChatThread, ConversationBar, DraftImages, FollowUpBadges, teamSteps, TurnBody, useRunStream } from "./run.js";
 import {
@@ -13,7 +14,7 @@ import {
   agents,
   agentSettings,
   chatDrafts,
-  limits,
+  limitPreference,
   markSeen,
   patterns,
   projectFor,
@@ -21,7 +22,7 @@ import {
   runs,
   runState,
   setSideChat,
-  setAgentSetting,
+  setProviderDefault,
   setTrust,
   sideChat,
   sideDraft,
@@ -267,6 +268,7 @@ function SideChatView({ run: summary, chat }: { run: RunSummary; chat: string })
                       <FollowUpBadges f={f} />
                     )}
                   </div>
+                  {f.warning ? <p class="msg warn" role="alert">{f.warning}</p> : null}
                   {step ? <TurnBody run={run} step={step} data={data.current} answer={f.status === "pending" ? undefined : f.result} /> : f.result ? <Markdown text={f.result} /> : null}
                 </div>
               </div>
@@ -301,7 +303,7 @@ function NewSideChat({ run }: { run: RunSummary }) {
 
 /** A side chat's message box: Ask or Change, the agent, and send. Without a chat, sending starts one. */
 function SideComposer({ run, chat }: { run: RunSummary; chat?: SideChat }) {
-  const [text, setText] = useState("");
+  const { text, setText, images, setImages, ready: draftReady, warning: draftWarning } = useMessageDraft(`side:${run.id}:${chat?.key ?? "new"}`);
   const [mode, setMode] = useState<"ask" | "change">(chat?.mode ?? "ask");
   const [agent, setAgent] = useState<AgentId>(chat?.agent ?? (run.pattern === "solo" && !["claude", "codex", "agy"].includes(savedAgent()) ? "codex" : savedAgent()));
   const [settings, setSettings] = useState<Record<string, ChatSettings>>({});
@@ -309,20 +311,20 @@ function SideComposer({ run, chat }: { run: RunSummary; chat?: SideChat }) {
   const selectedSettings = settings[agent] ?? chat?.turns.filter((turn) => turn.agent === agent).at(-1)?.settings ?? run.agentSettings[agent] ?? {};
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [images, setImages] = useState<Attachment[]>([]);
-  const area = useDraft(text, setText);
+  const area = useDraft(text, setText, draftReady);
   // Pins sent here from the Browser.
   useEffect(() => {
+    if (!draftReady) return;
     const drafts = takeDrafts(chat ? chat.key : "side:new");
     if (!drafts.length) return;
     setText((t) => [t.trim(), ...drafts.map((d) => d.text)].filter(Boolean).join("\n\n"));
     setImages((i) => [...i, ...drafts.flatMap((d) => d.images)]);
     area.current?.focus();
-  }, [chatDrafts.value, chat?.key]);
+  }, [chatDrafts.value, chat?.key, draftReady]);
   const wt = chat ? run.worktrees.find((w) => w.name === chat.turns[0]!.worktree) : resultWorktree(run);
   const name = SHORT[agent] ?? agent;
   const send = async () => {
-    if (!text.trim() || busy || !wt) return;
+    if (!draftReady || !text.trim() || busy || !wt) return;
     setBusy(true);
     setError("");
     const id = chat?.chat ?? `c${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
@@ -347,10 +349,12 @@ function SideComposer({ run, chat }: { run: RunSummary; chat?: SideChat }) {
     <div class="convo">
       <div class="convo-inner">
         {error ? <div class="msg err">{error}</div> : null}
+        {draftWarning ? <p class="msg warn" role="status">{draftWarning}</p> : null}
         <BrowserDraftCards text={text} onText={setText} images={images} onImages={setImages} />
         <DraftImages message={text} images={images} onRemove={(i) => setImages(images.filter((_, j) => j !== i))} />
         <div class="chatbox">
           <textarea
+            disabled={!draftReady}
             ref={area}
             rows={1}
             aria-label="Message"
@@ -374,7 +378,7 @@ function SideComposer({ run, chat }: { run: RunSummary; chat?: SideChat }) {
             </Menu> : null}
             <ChatControls showPermissions={run.pattern !== "solo" || !!chat} providers={run.pattern === "solo" && !chat ? agents.value.filter(item => item.id === "claude" || item.id === "codex" || item.id === "agy") : undefined} agent={agent} onAgent={(id) => { setAgent(id); store.set("sideAgent", id); }} settings={selectedSettings} onSettings={(value) => setSettings({ ...settings, [agent]: value })} permissions={permissions} onPermissions={setPermissions} restricted={!!run.lockdown || !!run.trigger} approvalsAvailable={!run.loop.remoteWorker && !run.loop.agentContainer} />
             <span class="chatbox-hint" />
-            <button class="send" aria-label="Send" title="Send (↵ — ⇧↵ for a new line)" disabled={busy || !text.trim() || !wt} onClick={send}>
+            <button class="send" aria-label="Send" title="Send (↵ — ⇧↵ for a new line)" disabled={!draftReady || busy || !text.trim() || !wt} onClick={send}>
               <Icon name="send" />
             </button>
           </div>
@@ -389,14 +393,14 @@ function SideComposer({ run, chat }: { run: RunSummary; chat?: SideChat }) {
 }
 
 /** A message box that grows with its text, and takes text sent over from Notes or a file. */
-function useDraft(text: string, setText: (fn: (t: string) => string) => void) {
+function useDraft(text: string, setText: (fn: (t: string) => string) => void, ready = true) {
   const area = useRef<HTMLTextAreaElement>(null);
   useEffect(() => {
-    if (!sideDraft.value) return;
+    if (!ready || !sideDraft.value) return;
     setText((t) => (t ? `${t}\n\n${sideDraft.value}` : sideDraft.value));
     sideDraft.value = "";
     area.current?.focus();
-  }, [sideDraft.value]);
+  }, [sideDraft.value, ready]);
   useEffect(() => {
     const el = area.current;
     if (!el) return;
@@ -442,6 +446,7 @@ function ChatView({ id }: { id: string }) {
             <span class={`status-pill ${state}`}>{STATUS_TEXT[run.status] ?? run.status}</span>
             {branch ? <code title="The branch this chat works on">{branch}</code> : null}
             {run.pattern !== "solo" ? state === "failing" ? <span class="note">Check fails</span> : state === "done" ? <span class="ok">Check passes</span> : state === "unverified" ? <span class="note">Not verified</span> : null : null}
+            {run.status === "running" ? <button type="button" class="btn ghost small danger" title="Stop this chat; its work stays on its branch" onClick={() => void post(`/api/runs/${run.id}/cancel`).catch(error => showError(error.message))}><Icon name="stop" /> Stop</button> : null}
             <a class="btn ghost small" href={`#/run/${encodeURIComponent(run.id)}`} title="Open this chat as a run, with its branch and result">
               Open
             </a>
@@ -455,7 +460,7 @@ function ChatView({ id }: { id: string }) {
           {["interrupted", "stopped", "failed", "cancelled"].includes(run.status) ? (
             <div class="chat-resume">
               <span class="help">{run.status === "interrupted" ? "This chat was interrupted." : `This chat ${STATUS_TEXT[run.status]?.toLowerCase() ?? run.status}.`}</span>
-              <button class="btn small" onClick={() => post(`/api/runs/${run.id}/resume`).catch((e) => showToast(e.message))}>
+              <button class="btn small" onClick={() => post(`/api/runs/${run.id}/resume`).catch((e) => showError(e.message))}>
                 ▶ Resume
               </button>
             </div>
@@ -503,7 +508,8 @@ function NewChat({ scope }: { scope: SideScope }) {
         agentSettings: agentSettings.value,
         trust: trust.value,
         approvals: { tools },
-        loop: { maxMinutes: limits.value.maxMinutes, maxSteps: limits.value.maxSteps },
+        // Your saved limits; without them the server applies the repository's .codeflow/config.json, then its defaults.
+        loop: limitPreference.value ? { maxMinutes: limitPreference.value.maxMinutes, maxSteps: limitPreference.value.maxSteps } : {},
         parentRunId: run?.id,
       });
       setText("");
@@ -551,7 +557,7 @@ function NewChat({ scope }: { scope: SideScope }) {
               }}
             />
             <div class="chatbox-bar chatbox-configurable">
-              <ChatControls agent={agent} onAgent={(id) => { setAgent(id); store.set("sideAgent", id); }} settings={agentSettings.value[agent] ?? {}} onSettings={(value) => setAgentSetting(agent, value)} permissions={{ trust: trust.value, tools }} onPermissions={(value) => { setTrust(value.trust); setTools(value.tools); store.set("interactiveApprovals", value.tools ? "1" : "0"); }} />
+              <ChatControls agent={agent} onAgent={(id) => { setAgent(id); store.set("sideAgent", id); }} settings={agentSettings.value[agent] ?? {}} onSettings={(value) => setProviderDefault(agent, value)} permissions={{ trust: trust.value, tools }} onPermissions={(value) => { setTrust(value.trust); setTools(value.tools); store.set("interactiveApprovals", value.tools ? "1" : "0"); }} />
               {fromRun.length ? (
                 <label class="to" title="Start from this run's result branch, so the agent sees that work">
                   <span class="to-lbl">From</span>

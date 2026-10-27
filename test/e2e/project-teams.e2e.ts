@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { chromium, type Browser } from "playwright-core";
 const root = fileURLToPath(new URL("../..", import.meta.url));
 const freePort = () => new Promise<number>((resolve) => { const probe = createServer().listen(0, "127.0.0.1", () => { const port = (probe.address() as AddressInfo).port; probe.close(() => resolve(port)); }); });
-const port = await freePort(), base = `http://localhost:${port}`, token = "standing-team-e2e-token";
+const port = Number(process.env.QA_MISSIONS_PORT) || await freePort(), base = `http://127.0.0.1:${port}`, token = "standing-team-e2e-token";
 const home = mkdtempSync(join(tmpdir(), "codeflow-standing-e2e-")), repo = join(home, "repo");
 let server: ChildProcess, browser: Browser;
 const errors: string[] = [];
@@ -19,7 +19,7 @@ const api = async (path: string, body?: unknown) => {
 };
 async function startServer() {
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("CODEFLOW_")));
-  server = spawn(process.execPath, ["--import", "tsx", "src/server.ts"], { cwd: root, env: { ...env, PORT: String(port), CODEFLOW_REMOTE_PORT: String(await freePort()), CODEFLOW_HOME: join(home, "data"), CODEFLOW_TOKEN: token, CODEFLOW_SCHEDULER_TICK_MS: "250", FAKE_DISCOVERY_MODELS: JSON.stringify(["sonnet", "standing-free"].map(value => ({ value, resolvedModel: value, displayName: value, supportsEffort: true, supportedEffortLevels: ["low", "high"] }))), PATH: `${join(root, "test/fake-bin")}:${process.env.PATH}` }, stdio: ["ignore", "pipe", "pipe"] });
+  server = spawn(process.execPath, ["--import", "tsx", "src/server.ts"], { cwd: root, env: { ...env, PORT: String(port), CODEFLOW_REMOTE_PORT: String(Number(process.env.QA_MISSIONS_PORT) ? port + 1 : await freePort()), CODEFLOW_HOME: join(home, "data"), CODEFLOW_TOKEN: token, CODEFLOW_SCHEDULER_TICK_MS: "250", FAKE_DISCOVERY_DELAY_MS: process.env.QA_MISSIONS_MODEL_DELAY_MS ?? "0", FAKE_DISCOVERY_MODELS: JSON.stringify(["sonnet", "standing-free"].map(value => ({ value, resolvedModel: value, displayName: value, supportsEffort: true, supportedEffortLevels: ["low", "high"] }))), PATH: `${join(root, "test/fake-bin")}:${process.env.PATH}` }, stdio: ["ignore", "pipe", "pipe"] });
   server.stdout?.resume();
   server.stderr?.on("data", (data) => errors.push(String(data)));
   let ready = false;
@@ -64,9 +64,12 @@ test("owner creates a standing team, previews, runs, reviews and approves with o
   const page = await context.newPage(); const pageErrors: string[] = []; page.on("pageerror", (error) => pageErrors.push(error.message));
   await page.addInitScript(() => localStorage.setItem("agentSettings", JSON.stringify({ claude: { model: "composer-default" } })));
   await page.route("**/api/models", async route => {
-    const response = await route.fetch(), catalogs = await response.json();
-    catalogs.claude.models = [{ id: "standing-free", label: "Standing model (free)", efforts: ["low", "high"] }];
-    await route.fulfill({ response, json: catalogs });
+    // The fixture intentionally restarts while catalog discovery can still be in flight.
+    try {
+      const response = await route.fetch(), catalogs = await response.json();
+      catalogs.claude.models = [{ id: "standing-free", label: "Standing model (free)", efforts: ["low", "high"] }];
+      await route.fulfill({ response, json: catalogs });
+    } catch { await route.abort("connectionreset").catch(() => undefined); }
   });
   await page.goto(`${base}/?token=${token}#/project/${id}/automation/missions`);
   assert.equal((await api("/api/project-teams/settings")).body.enabled, false);
@@ -90,7 +93,7 @@ test("owner creates a standing team, previews, runs, reviews and approves with o
   await page.getByLabel("Autonomy").selectOption("build-within-scope");
   await page.getByLabel("Required check command").fill("node check.mjs");
   await page.getByText("Schedule, budget and scope limits", { exact: true }).click();
-  await page.getByRole("button", { name: "Claude Code model", exact: true }).click();
+  await page.getByRole("button", { name: /^Claude Code model:/ }).click();
   await page.getByRole("combobox", { name: "Search Claude Code model", exact: true }).fill("standing");
   await page.getByRole("button", { name: "Free only", exact: true }).click();
   await page.getByRole("option").filter({ hasText: "Standing model (free)" }).click();
@@ -124,7 +127,7 @@ test("owner creates a standing team, previews, runs, reviews and approves with o
   await page.getByRole("button", { name: "Enable project missions", exact: true }).click();
   await tab.getByRole("button", { name: "Disable project missions", exact: true }).waitFor();
   await tab.goto(`${base}/#/run/${resultId}`);
-  await tab.getByRole("main").getByText(/Standing team implementation/).waitFor();
+  await tab.getByRole("main").getByText(/Project mission implementation/).waitFor();
   assert.equal(await tab.getByRole("main").getByRole("button", { name: "Delete…", exact: true }).count(), 0);
   const rail = tab.getByRole("navigation", { name: "Runs", exact: true });
   await rail.getByRole("button", { name: "Select runs", exact: true }).click();
@@ -232,7 +235,7 @@ test("orphaned mission runs offer individual and bulk deletion after project rem
   const pageErrors: string[] = []; page.on("pageerror", error => pageErrors.push(error.message));
   await page.goto(`${base}/?token=${token}#/run/${resultId}`);
   const main = page.getByRole("main");
-  await main.getByText(/Standing team implementation/).waitFor();
+  await main.getByText(/Project mission implementation/).waitFor();
   const removed = await fetch(`${base}/api/projects/${team.projectId}`, { method: "DELETE", headers: { authorization: `Bearer ${token}` } });
   assert.equal(removed.status, 200);
   await page.reload();

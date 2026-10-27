@@ -6,7 +6,7 @@ Use the owner token with the local API or the bundled command-line client. Keep 
 
 Use `npm run client -- --help` for the HTTP client. It requires the explicit
 `CODEFLOW_TOKEN` printed/configured by the server and accepts `CODEFLOW_URL` for
-another configured origin. It never reads agent login files. JSON files and
+another configured origin. Invalid or credential-bearing URLs produce a one-line usage error (exit2) without echoing the value. Connection failures identify the safe origin and available network error code (exit1). It never reads agent login files. JSON files and
 shell arguments are treated as data, not executed. Output files are created
 privately and never overwritten.
 
@@ -18,39 +18,47 @@ session checks apply identically to both prefixes.
 Paths below are relative to `/api` (or `/api/v1`). Requests with bodies use JSON.
 Successful mutations use the status shown where relevant; validation errors use
 `400`, missing resources `404`, and explicit concurrency conflicts `409`.
+A request refused because of the run's current state is a conflict: while a run is
+running, starting or validating a merge, resume, archive, outcome, follow-ups, merge,
+merge validation, inbox decisions and publishing return `409`, and so does resuming a
+finished run with nothing queued (send a reply to continue it). Stale team plan
+revisions, team comparisons (including one already resolved), template versions and
+resuming a team that already finished also return `409`.
 Errors contain an `error` string. No client-side mutation retry is automatic.
 
 | Operation | Request | Behavior |
 | --- | --- | --- |
+| `GET /agents?refresh=1` | No body | Invalidate cached provider model listings before returning availability. Fetch `/models` and `/doctor` afterward to share fresh discovery. Filesystem restrictions still prevent CLI probes. Ordinary background listings retain their ten-minute cache. |
 | `POST /projects/:id/repositories` | `repo` absolute Git path | Owner-only explicit membership addition; canonicalizes the root and returns the updated project. Existing membership is idempotent; the 50-repository limit applies. |
-| `POST /runs` | Existing run fields; optional `projectSelection: "explicit"` with `project` | Explicit selection requires an existing project and current canonical repository membership. Rejected membership never silently creates or extends a project. Callers omitting the marker retain legacy placement behavior. |
-| `POST /improve-prompt` | `repo`, `text`, optional `mode=quick\|repo`, `agent`, `context`, `source`, `execution=local` | Owner-only local prompt rewrite in a disposable private Git directory; returns `{prompt, summary, agent}` after cleanup. |
+| `POST /runs` | Existing run fields; optional `projectSelection: "explicit"` with `project` | Explicit selection requires an existing project and current canonical repository membership. Rejected membership never silently creates or extends a project. Callers omitting the marker retain legacy placement behavior. A race or debate with fewer than two contestants or debaters (distinct agents, or model variants of one) returns 400 before any run is created. |
+| `POST /improve-prompt` | `repo`, `text`, optional `mode=quick\|repo`, `agent`, `context`, `criteria`, `source`, `execution=local` | Owner-only local prompt rewrite in a disposable private Git directory; returns `{prompt, summary, agent}` after cleanup. Acceptance `criteria` are separate rewrite context (up to 100 nonempty strings, each bounded to 2,000 characters); they stay separate in the composer. |
 | `POST /readiness` | `repo`, optional `baseRef`, `setup`, `check`, `execute`, `pattern`, `roles`, `providers` | Inspection by default; `execute: true` runs commands in a temporary worktree at a pinned commit. Provider scope is described below. |
 | `GET /verification/profile` | `repo`, `preset` query | Detect lightweight, standard or thorough checks. |
 | `POST /verification` | `repo`, `profile` or `preset`, optional `baseRef`, `baseline`, `setup`, `repeats` | Execute bounded required gates on isolated checkouts and return structured evidence plus Markdown. |
-| `GET /workspace/file` | `repo`, `path` query | Load a bounded regular text file and its hash. |
-| `POST /workspace/file` | `repo`, `path`, `text`, `expectedHash` | Save only the loaded version; conflicts return 409. Active run worktrees and symlinks are refused. |
+| `GET /workspace/file` | `repo`, `path` query | Load a bounded regular text file and its hash. A missing file returns 404. |
+| `POST /workspace/file` | `repo`, `path`, `text`, `expectedHash` | Save only the loaded version; conflicts return 409, and a file deleted since it was loaded returns 404. Active run worktrees and symlinks are refused. |
 | `POST /workspace/merge-file` | `repo`, `path`, `base`, `draft` | Compute a three-way merge against the current file without writing. Returns `current`, merged `text`, `conflicts`, and `clean`; conflict markers need manual resolution before saving. |
 | `GET /workspace/search` | `repo`, `q`, `mode=text\|symbols` query | Bounded text or declaration search with source line numbers. |
 | `GET /workspace/dependencies` | `repo` query | Bounded static architecture graph across JavaScript/TypeScript, Python, Go, Rust and Java; packages, cycles and unresolved/computed edges are explicit. |
 | `POST /workspace/context` | `repo`, `paths` | Preview explicit file context, approximate token size and sensitive-file omissions. |
-| `GET /workspace/checkpoints` | `repo`, optional `ref` query | List exact commit checkpoints. |
-| `POST /workspace/apply-checkpoint` | `repo`, `runId`, `source`, `paths`, `expectedHead` | Apply selected files to an idle, clean run worktree without committing. |
+| `GET /workspace/checkpoints` | `repo`, optional `ref` and `base` query | List exact commit checkpoints. With a run's `base`, each says whether it is `owned`: the base or a commit descending from it. |
+| `POST /workspace/apply-checkpoint` | `repo`, `runId`, `source`, `paths`, `expectedHead`, optional `confirmDeletes` | Apply selected files to an idle, clean run worktree without committing. A tracked path missing from the checkpoint is deleted: without `confirmDeletes: true` that returns 409 naming the paths (`confirm: "deleteFiles"`). Returns the `deleted` paths. A moved HEAD returns 409. |
 | `POST /workspace/checkpoint-hunks` | `repo`, `runId`, `source`, `path` | Preview server-generated hunks for one existing regular text file in an idle run worktree. Returns pinned `head`, `source`, `path`, and bounded `hunks` with IDs. |
 | `POST /workspace/apply-hunks` | `repo`, `runId`, `source`, `path`, `expectedHead`, `hunks` | Apply 1–200 distinct preview IDs to a clean, unchanged run checkout. Arbitrary client patches are never accepted; files stay unstaged. |
 | `POST /runs/:id/pause` | `paused` | Hold new dispatch at operation boundaries; active work finishes. |
 | `POST /runs/:id/priority` | `priority` from -10 to 10 | Update dispatch priority, including waiting work. Equal priorities favor less-busy projects. |
-| `POST /runs/:id/provider-chat` | `agent`, optional `settings: {model, effort}`, `message` | Start a single-agent child with another provider, a portable conversation transcript, saved context files and a new worktree from the source result commit. Requires an idle source and clean worktree; retains project, computer and permission restrictions. Provider sessions and side-chat transcripts are excluded. |
-| `POST /runs/:id/fork` | exact `commit`, optional `task` | Begin a child run from an owned checkpoint, retaining source trust restrictions. |
+| `POST /runs/:id/provider-chat` | `agent`, optional `settings: {model, effort}`, `message`, `trust`, `tools` | Start a single-agent child with another provider, a portable conversation transcript, saved context files and a new worktree from the source result commit. Requires an idle source and clean worktree; retains project, computer and permission restrictions. `trust` and `tools` (default: the source's current level) may only narrow the source's permissions; a higher level, or approvals the source doesn't ask for, is refused. Provider sessions and side-chat transcripts are excluded. |
+| `POST /runs/:id/fork` | exact `commit`, optional `task` | Begin a child run from an owned checkpoint, retaining source trust restrictions. An owned checkpoint is the run's base commit or a commit on its branch made after it; earlier history returns 400. |
 | `POST /runs/:id/revise-goal` | `message`, optional `budget` | Create a new Auto-team run with a user-authored goal revision and prior work references; returns 201 with its `id`. |
 | `POST /runs/:id/rerun-tasks` | `expectedHead`, `taskIds`, optional selected-task `instructions`, explicit `budget` | Execute accepted selected tasks and every dependency descendant in a child at the pinned integration commit. Retained work is labeled baseline input; final checks/review are independent. Returns 201 `{id}`. |
 | `POST /runs/:id/team-plan` | `revision`, `tasks`, `contracts`, `rationale` | Edit a pending Auto-team plan before dispatch. Keeps member identities and requirements fixed; validates owners, dependencies, paths and acceptance mappings. Returns `team`; stale revisions return 409. |
-| `GET /runs/:id/review-coverage` | `branch` query | Return current commit, changed files, reviewed files, percentage, heuristic risk, stale-review indicator and human rework history. Only run-owned branches are allowed. |
+| `GET /runs/:id/review-coverage` | `branch` query | Return current commit, changed files, reviewed files, percentage, heuristic risk, stale-review indicator and human rework history. After a conflict resolution whose target the run's branch doesn't have yet, `merged: { from, files }` names the changed files that came only from that target (they still count). Only run-owned branches are allowed. |
 | `POST /runs/:id/review-coverage` | `branch`, `expectedHead`, `path`, `reviewed` | Record or remove review of a changed file at that exact commit. Branch movement invalidates prior coverage; stale requests are rejected. |
 | `POST /runs/:id/human-rework` | `branch`, `expectedHead`, `minutes`, optional `note` | Append a user-entered correction-time record (1–1,440 minutes, note ≤2,000 characters, at most 100 records/run). Returns 201 with updated coverage. |
 | `POST /runs/:id/validate-merge` | `branch`, `into`, optional `allowUntrusted` | Verify the combined result with the current target in a disposable checkout. Returns pinned `source`, `target`, merge `tree`, `report` or `conflicts`. Requires a configured check/profile. |
-| `POST /runs/:id/merge` | `branch`, `into`, optional `archiveAfter`, `requireValidation` | Merge an owned result into the selected local branch. `requireValidation: true` requires passing verification for unchanged source/target and the exact merged tree. |
-| `POST /runs/:id/archive` | `archived`, optional `cleanup`, `deleteBranches` | Archive or unarchive a finished run. Use `cleanup: false` to hide it while keeping worktrees and branches. |
+| `POST /runs/:id/merge` | `branch`, `into`, optional `archiveAfter`, `requireValidation`, `allowConflictMarkers` | Merge an owned result into the selected local branch; a run's result branch (whatever its prefix) is refused. A result that adds conflict markers (by each file's `conflict-marker-size`) gets 409 with `confirm: "allowConflictMarkers"`; send `allowConflictMarkers: true` to merge it anyway. `requireValidation: true` requires passing verification for unchanged source/target and the exact merged tree. |
+| `POST /runs/:id/triage` | `decision: approve\|revise\|reject`, optional `note`, `openPr`, `pushPr`, `budget` | Decide a pending automation/sweep result. Returns `{ok, triage, warning?}`; a successful push with a failed evidence comment carries `warning`. Automation/sweep results no longer pending and overlapping decisions return 409 before effects. Revise requires a note and a budget of 1–200 whole calls and 1–720 minutes. |
+| `POST /runs/:id/archive` | `archived`, optional `cleanup`, `deleteBranches`, `task` | Archive or unarchive a finished run. Use `cleanup: false` to hide it while keeping worktrees and branches. A chat tab or side chat keeps the workspace it shares; `task: true` archives the whole chat task (every tab, side chat and team run in it) and cleans up that shared workspace. The response lists what was `removed`, the `deletedBranches`, and what `failed` to be removed, with why. |
 | `DELETE /runs/:id` | — | Permanently remove a finished run's conversation/history and private run memory. Active runs and standing project team runs are rejected; archive managed runs to retain recovery and approval evidence. Git branches, worktrees and repository files remain. Run-list streams publish a summary with `deleted: true`; clients remove that ID. |
 | `GET /runs/:id/export` | optional `transcript=1` query | Export sanitized run metadata, checks, and requested transcript. |
 | `GET /approvals` | optional `run` query | Inspect bounded per-action permission requests. |
@@ -59,9 +67,9 @@ Errors contain an `error` string. No client-side mutation retry is automatic.
 | `GET /notes/search` | `q` query | Search current saved notes. |
 | `POST /notes/restore` | `key`, `revision`, `expectedRevision` | Restore a prior note as a new revision. |
 | `POST /remote/tls` | `{mode: "tailscale"}` or `{mode: "import", hostname, cert, key}` with PEM strings | Local owner only. Validate and save HTTPS configuration, rotate pairing, disable full control and reload the network listener without restarting runs. Tailscale mode uses the connected computer's DNS name. Environment-managed TLS cannot be replaced here. Returns remote status and public certificate metadata, never PEM material. |
-| `GET /remote/devices` | none | List paired device metadata, never session credentials. |
+| `GET /remote/devices` | none | List active paired device metadata (friendly label, ID, createdAt, expiresAt), never session credentials. At most 32 devices may be paired; unreadable device storage returns 503. |
 | `DELETE /remote/devices/:id` | none | Revoke one device immediately. |
-| `GET /diagnostics` | optional `repo` query | Export versions, queue/write health and sanitized recent logs. |
+| `GET /diagnostics` | optional `repo` query | Export versions, queue/write health and sanitized recent logs. A missing selected repository does not prevent collection; `repository` reports `found`, `missing` or `not-selected`. Incomplete leading log records are omitted. |
 
 Readiness accepts `roles` as an object of provider IDs (strings or arrays). Concrete assignments must be installed, compatible and not signed out; unused providers are skipped. `providers` alone is an explicit required-provider list. With `roles`, it limits the eligible pool for `auto` assignments; without that limit, Auto considers registered providers. An Auto-team's `roles.pool` contains alternatives and needs at least one usable member (also within `providers`, if supplied), while its coordinator is required. An explicit empty scope fails readiness. Unknown authentication remains a warning. Omitting both `roles` and `providers` preserves the original checks of all installed providers.
 
@@ -89,7 +97,8 @@ Closing the request cancels the turn; clients must not automatically retry it.
 Verification profiles contain `name`, up to 12 `checks`, optional `setup`, and
 up to 48 `requirements`. Each check has a unique `id`, `kind`, `command`, optional
 `title`, `required` (default true), and `timeoutMs` (default five minutes, maximum
-30 minutes). Kinds are `build`, `typecheck`, `lint`, `unit`, `integration`,
+30 minutes; detected profiles use the repository's `limits.checkTimeoutMin`, ten
+minutes by default). Kinds are `build`, `typecheck`, `lint`, `unit`, `integration`,
 `browser`, `mutation`, `visual`, `accessibility`, and `custom`. A requirement is
 `{id, description, checks: [checkId, ...]}`; an empty mapping remains uncovered.
 A failed mapped gate or uncovered criterion prevents `verified` status. Repeats
@@ -116,18 +125,38 @@ opaque `nextCursor` as `cursor` on the next request; cursors preserve ties for
 runs created in the same millisecond. Optional `q` filters all indexed run
 metadata and `project` selects a project (including legacy repository-based membership).
 `status=all|attention|running|passed|failing|flagged`, `pattern`, `agent`, and
-`repo` filter the complete authorized index before totals and pagination. Passed
+`repo` filter the complete authorized index before totals and pagination.
+`archived=include|exclude|only` selects the archive scope (default `include`).
+When excluding archived runs, `archivedMatches` counts otherwise matching archived
+runs so the UI can offer to include them. Passed
 requires completed execution and passing verification; blocked or unverified
 results are excluded. `section=waiting|running|results` selects a non-archived
 project-page section. The legacy `before` timestamp is
 supported but can omit timestamp ties; prefer `cursor`. Keep filters consistent
-between pages. Invalid cursors, status/section values and page sizes return 400.
+between pages. Invalid cursors, status/section/archive values and page sizes return 400.
 
 `GET /projects/:id/summary` returns `{live, archived, pending, week, sections}`.
 `week` contains `{runs, passed, costUsd}` for the last seven days, including
 archived history. `sections` contains cursor pages for `waiting`, `running` and
 `results`, with complete totals. Fetch additional section pages through `/runs`.
 These totals never depend on which sidebar pages a browser has loaded.
+
+`GET /projects/counts` returns a map keyed by project ID, `""` (all projects),
+and `none` (unassigned). Each value contains `live`, `archived`, `waiting`,
+`inboxRuns`, `archivedTasks`, `attentionTasks`, and a `repositories` map of run
+counts by repository. Run counts include all authorized indexed history; task
+counts group provider chats sharing a workspace. A task is archived only when
+all its chats are archived. Empty projects have zero counts. Filesystem-restricted
+runs are excluded, and shared accounts cannot call this owner endpoint. The UI
+refreshes counts after live changes and periodically, and shows unavailable
+counts instead of presenting loaded pages as complete totals.
+
+Owner tabs share one live connection. With an unchanged owner token, its opaque
+sharing keys survive server restarts using a private `stream-sharing.json` nonce.
+Sign-in, sign-out and invitation acceptance rotate that identity; a promoted tab
+validates its identity before connecting. Invalid identity storage is retained
+for recovery and falls back to an in-memory identity with a server warning.
+Sign-out still rotates and closes streams if persisting the nonce fails.
 
 The shared `/stream` connection accepts the `approvals` topic. It sends a
 `{type: "snapshot", records: [...]}` frame initially and whenever pending tool
@@ -223,19 +252,21 @@ configuration and lifecycle](launch-profiles.md).
 
 | Operation | Request | Behavior |
 | --- | --- | --- |
-| `GET /automations` | none | List configured local schedules and webhook triggers. |
+| `GET /automations` | none | List configured local schedules and webhook triggers, each with its `revision`. |
 | `POST /automations` | `name`, `run`, `schedule` and/or `webhook`, optional `enabled`, `isolate`, `image` | Validate saved run settings and create a trigger (201). |
-| `POST /automations/:id` | changed fields; optional `rotateToken` | Update validated settings or rotate the webhook credential. |
-| `POST /automations/schedule-preview` | `schedule`, optional `after`, `count` | Return `{times}` (at most ten UTC millisecond timestamps) without scheduling work. |
-| `POST /automations/:id/preview` | optional webhook event input | Dry-run saved settings, selected sweep items, permissions and limits without starting runs or consuming the event. |
+| `POST /automations/:id` | changed fields; optional `rotateToken`, `revision` | Update validated settings or rotate the webhook credential. With `revision`, 409 if the automation changed since that revision. |
+| `POST /automations/schedule-preview` | `schedule`, optional `after`, `count` | Return `{times, timezone?}` (at most ten UTC millisecond timestamps; for a time of day, the zone it runs in) without scheduling work. |
+| `POST /automations/:id/preview` | optional webhook event input | Dry-run saved settings, selected sweep items, permissions and limits without starting runs or consuming the event. Selected tasks include the same bounded, fenced details and validated event line as execution. |
 | `GET /automations/:id/events` | none | Inspect bounded persistent event records including queued, started, failed and dropped deliveries. |
-| `POST /automations/:id/events/:eventId/retry` | empty body | Replay an eligible saved event through the same validation, deduplication and queue limits. |
+| `POST /automations/:id/events/:eventId/retry` | empty body | Replay an eligible saved event through the same validation, source deduplication and queue limits. Returns `{state, id?, ids?, reason?}`, never a raw run: 202 for queued, 200 for other outcomes (including a dropped retry); inspect `state` and `reason`. |
 | `POST /automations/:id/run` | empty body | Explicitly fire now; returns 201 with run IDs, or 409 if skipped. |
 | `DELETE /automations/:id` | none | Remove the trigger. |
 
 Daily schedules use `{at: "HH:MM", timezone?: "IANA/Zone", days?: [0..6]}`;
 Sunday is zero and an explicit empty weekday list is invalid. Omitted timezone
-uses server local time. Interval schedules use `{every: minutes}`. During a
+uses server local time; zones are saved by their current IANA names (`Asia/Kolkata`,
+not `Asia/Calcutta`). Interval schedules use `{every: minutes}`, a whole number from
+5 to 10080; a schedule with both `every` and `at` is refused. During a
 repeated local clock time, a daily schedule fires once on its first occurrence;
 a missing local time shifts forward by the clock gap. Webhook event history
 keeps at most 100 records and the pending queue at most ten. Replay preserves the
@@ -255,7 +286,7 @@ that an operation did not execute; inspect the run before repeating a creation.
 ## Shared identities and project review
 
 `GET /auth/self`, `POST /auth/login {username,password}` and `POST /auth/logout`
-bootstrap the local viewer/reviewer dashboard. Login sets a distinct session
+bootstrap the local viewer/reviewer dashboard. Owner identity includes `localOnlyApis`, which is false on the phone listener; clients skip local connection inventories and use this host’s board there. Login sets a distinct session
 cookie; tokens and password/session hashes are never returned. Shared sessions
 require actual TLS or a direct loopback connection without forwarding headers.
 Owner account administration uses `GET/POST /accounts`, `PUT /accounts/:id`, and
@@ -306,7 +337,7 @@ aliases work, and `GET /v1/capabilities` lists the family as
 | `POST /team/attempts/:aid/progress` | `seq`, optional `runId`, the progress fields | Publish a numbered progress snapshot (the attempt's runner); a late number is ignored. A report that would revive a paused, stopped or unknown attempt is refused (409) while another attempt of the task is claimed, running or unknown or a hand-over is offered, on a Done task (409 "Move the task out of Done before resuming the attempt"), and for a machine whose user no longer owns the task (403 "The task now belongs to `<name>`; they continue it from its latest checkpoint, or a project maintainer reassigns it"). |
 | `POST /team/attempts/:aid/heartbeat` | empty body | Keep the attempt live; returns the approved, undelivered instructions. |
 | `POST /team/attempts/:aid/finish` | `state`, optional `head`, `summary`, `reason` | End the attempt as finished, failed, stopped, paused or unknown. |
-| `POST /team/attempts/:aid/recover` | `revision`, `reason`, `confirmedStopped=true` | Recover an unknown attempt after confirming its original execution stopped (task owner or project maintainer). Supersedes it, records the decision and releases the task; stale revisions or a reconnected runner return 409. |
+| `POST /team/attempts/:aid/recover` | `revision`, `reason`, `confirmedStopped=true` | Recover an attempt whose runner lost contact (unknown, or claimed or running without a heartbeat for 90 seconds) after confirming its original execution stopped (task owner or project maintainer). Supersedes it, records the decision and releases the task; stale revisions or a reconnected runner return 409. |
 | `POST /team/attempts/:aid/checkpoints` | optional `id`, `commit`, `baseCommit`, `branch`, `size`, `sha256`, `note`, `requirements`, `decisions`, optional `testResults`, `remaining`, `changedFiles` | Register a checkpoint manifest with `bundle: "pending"` (the attempt's runner); 201. `id` (32 lowercase hexadecimal characters) becomes the checkpoint's id and ref `refs/codeflow/team/<id>`; an id already on the board is refused (409), a malformed one 400, and without one the server generates the id. |
 | `PUT /team/checkpoints/:cid/bundle` | `application/octet-stream` body, `x-codeflow-sha256` header | Stream the bundle to disk (the checkpoint's runner); size and digest are verified before the checkpoint becomes available. A refusal (415, 400 on a size or digest mismatch, 409 when already uploaded or deleted, 507 when storage is full, 503 when the file could not be stored) is answered at once and the declared body is then drained, so a retry reads the answer; a body without a content-length (411) or declared over 64 MiB (413) is cut off once the answer is written. |
 | `GET /team/checkpoints/:cid` | none | The checkpoint manifest (viewer). |
@@ -323,7 +354,10 @@ aliases work, and `GET /v1/capabilities` lists the family as
 | `GET /team/events` | optional `after=<epoch:seq>` query | Server-sent events for the caller: `hello` with the epoch and sequence, then `change` events for the board and tasks in the caller's projects and `inbox` unread counts; a cursor the server no longer holds gets `resync`. Closed when the account changes or the runner is revoked, and when 2 MiB of frames wait on the socket. |
 
 Mutations return the updated task and carry the task `revision`; a stale one
-fails with 409 "Task changed; reload before saving". A missing role answers 403
+fails with 409 "Task changed; reload before saving" and `code: "stale-revision"`
+(a stale board revision on repository keys likewise), the only refusal that
+carries a `code`: every other 409 is a rule of the board, whose `error` explains
+it. A missing role answers 403
 naming the role, an unknown or invisible id 404 "Task not found", an unknown
 team route 404 "Unknown team operation" (never falling through to owner routes)
 and unavailable team storage 503. Task saves and repository keys accept 64 KiB
@@ -340,13 +374,13 @@ execution; on the team server itself the same routes work in-process and
 | Operation | Request | Behavior |
 | --- | --- | --- |
 | `GET /team-link` | none | The link: `linked`, the server address, user, server name, machine name, mappings and defaults, the connection state, the runner as the server reports it, the last sync and the last error. |
-| `POST /team-link/connect` | `url`, `username`, `password`, optional `name` | Enrol this computer: `https://` only (plain `http://` for loopback), never following a redirect and only with a trusted certificate (502 otherwise), refused (409) while already connected or while the local board has tasks; saves the link and starts the change stream and reconciliation; 201. |
+| `POST /team-link/connect` | `url`, `username`, `password`, optional `name` | Enrol this computer: `https://` only (plain `http://` for loopback), never following a redirect and only with a trusted certificate (502 otherwise), adds a saved connection (up to 20); duplicate server addresses are refused (409), including loopback aliases; local tasks remain available; saves the link and starts the change stream and reconciliation; 201. |
 | `DELETE /team-link` | none | Revoke the runner on the server (best effort) and forget it here; mappings, defaults and local attempt records stay. |
 | `PUT /team-link/mappings` | `projectId`, `repository`, `path` | Map a repository key to an absolute folder that is a Git repository. |
 | `POST /team-link/tasks/:id/start` | optional `repo`, `pattern`, `roles`, optional `agentSettings`, `roleSettings`, `trust`, `loop` (`check`, `setup`, `maxMinutes`, `maxSteps`), `fromCheckpointId` | Claim an attempt and start the run here; returns `{attemptId, runId}`; 201. Refused (400) before anything is claimed when the repository cannot carry checkpoints (a submodule, a checkout filter such as Git LFS, or a tree over 20,000 files, 256 MiB or 100 attribute files). |
 | `POST /team-link/tasks/:id/stop` | empty body | Cancel the current attempt's run (resumable) and record it as paused. |
-| `POST /team-link/tasks/:id/resume` | empty body | Resume this computer's paused, stopped or unknown attempt of the task under the same attempt id; refused (409) when the attempt was superseded or has ended, the task changed hands or is Done, another attempt is busy or a hand-over is offered. |
-| `POST /team-link/tasks/:id/handover` | `to`, `note`, optional `includeUncommitted` | Create or reuse the checkpoint (a retry uploads the kept bundle), then offer the hand-over. |
+| `POST /team-link/tasks/:id/resume` | empty body | Resume the attempt the task page shows (the current one, else the latest) under the same attempt id, when it is this computer's and paused, stopped or unknown; an older paused attempt behind a newer one is not resumed; refused (409) when the attempt was superseded or has ended, the task changed hands or is Done, another attempt is busy or a hand-over is offered. |
+| `POST /team-link/tasks/:id/handover` | `to`, `note`, optional `includeUncommitted` | Check that `to` is another contributor of the project (400 before anything is committed or created), create or reuse the checkpoint (a retry uploads the kept bundle), then offer the hand-over; the note travels with the offer, not in the checkpoint. |
 | `POST /team-link/tasks/:id/accept` | `handoffId`, optional `repo` | Download and import the checkpoint, then accept the offer. |
 | `POST /team-link/checkpoints/:id/fetch` | `repo` | Import a checkpoint and point `team/<task id>/<first 8 characters of the checkpoint id>` at it; returns `{commit, branch, taskId, created}`. |
 | `GET /team-link/attempts` | none | This computer's attempt records: which run belongs to which attempt, and what has been published. |
@@ -407,6 +441,14 @@ leave provider PR closure pending; native merge queues and atomic provider-polic
 snapshots are not claimed. Unsupported/unknown protected-branch policies fail
 closed. See [provider-specific operations and limits](code-hosts.md).
 
+GitHub picker routes `GET /github/issues?repo=...&q=...` and
+`GET /github/prs?repo=...&q=...` return `{items,truncated}`, with up to 50 open
+matches. Text queries search GitHub; a number or `#N` resolves that exact open
+item. Project-bound GitHub connection item routes expose the same truncation
+and search behavior. `GET /runs/:id/pr-targets?branch=<owned-branch>` returns
+`{branches,runBranches,initial,defaultBranch}`; ordinary targets are separate
+from other run branches, while a stacked starting branch stays prominent.
+
 GitHub threads use `GET /runs/:id/pr-threads?branch=<owned-branch>` and `POST` with
 `{action:"load",snapshotId,threadId}` or
 `{action:"resolve",snapshotId,threadId,expectedHead,expectedRevision,resolved}`.
@@ -433,7 +475,7 @@ Restricted execution uses a separate owner-only manual task surface:
 | `GET /filtered-tasks/:id` | none | Read task/output under unchanged current canonical policy and project membership. |
 | `POST /filtered-tasks/:id/preview-import` | empty body | Validate source/result/policy and preview bounded allowed file changes. |
 | `POST /filtered-tasks/:id/import` | `revision`, `expectedHead`, `resultHash` | Create a new review branch with an atomic exact-source ref transaction; leave checkout and index unchanged. |
-| `POST /filtered-tasks/:id/cancel` | `revision` | Cancel preparation/execution and confirm the owned daemon container is absent. |
+| `POST /filtered-tasks/:id/cancel` | `revision` | Cancel preparation/execution, or an unknown daemon receipt, and confirm the owned daemon container is absent. A finished task whose container is confirmed stopped returns 409; delete it instead. |
 | `POST /filtered-tasks/:id/receipt` | `revision` | Explicitly inspect an interrupted branch-import receipt; never replay a provider turn. |
 | `DELETE /filtered-tasks/:id` | JSON `revision` | Remove a stopped terminal task's private export/record; preserve any imported review branch. |
 
@@ -460,7 +502,7 @@ backends and phone/shared sessions cannot manage additional SSH connections.
 | `POST /ssh-hosts/:id/disconnect` | none | Close SSH channels and preview forwards, leaving remote work running. |
 | `POST /ssh-hosts/:id/stop` | none | Stop an idle remote backend, then disconnect. Refuses active execution, terminals and development services. |
 | `DELETE /ssh-hosts/:id` | none | Disconnect and remove the saved definition; remote data remains. |
-| `GET /ssh-context` | none | Local workspace context. At `/computer/:id/api/ssh-context`, returns the saved computer ID, name and connection state. |
+| `GET /ssh-context` | none | Workspace context with `connections` indicating whether this listener can manage SSH connections. Phone sessions receive `connections: false`. At `/computer/:id/api/ssh-context`, returns the saved computer ID, name and connection state. |
 
 The returned workspace uses the same local app origin and owner session. Its
 `/computer/:id/api/` endpoints and event streams address the remote backend, so project paths, Git,
@@ -468,7 +510,7 @@ files, checks, agent tools and terminals all refer to that server. Mutations are
 never replayed automatically. See [SSH projects](ssh-projects.md) for setup,
 reconnection, remote previews, supported hosts and authentication boundaries.
 
-Managed Tailscale certificates renew automatically while Tailscale remote access is enabled. `GET /remote` includes `tls.renewal` with `automatic`, `running`, `nextAttempt`, optional `lastSuccess` and a safe `error`. Renewal preserves paired sessions and control settings. Imported/environment certificates are excluded.
+Managed Tailscale certificates renew automatically while Tailscale remote access is enabled. `GET /remote` includes `tls.renewal` with `automatic`, `running`, `nextAttempt`, optional `lastSuccess` and a safe `error`. Renewal preserves paired sessions and control settings. Imported/environment certificates are excluded from automatic renewal. All TLS sources are validated for key identity, dates and the selected hostname. Environment configuration exposes `tls.expiresAt`; invalid validity or hostname sets `secure: false`, `control: false` and `tls.error`, and closes the network listener.
 
 For multi-agent roles in Race, Debate, Review council, Supervisor and Loop workflows, a role setting can include additional models from the same provider: `roleSettings.reviewers.claude = { model: "first", variants: [{ model: "second", effort: "low" }] }`. Each entry runs separately with its own settings and session. Pipeline and other single-agent roles still use one model. Auto team pools also accept variants in `roleSettings.pool`: these are allowed model/effort choices for workers and reviewers. The coordinator selects among them within the member limit; it does not launch every selected model. Coordinator settings stay fixed. Additional models use the same validation as primary models (maximum 128 additional models per provider).
 
@@ -524,7 +566,7 @@ The endpoint is owner-only on the main listener, subject to the existing origin 
 
 ## Auto model catalog
 
-`GET /api/model-catalog` returns provider discovery catalogs, managed-provider eligibility, `allowResearch` and offline status. It uses the cached catalog and performs bounded CLI discovery when missing or stale. `POST /api/model-catalog` explicitly refreshes; its closed body accepts optional booleans `allowResearch` and `offline`. Research is disabled by default. `CODEFLOW_MODEL_NETWORK=offline` prevents new discovery/research while retaining cached evidence.
+`GET /api/model-catalog` returns provider discovery catalogs, managed-provider eligibility, `allowResearch` and offline status. It uses the cached catalog and performs bounded CLI discovery when missing or stale. `POST /api/model-catalog` explicitly refreshes; its closed body accepts optional booleans `allowResearch` and `offline`. Research is disabled by default. `CODEFLOW_MODEL_NETWORK=offline` prevents new discovery/research while retaining cached evidence. Like `/api/models`, both are refused (403 for GET, 409 for POST) while any project has a custom [filesystem restriction](filesystem-policy.md), so no provider CLI or documentation fetch runs.
 
 Each catalog identifies its provider/environment/revision and separates reported model/effort availability, documented facts and run observations. It contains no authentication credentials. The existing `/api/models` endpoint retains its legacy behavior. Remote/container discovery happens in the selected execution environment, independently of this local preview. New Auto steps persist `modelAssignment` (provider, exact ID, effort, rationale, catalog revision/source and environment). Advanced worker `roleSettings.pool` pins are checked again at dispatch and on recovery; global coordinator defaults do not pin workers.
 

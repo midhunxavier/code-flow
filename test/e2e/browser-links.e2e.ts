@@ -195,7 +195,7 @@ test("empty browser tabs explain run scope, and Keep open preserves a website ac
       await page.setViewportSize({ width, height: 785 });
       assert.equal(await panel.evaluate(element => element.scrollWidth <= element.clientWidth), true);
       await page.waitForFunction(() => document.querySelector("#side-panel")!.getAnimations({ subtree: true }).every(animation => animation.playState !== "running"));
-      const audit = await page.evaluate(async () => (window as unknown as { axe: typeof axe }).axe.run("#side-panel", { runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21aa"] } }));
+      const audit = await page.evaluate(async () => (window as unknown as { axe: typeof axe }).axe.run("#side-panel", { runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"] } }));
       assert.deepEqual(audit.violations.map(v => ({ id: v.id, nodes: v.nodes.map(n => n.target) })), []);
       await page.screenshot({ path: join(root, `output/playwright/browser-empty-${theme}-${width}.png`) });
     }

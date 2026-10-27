@@ -39,7 +39,7 @@ async function connectionsPage() { await page.goto(`${base}/?token=${token}#/pro
 async function audit() {
   await page.waitForFunction(() => [...document.querySelectorAll("dialog[open]")].every(dialog => getComputedStyle(dialog).opacity === "1"));
   await page.addScriptTag({ content: axe.source });
-  const results = await page.evaluate(async () => (window as unknown as { axe: typeof axe }).axe.run(document, { runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21aa"] } }));
+  const results = await page.evaluate(async () => (window as unknown as { axe: typeof axe }).axe.run(document, { runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"] } }));
   assert.deepEqual(results.violations.map(v => ({ id: v.id, nodes: v.nodes.map(n => n.target) })), []);
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "page fits its viewport");
 }
@@ -147,7 +147,7 @@ test("reconnect preserves a working credential after failure, restart restores c
   await api(`/api/integration-connections/${connection}/test`, {});
   await wizard().getByRole("button", { name: "Back", exact: true }).click(); await wizard().getByLabel("Access token", { exact: true }).fill(""); await wizard().getByRole("button", { name: "Continue", exact: true }).click(); await wizard().getByRole("button", { name: "Test connection", exact: true }).click(); await wizard().getByRole("status").waitFor(); await wizard().getByRole("button", { name: "Reconnect", exact: true }).click(); await wizard().waitFor({ state: "hidden" });
   await stop(); await start(); await connectionsPage(); await card("GitLab").getByText("Project GitLab", { exact: true }).waitFor(); assert.equal((await api("/api/notifications")).find((t: any) => t.id === webhook).settings.enabled, true);
-  await card("GitLab").getByRole("button", { name: "Manage Project GitLab connection", exact: true }).click(); await card("GitLab").getByRole("menuitem", { name: "Disconnect", exact: true }).click(); await until(() => api("/api/integration-connections"), data => !data.connections.some((c: any) => c.id === connection));
+  await card("GitLab").getByRole("button", { name: "Manage Project GitLab connection", exact: true }).click(); await card("GitLab").getByRole("menuitem", { name: "Disconnect", exact: true }).click(); await page.getByRole("dialog", { name: "Disconnect Project GitLab?" }).getByRole("button", { name: "Disconnect", exact: true }).click(); await until(() => api("/api/integration-connections"), data => !data.connections.some((c: any) => c.id === connection));
   const state = await api(`/api/integration-connections/projects/${project}?repository=${encodeURIComponent(repo)}`); assert.ok(!state.bindings.some((b: any) => b.connectionId === connection)); assert.ok(state.connections.some((c: any) => c.id === "admin-source" && c.administratorManaged));
   await api("/api/integrations/admin-source/items?kind=issue");
   assert.deepEqual(errors, []);

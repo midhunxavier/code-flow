@@ -28,7 +28,7 @@ after(async () => { await browser?.close(); if (server?.exitCode === null) { ser
 test("composer selects a remote worker, stages references, imports its result and inspects public receipts", { timeout: 60_000 }, async () => {
   await selectAgentConversation(page); await page.getByLabel("Task", { exact: true }).fill("WRITE remote browser fixture"); await page.waitForFunction(() => document.querySelector<HTMLInputElement>("#checkCmd")?.value === "true");
   if (await page.locator(".composer-options").getAttribute("open") === null) await page.locator(".composer-options > summary").click(); if (await page.locator(".advanced-controls").getAttribute("open") === null) await page.locator(".advanced-controls > summary").click(); await page.getByLabel("Agent execution", { exact: true }).selectOption("fixture"); await page.getByLabel("Worker repository mapping", { exact: true }).selectOption("project");
-  await page.locator(".taskbox").getByRole("button", { name: "Permissions", exact: true }).click();
+  await page.locator(".taskbox").getByRole("button", { name: /^Permissions:/ }).click();
   assert.equal(await page.getByRole("menuitem", { name: /^Ask for approval/ }).isDisabled(), true); await page.keyboard.press("Escape");
   await page.locator('.taskbox input[type="file"]').setInputFiles({ name: "reference.txt", mimeType: "text/plain", buffer: Buffer.from("explicit staged reference") }); await page.getByRole("button", { name: "Remove reference.txt", exact: true }).waitFor();
   await page.getByRole("button", { name: /^(Start run|Send)/ }).click(); await page.waitForURL(/#\/run\//); const id = page.url().split("#/run/")[1]!;

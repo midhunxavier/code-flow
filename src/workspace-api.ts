@@ -5,7 +5,7 @@ import { join, resolve, sep } from "node:path";
 import { assertWorktree, repoRoot, resolveCommit, git, worktreeGit, WorktreeMismatchError, type CheckoutRef } from "./git.js";
 import { readJson, HttpError } from "./http.js";
 import { inspectReadiness, inTemporaryWorktree } from "./readiness.js";
-import { applyCheckpoint, checkpoints, dependencyGraph, readEditableFile, saveEditableFile, searchCode, WorkspaceConflictError } from "./workspace.js";
+import { applyCheckpoint, CheckpointDeletionError, checkpoints, dependencyGraph, readEditableFile, saveEditableFile, searchCode, WorkspaceConflictError, WorkspaceFileMissingError } from "./workspace.js";
 import { detectVerificationProfile, renderVerificationReport, runVerification, validateVerificationProfile, type VerificationPreset } from "./verification.js";
 import { runCheck, type CheckResult } from "./checks.js";
 import { redactExport } from "./privacy.js";
@@ -33,7 +33,9 @@ async function diagnosticTail(path: string) {
     const bytes = Math.min(info.size, 32_000);
     const buffer = Buffer.alloc(bytes);
     const { bytesRead } = await file.read(buffer, 0, bytes, Math.max(0, info.size - bytes));
-    return buffer.subarray(0, bytesRead).toString("utf8");
+    const text = buffer.subarray(0, bytesRead).toString("utf8");
+    // A truncated first record may start in the middle of a credential value.
+    return info.size > bytes ? text.slice(text.indexOf("\n") < 0 ? text.length : text.indexOf("\n") + 1) : text;
   } finally { await file.close(); }
 }
 export async function handleWorkspaceApi(req: IncomingMessage, url: URL, parts: string[], manager: RunManager, signal: AbortSignal): Promise<Result | undefined> {
@@ -43,7 +45,8 @@ export async function handleWorkspaceApi(req: IncomingMessage, url: URL, parts: 
   const absolute = typeof selected === "string" && selected.startsWith("/") ? resolve(selected) : undefined;
   // Resolve application-owned paths before asking the checkout's mutable .git where it belongs.
   const owned = absolute ? manager.list().flatMap((run) => run.worktrees.map((tree) => ({ run, tree }))).find(({ tree }) => absolute === resolve(tree.path) || absolute.startsWith(resolve(tree.path) + sep)) : undefined;
-  const repo = owned?.tree.path ?? (absolute ? await repoRoot(absolute).catch(() => { throw new HttpError(400, "Choose an existing Git repository"); }) : undefined);
+  const optionalRepo = req.method === "GET" && (parts[1] === "diagnostics" || parts[1] === "v1" && parts[2] === "capabilities");
+  const repo = !optionalRepo && owned ? owned.tree.path : (absolute ? await repoRoot(absolute).catch(() => { if (optionalRepo) return undefined; throw new HttpError(400, "Choose an existing Git repository"); }) : undefined);
   const requireRepo = () => { if (!repo) throw new HttpError(400, "Choose a repository"); return repo; };
   const readRepo = () => owned ? worktreeGit(owned.run.repo, owned.tree.path) : Promise.resolve(requireRepo());
   const writeRepo = () => owned ? ownedCheckout(owned.run.repo, owned.tree) : Promise.resolve(requireRepo());
@@ -129,24 +132,29 @@ export async function handleWorkspaceApi(req: IncomingMessage, url: URL, parts: 
     }
     if (parts[2] === "file") {
       const path = typeof body.path === "string" ? body.path : url.searchParams.get("path") ?? "";
-      if (req.method === "GET") return { status: 200, body: await readEditableFile(await readRepo(), path) };
+      if (req.method === "GET") { try { return { status: 200, body: await readEditableFile(await readRepo(), path) }; } catch (error) { if (error instanceof WorkspaceFileMissingError) throw new HttpError(404, error.message); throw error; } }
       if (req.method === "POST") {
         const busy = manager.list().find((run) => run.status === "running" && (run.repo === selectedRepo || run.worktrees.some((tree) => tree.path === selectedRepo)));
         if (busy) throw new HttpError(409, "Finish or stop the active run before editing its workspace");
         try { return { status: 200, body: await manager.withIdleRepository(selectedRepo, async () => saveEditableFile(await writeRepo(), path, body.text, body.expectedHash), { kind: "file-edit", owner: "workspace" }) }; }
-        catch (error) { if (error instanceof WorkspaceConflictError) throw new HttpError(409, error.message); throw error; }
+        catch (error) { if (error instanceof WorkspaceConflictError) throw new HttpError(409, error.message); if (error instanceof WorkspaceFileMissingError) throw new HttpError(404, error.message); throw error; }
       }
     }
     if (parts[2] === "search" && req.method === "GET") return { status: 200, body: url.searchParams.get("mode") === "semantic" ? await searchSemanticSymbols(selectedRepo, url.searchParams.get("q") ?? "", signal) : await searchCode(await readRepo(), url.searchParams.get("q") ?? "", url.searchParams.get("mode") === "symbols" ? "symbols" : "text") };
     if (parts[2] === "references" && req.method === "GET") return { status: 200, body: await findCodeReferences(selectedRepo, { path: url.searchParams.get("path") ?? "", line: Number(url.searchParams.get("line")), column: Number(url.searchParams.get("column")) }, signal) };
     if (parts[2] === "dependencies" && req.method === "GET") return { status: 200, body: await inspectArchitecture(selectedRepo, signal) };
-    if (parts[2] === "checkpoints" && req.method === "GET") { const at = await readRepo(); return { status: 200, body: { head: await resolveCommit(at), checkpoints: await checkpoints(at, url.searchParams.get("ref") || "HEAD") } }; }
+    if (parts[2] === "checkpoints" && req.method === "GET") { const at = await readRepo(); return { status: 200, body: { head: await resolveCommit(at), checkpoints: await checkpoints(at, url.searchParams.get("ref") || "HEAD", url.searchParams.get("base") || undefined) } }; }
     if (parts[2] === "apply-checkpoint" && req.method === "POST") {
       const run = typeof body.runId === "string" ? manager.get(body.runId) : undefined;
       const tree = run?.worktrees.find((tree) => tree.path === selectedRepo);
       if (!run || !tree || run.status === "running") throw new HttpError(409, "Choose an idle run worktree before applying checkpoint files");
       if (!Array.isArray(body.paths) || body.paths.some((path: unknown) => typeof path !== "string")) throw new HttpError(400, "Choose repository paths");
-      return { status: 200, body: await manager.withIdleRepository(selectedRepo, async () => applyCheckpoint(await ownedCheckout(run.repo, tree), { source: String(body.source ?? ""), paths: body.paths, expectedHead: String(body.expectedHead ?? "") }), { kind: "checkpoint-files", owner: run.id }) };
+      try { return { status: 200, body: await manager.withIdleRepository(selectedRepo, async () => applyCheckpoint(await ownedCheckout(run.repo, tree), { source: String(body.source ?? ""), paths: body.paths, expectedHead: String(body.expectedHead ?? ""), confirmDeletes: body.confirmDeletes === true }), { kind: "checkpoint-files", owner: run.id }) }; }
+      catch (error) {
+        if (error instanceof WorkspaceConflictError) throw new HttpError(409, error.message);
+        if (error instanceof CheckpointDeletionError) throw Object.assign(new HttpError(409, error.message), { confirm: "deleteFiles" });
+        throw error;
+      }
     }
     if (parts[2] === "context" && req.method === "POST") {
       try { return { status: 200, body: await inspectContext({ repo: selectedRepo, baseRef: typeof body.baseRef === "string" ? body.baseRef : undefined, paths: body.paths, attachments: body.attachments, signal }) }; }
@@ -157,7 +165,7 @@ export async function handleWorkspaceApi(req: IncomingMessage, url: URL, parts: 
     const packageJson = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
     const log = await diagnosticTail(join(CODEFLOW_HOME, "server.log"));
     const runs = manager.list();
-    return { status: 200, body: redactExport({ version: 1, application: packageJson.version, node: process.version, platform: process.platform, at: Date.now(), busy: manager.busy, activity: manager.inspectRepositoryActivity(), writes: writeHealth, runs: { total: runs.length, active: runs.filter((run) => run.status === "running").length, interrupted: runs.filter((run) => run.status === "interrupted").length }, recentErrors: log.slice(-32_000), capabilities: { workspace: true, verificationProfiles: true }, git: repo ? await git(["--version"], repo).then((result) => result.stdout.trim()) : undefined }) };
+    return { status: 200, body: redactExport({ version: 1, application: packageJson.version, node: process.version, platform: process.platform, at: Date.now(), busy: manager.busy, activity: manager.inspectRepositoryActivity(), writes: writeHealth, runs: { total: runs.length, active: runs.filter((run) => run.status === "running").length, interrupted: runs.filter((run) => run.status === "interrupted").length }, recentErrors: log.slice(-32_000), capabilities: { workspace: true, verificationProfiles: true }, repository: selected ? repo ? "found" : "missing" : "not-selected", git: await git(["--version"], CODEFLOW_HOME).then((result) => result.code === 0 ? result.stdout.trim() : undefined, () => undefined) }) };
   }
   throw new HttpError(404, "Unknown workspace operation");
 }

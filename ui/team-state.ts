@@ -1,4 +1,5 @@
 import type { TeamMember, TeamState, TeamTask } from "./types.js";
+export { teamStatusLabel } from "../src/run-status.js";
 
 export function defaultPlanApproval(patternId: string, preference: boolean | undefined): boolean {
   return preference ?? patternId === "auto-team";
@@ -7,6 +8,23 @@ export function defaultPlanApproval(patternId: string, preference: boolean | und
 /** A rebuilt Auto plan needs planning and review; direct replies can use one call. */
 export function followupMinimumCalls(autoTeam: boolean, running: boolean, target: string): number {
   return autoTeam && (running || target === "team") ? 4 : 1;
+}
+
+/**
+ * The calls a reply offers before you change them: the run's live allocation, which a direct
+ * reply's own (as small as one call) replaces, raised to what the chosen target needs.
+ */
+export function defaultFollowupCalls(loop: { maxSteps: number; maxInvocations?: number }, minimumCalls: number): number {
+  return Math.min(200, Math.max(minimumCalls, loop.maxInvocations ?? loop.maxSteps));
+}
+
+/** Budgets are whole minutes; a correction's replacement team may have kept the fractional remainder. */
+export const wholeMinutes = (minutes: number) => Math.max(1, Math.floor(minutes));
+
+const CHANGED_WORK: Record<TeamMember["role"], string> = { coordinator: "Coordination", reviewer: "Review", worker: "Assignment" };
+/** A member that continued on another provider after its own became unavailable. */
+export function providerChangeText(change: NonNullable<TeamState["providerChanges"]>[number], name: (provider: string) => string): string {
+  return `${CHANGED_WORK[change.role] ?? "Assignment"} continued with ${name(change.to)} after ${name(change.from)} became unavailable.`;
 }
 
 export function teamNeedsResume(run: { status: string; team?: Pick<TeamState, "status">; patternDone?: boolean }): boolean {

@@ -1,3 +1,4 @@
+import { ActionNotPerformed } from "./agent-action-error.js";
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { copyFile, link, lstat, mkdir, open, opendir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
@@ -91,8 +92,8 @@ export class BrowserFiles {
     return {item,path,size:info.size};
   }
   async save(id:string,workspace:string|undefined,destination:unknown) {
-    const source=await this.downloaded(id),path=await browserWorkspacePath(workspace,destination,true);
-    await copyFile(source.path,path,constants.COPYFILE_EXCL).catch(error=>{if(error.code==="EEXIST")throw new Error("Destination already exists; choose another filename");throw error;});
+    const [source,path]=await Promise.all([this.downloaded(id),browserWorkspacePath(workspace,destination,true)]).catch(error=>{throw new ActionNotPerformed(error.message);});
+    await copyFile(source.path,path,constants.COPYFILE_EXCL).catch(error=>{if(error.code==="EEXIST")throw new ActionNotPerformed("Destination already exists; choose another filename");throw error;});
     return {path,bytes:source.size,name:source.item.name};
   }
   async remove(id:string) {

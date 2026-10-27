@@ -7,6 +7,7 @@ import { useEffect, useRef } from "preact/hooks";
 import type { Built } from "./run.js";
 import { reconcileStreamSnapshot, type StreamSnapshot } from "./run-stream.js";
 import { subscribe } from "./stream.js";
+import { forgetRun } from "./state.js";
 import type { AgentEvent, RunEvent, RunSummary, Step } from "./types.js";
 
 export interface StepPage { before?: string; loading: boolean; loaded: boolean; historical: boolean; error?: string; request: number }
@@ -122,6 +123,7 @@ function receive(feed: RunFeed, ev: Message) {
   if (ev.type === "persistence") { feed.persistence.value = ev.status; return; }
   if (ev.type === "error") {
     feed.problem.value = ev.status === 404 ? ev.message : `Couldn't load this run: ${ev.message}`;
+    if (ev.status === 404) { feed.run.value = null; feed.pending = undefined; forgetRun(feed.id, false, false); }
     return;
   }
   if (ev.type === "hello") {

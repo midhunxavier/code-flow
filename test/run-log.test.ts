@@ -128,7 +128,10 @@ test("a run's log holds patches; its events and a reload see whole snapshots", a
   const events = await manager.events(run.id);
   assert.ok(events.every((e) => (e.type as string) !== "run-patch"));
   const last = events.filter((e) => e.type === "run").at(-1);
-  assert.deepEqual(last?.type === "run" && last.run, JSON.parse(JSON.stringify(manager.list().find((r) => r.id === run.id))), "the last snapshot is the run as it is");
+  // Live approval state is a registry projection and must not be restored from a log.
+  const { approvalPending, ...durable } = JSON.parse(JSON.stringify(manager.list().find((r) => r.id === run.id)));
+  assert.equal(approvalPending, false);
+  assert.deepEqual(last?.type === "run" && last.run, durable, "the last snapshot retains all durable run state");
 
   const reloaded = new RunManager(findPattern);
   await reloaded.load();

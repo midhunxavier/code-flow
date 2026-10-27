@@ -1,4 +1,6 @@
 import { sensitiveContextPath } from "./context-inspection.js";
+import { ACTIVE_CYCLES, PT_LIMITS, safePath } from "./project-team-admission.js";
+import { PROJECT_TEAM_BUDGET_RANGES } from "./project-team-budget.js";
 import { redactText } from "./privacy.js";
 import { createHash } from "node:crypto";
 import { isAbsolute } from "node:path";
@@ -11,7 +13,6 @@ import { providerEligibility } from "./provider-eligibility.js";
 
 export const projectTeamsEnabled = () => process.env.CODEFLOW_PROJECT_TEAMS_ENABLED === "true";
 export const WEEK = 7 * 24 * 60 * 60_000;
-export const PT_LIMITS = { bytes: 16 * 1024 * 1024, cycles: 100, opportunities: 200, decisions: 2000, operations: 2000, open: 12, pending: 2 };
 export const digest = (value: unknown): string => createHash("sha256").update(JSON.stringify(value, (_key, item) => item && typeof item === "object" && !Array.isArray(item) ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => a.localeCompare(b))) : item)).digest("hex");
 export const object = (v: unknown): v is Record<string, any> => !!v && typeof v === "object" && !Array.isArray(v);
 export function closed(v: unknown, keys: string[], label: string): Record<string, any> {
@@ -30,8 +31,7 @@ function strings(v: unknown, max: number, label: string): string[] {
   if (!Array.isArray(v) || v.length > max) throw new Error(`Invalid ${label}`);
   return [...new Set(v.map((s) => text(s, 1000, label)))];
 }
-export const safePath = (p: string) => p === "*" || p.length <= 500 && !p.startsWith("-") && !p.includes("\\") && !p.includes(":") && !/[\x00-\x1f]/.test(p) && !p.split("/").some((part) => !part || part === "." || part === ".." || part === ".git" || part.includes("*"));
-export const containsPath = (scope: string, path: string) => scope === "*" || path === scope || path.startsWith(`${scope}/`);
+export { ACTIVE_CYCLES, PT_LIMITS, candidateProblem, containsPath, pathPermitted, safePath } from "./project-team-admission.js";
 export const CATEGORIES = ["bug", "usability", "performance", "tests", "docs", "experiment"] as const;
 export type Category = typeof CATEGORIES[number];
 export function missionSchedule(value: unknown): Schedule {
@@ -100,7 +100,7 @@ export function validateMission(value: unknown): ProjectTeamMission {
   const verification = r.verification ? validateVerificationProfile(r.verification) : check ? validateVerificationProfile({ name: "Project team checks", checks: [{ id: "primary", kind: "custom", command: check, required: true }] }) : undefined;
   if (mode === "build-within-scope" && !verification?.checks.some((c) => c.required)) throw new Error("Automatic implementation requires a required verification check");
   const b = closed(r.budget ?? {}, ["discoveryCalls", "discoveryMinutes", "buildCalls", "buildMinutes", "weeklyCalls", "weeklyMinutes"], "budget");
-  const budget = { discoveryCalls: integer(b.discoveryCalls ?? 8, 8, 40, "discovery calls"), discoveryMinutes: integer(b.discoveryMinutes ?? 15, 1, 60, "discovery minutes"), buildCalls: integer(b.buildCalls ?? 16, 4, 80, "build calls"), buildMinutes: integer(b.buildMinutes ?? 45, 1, 120, "build minutes"), weeklyCalls: integer(b.weeklyCalls ?? 48, 4, 500, "weekly calls"), weeklyMinutes: integer(b.weeklyMinutes ?? 120, 1, 1440, "weekly minutes") };
+  const budget = Object.fromEntries(Object.entries(PROJECT_TEAM_BUDGET_RANGES).map(([field, range]) => [field, integer(b[field] ?? range.default, range.min, range.max, range.label)])) as ProjectTeamMission["budget"];
   return { mission: text(r.mission, 6000, "mission"), users: text(r.users, 2000, "intended users"), priorities: strings(r.priorities ?? [], 12, "priorities"), exclusions: strings(r.exclusions ?? [], 24, "exclusions"), baseBranch: branch, mode, categories, paths, excludedPaths, ...validateTeamConfiguration({ coordinator, pool, agentSettings: r.agentSettings, roleSettings: r.roleSettings }), trust, check, setup, verification, schedule, maxFiles: integer(r.maxFiles ?? 8, 1, 100, "changed files"), maxLines: integer(r.maxLines ?? 400, 1, 10000, "changed lines"), rescanDays: integer(r.rescanDays ?? 28, 1, 90, "rescan days"), budget };
 }
 export interface OpportunityCandidate {
@@ -152,25 +152,15 @@ export interface ProjectTeam {
   schedule?: Schedule; scheduleEnabled?: boolean;
   missionRevision: number; mission: ProjectTeamMission; missions: { revision: number; value: ProjectTeamMission }[];
   createdAt: number; updatedAt: number; cycles: ProjectTeamCycle[]; opportunities: ProjectOpportunity[]; decisions: ProjectTeamDecision[];
-  operations: { id: string; hash: string; at: number }[]; error?: string;
+  operations: { id: string; hash: string; at: number }[]; error?: string; recoveryError?: string;
 }
-export const ACTIVE_CYCLES: CycleStatus[] = ["requested", "discovering", "selecting", "building", "unknown"];
 export { allowance } from "./project-team-budget.js";
-export function pathPermitted(scope: ProjectTeamRun["scope"], path: string) { return safePath(path) && !sensitiveContextPath(path) && scope.paths.some((p) => containsPath(p, path)) && !scope.excludedPaths.some((p) => containsPath(p, path)); }
-export function candidateProblem(c: ProjectOpportunity, mission: ProjectTeamMission): string | undefined {
-  if (c.origin !== "owner" && !c.evidenceVerified) return "Evidence could not be verified at the pinned commit";
-  if (!mission.categories.includes(c.category)) return "Outside allowed categories";
-  if (c.risk !== "low" || c.confidence < 2 || c.alignment < 2) return "Needs an owner decision about risk, evidence or mission alignment";
-  if (c.kind === "hypothesis" && c.category !== "experiment") return "Product benefit needs evidence before automatic implementation";
-  if (c.paths.some((p) => !pathPermitted(mission, p))) return "Outside allowed paths";
-  if (!mission.verification?.checks.some((c) => c.required)) return "Configure a required verification check";
-}
 export const score = (c: OpportunityCandidate) => c.alignment * 4 + c.impact * 3 + c.confidence * 2 - c.effort * 2;
 export function validateTeamDocument(v: unknown): ProjectTeam {
-  if (!object(v) || v.version !== 1 || !/^pt-[a-f0-9]{24}$/.test(v.id) || !isAbsolute(v.repo) || !Number.isSafeInteger(v.revision) || v.revision < 1 || !["draft", "active", "paused", "archived"].includes(v.status)) throw new Error("Invalid standing team document");
+  if (!object(v) || v.version !== 1 || !/^pt-[a-f0-9]{24}$/.test(v.id) || !isAbsolute(v.repo) || !Number.isSafeInteger(v.revision) || v.revision < 1 || !["draft", "active", "paused", "archived"].includes(v.status)) throw new Error("Invalid project mission document");
   validateMission(v.mission);
   for (const key of ["missions", "cycles", "opportunities", "decisions", "operations"]) if (!Array.isArray(v[key])) throw new Error(`Invalid team ${key}`);
-  if (v.cycles.length > PT_LIMITS.cycles || v.opportunities.length > PT_LIMITS.opportunities || v.decisions.length > PT_LIMITS.decisions || v.operations.length > PT_LIMITS.operations) throw new Error("Standing team history is full; archive this team and retain its decisions before creating another");
+  if (v.cycles.length > PT_LIMITS.cycles || v.opportunities.length > PT_LIMITS.opportunities || v.decisions.length > PT_LIMITS.decisions || v.operations.length > PT_LIMITS.operations) throw new Error("Mission history is full; archive this mission and retain its decisions before creating another");
   const validTime = (value: unknown) => Number.isSafeInteger(value) && Number(value) >= 0;
   const validHash = (value: unknown) => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
   const commit = (value: unknown) => typeof value === "string" && /^[a-f0-9]{40,64}$/.test(value);
@@ -179,7 +169,7 @@ export function validateTeamDocument(v: unknown): ProjectTeam {
   if (v.schedule !== undefined) missionSchedule(v.schedule);
   if (v.scheduleEnabled !== undefined && typeof v.scheduleEnabled !== "boolean") throw new Error("Invalid scheduling setting");
   if (v.definition && digest(validateTeamSnapshot(v.definition).configuration) !== digest(teamConfiguration(v.mission))) throw new Error("Assignment differs from its pinned team configuration");
-  if (typeof v.projectId !== "string" || !v.projectId || typeof v.name !== "string" || !v.name || !validTime(v.createdAt) || !validTime(v.updatedAt) || !Number.isSafeInteger(v.missionRevision) || v.missionRevision < 1 || !unique(v.missions, "revision") || !unique(v.cycles, "id") || !unique(v.opportunities, "id") || !unique(v.operations, "id")) throw new Error("Invalid standing team identity or history");
+  if (typeof v.projectId !== "string" || !v.projectId || typeof v.name !== "string" || !v.name || !validTime(v.createdAt) || !validTime(v.updatedAt) || !Number.isSafeInteger(v.missionRevision) || v.missionRevision < 1 || !unique(v.missions, "revision") || !unique(v.cycles, "id") || !unique(v.opportunities, "id") || !unique(v.operations, "id")) throw new Error("Invalid project mission identity or history");
   for (const m of v.missions) { if (!object(m) || !Number.isSafeInteger(m.revision) || m.revision < 1) throw new Error("Invalid mission revision"); validateMission(m.value); }
   if (!v.missions.some((m: any) => m.revision === v.missionRevision && digest(m.value) === digest(v.mission))) throw new Error("Current mission differs from its revision history");
   for (const c of v.cycles) {
@@ -208,13 +198,15 @@ export function validateTeamDocument(v: unknown): ProjectTeam {
   return v as ProjectTeam;
 }
 
+/** The owner's advisory on a restored mission; recovery passes leave it for the owner to clear. */
+export const RESTORED_TEAM_ERROR = "Restored from backup. Inspect repository membership, launch receipts and budgets before activating.";
 /** Restoring retains evidence and reservations, but never restarts unattended work. */
 export function disableRestoredProjectTeam(value: unknown): ProjectTeam {
   const team = structuredClone(validateTeamDocument(value));
   if (team.status !== "archived") team.status = "paused";
   team.revision++; team.updatedAt = Date.now();
   for (const opportunity of team.opportunities) if (["ready", "accepted", "selected", "implementing"].includes(opportunity.status)) { opportunity.status = "blocked"; opportunity.reason = "Restored result requires a new verified run before approval"; opportunity.revision++; }
-  team.error = "Restored from backup. Inspect repository membership, launch receipts and budgets before activating.";
+  team.error = RESTORED_TEAM_ERROR; team.recoveryError = undefined;
   for (const cycle of team.cycles) if (ACTIVE_CYCLES.includes(cycle.status)) { cycle.status = "cancelled"; cycle.endedAt = Date.now(); cycle.reason = "Cancelled during restore; unresolved launch reservations retained"; }
   return team;
 }

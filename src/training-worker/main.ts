@@ -1,3 +1,4 @@
+import { pythonVersion } from "./python.js";
 import { holdoutResult } from "../ml/holdout-model.js";
 import { assertNoResident, residentDiscard, residentPrepare, residentRequest, residentStatus, residentStop, residentSupervisor } from "./resident.js";
 import { inferenceSupervisor, servingExecute, servingUpload } from "./serving.js";
@@ -38,16 +39,19 @@ async function probe(root: string, enrollment: Enrollment, requested: unknown, s
   const recipes: NonNullable<Probe["recipes"]> = [];
   for (const selectedRecipe of [RECIPE, LLM_RECIPE] as const) {
     const python = await pythonFor(root, requested, selectedRecipe);
+    let version: string;
+    try { version = await pythonVersion(python, environment(root)); }
+    catch (error) { recipes.push({ id: selectedRecipe, python, ready: false, issue: (error as Error).message }); continue; }
     try {
       const { stdout } = await exec(python, (serving ? [join(bundleDir, "inference.py"), "probe", selectedRecipe] : [recipePath(selectedRecipe), "probe"]), { env: environment(root, 1, null), cwd: root, timeout: 40000, maxBuffer: 64000 });
       const result = JSON.parse(stdout);
-      recipes.push({ id: selectedRecipe, python, ready: true, devices: selectedRecipe === LLM_RECIPE ? result.devices : ["cpu"] });
-    } catch { recipes.push({ id: selectedRecipe, python, ready: false, issue: "Install the pinned Python 3.12 environment for this recipe, or choose a compatible existing Python environment." }); }
+      recipes.push({ id: selectedRecipe, python, pythonVersion: version, ready: true, devices: selectedRecipe === LLM_RECIPE ? result.devices : ["cpu"] });
+    } catch { recipes.push({ id: selectedRecipe, python, pythonVersion: version, ready: false, issue: "Install the pinned Python 3.12 environment for this recipe, or choose a compatible existing Python environment." }); }
   }
   const selectedResult = recipes.find(r => r.id === selected)!;
   const gpus = await exec("nvidia-smi", ["--query-gpu=uuid,name,memory.total,memory.free", "--format=csv,noheader,nounits"], { timeout: 5000, maxBuffer: 64000 }).then(({ stdout }) => stdout.trim().split("\n").filter(Boolean).map(line => { const [uuid, name, memory, free] = line.split(",").map(s => s.trim()); return { uuid: uuid!, name: name!, memoryMiB: Number(memory), freeMiB: Number(free) }; }).filter(g => Number.isFinite(g.memoryMiB) && Number.isFinite(g.freeMiB)), () => []);
   const disk = await statfs(root);
-  return { workerId: enrollment.workerId, protocol: ML_PROTOCOL, commonHoldout: 1, boundedSearch: 1, dataWatch: 1, serving: 1, persistentServing: 1, platform: platform(), hostname: hostname(), cpus: cpus().length, memoryBytes: freemem(), freeBytes: disk.bavail * disk.bsize, python: selectedResult.python, ready: selectedResult.ready, issue: selectedResult.issue, recipe: selected, recipes, gpus, limits: { datasetBytes: DATA_LIMIT, concurrentJobs: 1, hardMemoryLimit: false } };
+  return { workerId: enrollment.workerId, protocol: ML_PROTOCOL, uploadResume: 1, commonHoldout: 1, boundedSearch: 1, dataWatch: 1, serving: 1, persistentServing: 1, platform: platform(), hostname: hostname(), cpus: cpus().length, memoryBytes: freemem(), freeBytes: disk.bavail * disk.bsize, python: selectedResult.python, ready: selectedResult.ready, issue: selectedResult.issue, recipe: selected, recipes, gpus, limits: { datasetBytes: DATA_LIMIT, concurrentJobs: 1, hardMemoryLimit: false } };
 }
 async function state(root: string, jobId: unknown): Promise<JobStatus> {
   const directory = jobDir(root, jobId), accepted = intent(await json(join(directory, "intent.json")));
@@ -162,6 +166,22 @@ export async function control(directory: string, raw: unknown): Promise<unknown>
       const fingerprint = hasher.digest("hex");
       await rename(temp, join(root, "transfers", `${fingerprint}-${format}.part`));
       return reserveHoldout(root, request, await finishSnapshot(root, { hash: fingerprint, format, python: request.python }));
+    }
+    if (request.action === "upload-status") {
+      const fingerprint = digest(request.hash), format = request.format;
+      if (!["csv", "parquet", "jsonl"].includes(String(format))) throw new Error("Invalid dataset format");
+      const total = integer(request.bytes, 1, format === "jsonl" ? 32 * 1024 * 1024 : DATA_LIMIT, "Dataset bytes");
+      const key = `${fingerprint}-${format}`, destination = join(root, "datasets", `${fingerprint}.${format}`);
+      if (await json(join(root, "datasets", key + ".json"), true)) {
+        if ((await stat(destination)).size !== total || await snapshotHash(destination) !== fingerprint) throw new Error("Cached dataset hash changed");
+        return { offset: total, present: true };
+      }
+      const partial = join(root, "transfers", key + ".part");
+      const size = await stat(partial).then(s => s.size, (e: NodeJS.ErrnoException) => { if (e.code !== "ENOENT") throw e; return 0; });
+      // Discard only oversized or incomplete trailing chunks; complete chunks are hash-checked at finish.
+      const offset = size > total ? 0 : size === total ? size : Math.floor(size / CHUNK_BYTES) * CHUNK_BYTES;
+      if (size !== offset) { const fd = await open(partial, "r+"); try { await fd.truncate(offset); await fd.sync(); } finally { await fd.close(); } }
+      return { offset, present: false };
     }
     if (request.action === "upload") {
       const fingerprint = digest(request.hash), format = request.format;
@@ -333,7 +353,7 @@ async function runner(root: string, jobId: string) {
     const selected = recipe(accepted.recipe), script = recipePath(selected);
     if (accepted.kind === "setup") {
       const destination = dirname(dirname(managedPython(root, selected)));
-      await exec(accepted.python!, ["-c", "import sys; assert sys.version_info[:2] == (3, 12), 'Use Python 3.12'"], { timeout: 10000, env: environment(root) });
+      await pythonVersion(accepted.python!, environment(root));
       await run(accepted.python!, ["-m", "venv", destination]);
       await run(managedPython(root, selected), ["-m", "pip", "--isolated", "install", "--disable-pip-version-check", "--require-hashes", "--only-binary=:all:", "-r", join(bundleDir, selected === LLM_RECIPE ? "llm_requirements.txt" : "requirements.txt")]);
       await run(managedPython(root, selected), [script, "probe"]);

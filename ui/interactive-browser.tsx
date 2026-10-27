@@ -1,16 +1,19 @@
 import { BrowserTransfers, type BrowserChooser, type BrowserDownload } from "./browser-transfers.js";
 import { useEffect, useRef, useState } from "preact/hooks";
-import { api, apiPath, post, usePoll } from "./lib.js";
+import { api, ApiError, apiPath, post, usePoll } from "./lib.js";
 import { Icon } from "./icons.js";
 import type { DevServer } from "./types.js";
 import { LiveBrowserTools, LiveBrowserTray, receiveBrowserOverlay } from "./browser.js";
 import { Strip } from "./panel-bits.js";
-import { rememberSide, sideMemo, sideOpen, sideScope, sideTab } from "./state.js";
+import { executionPaused, rememberSide, sideMemo, sideMemory, sideOpen, sideScope, sideTab, supersedePreviewBrowserPage } from "./state.js";
+import { PolicyPauseNotice } from "./policy-pause.js";
 
 type Tab = {id:string;url:string;title:string};
 type State = {type:"state";tabs:Tab[];selected?:string;width:number;height:number;view:number;chooser?:BrowserChooser;downloads?:BrowserDownload[];dialog?:{type:string;message:string;defaultPrompt:string}};
 type Frame = {type:"frame";data:string;width:number;height:number;tab:string;view:number};
 const modifiers = (event:KeyboardEvent | MouseEvent) => (event.altKey ? 1 : 0) | (event.ctrlKey ? 2 : 0) | (event.metaKey ? 4 : 0) | (event.shiftKey ? 8 : 0);
+
+const sameBrowserUrl = (left:string,right:string) => {try{return new URL(left).href===new URL(right).href;}catch{return false;}};
 
 export function BrowserTab() { return <InteractiveBrowser key={sideScope.value.key} />; }
 
@@ -23,13 +26,23 @@ export function InteractiveBrowser() {
   const [controlBusy,setControlBusy] = useState(false);
   const changeControl = async (action: "takeover" | "release") => { setControlBusy(true); try { setControl(await post(`/api/browser/control?scope=${encodeURIComponent(scope)}`, {action})); } catch (error) { setError((error as Error).message); } finally { setControlBusy(false); } };
   const [state,setState] = useState<State>();
+  const knownState = useRef<State>();
+  const pointerActive = useRef(false), resizePending = useRef(false);
+  const [resizing,setResizing] = useState(false);
   const [servers,setServers] = useState<Omit<DevServer,"logs">[]>([]);
   const autoOff = useRef(false);
-  usePoll(current=>api<Omit<DevServer,"logs">[]>("/api/serve").then(value=>current()&&setServers(value),()=>{}),5000,[],visible);
+  // A filesystem restriction pauses the browser: known up front (every provider says so), or the server
+  // refused it (a policy applied elsewhere) and `blocked` holds its reason. Either way it's said, not "Starting…".
+  const paused = executionPaused.value;
+  const [blocked,setBlocked] = useState("");
+  const unavailable = paused || !!blocked;
+  usePoll(current=>api<Omit<DevServer,"logs">[]>("/api/serve").then(value=>current()&&setServers(value),()=>{}),5000,[],visible && !unavailable);
   const [frame,setFrame] = useState<Frame>();
   const [drawn,setDrawn] = useState<{tab:string;view:number}>();
   const [connected,setConnected] = useState(false);
   const [error,setError] = useState("");
+  const [navigationError,setNavigationError] = useState("");
+  const navigationErrorIntent = useRef<string>();
   const [address,setAddress] = useState("");
   const [prompt,setPrompt] = useState("");
   const [device,setDevice] = useState("full");
@@ -43,36 +56,63 @@ export function InteractiveBrowser() {
   const pending = useRef<Promise<any>>(Promise.resolve());
   const mounted = useRef(true);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
-  const send = (input:Record<string,unknown>) => {
+  const applyState = (value:State) => {
+    knownState.current=value;setState(value);
+    if(value.selected!==displayed.current?.tab){setFrame(previous=>previous?.tab===value.selected?previous:undefined);displayed.current=undefined;setDrawn(undefined);}
+  };
+  const send = (input:Record<string,unknown>, current?:()=>boolean) => {
     const work = pending.current.catch(() => {}).then(async () => {
-      if (!mounted.current) return;
-      try { const result = await post<any>(endpoint,input); if (mounted.current) setError(""); return result; }
-      catch (error) { if (mounted.current) setError((error as Error).message); throw error; }
+      if (!mounted.current || current && !current()) return;
+      try {
+        const latest = knownState.current;
+        // Navigation controls can follow a queued resize of the same tab. Pointer
+        // input keeps its original frame identity and is validated by the server.
+        if (input.tab === latest?.selected && typeof input.view === "number" && latest && latest.view > input.view && ["back","forward","reload"].includes(String(input.action))) input={...input,view:latest.view};
+        const result = await post<any>(endpoint,input);
+        if (!mounted.current || current && !current()) return;
+        if (result?.type === "state" && (!knownState.current || result.view >= knownState.current.view)) applyState(result);
+        if (!current && !["resize","state","watch","overlay"].includes(String(input.action))) setError(""); // passive updates do not clear a newer user-action error
+        return result;
+      } catch (error) {
+        if (!mounted.current || current && !current()) return;
+        if (!current) setError((error as Error).message);
+        throw error;
+      }
     });
     pending.current = work.catch(() => {}); return work;
   };
   const act = (action:string, extra:Record<string,unknown> = {}) => {
     const shown = action === "dialog" && state?.selected ? {tab:state.selected,view:state.view} : displayed.current;
     if (!shown) return;
+    if (["back","forward","reload"].includes(action)) supersedePreviewBrowserPage(scope);
     void send({action,tab:shown.tab,view:shown.view,...extra}).catch(() => {});
   };
+  // A refused event stream closes for good and says nothing: ask why, and ask again now and then
+  // until the browser is allowed (clearing `blocked` reconnects).
+  const probe = (alive: () => boolean) => api(`/api/browser/control?scope=${encodeURIComponent(scope)}`).then(() => { if (alive()) setBlocked(""); }, error => { if (alive() && error instanceof ApiError && error.status >= 400 && error.status < 500) setBlocked(error.message); });
   useEffect(() => {
-    if (!visible) return;
+    if (!visible || !blocked || paused) return;
+    let alive = true; const timer = setInterval(() => void probe(() => alive), 15_000);
+    return () => { alive = false; clearInterval(timer); };
+  }, [visible,!!blocked,paused]);
+  useEffect(() => { if (!paused) setBlocked(""); }, [paused]); // lifted in this app: connect again now
+  useEffect(() => {
+    if (!visible || unavailable) return;
+    let alive = true;
     const events = new EventSource(apiPath(`/api/browser/events?scope=${encodeURIComponent(scope)}`));
     events.onmessage = event => {
       const value = JSON.parse(event.data);
       if (value.type === "control") setControl(value);
       else if (value.type === "state") {
-        setState(value); setConnected(true);
-        if (value.selected !== displayed.current?.tab) { setFrame(previous=>previous?.tab===value.selected?previous:undefined); displayed.current = undefined; setDrawn(undefined); }
+        applyState(value);setConnected(true);
       } else if (value.type === "frame") { setFrame(value); setConnected(true); }
       else if (value.type === "overlay") receiveBrowserOverlay(`${scope}|${value.tab}`,value.message);
       else if (value.type === "error") setError(value.message);
       else if (value.type === "closed") { events.close(); setConnected(false); setError("The browser session ended. Reopen the Browser panel to reconnect."); }
     };
-    events.onerror = () => setConnected(false);
-    return () => { events.close(); setConnected(false); };
-  }, [visible,scope]);
+    events.onerror = () => { setConnected(false); if (events.readyState === EventSource.CLOSED) void probe(() => alive); };
+    return () => { alive = false; events.close(); setConnected(false); };
+  }, [visible,scope,unavailable]);
   const selected = state?.tabs.find(tab => tab.id === state.selected);
   // Chrome sends frames for about:blank too. Present a start page instead of its
   // featureless canvas, and never show a frame from the previously selected tab.
@@ -99,42 +139,74 @@ export function InteractiveBrowser() {
   }, [frame]);
   useEffect(() => {
     if (!visible || !surface.current || !state?.selected) return;
-    let timer: ReturnType<typeof setTimeout>;
+    let timer: ReturnType<typeof setTimeout>, generation=0, alive=true;
     const resize = () => {
-      clearTimeout(timer);
+      const request=++generation;resizePending.current=true;setResizing(true);clearTimeout(timer);
+      const settled=()=>{if(alive&&request===generation){resizePending.current=false;setResizing(false);}};
       timer = setTimeout(() => {
-        const box = surface.current?.getBoundingClientRect(); if (!box?.width || !box.height) return;
-        void send({action:"resize",width:Math.min(2560,Math.max(240,device === "phone" ? 390 : device === "tablet" ? 768 : Math.round(box.width))),height:Math.min(1600,Math.max(200,Math.round(box.height)))}).catch(() => {});
+        // Finish an annotation gesture against its original viewport first.
+        if (pointerActive.current) { resize(); return; }
+        const box = surface.current?.getBoundingClientRect(); if (!box?.width || !box.height) {settled();return;}
+        void send({action:"resize",width:Math.min(2560,Math.max(240,device === "phone" ? 390 : device === "tablet" ? 768 : Math.round(box.width))),height:Math.min(1600,Math.max(200,Math.round(box.height)))}).catch(() => {}).finally(settled);
       },100);
     };
     const observer = new ResizeObserver(resize); observer.observe(surface.current); resize();
-    return () => { observer.disconnect(); clearTimeout(timer); };
+    return () => {alive=false;generation++;observer.disconnect();clearTimeout(timer);resizePending.current=false;setResizing(false);};
   }, [visible,state?.selected,device]);
-  const navigate = (url:string) => { autoOff.current=true; void send({action:"navigate",url:/^https?:\/\//i.test(url) ? url : /^(localhost|127\.|\[::1\])/.test(url) ? `http://${url}` : `https://${url}`}).catch(() => {}); };
-  const opened = useRef("");
+  const navigate = (url:string) => { const target=/^https?:\/\//i.test(url) ? url : /^(localhost|127\.|\[::1\])/.test(url) ? `http://${url}` : `https://${url}`; supersedePreviewBrowserPage(scope,target); navigationErrorIntent.current=undefined; autoOff.current=true; setNavigationError(""); void send({action:"navigate",url:target}).catch(() => {}); };
   const restored = useRef(false);
   const memo = sideMemo.value;
   useEffect(() => {
     if (!state?.selected) return;
     const request = memo.browserRequest;
-    const saved = memo.pages?.find(page => page.id === memo.page)?.url ?? memo.url ?? memo.pages?.[0]?.url;
-    const id = request && request.id !== memo.browserHandled ? request.id : !restored.current && selected?.url === "about:blank" && saved ? "restore" : "";
+    if (!request || request.cancelled || request.id === memo.browserHandled) return;
+    // Consume an intent before dispatch: failed navigation must not run again on a state update or reload.
     restored.current = true;
-    const url = id === "restore" ? saved : request?.url;
-    if (!id || !url || opened.current === id) return;
-    opened.current = id;
-    const existing = state.tabs.find(tab => tab.url === url);
-    void send(existing ? {action:"tabs",operation:"select",tab:existing.id} : {action:"navigate",url}).then(() => {
-      if (request?.id === id) rememberSide({browserHandled:id},scope);
-    }, () => { opened.current = ""; });
-  }, [state?.selected,memo.browserRequest?.id,selected?.url]);
+    rememberSide({browserHandled:request.id},scope);
+    setNavigationError(""); navigationErrorIntent.current=request.id;
+    const current = () => { const latest=sideMemory.value[scope]?.browserRequest; return latest?.id===request.id && !latest.cancelled; };
+    const normalized = (url:string) => { try {return new URL(url).href;} catch {return url;} };
+    const existing = state.tabs.find(tab=>normalized(tab.url)===normalized(request.url));
+    void send(existing ? {action:"tabs",operation:"select",tab:existing.id} : {action:"navigate",url:request.url},current).catch(error=>{ if(current()) setNavigationError(`Could not open ${request.url}: ${error.message}`); });
+  }, [state?.selected,memo.browserRequest?.id,memo.browserHandled]);
+  useEffect(() => {
+    if (memo.browserRequest?.cancelled && navigationErrorIntent.current===memo.browserRequest.id) { navigationErrorIntent.current=undefined; setNavigationError(""); }
+  }, [memo.browserRequest?.id,memo.browserRequest?.cancelled]);
+  useEffect(() => {
+    if (!state?.selected || restored.current) return;
+    restored.current = true;
+    // A pending explicit request takes precedence; a new Chrome session can still restore the last page.
+    if (memo.browserRequest && !memo.browserRequest.cancelled && memo.browserRequest.id !== memo.browserHandled || selected?.url !== "about:blank") return;
+    const cancelled = memo.browserRequest?.cancelled ? memo.browserRequest : undefined;
+    const allowed = (url:string|undefined) => {
+      if(!url) return false;
+      try { return !cancelled || new URL(url).href!==new URL(cancelled.url).href || !!cancelled.manualUrl && !!memo.url && new URL(url).href===new URL(cancelled.manualUrl).href && new URL(url).href===new URL(memo.url).href; }
+      catch { return false; }
+    };
+    // A canceled automatic request remains in history, but must not reopen the stopped app.
+    // After manual takeover, the latest actual page takes precedence over the old intent's page.
+    const candidates = memo.browserRequest?.cancelled ? [memo.url,...(memo.pages??[]).map(page=>page.url).reverse()] : [memo.pages?.find(page=>page.id===memo.page)?.url,memo.url,memo.pages?.[0]?.url];
+    const saved = candidates.find(allowed);
+    if(saved) {
+      const request=memo.browserRequest;
+      const preview = request?.previewStartedAt!==undefined && !request.cancelled && sameBrowserUrl(saved,request.url) ? request : undefined;
+      const current = preview ? () => {const latest=sideMemory.value[scope]?.browserRequest;return latest?.id===preview.id&&!latest.cancelled;} : undefined;
+      if(preview) navigationErrorIntent.current=preview.id;
+      void send({action:"navigate",url:saved},current).catch(error=>{if(!current||current())setNavigationError(`Could not restore ${saved}: ${error.message}`);});
+    }
+  }, [state?.selected]);
   useEffect(()=>{
     if(autoOff.current || !state?.selected || selected?.url !== "about:blank" || memo.url || memo.browserRequest) return;
     const folders=sideScope.value.run?.worktrees.map(tree=>tree.path) ?? [sideScope.value.repo];
     const own=servers.find(server=>server.status==="running" && folders.some(folder=>folder && (server.cwd===folder || server.cwd.startsWith(`${folder}/`))));
-    if(own){autoOff.current=true;void send({action:"navigate",url:own.url}).catch(()=>{});}
+    if(own){
+      // Effects from an older render must not replace a newer explicit or canceled intent.
+      const latest=sideMemory.value[scope]; if(latest?.url || latest?.browserRequest) return;
+      autoOff.current=true;rememberSide({browserRequest:{id:crypto.randomUUID(),url:own.url,previewStartedAt:own.startedAt}},scope);
+    }
   },[state?.selected,selected?.url,servers]);
   const pointer = (event:PointerEvent | WheelEvent, type:string) => {
+    if(resizePending.current&&!pointerActive.current)return;
     const shown = displayed.current, box = canvas.current?.getBoundingClientRect();
     if (!shown || !box) return;
     const scale = Math.min(box.width / shown.width,box.height / shown.height);
@@ -161,25 +233,26 @@ export function InteractiveBrowser() {
     if (event.key === "Escape") keyboard.current?.blur(); else event.stopPropagation();
   };
   return <div class="interactive-browser">
-    <Strip label="Open pages" active={state?.selected} items={(state?.tabs ?? []).map(tab => ({key:tab.id,label:tab.url === "about:blank" ? "New tab" : tab.title || tab.url,title:tab.url}))} onPick={tab => void send({action:"tabs",operation:"select",tab}).catch(() => {})} onClose={tab => void send({action:"tabs",operation:"close",tab}).catch(() => {})}>
-      <button class="icon-btn" aria-label="New browser tab" title="New browser tab" onClick={() => {autoOff.current=true;void send({action:"tabs",operation:"new"}).catch(() => {});}}><Icon name="plus" /></button>
+    <Strip label="Open pages" active={state?.selected} items={(state?.tabs ?? []).map(tab => ({key:tab.id,label:tab.url === "about:blank" ? "New tab" : tab.title || tab.url,title:tab.url}))} onPick={tab => {supersedePreviewBrowserPage(scope,state?.tabs.find(item=>item.id===tab)?.url);void send({action:"tabs",operation:"select",tab}).catch(() => {});}} onClose={tab => {supersedePreviewBrowserPage(scope);void send({action:"tabs",operation:"close",tab}).catch(() => {});}}>
+      <button class="icon-btn" aria-label="New browser tab" title="New browser tab" disabled={unavailable} onClick={() => {supersedePreviewBrowserPage(scope);autoOff.current=true;void send({action:"tabs",operation:"new"}).catch(() => {});}}><Icon name="plus" /></button>
     </Strip>
     <form class="live-browser-address" onSubmit={event => { event.preventDefault(); addressEditing.current=false; if (address.trim()) navigate(address.trim()); }}>
       <button type="button" class="icon-btn" aria-label="Back" onClick={() => act("back")}><span aria-hidden="true">←</span></button>
       <button type="button" class="icon-btn" aria-label="Forward" onClick={() => act("forward")}><span aria-hidden="true">→</span></button>
       <button type="button" class="icon-btn" aria-label="Reload" onClick={() => act("reload")}><Icon name="refresh" /></button>
       <input ref={addressInput} class="field" aria-label="Address" placeholder="Enter a website address" value={address} onInput={event => {addressEditing.current=true;setAddress(event.currentTarget.value);}} />
-      <button class="btn small" type="submit">Go</button>
+      <button class="btn small" type="submit" disabled={unavailable}>Go</button>
     </form>
-    <div class="live-browser-toolbar"><span class="help" role="status">{connected ? control.user ? "You have control" : control.owner ? `${control.owner} is using the browser` : "Live browser · shared with agents" : "Connecting to Chrome…"}{control.waiting ? ` · ${control.waiting} waiting` : ""}</span><button type="button" class="btn small" disabled={controlBusy} onClick={() => void changeControl(control.user ? "release" : "takeover")}>{controlBusy ? "Handing over…" : control.user ? "Let agents continue" : "Take control"}</button><select class="field" aria-label="Browser viewport" value={device} onChange={event => setDevice(event.currentTarget.value)}><option value="full">Fit panel</option><option value="tablet">Tablet</option><option value="phone">Phone</option></select></div>
+    <div class="live-browser-toolbar"><span class="help" role="status">{unavailable ? "Browser unavailable" : connected ? control.user ? "You have control" : control.owner ? `${control.owner} is using the browser` : "Live browser · shared with agents" : "Connecting to Chrome…"}{control.waiting ? ` · ${control.waiting} waiting` : ""}</span><button type="button" class="btn small" disabled={controlBusy || unavailable} onClick={() => void changeControl(control.user ? "release" : "takeover")}>{controlBusy ? "Handing over…" : control.user ? "Let agents continue" : "Take control"}</button><select class="field" aria-label="Browser viewport" value={device} onChange={event => setDevice(event.currentTarget.value)}><option value="full">Fit panel</option><option value="tablet">Tablet</option><option value="phone">Phone</option></select></div>
     <BrowserTransfers scope={scope} chooser={state?.chooser} downloads={state?.downloads??[]} send={send} />
-    {error ? <div class="msg err" role="alert">{error}</div> : null}
-    {selected && /^https?:\/\//.test(selected.url) ? <LiveBrowserTools key={selected.id} pageKey={`${scope}|${selected.id}`} url={selected.url} width={state!.width} send={message=>send({action:"overlay",tab:selected.id,message})} />:null}
+    {navigationError || error ? <div class="msg err" role="alert">{navigationError || error}</div> : null}
+    {selected && /^https?:\/\//.test(selected.url) ? <LiveBrowserTools key={selected.id} pageKey={`${scope}|${selected.id}`} url={selected.url} width={state!.width} visible={visible} clearConsole={()=>send({action:"clear-console",tab:selected.id})} send={message=>send({action:"overlay",tab:selected.id,message})} />:null}
     <div class="live-browser-surface" ref={surface}>
+      {resizing && showPage && !unavailable ? <span class="live-browser-resizing" role="status">Resizing browser…</span> : null}
       {state?.dialog ? <form class="live-browser-dialog" aria-label="Website dialog" onSubmit={event => {event.preventDefault();act("dialog",{accept:true,text:prompt});}}><p>{state.dialog.message}</p>{state.dialog.type === "prompt" ? <input class="field" aria-label="Website prompt" value={prompt} onInput={event => setPrompt(event.currentTarget.value)} /> : null}<button class="btn primary">OK</button><button type="button" class="btn" onClick={() => act("dialog",{accept:false})}>Cancel</button></form> : null}
-      <canvas ref={canvas} hidden={!showPage} role="img" aria-label="Live browser page" data-tab={drawn?.tab} data-view={drawn?.view} data-frame-width={frame?.width} data-frame-height={frame?.height} data-ready={showPage && connected && drawn?.view === state?.view && drawn?.tab === state?.selected} onContextMenu={event => event.preventDefault()} onPointerDown={event => {event.preventDefault();keyboard.current?.focus({preventScroll:true}); event.currentTarget.setPointerCapture(event.pointerId);pointer(event,"mousePressed");}} onPointerUp={event => {pointer(event,"mouseReleased");if(event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);}} onPointerMove={event => {if(event.buttons || performance.now()-hoverAt.current>80) {hoverAt.current=performance.now();pointer(event,"mouseMoved");}}} onWheel={event => {event.preventDefault();pointer(event,"mouseWheel");}} />
+      <canvas ref={canvas} hidden={!showPage || unavailable} role="img" aria-label="Live browser page" data-tab={drawn?.tab} data-view={drawn?.view} data-frame-width={frame?.width} data-frame-height={frame?.height} aria-busy={resizing} data-ready={showPage && connected && !resizing && drawn?.view === state?.view && drawn?.tab === state?.selected} onContextMenu={event => event.preventDefault()} onPointerDown={event => {if(resizePending.current)return;pointerActive.current=true;event.preventDefault();keyboard.current?.focus({preventScroll:true}); event.currentTarget.setPointerCapture(event.pointerId);pointer(event,"mousePressed");}} onPointerUp={event => {pointer(event,"mouseReleased");pointerActive.current=false;if(event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);}} onLostPointerCapture={() => {pointerActive.current=false;}} onPointerMove={event => {if(event.buttons || performance.now()-hoverAt.current>80) {hoverAt.current=performance.now();pointer(event,"mouseMoved");}}} onWheel={event => {event.preventDefault();pointer(event,"mouseWheel");}} />
       <textarea ref={keyboard} disabled={!showPage} tabIndex={showPage ? 0 : -1} class="live-browser-keyboard" aria-label="Type in browser page" autoComplete="off" autoCapitalize="off" spellcheck={false} onKeyDown={key} onInput={event => {if ((event as InputEvent).isComposing) return;const text=event.currentTarget.value; event.currentTarget.value="";if(text) act("text",{text});}} onCompositionEnd={event => {const text=event.currentTarget.value;event.currentTarget.value="";if(text) act("text",{text});}} onPaste={event => {event.preventDefault();const text=event.clipboardData?.getData("text/plain");if(text) act("text",{text});}} />
-      {blank ? <section class="live-browser-empty" aria-label="Browser start page">
+      {unavailable ? <div class="live-browser-empty" role="status">{paused ? <PolicyPauseNotice what="Interactive browsing is paused" /> : <p class="msg warn">{blocked}</p>}</div> : blank ? <section class="live-browser-empty" aria-label="Browser start page">
         <div class="live-browser-empty-icon"><Icon name="globe" /></div>
         <h3>No website open</h3>
         <p>Each {sideScope.value.run ? "run" : "project"} keeps its own browser tabs. Your pages in other runs are still there.</p>

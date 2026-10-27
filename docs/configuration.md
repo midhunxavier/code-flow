@@ -8,7 +8,7 @@ Open **Settings** at the bottom of the sidebar, press **⌘, / Ctrl+,**, or sear
 
 - **General:** light, dark, or system appearance; sidebar grouping; archived runs; keyboard shortcuts. Terminals follow the selected appearance.
 - **Agents & models:** provider health and usage, model and effort defaults. Sign in through the provider CLI on the current machine.
-- **Run defaults:** workflow, plan approval, agent permissions and run limits. These update the composer’s remembered choices and the current draft; running work is unchanged. Project defaults and per-role choices can override model preferences.
+- **Run defaults:** workflow, plan approval, agent permissions and run limits. These update the composer’s remembered choices and the current draft; running work is unchanged. A project that remembers the team of its last run starts its new drafts from that workflow, team and models instead; Run defaults lists those projects, and opening one doesn’t change these settings. Models chosen by a project’s remembered team, a template or a per-role choice apply to that draft only; the Agents & models defaults stay as saved.
 - **Notifications:** browser notifications and outbound notification destinations.
 - **SSH connections:** save and open remote VMs, with optional port and identity-file overrides. See [SSH projects](ssh-projects.md).
 - **Remote access:** Tailscale, Wi-Fi, pairing and device access to the local workspace.
@@ -24,6 +24,10 @@ Appearance, run defaults and sidebar preferences save in this browser, separatel
 ## Per-repo config
 
 Commit `.codeflow/config.json` and every run in that repo (and every teammate) gets the same defaults. Anything you set in the UI wins.
+
+- The defaults come from the commit the run starts on: choose another start branch in New run and its committed file supplies the check, setup, limits and models (the note in **Run options** names the branch). `trust` and `copy` always come from your checkout's file, since they concern this computer and a branch mustn't widen them. Runs from an issue, a pull request or an imported source, and continuations of a run, use your checkout's file.
+- A draft keeps only what you set for it: a check or setup you typed, limits you changed in **Advanced**, a permission you picked, or what **Edit & run again** restored. Everything else is read again from **Settings** and this file whenever the draft opens, so a changed file applies to drafts you saved earlier. **Run details** names where each value came from.
+- Limits saved in **Settings → Run defaults** count as set in the UI and win over this file's `limits`. Until you save some there, the file's `maxMinutes` and `maxSteps` are the composer's limits.
 
 ```json
 {
@@ -48,6 +52,7 @@ Commit `.codeflow/config.json` and every run in that repo (and every teammate) g
 
   Setup runs once per worktree outside the agents' sandboxes, so the check can run without network (`--no-sync`). When a run's check can't run at all (not installed, nothing collected, `conftest.py` can't import the project), the run says so and asks you to set these.
 - `copy` brings files git doesn't carry (like `.env`) from your checkout into every new worktree. Only regular files that git ignores are copied. Symlinks are refused, since a cloned repo's `.env` could point at your credentials, and so are files git would commit. Patterns can't reach outside the repo, and nothing is copied through a symlink in the worktree.
+  - Patterns are relative to the repo's root: write `.env`, not `/.env`. The run's log says, once per run, which patterns copied nothing and why: a warning for one that can never match (an absolute path, `..`, a folder), a note for a file that isn't in your checkout, which is fine for an optional one like `.env.local`.
   - Copied files are never committed, even when an agent un-ignores one or runs `git add -f`. Neither are new files named like secrets (`.env`, `.env.*` other than `.env.example`, `.env.sample` and `.env.template`, `*.pem`, `id_rsa*`, `id_ed25519*`). They stay in the worktree, and a warning names what was left out. Commit such a file yourself if it belongs in the repo.
 - `image` is the Docker image for running checks in isolation (automations, untrusted sources). `learn` passes recurring review problems on to later runs. `prove` checks that each passing result has a test that fails without it ([fail-to-pass](patterns.md#checks-loops-and-limits)); set it to `false` when the check is too slow to run twice.
 - A result's worktree that was removed (archived) is set up again when you follow up on it: files copied, setup run, context restored, and the files you sent with the follow-up added. If its branch was deleted, that follow-up fails with a clear message; the run itself stays finished. A follow-up also fails, rather than delete anything, when the worktree's folder is there but holds something else: move that folder away, then send it again.
@@ -65,6 +70,8 @@ Commit `.codeflow/config.json` and every run in that repo (and every teammate) g
 | Trusted | any command | sandboxed, with network | sandboxed to the worktree |
 | Full access | any tool, no permission checks (`bypassPermissions`) | no sandbox (`danger-full-access`) | no sandbox (no `--sandbox`) |
 
+The composer's **Permissions** menu offers the same modes, plus **Ask for approval**: Standard, with supported tool requests sent to the approval inbox. A Claude or Codex conversation at Standard asks by default; a repository's `"trust"` default shows as its own mode. Remote workers, Docker isolation and Safe can't ask, so those runs start without approvals. Antigravity can't ask either: a team that gives it a role needs another mode, and Run details shows what the run will use.
+
 **Full access** turns every agent's sandbox off in steps that build: an agent can run anything, use the network, and change files outside its worktree with your credentials. Use it only on repos and tasks you trust completely. To keep it a choice you make:
 
 - It's picked per run in the composer, which warns while it's on, and the run shows ⚠ full access. A repo's `.codeflow/config.json` can't turn it on: `"trust": "full"` there is ignored.
@@ -80,7 +87,7 @@ Per provider in **Settings → Agents & models**, and per role right under each 
 
 ## Light or dark
 
-code-flow follows your system’s appearance until you choose Light or Dark in **Settings → General**. The pick is kept in that browser, and a side panel popped out into its own window follows it.
+code-flow follows your system’s appearance until you choose Light or Dark in **Settings → General**. The pick is kept in that browser, and other windows of code-flow follow it.
 
 ## Health
 
@@ -100,7 +107,7 @@ Once an agent CLI reports its final result, it gets 10 seconds to exit; one that
 | `CODEFLOW_STEP_TIMEOUT_MIN` | `30` | Timeout per agent step |
 | `CODEFLOW_STEP_IDLE_MIN` | `15` | An agent CLI that prints nothing for this long is stuck (a login prompt, a stalled network, a hook that never returns) and is stopped. Keep it above your longest silent test run |
 | `CODEFLOW_GIT_TIMEOUT_SEC` | `300` | Longest a git command may run, hooks included; cloning a new worktree's submodules gets 10 minutes |
-| `CODEFLOW_MERGE_TIMEOUT_SEC` | `1800` | Longest **Merge…** may take in a checkout, your hooks included (a post-merge `npm install`, Git LFS). If git is stopped after it made the merge commit, the merge counts as done, with a warning |
+| `CODEFLOW_MERGE_TIMEOUT_SEC` | `1800` | Longest **Merge…** may take in a checkout, your hooks included (a post-merge `npm install`, Git LFS). If git is stopped after it made the merge commit, the merge counts as done (git's leftover merge state is cleared), with a warning |
 | `CODEFLOW_MAX_AGENTS` | `6` | Agent CLIs running at once, across all runs |
 | `CODEFLOW_MAX_CHECKS` | `3` | Check and setup commands running at once, across all runs |
 | `CODEFLOW_RETRY_DELAYS_MS` | `20000,60000` | Waits before retrying an agent turn that failed for a passing reason |
@@ -118,8 +125,8 @@ Once an agent CLI reports its final result, it gets 10 seconds to exit; one that
 | `CODEFLOW_WATCH_INTERVAL_MS` | `60000` | How often watched PRs are checked for CI results and new comments. A PR that stays green with no new comments is checked less often, up to every 10 minutes |
 | `CODEFLOW_CODEX_TRANSPORT` | `auto` | `auto`: `codex app-server` when the installed Codex has it, else `codex exec`. A Codex without app-server is re-checked every 10 minutes; a slow or failed app-server start fails only that turn. `app-server`: require it. `exec`: always `codex exec` (your notes then wait for Codex's next turn) |
 | `CODEFLOW_PYTHON` | `python3` | The Python 3 that runs the side panel Terminal's pseudo-terminal (`scripts/pty.py`). It's found once and run by its full path, so a repository that pins another Python (pyenv, asdf, mise) still gets a terminal. Without a working one, terminals are line-based (`interactiveTerminal: false` in `/api/health`) |
-| `CODEFLOW_CHROME` | first one installed | The Chrome, Chromium, Edge or Brave the side panel Browser's **Snapshot** runs headless. Without one, Snapshot says so |
-| `CODEFLOW_AGY_SKIP_PERMISSIONS` | `1` | Set to `0` to stop passing `--dangerously-skip-permissions` to agy; then configure `permissions.allow` in `~/.gemini/antigravity-cli/settings.json` |
+| `CODEFLOW_CHROME` | first one installed | Chrome, Chromium, Edge or Brave executable for the live Browser and visual-comparison captures. The legacy `CODEFLOW_CHROME_PATH` alias is accepted only when `CODEFLOW_CHROME` is unset |
+| `CODEFLOW_AGY_SKIP_PERMISSIONS` | `1` | Legacy agy calls only, the ones without a run permission policy (prompt improvement, docs help, runs saved before run policies): set to `0` to stop passing `--dangerously-skip-permissions` there, then configure `permissions.allow` in `~/.gemini/antigravity-cli/settings.json`. Runs ignore it: isolated Antigravity never passes the flag, and unrestricted Antigravity always does |
 
 A numeric setting that isn't a valid number (`30m`, say) or is out of range falls back to its default, with a warning in the terminal.
 
@@ -143,7 +150,7 @@ Child processes exclude the application API token, scoped team capabilities, int
 | `remote-worker-private/` | Private SSH receipt capabilities; excluded from ordinary result projections and restore authority |
 | `code-host-operations.json` | Safe confirmed/unknown code-host mutation receipts; no automatic replay after restart or restore |
 | `extension-cache/` | Captured trusted plugin bundles; excluded from backup/restore and rebuilt only from explicit reviewed configuration |
-| `projects.json` | Your [projects](runs.md#projects): names, repositories, and the team each one last used. Written whole (through a temporary file); a change that can't be saved fails and is undone. One that can't be read is moved aside to `projects.json.corrupt-<time>` and logged; if it can't be moved either, projects are off (runs start without one) until it's fixed |
+| `projects.json` | Your [projects](runs.md#projects): names, repositories, and the team each one last used. Written whole (through a temporary file); a change that can't be saved fails and is undone. Invalid JSON or unusable entries are preserved in `projects.json.corrupt-<time>`; the composer shows the backup filename and recovery guidance for that server session. An unreadable file, or one that cannot be moved aside, is retained and projects are off. The composer explains the actual cause and can start unassigned runs. Stop Code Flow before repairing or restoring the file in `CODEFLOW_HOME`, then restart |
 | `server.log` | code-flow's own log, one JSON line per entry: failed requests, unhandled errors, failed writes, processes it cleaned up. Past 5 MB it moves to `server.log.1` (one old file is kept) |
 | `processes.json` | The process groups code-flow has started and not seen finish. If code-flow dies without a clean exit (a crash, `kill -9`, a closed terminal), the next start stops what's left before resuming anything, so an orphaned agent can't keep editing a worktree. Pids from before a reboot, or reused by another program, are left alone |
 | `server.lock` | One server per `CODEFLOW_HOME`. It records the server's pid, start time and the boot, so a lock left by a crash is taken over even when another program now has that pid, or after a reboot |

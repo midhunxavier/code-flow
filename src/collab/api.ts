@@ -1,3 +1,4 @@
+import { TEAM_JOIN_SETTINGS } from "./settings-location.js";
 import { constants } from "node:fs";
 import { open } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -5,7 +6,7 @@ import { pipeline } from "node:stream/promises";
 import { HttpError, readJson, readLoginJson, send } from "../http.js";
 import { SharedAccountError } from "../shared-accounts.js";
 import type { SharedAccounts, SharedUser } from "../shared-accounts.js";
-import { ATTEMPT_ID, CHECKPOINT_ID, CollabError, MAX, PATH_ID, RUNNER_TOKEN, SHA256_HEX, actorRole, roleAtLeast, validateText } from "./model.js";
+import { ATTEMPT_ID, CHECKPOINT_ID, CollabError, collabErrorBody, MAX, PATH_ID, RUNNER_TOKEN, SHA256_HEX, actorRole, roleAtLeast, validateText } from "./model.js";
 import type { Checkpoint, CollabActor } from "./model.js";
 import type { ChangeEvent, ChangeKind, ClaimInput, CollabStore, FinishInput, HandoffInput, ReviewInput } from "./store.js";
 
@@ -71,7 +72,7 @@ export function teamRoutePolicy(method: string, parts: readonly string[]): TeamR
 function denied(route: TeamRoute): HttpError {
   if (!route.principals.length) return new HttpError(403, "Connect a computer without a session or runner credential: POST /api/team/runners/connect with { username, password, name }");
   if (!route.principals.includes("runner")) return new HttpError(403, "Only the hub owner may do this, from the team server itself");
-  return new HttpError(403, "Only the computer executing an attempt may start it or report on it; run team tasks from your own code-flow (Settings → Team → Connect this computer)");
+  return new HttpError(403, `Only the computer executing an attempt may start it or report on it; run team tasks from your own code-flow (${TEAM_JOIN_SETTINGS})`);
 }
 const checkpointIdOf = (value: unknown): string => { if (typeof value !== "string" || !CHECKPOINT_ID.test(value)) throw new CollabError("Send the checkpoint id as 32 lowercase hexadecimal characters"); return value; };
 const attemptIdOf = (value: unknown): string => { if (typeof value !== "string" || !ATTEMPT_ID.test(value)) throw new CollabError("Send the attempt id as 32 lowercase hexadecimal characters"); return value; };
@@ -83,7 +84,7 @@ export async function handleTeamApi(req: IncomingMessage, res: ServerResponse, u
   if (!route.principals.includes(host.principal)) throw denied(route);
   if (method !== "GET") host.mutation(req);
   try { await dispatch(req, res, url, parts, host, route); }
-  catch (error) { if (error instanceof CollabError && !res.headersSent) return send(res, error.status, { error: error.message }); throw error; }
+  catch (error) { if (error instanceof CollabError && !res.headersSent) return send(res, error.status, collabErrorBody(error)); throw error; }
 }
 async function dispatch(req: IncomingMessage, res: ServerResponse, url: URL, parts: readonly string[], host: TeamApiHost, route: TeamRoute): Promise<void> {
   const { store, actor } = host, id = parts[3] ?? "", sub = parts[5] ?? "", body = (): Promise<Record<string, unknown>> => readJson(req, route.bodyLimit ?? TEAM_BODY_LIMIT.small, { timeoutMs: 10_000 });

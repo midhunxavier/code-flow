@@ -37,3 +37,13 @@ export function proposal(raw: unknown, base: JobSpec): { spec?: JobSpec; reason:
   return { stop: false, reason, spec };
 }
 export function gain(candidate: number, reference: number, direction: "higher" | "lower") { return direction === "higher" ? candidate - reference : reference - candidate; }
+
+/** Same stopping decision for dispatch and paused-search controls. */
+export function cycleLimitReason(c: Cycle, now = Date.now()): string | undefined {
+  const bestIndex = c.bestJobId ? c.trials.findIndex(t => t.jobId === c.bestJobId) : -1;
+  const finalSeconds = Math.min(c.template.intent.recipe ? 1800 : 600, Math.ceil(c.limits.elapsedSeconds / 3));
+  return c.trials.length >= c.limits.iterations ? "Iteration limit reached"
+    : c.reservedTrainSeconds + c.template.intent.spec!.trainSeconds > c.limits.trainSeconds ? "Training budget exhausted"
+    : c.trials.length - (bestIndex + 1) >= c.limits.patience ? "Early stopping: no sufficient validation improvement"
+    : c.expiresAt - finalSeconds * 1000 < now + (c.template.intent.spec!.trainSeconds + 1) * 1000 ? "Time reserved for final evaluation" : undefined;
+}

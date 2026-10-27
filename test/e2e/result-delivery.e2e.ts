@@ -88,11 +88,11 @@ test("Agent test result explains its purpose, hides publishing and keeps archive
     await card.scrollIntoViewIfNeeded();
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
     await page.addScriptTag({ content: axe.source });
-    const violations = await page.evaluate(async () => (await (window as any).axe.run('.result-compact', { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa'] } })).violations);
+    const violations = await page.evaluate(async () => (await (window as any).axe.run('.result-compact', { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', "wcag21a"] } })).violations);
     assert.deepEqual(violations.map((v: any) => v.id), []);
   }
-  await card.getByText("More options", { exact: true }).click();
-  await card.getByRole("button", { name: "Review test changes" }).click();
+  assert.equal(await card.getByRole("button", { name: /Preview|Review test changes/ }).count(), 0, "a no-op test does not promise code changes");
+  await page.goto(`${base}/#/review/${run.id}/${run.artifacts[0].branch.split("/").map(encodeURIComponent).join("/")}`);
   await page.locator(".review").waitFor();
   assert.equal(await page.getByText("Publish changes", { exact: true }).count(), 0);
   await page.goto(base + `/#/run/${run.id}`);

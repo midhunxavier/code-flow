@@ -1,9 +1,9 @@
 import { pollVisible } from "./polling.js";
 import type { ComponentChildren } from "preact";
 import { useEffect, useState } from "preact/hooks";
-import { localApi, workspaceId, workspaceUrl } from "./lib.js";
-import { executionHost } from "./ssh-projects.js";
-import { projects } from "./state.js";
+import { ApiError, localApi, workspaceId, workspaceUrl } from "./lib.js";
+import { executionHost, managesConnections } from "./ssh-projects.js";
+import { executionPaused, projects } from "./state.js";
 
 interface Computer { id: string; name: string; projects: { id: string; name: string }[]; error?: string }
 interface Directory { currentComputerId: string; computers: Computer[] }
@@ -12,8 +12,12 @@ export function useComputerProjects() {
   const [directory, setDirectory] = useState<Directory | null>(null);
   const [error, setError] = useState("");
   const localProjects = JSON.stringify(projects.value.map(project => [project.id, project.name, project.repos]));
+  // This computer's own restriction (a remote workspace's providers speak for that computer, not this one).
+  const paused = executionPaused.value && !workspaceId;
   useEffect(() => {
-    if (executionHost.value.kind === "host") return;
+    if (!managesConnections(executionHost.value)) { setDirectory(null); setError(""); return; }
+    // The server refuses them under a filesystem restriction: say so without asking every 15 seconds.
+    if (paused) { setDirectory(null); setError("Filesystem restrictions pause connected projects"); return; }
     let active = true, pending = false;
     const refresh = async () => {
       if (pending || document.hidden) return;
@@ -21,18 +25,18 @@ export function useComputerProjects() {
       try {
         const next = await localApi<Directory>("/api/workspace-projects");
         if (active) { setDirectory({ ...next, currentComputerId: workspaceId ?? "local" }); setError(""); }
-      } catch { if (active) { setDirectory(null); setError("Connected projects unavailable"); } }
+      } catch (error) { if (active) { setDirectory(null); setError(error instanceof ApiError && error.status >= 400 && error.status < 500 ? error.message : "Connected projects unavailable"); } } // a refusal says why (a filesystem restriction pauses them)
       finally { pending = false; }
     };
     const stop = pollVisible(refresh, 15_000);
     return () => { active = false; stop(); };
-  }, [localProjects, executionHost.value.kind]);
+  }, [localProjects, executionHost.value.kind, executionHost.value.connections, paused]);
   return { directory, error };
 }
 
 /** All computers share one order; the active workspace renders in its existing slot. */
 export function ComputerProjects({ directory, error, query, children }: { directory: Directory | null; error: string; query: string; children: ComponentChildren }) {
-  if (!directory) return error || executionHost.value.kind === "host" ? <>{children}{error ? <p class="rail-empty" role="status">{error}</p> : null}</> : <p class="rail-empty" role="status">Loading projects…</p>;
+  if (!directory) return error || !managesConnections(executionHost.value) ? <>{children}{error ? <p class="rail-empty" role="status">{error}</p> : null}</> : <p class="rail-empty" role="status">Loading projects…</p>;
   if (directory.computers.length === 1) return <>{children}</>;
   return <>{directory.computers.map((computer) => {
     const current = computer.id === directory.currentComputerId;

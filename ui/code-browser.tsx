@@ -86,11 +86,12 @@ export function CodeBrowser({ folder, initialPath, onClose, compact = false, ref
   return <section class={`code-browser ${compact ? "compact-files" : ""} ${selectedPath ? "file-open" : ""}`} aria-label="Code browser">
     {compact ? <header class="files-heading">
       {selectedPath ? <button class="btn ghost small" aria-label="Back to the files" disabled={busy} onClick={back}>← {panelMode === "search" ? "Search" : "Files"}</button> : <div class="segmented small" role="group" aria-label="File explorer view"><button aria-pressed={panelMode === "files"} onClick={() => setPanelMode("files")}>Files</button><button aria-pressed={panelMode === "search"} onClick={() => setPanelMode("search")}><Icon name="search" />Search</button></div>}
+      {busy ? <span class="help" role="status">Working…</span> : null}
       <span class="files-location" title={folder}>{baseName(folder)}</span>
       {file && draft !== file.text ? <span class="badge">Unsaved</span> : null}
     </header> : <p class="help code-scope">Editing scope: <code>{folder || "Choose a repository"}</code></p>}
     {error ? <p class="msg err" role="alert">{error}</p> : null}
-    {busy ? <p class="help files-progress" role="status">Working…</p> : null}
+    {busy && !compact ? <p class="help files-progress" role="status">Working…</p> : null}
     {compact ? <div key="explorer" class="files-explorer" hidden={!!selectedPath || panelMode !== "files"}><FileTree key={`${refreshKey}:${treeRevision}`} root={folder} onOpen={path => {if(!busy) void loadFile(path);}} /></div> : <details open={!selectedPath}><summary>Browse files</summary><FileTree key={`${refreshKey}:${treeRevision}`} root={folder} onOpen={path => {if(!busy) void loadFile(path);}} /></details>}
     {selectedPath ? <div key="actions" class="files-actions settings-actions">
       {!compact ? <button class="btn small" disabled={busy} onClick={back}>Back to the files</button> : null}

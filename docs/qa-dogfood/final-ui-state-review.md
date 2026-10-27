@@ -1,0 +1,11 @@
+# Final UI state and workflow review
+
+Reviewed integration through the parallel-port merge after `af72c54`, against `f14f404`. The memory/ML source review also inspected the pending cluster51 changes in its separate worktree. No new confirmed product defect was found in these boundaries. This is a focused review, not an assertion that every UI state or every diff hunk has been exhaustively verified.
+
+The review read the changed draft store and message-draft hook, ordered IndexedDB writes, failed-read preservation, cross-tab warnings, approval-card identity and failed-decision feedback, reconnect identity/version guards, dialog busy/close handling, archive outcomes, note revision bases, bounded terminal history, deferred queue failure caching, schedule validation and timezone drafts, composer permission/body derivation, and the complete `ui/state.ts` diff. It followed project selection/defaults, provider refresh generations, history paging and deletion tombstones, draft restoration and branch configuration changes. It also inspected review recipients, retained comments, publishing intent, run-result feedback, deferred record retention, project counts, and the run-history index changes.
+
+The pending cluster51 source review covered memory-manifest provenance, curated onboarding exclusions and deduplication, action-specific conventions conflicts, planner iteration/budget descriptions, cycle stopping, and transfer acknowledgement/resumption. The independent ML review and cluster51 regression report cover worker-side upload edges and the repaired missing-best-job patience bug.
+
+One test-isolation defect was identified: the new memory/ML browser fixture modified the shared `dist/training-worker.json`, which could race other tests during the full suite. Its owner was instructed to run a private copied app and reserve the full adjacent port block. This is a harness issue, separate from product coverage; its final validation is recorded with cluster51.
+
+This review itself made no provider calls and drove no user desktop or live server. Full-suite results and the final partial-feature browser replays are recorded separately. Every shell command that imported or ran application code used an explicit outer scratch `CODEFLOW_HOME`.

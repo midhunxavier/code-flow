@@ -29,7 +29,7 @@ async function audit(screen: string) {
   // The reduced-motion rule gives every element an `all .01ms` transition, so a theme switch or state change settles only on the next frame; axe caches styles per node and would mix old and new colors.
   await page.evaluate(async () => { for (;;) { document.documentElement.getBoundingClientRect(); const running = document.getAnimations().filter((animation) => animation.playState === "running" && animation.effect?.getComputedTiming().endTime !== Infinity); if (!running.length) break; await Promise.all(running.map((animation) => animation.finished.catch(() => undefined))); } });
   await page.addScriptTag({ content: axe.source });
-  const result = await page.evaluate(async () => (window as unknown as { axe: typeof axe }).axe.run(document, { runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21aa", "wcag22aa"] } }));
+  const result = await page.evaluate(async () => (window as unknown as { axe: typeof axe }).axe.run(document, { runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"] } }));
   const compact = (values: typeof result.violations) => values.map((item) => ({ id: item.id, impact: item.impact, help: item.help, nodes: item.nodes.map((node) => ({ target: node.target, html: node.html, failureSummary: node.failureSummary })) }));
   findings.push({ screen, violations: compact(result.violations), incomplete: compact(result.incomplete) });
   mkdirSync(join(root, "output/playwright"), { recursive: true }); writeFileSync(join(root, "output/playwright/accessibility.json"), JSON.stringify(findings, null, 2));
@@ -48,7 +48,7 @@ test("main screens, workspace tools and dialogs pass automatic accessibility che
     await page.getByRole("button", { name: "Side panel", exact: true }).click();
     for (const tab of ["Files", "Notes", "Chat"]) { await page.getByRole("tab", { name: tab, exact: true }).click(); await page.getByRole("tabpanel").waitFor(); await audit(`${colorScheme} side panel ${tab}`); }
     await page.getByRole("button", { name: "Close side panel", exact: true }).click();
-    await page.getByRole("button", { name: "Open command palette", exact: true }).click(); await page.getByRole("dialog").waitFor(); await audit(`${colorScheme} command palette`); await page.keyboard.press("Escape");
+    await page.getByRole("button", { name: /^Open command palette/ }).click(); await page.getByRole("dialog").waitFor(); await audit(`${colorScheme} command palette`); await page.keyboard.press("Escape");
     await page.goto(`${base}/#/`); await page.getByRole("button", { name: "Open another repository", exact: true }).click(); await page.getByRole("dialog").waitFor(); await audit(`${colorScheme} folder picker`); await page.keyboard.press("Escape");
   }
   await page.setViewportSize({ width: 390, height: 844 }); await page.goto(`${base}/#/`); await page.locator("main").waitFor(); await audit("mobile composer"); await page.goto(`${base}/#/settings/workspace`); await page.getByRole("heading", { name: "Inspect, verify, and recover" }).waitFor(); await audit("mobile workspace");
@@ -69,7 +69,7 @@ test("keyboard users can skip navigation, operate the command palette and recove
   const skip = page.getByRole("link", { name: "Skip to main content" });
   for (let n = 0; n < 40 && !await skip.evaluate((element) => element === document.activeElement); n++) await page.keyboard.press("Shift+Tab");
   assert.equal(await skip.evaluate((element) => element === document.activeElement), true); await page.keyboard.press("Enter"); assert.equal(await page.evaluate(() => document.activeElement?.id), "main-content");
-  const trigger = page.getByRole("button", { name: "Open command palette", exact: true }); await trigger.focus(); await page.keyboard.press("Enter"); const input = page.getByRole("combobox", { name: "Find a command, project or run" }); await input.fill("Repository workspace"); await page.keyboard.press("ArrowDown"); await page.keyboard.press("Enter"); await page.getByRole("heading", { name: "Inspect, verify, and recover" }).waitFor();
+  const trigger = page.getByRole("button", { name: /^Open command palette/ }); await trigger.focus(); await page.keyboard.press("Enter"); const input = page.getByRole("combobox", { name: "Find a command, project or run" }); await input.fill("Repository workspace"); await page.keyboard.press("ArrowDown"); await page.keyboard.press("Enter"); await page.getByRole("heading", { name: "Inspect, verify, and recover" }).waitFor();
   await trigger.focus(); await page.keyboard.press("Enter"); await input.waitFor(); await page.keyboard.press("Escape"); assert.equal(await trigger.evaluate((element) => element === document.activeElement), true);
   await page.getByRole("button", { name: "Side panel", exact: true }).click(); const resize = page.getByRole("separator", { name: "Resize the side panel" }); await resize.focus(); await page.keyboard.press("Home"); assert.equal(await resize.getAttribute("aria-valuenow"), "300"); await page.keyboard.press("ArrowLeft"); assert.equal(await resize.getAttribute("aria-valuenow"), "324"); await page.keyboard.press("End"); assert.equal(await resize.getAttribute("aria-valuenow"), await resize.getAttribute("aria-valuemax"));
   await page.getByRole("button", {name:"Expand side panel",exact:true}).click();

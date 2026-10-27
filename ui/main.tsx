@@ -13,8 +13,8 @@ import { SharedDashboard, SharedLogin } from "./shared.js";
 import type { SharedPrincipal } from "../src/shared-accounts.js";
 import { configureStreamSharing, type StreamSharing } from "./stream.js";
 import logo from "./brand/code-flow-mark.svg";
-import { api, localApi, workspaceId, initializeTeamConnection, ensureCollaborationSource, showToast, store, SHORT } from "./lib.js";
-import { agents, composerProject, composerLoading, draftsReady, openBrowserPage, openComposer, hashFor, initializeProjectDrafts, listenForHandOffs, loadHealth, loadModels, loadProjects, loadTeamRollout, patterns, refreshRuns, route, routeFromHash, setRepo, templates, watchAllRuns } from "./state.js";
+import { api, localApi, ownerOnLocalListener, workspaceId, initializeTeamConnection, ensureCollaborationSource, showToast, showError, store, SHORT } from "./lib.js";
+import { agents, composerProject, composerLoading, draftsReady, openBrowserPage, openComposer, hashFor, initializeProjectDrafts, listenForHandOffs, loadHealth, loadModels, loadProjects, loadTeamRollout, patterns, refreshRuns, replaceRouteHistory, route, routeFromHash, setRepo, templates, watchAllRuns } from "./state.js";
 
 // Reuse the sidebar's stacked-layers mark for the browser tab.
 const icon = Object.assign(document.createElement("link"), { rel: "icon", type: "image/svg+xml", href: logo });
@@ -64,9 +64,10 @@ async function boot() {
   let agentList, patternList;
   try {
     if (location.hash.startsWith("#/join/") && !workspaceId) { const { JoinProject } = await import("./join-project.js"); render(<JoinProject token={location.hash.slice("#/join/".length)} />, root); return; }
-    const identity = await localApi<{ kind: "owner"; streamSharing?: StreamSharing } | { kind: "anonymous" } | SharedPrincipal>("/api/auth/self");
+    const identity = await localApi<{ kind: "owner"; streamSharing?: StreamSharing; localOnlyApis?: boolean } | { kind: "anonymous" } | SharedPrincipal>("/api/auth/self");
     if (identity.kind === "anonymous") { render(<SharedLogin />, root); return; }
     if (identity.kind === "shared") { render(<><SharedDashboard identity={identity} /><ConfirmationHost /></>, root); return; }
+    ownerOnLocalListener.value = identity.localOnlyApis !== false;
     await loadExecutionHost();
     await initializeTeamConnection();
     const streamIdentity = executionHost.value.kind === "ssh" ? await api<{ streamSharing?: StreamSharing }>("/api/auth/self") : identity;
@@ -92,9 +93,10 @@ async function boot() {
     // pushing one would make Back return to `/`, which pushes it again, so Back could never leave.
     if (location.hash !== hash && !(hash === "#/" && !location.hash)) {
       // Replace legacy addresses so Back cannot get stuck on an alias.
-      if (hashFor(routeFromHash(location.hash)) === hash) history.replaceState(null, "", hash);
+      if (replaceRouteHistory.value || hashFor(routeFromHash(location.hash)) === hash) history.replaceState(null, "", hash);
       else history.pushState(null, "", hash);
     }
+    replaceRouteHistory.value = false;
   });
   const readRoute = () => { if (ensureCollaborationSource(location.hash)) route.value = routeFromHash(); };
   window.addEventListener("popstate", readRoute);
@@ -113,7 +115,7 @@ async function boot() {
   void loadHealth();
   api("/api/templates").then(
     (t) => (templates.value = t),
-    (err) => showToast(`Couldn't load the templates: ${(err as Error).message}`, 5000),
+    (err) => showError(`Couldn't load the templates: ${(err as Error).message}`, 5000),
   );
   const inventory = Promise.all([refreshRuns(), loadProjects()]);
   const saved = store.get("repo");

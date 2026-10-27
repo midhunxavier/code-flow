@@ -4,13 +4,14 @@ import { SshTeamServerCard } from "./team-server-status.js";
 import { TeamTerminalPanel } from "./team-terminals.js";
 import { HostQueue } from "./host-execution.js";
 import { TeamConnectionPicker } from "./team-connections.js";
-import { useEffect, useState } from "preact/hooks";
+import { useEffect, useLayoutEffect, useState } from "preact/hooks";
 import type { Board, BoardProject, InboxItem, Task, TaskStatus, TaskSummary } from "../src/collab/model.js";
 import { TaskDraftAssistant } from "./task-draft.js";
+import { readTaskDraft, saveTaskDraft, taskDraftKey } from "./team-task-draft.js";
 import { Icon, type IconName } from "./icons.js";
-import { post, showToast, usePoll } from "./lib.js";
+import { post, showToast, usePoll, ownerOnLocalListener, teamConnectionRequired } from "./lib.js";
 import { roleAtLeast } from "./shared-roles.js";
-import { ATTEMPT_LABEL, INBOX_LABEL, STATUS_LABEL, TASK_STATUSES, type Member, type TeamRoute, ago, attemptLive, attemptStale, board, boardError, boardLoaded, inboxOpen, inboxUnread, initials, loadBoard, loadInbox, loadTeamLink, markRead, teamLink, teamTick, whoLabel } from "./collab-state.js";
+import { ATTEMPT_LABEL, INBOX_LABEL, STATUS_LABEL, TASK_STATUSES, type Member, type TeamRoute, ago, attemptLive, attemptSilent, attemptStale, board, boardError, boardLoaded, inboxOpen, inboxUnread, initials, loadBoard, loadInbox, loadTeamLink, markRead, teamLink, teamTick, whoLabel } from "./collab-state.js";
 
 const STAGE: Record<TaskStatus, { icon: IconName; description: string; empty: string }> = {
   planned: { icon: "issue", description: "Ready to start", empty: "Nothing planned yet" },
@@ -37,6 +38,8 @@ export function TeamBoardView({ project, shared = false, embedded = false, navig
   const ssh = !shared && host.kind === "ssh" ? host : null;
   const b = board.value;
   const chosen = project;
+  useEffect(() => { if (b && readTaskDraft(taskDraftKey(b.me.userId, project))) setCreating("manual"); else setCreating(false); }, [b?.me.userId, project]);
+  if (!shared && teamConnectionRequired.value) return <div class="team-page"><TeamConnectionPicker /><p class="help" role="status">You have {teamConnectionRequired.value} team connections. Choose which board to open.</p></div>;
   if (!b) return <div class="team-page" aria-busy={!boardLoaded.value}>{!shared && !ssh && !embedded ? <TeamConnectionPicker /> : null}{boardError.value ? <p class="msg err" role="alert">{boardError.value} <button class="btn small" onClick={() => void loadBoard()}>Retry</button></p> : <p class="help" role="status">Loading the team board…</p>}</div>;
   if (project && !b.projects.some(entry => entry.id === project)) return <div class="team-page"><p role="alert">This project is unavailable on this board. Choose a project you have access to.</p><button class="btn" onClick={() => navigate({ view: "team" })}>All board projects</button></div>;
   const me = b.me.userId;
@@ -60,7 +63,7 @@ export function TeamBoardView({ project, shared = false, embedded = false, navig
     {boardError.value ? <p class="msg err" role="alert">{boardError.value}</p> : null}
     <div class="page-head team-board-head">
       <div class="page-head-text"><div class="collaboration-eyebrow"><Icon name="layers" /> Collaboration</div>{embedded ? <h2>Board</h2> : <h1>Board</h1>}<p>{ssh ? `Tasks, ownership and reviews on ${ssh.name}.` : chosen ? `${b.projects.find((entry) => entry.id === chosen)?.name ?? "This project"} · Tasks, ownership, and reviews in one place.` : "Shared tasks, ownership, and reviews in one place."}</p></div>
-      <div class="page-head-actions"><button class="btn" onClick={() => navigate({ view: "team-people", ...(chosen ? { project: chosen } : {}) })}><Icon name="people" /> People</button>{canCreate && !shared ? <button type="button" class="btn" disabled={!!creating} onClick={() => setCreating("agent")}><Icon name="sparkle" /> Draft with agent</button> : null}{canCreate ? <button type="button" class="btn primary" aria-expanded={!!creating} aria-controls={creating ? "team-new" : undefined} disabled={!!creating} onClick={() => setCreating("manual")}><Icon name="plus" /> New task</button> : null}</div>
+      <div class="page-head-actions"><button class="btn" onClick={() => navigate({ view: "team-people", ...(chosen ? { project: chosen } : {}) })}><Icon name="people" /> People</button>{canCreate && !shared && ownerOnLocalListener.value ? <button type="button" class="btn" disabled={!!creating} onClick={() => setCreating("agent")}><Icon name="sparkle" /> Draft with agent</button> : null}{canCreate ? <button type="button" class="btn primary" aria-expanded={!!creating} aria-controls={creating ? "team-new" : undefined} disabled={!!creating} onClick={() => setCreating("manual")}><Icon name="plus" /> New task</button> : null}</div>
     </div>
     {!shared && !ssh && !embedded ? <TeamConnectionPicker compact /> : null}
     {ssh && !embedded ? <><SshTeamServerCard key={ssh.id} host={ssh} /><div class="team-board-context"><strong>Viewing this computer’s board · {ssh.name}</strong><p>Tasks below belong to this computer. To use the shared team board, connect your computer with the team address and account from team server setup.</p></div></> : null}
@@ -106,7 +109,7 @@ function TaskCard({ task, me, project, now, onOpen }: { task: TaskSummary; me: s
     <span class="tc-context"><span class="tc-repository" title={task.repository}><Icon name="folder" /><code>{task.repository}</code></span>{needsYou ? <span class="tc-attention">Needs you</span> : null}</span>
     <span class="tc-title">{task.title}</span>
     {project ? <span class="tc-project">{project.name}</span> : null}
-    {attempt ? <span class={`tc-attempt ${stale ? "team-stale" : live ? "team-live" : ""}`}>{live ? <span class="dot running" aria-hidden="true" /> : <Icon name={stale ? "alert" : "terminal"} />}<span>{stale ? `Connection lost · ${attempt.runnerName}` : `${ATTEMPT_LABEL[attempt.state]} on ${attempt.runnerName}`}{attempt.progress.stage && !stale ? <span class="tc-stage">{attempt.progress.stage}</span> : null}</span></span> : null}
+    {attempt ? <span class={`tc-attempt ${stale ? "team-stale" : live ? "team-live" : ""}`}>{live ? <span class="dot running" aria-hidden="true" /> : <Icon name={stale ? "alert" : "terminal"} />}<span>{stale ? `${attemptSilent(attempt, now) ? "Connection lost" : ATTEMPT_LABEL.unknown} · ${attempt.runnerName}` : `${ATTEMPT_LABEL[attempt.state]} on ${attempt.runnerName}`}{attempt.progress.stage && !stale ? <span class="tc-stage">{attempt.progress.stage}</span> : null}</span></span> : null}
     {task.blocker ? <span class="tc-blocker"><Icon name="alert" /><span>{task.blocker}</span></span> : null}
     <span class="pills">
       {task.reviewer ? <span class="badge">Reviewer {task.reviewer.userId === me ? "you" : task.reviewer.displayName}</span> : null}
@@ -120,26 +123,31 @@ function TaskCard({ task, me, project, now, onOpen }: { task: TaskSummary; me: s
 /** The inline "New task" form: the fields a card needs now; everything else is edited on the task page. */
 function NewTaskForm({ b, projectId: initial, shared, draftWithAgent, onDone, onCancel }: { b: Board; projectId?: string; shared: boolean; draftWithAgent?: boolean; onDone: (task: Task) => void; onCancel: () => void }) {
   const options = b.projects.filter((entry) => roleAtLeast(entry.role, "contributor"));
-  const [projectId, setProjectId] = useState(initial && options.some((entry) => entry.id === initial) ? initial : options[0]?.id ?? "");
+  const draftKey = taskDraftKey(b.me.userId, initial);
+  const [saved] = useState(() => { const draft = readTaskDraft(draftKey); return draft && options.some(entry => entry.id === draft.projectId) && (!initial || initial === draft.projectId) ? draft : null; });
+  const [projectId, setProjectId] = useState(initial && options.some((entry) => entry.id === initial) ? initial : options.some(entry => entry.id === saved?.projectId) ? saved!.projectId : options[0]?.id ?? "");
   const project = options.find((entry) => entry.id === projectId);
-  const [title, setTitle] = useState(""), [repository, setRepository] = useState(project?.repositories[0]?.key ?? ""), [goal, setGoal] = useState(""), [acceptance, setAcceptance] = useState(""), [baseRef, setBaseRef] = useState(""), [owner, setOwner] = useState(""), [reviewer, setReviewer] = useState("");
+  const [title, setTitle] = useState(saved?.title ?? ""), [repository, setRepository] = useState(project?.repositories.some(repo => repo.key === saved?.repository) ? saved!.repository : project?.repositories[0]?.key ?? ""), [goal, setGoal] = useState(saved?.goal ?? ""), [acceptance, setAcceptance] = useState(saved?.acceptance ?? ""), [baseRef, setBaseRef] = useState(saved?.baseRef ?? ""), [owner, setOwner] = useState(saved?.owner ?? (draftWithAgent ? b.me.userId : "")), [reviewer, setReviewer] = useState(saved?.reviewer ?? "");
   const [saving, setSaving] = useState(false), [draftBusy, setDraftBusy] = useState(false), [drafting, setDrafting] = useState(!!draftWithAgent), [draftApplied, setDraftApplied] = useState(false);
   const busy = saving || draftBusy;
   const [error, setError] = useState("");
-  useEffect(() => { setRepository(project?.repositories[0]?.key ?? ""); setOwner(draftWithAgent ? b.me.userId : ""); setReviewer(""); }, [projectId]);
+  const [draftSaved, setDraftSaved] = useState(true);
+  useLayoutEffect(() => { setDraftSaved(saveTaskDraft(draftKey, { projectId, repository, title, goal, acceptance, baseRef, owner, reviewer })); }, [draftKey, projectId, repository, title, goal, acceptance, baseRef, owner, reviewer]);
+  useEffect(() => { if (draftSaved) return; const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ""; }; window.addEventListener("beforeunload", warn); return () => window.removeEventListener("beforeunload", warn); }, [draftSaved]);
+  const cancel = () => { saveTaskDraft(draftKey, null); onCancel(); };
   const maintainer = roleAtLeast(project?.role, "maintainer");
   const members: Member[] = project?.members ?? [];
   const owners = members.filter((member) => roleAtLeast(member.role, "contributor") && (maintainer || member.userId === b.me.userId));
-  const reviewers = members.filter((member) => roleAtLeast(member.role, "reviewer"));
+  const reviewers = members.filter(member => roleAtLeast(member.role, "reviewer") && member.userId !== owner);
   const submit = async (event: Event) => {
     event.preventDefault(); if (busy || !project) return; setSaving(true); setError("");
     try {
       const created = await post<Task>("/api/team/tasks", { projectId, repository, title: title.trim(), goal, acceptance, ...(baseRef.trim() ? { baseRef: baseRef.trim() } : {}), ...(owner ? { owner } : {}), ...(reviewer ? { reviewer } : {}) });
-      showToast("Task created"); onDone(created);
+      saveTaskDraft(draftKey, null); showToast("Task created"); onDone(created);
     } catch (err) { setError((err as Error).message); } finally { setSaving(false); }
   };
   return <form id="team-new" class="team-section team-new" aria-labelledby="team-new-title" onSubmit={(event) => void submit(event)}>
-    <header class="task-create-head"><div><h2 id="team-new-title">New task</h2><p>Define the outcome, then choose who’s involved.</p></div><button type="button" class="icon-btn" aria-label="Close new task" disabled={busy} onClick={onCancel}><Icon name="close" /></button></header>
+    <header class="task-create-head"><div><h2 id="team-new-title">New task</h2><p>Define the outcome, then choose who’s involved.</p></div><button type="button" class="icon-btn" aria-label="Close new task" disabled={busy} onClick={cancel}><Icon name="close" /></button></header>
     <div class="task-create-layout">
       <div class="task-create-content">
         {draftApplied ? <p class="msg ok" role="status">Draft applied. Review and edit the fields, then create the task.</p> : null}
@@ -150,19 +158,20 @@ function NewTaskForm({ b, projectId: initial, shared, draftWithAgent, onDone, on
       </div>
       <aside class="task-create-settings" aria-label="Task settings">
         <fieldset><legend><Icon name="folder" /> Workspace</legend><div class="task-create-fields">
-          {options.length > 1 ? <label>Project<select class="field" value={projectId} disabled={busy} onChange={(event) => setProjectId(event.currentTarget.value)}>{options.map((entry) => <option key={entry.id} value={entry.id}>{entry.name}</option>)}</select></label> : null}
+          {options.length > 1 ? <label>Project<select class="field" value={projectId} disabled={busy} onChange={(event) => { const id = event.currentTarget.value; setProjectId(id); setRepository(options.find(entry => entry.id === id)?.repositories[0]?.key ?? ""); setOwner(draftWithAgent ? b.me.userId : ""); setReviewer(""); }}>{options.map((entry) => <option key={entry.id} value={entry.id}>{entry.name}</option>)}</select></label> : null}
           <label>Repository<select class="field" required value={repository} disabled={busy || !project?.repositories.length} onChange={(event) => setRepository(event.currentTarget.value)}>{project?.repositories.map((repo) => <option key={repo.key} value={repo.key}>{repo.label} ({repo.key})</option>)}</select></label>
           <label>Base branch<input class="field" maxLength={100} placeholder={project?.repositories.find((repo) => repo.key === repository)?.defaultBranch ?? "The repository's default branch"} value={baseRef} disabled={busy} onInput={(event) => setBaseRef(event.currentTarget.value)} /></label>
         </div></fieldset>
         {project && !project.repositories.length ? <p class="msg warn" role="status">{project.name} has no repository keys yet. A maintainer defines repository keys in Connections → Share access{!shared && maintainer ? <>: <a href="#/settings/connections/manage">open Connections → Share access</a></> : null}.</p> : null}
         <fieldset><legend><Icon name="people" /> Assignment</legend><div class="task-create-fields task-create-assignees">
-          <label>Owner<select class="field" value={owner} disabled={busy} onChange={(event) => setOwner(event.currentTarget.value)}><option value="">Unassigned</option>{owners.map((member) => <option key={member.userId} value={member.userId}>{member.userId === b.me.userId ? `${member.displayName} (you)` : member.displayName}</option>)}</select></label>
+          <label>Owner<select class="field" value={owner} disabled={busy} onChange={(event) => { const next = event.currentTarget.value; setOwner(next); if (reviewer === next) setReviewer(""); }}><option value="">Unassigned</option>{owners.map((member) => <option key={member.userId} value={member.userId}>{member.userId === b.me.userId ? `${member.displayName} (you)` : member.displayName}</option>)}</select></label>
           <label>Reviewer<select class="field" value={reviewer} disabled={busy} onChange={(event) => setReviewer(event.currentTarget.value)}><option value="">None yet</option>{reviewers.map((member) => <option key={member.userId} value={member.userId}>{member.userId === b.me.userId ? `${member.displayName} (you)` : member.displayName}</option>)}</select></label>
         </div><p class="help">You can assign teammates later.</p></fieldset>
       </aside>
     </div>
+    <p class="help" role="status">{draftSaved ? "Draft saved in this tab for this team." : "Draft storage is unavailable. Keep this page open until you create the task."}</p>
     {error ? <p class="msg err" role="alert">{error}</p> : null}
-    <footer class="task-create-footer"><p><span class="dot" aria-hidden="true" /> Your task will appear in Planned.</p><div class="team-actions"><button type="button" class="btn ghost" disabled={busy} onClick={onCancel}>Cancel</button><button type="submit" class="btn primary" disabled={busy || !project?.repositories.length || !title.trim()}><Icon name="plus" />{saving ? "Creating…" : "Create task"}</button></div></footer>
+    <footer class="task-create-footer"><p><span class="dot" aria-hidden="true" /> Your task will appear in Planned.</p><div class="team-actions"><button type="button" class="btn ghost" disabled={busy} onClick={cancel}>Cancel</button><button type="submit" class="btn primary" disabled={busy || !project?.repositories.length || !title.trim()}><Icon name="plus" />{saving ? "Creating…" : "Create task"}</button></div></footer>
   </form>;
 }
 

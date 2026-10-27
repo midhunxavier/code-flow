@@ -1,3 +1,4 @@
+import { quotaReason } from "./quota-status.js";
 import { getAdapter, adapters, AGENT_IDS, type AgentId } from "./adapters/index.js";
 
 /**
@@ -13,38 +14,25 @@ export type Quota = Partial<Record<AgentId, { status: string; windows: Record<st
 
 /** Preferred order when every plan has room. */
 const PREFERENCE: AgentId[] = ["claude", "codex", "agy"];
-const NEARLY_FULL = 0.9;
-const LIMITED_FOR_MS = 60 * 60_000;
-/** A CLI that failed for being signed out is passed over this long; then it's tried again (you may have signed in). */
-const SIGNED_OUT_FOR_MS = 15 * 60_000;
-
-/** Why an agent shouldn't get new work right now, or undefined if it has room. */
+/** Why an agent should not receive Auto work right now. */
 export function exhausted(agent: AgentId, quota: Quota, now = Date.now()): string | undefined {
-  const q = quota[agent];
-  if (!q) return undefined;
-  if (q.status === "signed_out") return now - q.at < SIGNED_OUT_FOR_MS ? "isn't signed in" : undefined;
-  const windows = Object.entries(q.windows);
-  const live = windows.filter(([, w]) => !w.resetsAt || w.resetsAt > now);
-  if (q.status === "limited" || q.status === "rejected") {
-    const resets = windows.map(([, w]) => w.resetsAt).filter((t): t is number => !!t);
-    // With reset times known, the limit lasts until the last one; without, an hour.
-    if (resets.length ? Math.max(...resets) > now : now - q.at < LIMITED_FOR_MS) return "hit its usage limit";
-  }
-  for (const [name, w] of live) {
-    if ((w.utilization ?? 0) >= NEARLY_FULL) return `is at ${Math.round((w.utilization ?? 0) * 100)}% of its ${name.replace(/_/g, "-")} limit`;
-  }
-  return undefined;
+  return quotaReason(quota[agent], now);
 }
 
 /**
  * Replace every "auto" in `roles` with a concrete agent. Within a role, auto picks differ from
  * each other and from agents already chosen there (a race needs different contestants).
+ * `independence` names the roles that weigh others' work, and whose (strongest first, see
+ * RoleSpec.independentOf): Auto fills such a role from a vendor that didn't do that work, and a
+ * role whose work is weighed steers clear of a checker you picked yourself, when another
+ * vendor has room. Only then does it settle for the same vendor (the pattern warns).
  */
 export function resolveAuto(
   roles: Record<string, string[]>,
   quota: Quota,
   installed: Set<AgentId>,
   rank: { order: AgentId[]; why: Record<string, string> } = { order: [], why: {} },
+  independence: Record<string, string[]> = {},
 ): { roles: Record<string, AgentId[]>; notes: string[] } {
   const notes: string[] = [];
   const out: Record<string, AgentId[]> = {};
@@ -52,22 +40,46 @@ export function resolveAuto(
   const candidates = order.filter((a) => installed.has(a));
   const roomy = candidates.filter((a) => !exhausted(a, quota));
   const skipped = candidates.filter((a) => exhausted(a, quota));
-  for (const [role, list] of Object.entries(roles)) {
-    const chosen = list.filter((a): a is AgentId => (AGENT_IDS as readonly string[]).includes(a));
+  const isAgent = (a: string): a is AgentId => (AGENT_IDS as readonly string[]).includes(a);
+  const explicit = (role: string) => (roles[role] ?? []).filter(isAgent);
+  const filled = (role: string) => out[role] ?? explicit(role);
+  /** Whose agents a role's Auto picks avoid, in the order to try: all the work it weighs, then the strongest. */
+  const steer = (role: string): { roles: string[]; agents: AgentId[]; yours?: boolean }[] => {
+    const weighs = independence[role];
+    if (weighs?.length) return [{ roles: weighs, agents: weighs.flatMap(filled) }, { roles: weighs.slice(0, 1), agents: filled(weighs[0]!) }];
+    const checkers = Object.keys(roles).filter((checker) => independence[checker]?.[0] === role);
+    return [{ roles: checkers, agents: checkers.flatMap(explicit), yours: true }];
+  };
+  // Roles that weigh others' work go last, so they know who did that work.
+  for (const role of Object.keys(roles).sort((a, b) => Number(!!independence[a]?.length) - Number(!!independence[b]?.length))) {
+    const list = roles[role]!;
+    const chosen = list.filter(isAgent);
+    const avoid = steer(role).filter((group) => group.agents.length);
     for (const value of list) {
       if (value !== "auto") continue;
-      const pick = roomy.find((a) => !chosen.includes(a)) ?? candidates.find((a) => !chosen.includes(a));
+      const free = (a: AgentId) => !chosen.includes(a);
+      const first = roomy.find(free);
+      let pick: AgentId | undefined;
+      let avoided: (typeof avoid)[number] | undefined;
+      for (const group of avoid) {
+        pick = roomy.find((a) => free(a) && !group.agents.includes(a));
+        if (pick) { if (first && group.agents.includes(first)) avoided = group; break; }
+      }
+      pick ??= first ?? candidates.find(free);
       if (!pick) continue; // nobody left; the role's own validation reports it
-      chosen.push(pick);
       const reasons: string[] = [];
       const pickedFull = exhausted(pick, quota);
       // Everyone is out of room: say so rather than implying the pick has some.
       if (pickedFull) reasons.push(`every agent is out of room; ${getAdapter(pick).displayName} ${pickedFull}`);
       else if (skipped.length) reasons.push(`${getAdapter(skipped[0]!).displayName} ${exhausted(skipped[0]!, quota)}`);
+      if (avoided) reasons.push(`independent of the ${avoided.roles.join(" and ")}${avoided.yours ? " you picked" : ""}: ${[...new Set(avoided.agents)].map((a) => getAdapter(a).displayName).join(", ")}`);
       if (rank.why[pick] && rank.order[0] === pick) reasons.push(rank.why[pick]!);
-      notes.push(`Auto picked ${getAdapter(pick).displayName} for ${role}${reasons.length ? ` (${reasons.join("; ")})` : ""}`);
+      if (!reasons.length) reasons.push(`${chosen.length ? "next" : "first"} in preference order`);
+      chosen.push(pick);
+      notes.push(`Auto picked ${getAdapter(pick).displayName} for ${role} (${reasons.join("; ")})`);
     }
     out[role] = [...new Set(chosen)];
   }
-  return { roles: out, notes };
+  // In the order the roles came: the pattern lists them that way.
+  return { roles: Object.fromEntries(Object.keys(roles).map((role) => [role, out[role]!])), notes };
 }

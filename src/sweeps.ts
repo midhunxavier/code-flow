@@ -155,7 +155,7 @@ async function alertItems(repo: string): Promise<SweepList> {
       const where = a.most_recent_instance?.location ?? {};
       const severity = String(rule.security_severity_level ?? rule.severity ?? "unknown");
       // Security-relevant findings start picked; style notes and low-severity ones don't.
-      const serious = severityRank(severity) <= severityRank("medium");
+      const serious = picksAlertByDefault(severity);
       const title = rule.description || rule.name || rule.id;
       const at = where.path ? `${where.path}${where.start_line ? `:${where.start_line}` : ""}` : "";
       items.push({
@@ -196,6 +196,8 @@ async function alertItems(repo: string): Promise<SweepList> {
   return { kind: "alerts", items, notices };
 }
 
+const picksAlertByDefault = (severity: string) => severityRank(severity) <= severityRank("medium");
+
 /**
  * Dependabot alerts, one item per package: upgrading it fixes them together. The item is keyed
  * by its alerts' numbers, not the package, so a new alert on a package swept before is new work.
@@ -219,6 +221,7 @@ function dependabotAlertItems(alerts: any[], prs: PullRequest[]): SweepItem[] {
       .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
       .at(-1);
     const covered = prs.find((pr) => upgrades(pr, pkg.name));
+    const serious = picksAlertByDefault(severity);
     const manifest = worst.dependency?.manifest_path;
     const count = numbers.length > 1 ? `${numbers.length} Dependabot alerts` : `Dependabot alert #${numbers[0]}`;
     return {
@@ -229,8 +232,8 @@ function dependabotAlertItems(alerts: any[], prs: PullRequest[]): SweepItem[] {
       detail: [`${worst.security_vulnerability?.vulnerable_version_range ?? "?"} → ${patched ?? "no fix yet"}`, worst.security_advisory?.summary].filter(Boolean).join(" · "),
       url: worst.html_url,
       severity,
-      selected: !covered && !!patched,
-      note: covered ? `Dependabot PR #${covered.number} already upgrades it` : patched ? undefined : "No patched version yet",
+      selected: !covered && !!patched && serious,
+      note: covered ? `Dependabot PR #${covered.number} already upgrades it` : !patched ? "No patched version yet" : !serious ? "Low severity" : undefined,
       task: patched
         ? `Fix ${count} in ${pkg.name} (${pkg.ecosystem}): upgrade it to ${patched} or later${manifest ? ` in ${manifest}` : ""}. Update anything the upgrade breaks and keep the tests passing.`
         : `Mitigate ${count} in ${pkg.name} (${pkg.ecosystem}): no patched version exists yet. Avoid the vulnerable code path or replace the package, and explain what you did.`,

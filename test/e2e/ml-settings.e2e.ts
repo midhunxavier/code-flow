@@ -53,7 +53,7 @@ test("Settings enables ML on demand, survives reload and restart, and keeps unus
   await page.getByRole("heading", { name: "Optional ML", exact: true }).waitFor();
   const nav = page.getByRole("navigation", { name: "Project navigation" });
   assert.equal(await nav.getByRole("link", { name: "ML", exact: true }).count(), 0);
-  await page.getByRole("button", { name: "More project tools", exact: true }).click();
+  await page.getByRole("button", { name: /^More project tools:/ }).click();
   assert.equal(await page.getByRole("menuitem", { name: "ML", exact: true }).count(), 0);
   await page.keyboard.press("Escape");
   await page.goto(`${base}/#/settings/general`);

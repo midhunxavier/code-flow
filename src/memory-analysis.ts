@@ -169,17 +169,34 @@ export async function analyzeProjectMemory(input: MemoryAnalysisInput): Promise<
   const onboarding: string[] = ["# Project onboarding", "Curated from accepted guidance written by you. Review the sources and applicability before using it."];
   let size = onboarding.join("\n\n").length;
   const curated = [...entries].sort((a, b) => a.title.localeCompare(b.title) || a.id.localeCompare(b.id));
+  const contradictions = new Map<string, Set<string>>();
+  for (const pair of result.claims.findings.filter(f => f.kind === "contradiction")) {
+    for (const [entry, other] of [[pair.a, pair.b], [pair.b, pair.a]]) {
+      const others = contradictions.get(entry!.id) ?? new Set<string>();
+      others.add(byId.get(other!.id)?.title ?? other!.id); contradictions.set(entry!.id, others);
+    }
+  }
+  const retainedBodies = new Map<string, string>();
   for (const entry of curated) {
+    // Both literal whitespace and applicability carry meaning. Normalized text
+    // fingerprints remain useful review hints, but cannot erase distinct guidance.
+    const guidanceHash = createHash("sha256").update(JSON.stringify({ body: entry.body, applicability: entry.applicability, paths: [...new Set(entry.paths)].sort() })).digest("hex");
     const reason = entry.status !== "accepted" || entry.acceptedBy !== "user" ? "Not accepted by you"
       : !entry.origins.length || entry.origins.some((origin) => origin.kind !== "user" || origin.trust !== "trusted" || origin.lockedDown || origin.private) ? "Includes run, imported, private or untrusted origins"
       : stale.has(entry.id) ? "Needs applicability or freshness review"
       : entry.applicability.kind === "branch" && !branch ? "Selected branch is unknown"
       : incomplete.has(entry.id) ? "Freshness checks were unavailable or reached a limit"
-      : entry.tags.includes("onboarding-summary") ? "Already an onboarding summary" : undefined;
+      : entry.tags.includes("onboarding-summary") ? "Already an onboarding summary"
+      : contradictions.has(entry.id) ? `Potential contradiction with ${[...contradictions.get(entry.id)!].join(", ")}; review both sources in Semantic claim review`
+      : retainedBodies.has(guidanceHash) ? `Same text as ${retainedBodies.get(guidanceHash)}` : undefined;
     if (reason) { result.onboarding.reasons.push({ id: entry.id, reason }); continue; }
-    const scope = entry.applicability.kind === "branch" ? `\n\nApplies to branch ${entry.applicability.branch}${entry.applicability.commit ? ` at ${entry.applicability.commit}` : ""}.` : "";
-    const section = `## ${entry.title}\n\n${entry.body}${scope}\n\nSource: ${entry.id} (revision ${entry.revision}).`;
+    const scope = entry.applicability.kind === "branch" ? `\n\n\`\`\`json\n${JSON.stringify(`Applies to branch ${entry.applicability.branch}${entry.applicability.commit ? ` at ${entry.applicability.commit}` : ""}.`)}\n\`\`\`` : "";
+    // JSON escapes line breaks; each path stays inside a quoted JSON string, so
+    // Markdown punctuation or backticks cannot become links or close the fence.
+    const paths = entry.paths.length ? `\n\nApplies to paths:\n\n\`\`\`json\n${JSON.stringify([...new Set(entry.paths)], null, 2)}\n\`\`\`` : "";
+    const section = `## ${entry.title}\n\n${entry.body}${scope}${paths}\n\nSource: ${entry.id} (revision ${entry.revision}).`;
     if (result.onboarding.sourceRefs.length >= LIMITS.onboardingEntries || size + section.length + 2 > LIMITS.onboardingChars) { result.onboarding.reasons.push({ id: entry.id, reason: "Onboarding summary size limit" }); result.truncated = true; continue; }
+    retainedBodies.set(guidanceHash, entry.title);
     onboarding.push(section); size += section.length + 2; result.onboarding.sourceRefs.push(ref(entry));
   }
   result.onboarding.body = result.onboarding.sourceRefs.length ? onboarding.join("\n\n") : "";

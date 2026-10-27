@@ -234,7 +234,8 @@ test("summaries carry the card fields, the current attempt, the latest checkpoin
 });
 
 test("bounded lists refuse at their limit, the audit trail drops its oldest entries, and clones never alias the source", () => {
-  const list = [0, 1, 2]; assert.deepEqual(pushBounded(list, 3, 4, "comments"), [0, 1, 2, 3]); refuses(() => pushBounded(list, 4, 4, "comments"), /At most 4 comments can be kept here; finish or remove some before adding more/); assert.deepEqual(list, [0, 1, 2, 3]); refuses(() => pushBounded([1, 2, 3, 4, 5], 6, 4, "attempts"), /At most 4 attempts/);
+  // Permanent task history has no item-delete UI; the refusal must point to a follow-up task.
+  const list = [0, 1, 2]; assert.deepEqual(pushBounded(list, 3, 4, "comments"), [0, 1, 2, 3]); refuses(() => pushBounded(list, 4, 4, "comments"), /At most 4 comments can be kept on this task.*permanent; start a follow-up task/); assert.deepEqual(list, [0, 1, 2, 3]); refuses(() => pushBounded([1, 2, 3, 4, 5], 6, 4, "attempts"), /At most 4 attempts/);
   assert.deepEqual(pushBounded(list, 9, 4, "audit entries", "drop-oldest"), [1, 2, 3, 9]); assert.deepEqual(pushBounded([1, 2, 3, 4, 5, 6], 7, 3, "x", "drop-oldest"), [5, 6, 7]); assert.deepEqual(pushBounded([], 1, 1, "x", "drop-oldest"), [1]); assert.deepEqual(pushBounded([1], 2, 1, "x", "drop-oldest"), [2]);
   const t = task({ audit: Array.from({ length: 205 }, (_, i) => ({ at: i, by: who("alice"), action: `a${i}` })) }); assert.equal(trimAudit(t), t); assert.equal(t.audit.length, 200); assert.equal(t.audit[0]!.at, 5); assert.equal(t.audit[199]!.at, 204); trimAudit(t); assert.equal(t.audit.length, 200);
   for (let i = 0; i < 3; i++) recordAudit(t, { userId: "bob", displayName: "Bob", via: "runner" }, "x".repeat(70), "y".repeat(600), 900 + i);

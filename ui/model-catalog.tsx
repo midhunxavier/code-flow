@@ -1,6 +1,8 @@
 import { signal } from "@preact/signals";
 import { useEffect, useState, useRef } from "preact/hooks";
 import { api, post } from "./lib.js";
+import { executionPaused } from "./state.js";
+import { PolicyPauseNotice } from "./policy-pause.js";
 import type { CapabilityCatalog } from "../src/model-catalog.js";
 import type { ModelCatalog } from "../src/adapters/types.js";
 interface Inventory {
@@ -40,9 +42,11 @@ export function WorkerModelCatalog({ remote, nativeAntigravity = false }: {
             if (request === generation.current) setBusy(false);
         }
     }
-    useEffect(() => { setData(undefined); discoveredCatalogs.value = {}; if (!remote) void load(); return () => { generation.current++; }; }, [remote, nativeAntigravity]);
+    // Discovery runs provider CLIs, which a filesystem restriction pauses: don't ask, say why.
+    const paused = executionPaused.value;
+    useEffect(() => { setData(undefined); setError(""); discoveredCatalogs.value = {}; if (!remote && !paused) void load(); return () => { generation.current++; }; }, [remote, nativeAntigravity, paused]);
     return <section class="section" aria-label="Automatic worker models"><h4>Automatic worker selection</h4><p class="help">Auto chooses each worker's provider, model and effort. Your coordinator stays fixed. Use the worker pool and model selections below to restrict or pin workers.</p>
-    {remote ? <p class="help">Models are discovered in the selected execution environment when the run starts. Local model lists do not establish remote or container compatibility.</p> : <>
+    {remote ? <p class="help">Models are discovered in the selected execution environment when the run starts. Local model lists do not establish remote or container compatibility.</p> : paused ? <PolicyPauseNotice what="Model discovery is paused" /> : <>
     <button class="btn" disabled={busy} onClick={() => void load(true)}>{busy ? "Discovering models…" : "Refresh model catalog"}</button>
     <label class="checkpoint"><input type="checkbox" checked={data?.allowResearch ?? false} disabled={busy || data?.offline} onChange={e => void load(true, e.currentTarget.checked)}/><span>Allow research from official provider documentation</span></label>
     <p class="help">{data?.offline ? "Offline: using cached information. " : ""}CLI listings report candidates; they do not prove account access or successful execution. Unknown facts stay unknown.</p>
