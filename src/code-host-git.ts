@@ -2,6 +2,7 @@ import { mkdtemp, chmod, rm, readdir, lstat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
+import type { Stats } from "node:fs";
 import { git, resolveCommit, type GitOptions, type GitResult } from "./git.js";
 import { CODE_HOST_IMPORTS, CODE_HOST_PROVENANCE, trustedCodeHostCommits, removeCodeHostImport } from "./code-host-imports.js";
 import type { CodeHostSession } from "./integrations.js";
@@ -11,6 +12,29 @@ export interface ImportedCode { head: string; target: string; base: string; bran
 /** Dependency injection is used only by explicit fixture tests; production has no transport toggle. */
 export type CodeHostGitCommand = (args: string[], cwd: string, options: GitOptions) => Promise<GitResult>;
 class CodeHostStagingError extends Error {}
+type StagingFilesystem = { readdir: (path: string) => Promise<string[]>; lstat: (path: string) => Promise<Pick<Stats, "isSymbolicLink" | "isDirectory" | "size">> };
+/** Inspect the current private staging tree; injectable filesystem operations support race regressions. */
+export async function checkCodeHostStagingBudget(path: string, filesystem: StagingFilesystem = { readdir, lstat }) {
+  let bytes = 0, files = 0;
+  const visit = async (dir: string) => {
+    const names = await filesystem.readdir(dir).catch(error => {
+      if (dir !== path && (error as NodeJS.ErrnoException).code === "ENOENT") return [];
+      throw error;
+    });
+    for (const name of names) {
+      const child = join(dir, name), info = await filesystem.lstat(child).catch(error => {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+        throw error;
+      });
+      // Git atomically replaces lock files and temporary object directories while fetching.
+      if (!info) continue;
+      if (info.isSymbolicLink()) throw new CodeHostStagingError("Unsafe staging path");
+      if (info.isDirectory()) await visit(child);
+      else { bytes += info.size; if (++files > 20_000 || bytes > 256 * 1024 * 1024) throw new CodeHostStagingError("Code fetch exceeds storage limits (256 MiB or 20,000 files)"); }
+    }
+  };
+  await visit(path);
+}
 const SHA = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
 const OPTIONS = ["-c", "core.hooksPath=/dev/null", "-c", "credential.helper=", "-c", "http.sslVerify=true", "-c", "http.followRedirects=false", "-c", "protocol.ext.allow=never", "-c", "protocol.file.allow=never", "-c", "gc.auto=0", "-c", "maintenance.auto=false", "-c", "fetch.fsckObjects=true", "-c", "transfer.fsckObjects=true"];
 const isolatedEnv = (): NodeJS.ProcessEnv => Object.fromEntries(Object.keys(process.env).filter((key) => /^GIT_|^GCM_|^SSH_ASKPASS$|^GIT_ASKPASS$/.test(key)).map((key) => [key, undefined]));
@@ -29,7 +53,7 @@ export class CodeHostGit {
     const path = await mkdtemp(join(tmpdir(), "codeflow-code-host-")); await chmod(path, 0o700);
     const abort = new AbortController(), linked = signal ? AbortSignal.any([signal, abort.signal]) : abort.signal;
     let checking = false;
-    const checkBudget = async () => { let bytes = 0, files = 0; const visit = async (dir: string) => { for (const name of await readdir(dir)) { const child = join(dir, name), info = await lstat(child); if (info.isSymbolicLink()) throw new CodeHostStagingError("Unsafe staging path"); if (info.isDirectory()) await visit(child); else { bytes += info.size; if (++files > 20_000 || bytes > 256 * 1024 * 1024) throw new CodeHostStagingError("Code fetch exceeds storage limits (256 MiB or 20,000 files)"); } } }; await visit(path); };
+    const checkBudget = () => checkCodeHostStagingBudget(path);
     const monitor = setInterval(() => { if (checking) return; checking = true; void checkBudget().catch(error => abort.abort(error)).finally(() => { checking = false; }); }, 250); monitor.unref();
     try {
       await this.checked(["init", "--bare", "-q", path], path, { signal: linked });
@@ -37,9 +61,9 @@ export class CodeHostGit {
       const checkReady = async () => { await checkBudget(); linked.throwIfAborted(); };
       const result = await action(path, run, checkReady); await checkReady(); return result;
     } catch (error) {
-      // The subprocess reports only cancellation. Retain our bounded staging failure,
-      // but leave a caller-initiated cancellation on its original path.
-      if (linked.aborted && linked.reason instanceof CodeHostStagingError) throw linked.reason;
+      // Retain an internal monitor failure instead of reporting generic cancellation;
+      // a caller-initiated cancellation keeps its original path.
+      if (linked.aborted && linked.reason instanceof Error && !signal?.aborted) throw linked.reason;
       throw error;
     } finally { clearInterval(monitor); await rm(path, { recursive: true, force: true }); }
   }

@@ -452,6 +452,7 @@
   .live-browser-surface { flex: 1 0 200px; min-height: 200px; min-width: 0; position: relative; overflow: hidden; background: var(--raised); }
   .live-browser-surface canvas { display: block; width: 100%; height: 100%; object-fit: contain; touch-action: none; }
   .live-browser-surface canvas[hidden] { display: none; }
+  .live-browser-resizing { position: absolute; right: 8px; bottom: 8px; z-index: 2; pointer-events: none; padding: 4px 7px; border: 1px solid var(--border); border-radius: 5px; background: var(--raised); color: var(--muted); font-size: 11px; white-space: nowrap; }
   .live-browser-keyboard { position: absolute; left: 0; bottom: 0; width: 1px; height: 1px; opacity: .01; padding: 0; border: 0; resize: none; }
   .live-browser-surface:focus-within { outline: 2px solid var(--focus); outline-offset: -2px; }
   .live-browser-empty { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: safe center; gap: 14px; color: var(--muted); padding: 24px; text-align: center; overflow: auto; }

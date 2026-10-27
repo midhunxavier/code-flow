@@ -134,7 +134,7 @@ test("Reload queued behind a resize uses the current view of the same tab", { ti
  const held=new Promise<void>(resolve=>release=resolve),captured=new Promise<void>(resolve=>entered=resolve);
  await page.route("**/api/browser?**",async route=>{if(route.request().postDataJSON()?.action==="resize"&&first){first=false;entered();await held;}await route.continue();});
  try {
-  await side.getByLabel("Browser viewport").selectOption("tablet");await captured;
+  await side.getByLabel("Browser viewport").selectOption("tablet");await captured;assert.notEqual(await surface.getAttribute("data-ready"),"true","queued resizing must not advertise a clickable old frame");await shot("10-pending-resize");await surface.hover({position:await point(60,80)});await page.mouse.wheel(0,120);
   const reloaded=page.waitForResponse(response=>response.url().includes("/api/browser?")&&response.request().postDataJSON()?.action==="reload");
   await side.getByRole("button",{name:"Reload",exact:true}).click();release();assert.equal((await reloaded).status(),200);await ready();
   assert.deepEqual(apiFailures.slice(marker),[]);

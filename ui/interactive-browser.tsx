@@ -27,7 +27,8 @@ export function InteractiveBrowser() {
   const changeControl = async (action: "takeover" | "release") => { setControlBusy(true); try { setControl(await post(`/api/browser/control?scope=${encodeURIComponent(scope)}`, {action})); } catch (error) { setError((error as Error).message); } finally { setControlBusy(false); } };
   const [state,setState] = useState<State>();
   const knownState = useRef<State>();
-  const pointerActive = useRef(false);
+  const pointerActive = useRef(false), resizePending = useRef(false);
+  const [resizing,setResizing] = useState(false);
   const [servers,setServers] = useState<Omit<DevServer,"logs">[]>([]);
   const autoOff = useRef(false);
   // A filesystem restriction pauses the browser: known up front (every provider says so), or the server
@@ -55,20 +56,21 @@ export function InteractiveBrowser() {
   const pending = useRef<Promise<any>>(Promise.resolve());
   const mounted = useRef(true);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+  const applyState = (value:State) => {
+    knownState.current=value;setState(value);
+    if(value.selected!==displayed.current?.tab){setFrame(previous=>previous?.tab===value.selected?previous:undefined);displayed.current=undefined;setDrawn(undefined);}
+  };
   const send = (input:Record<string,unknown>, current?:()=>boolean) => {
     const work = pending.current.catch(() => {}).then(async () => {
       if (!mounted.current || current && !current()) return;
       try {
         const latest = knownState.current;
-        if (typeof input.tab === "string" && typeof input.view === "number" && latest) {
-          if (input.tab !== latest.selected) return;
-          // Navigation controls follow a queued resize; input stays tied to the frame the user saw.
-          if (["back","forward","reload"].includes(String(input.action))) input = { ...input, view: latest.view };
-          else if (input.view !== latest.view) return;
-        }
+        // Navigation controls can follow a queued resize of the same tab. Pointer
+        // input keeps its original frame identity and is validated by the server.
+        if (input.tab === latest?.selected && typeof input.view === "number" && latest && latest.view > input.view && ["back","forward","reload"].includes(String(input.action))) input={...input,view:latest.view};
         const result = await post<any>(endpoint,input);
-        if (result?.type === "state" && (!knownState.current || result.view >= knownState.current.view)) knownState.current = result;
         if (!mounted.current || current && !current()) return;
+        if (result?.type === "state" && (!knownState.current || result.view >= knownState.current.view)) applyState(result);
         if (!current && !["resize","state","watch","overlay"].includes(String(input.action))) setError(""); // passive updates do not clear a newer user-action error
         return result;
       } catch (error) {
@@ -102,8 +104,7 @@ export function InteractiveBrowser() {
       const value = JSON.parse(event.data);
       if (value.type === "control") setControl(value);
       else if (value.type === "state") {
-        knownState.current = value; setState(value); setConnected(true);
-        if (value.selected !== displayed.current?.tab) { setFrame(previous=>previous?.tab===value.selected?previous:undefined); displayed.current = undefined; setDrawn(undefined); }
+        applyState(value);setConnected(true);
       } else if (value.type === "frame") { setFrame(value); setConnected(true); }
       else if (value.type === "overlay") receiveBrowserOverlay(`${scope}|${value.tab}`,value.message);
       else if (value.type === "error") setError(value.message);
@@ -138,19 +139,19 @@ export function InteractiveBrowser() {
   }, [frame]);
   useEffect(() => {
     if (!visible || !surface.current || !state?.selected) return;
-    let timer: ReturnType<typeof setTimeout>;
+    let timer: ReturnType<typeof setTimeout>, generation=0, alive=true;
     const resize = () => {
-      clearTimeout(timer);
+      const request=++generation;resizePending.current=true;setResizing(true);clearTimeout(timer);
+      const settled=()=>{if(alive&&request===generation){resizePending.current=false;setResizing(false);}};
       timer = setTimeout(() => {
-        // Opening the annotation drawer can resize the surface during a drag. Finish
-        // its input against the original view before changing Chrome's viewport.
+        // Finish an annotation gesture against its original viewport first.
         if (pointerActive.current) { resize(); return; }
-        const box = surface.current?.getBoundingClientRect(); if (!box?.width || !box.height) return;
-        void send({action:"resize",width:Math.min(2560,Math.max(240,device === "phone" ? 390 : device === "tablet" ? 768 : Math.round(box.width))),height:Math.min(1600,Math.max(200,Math.round(box.height)))}).catch(() => {});
+        const box = surface.current?.getBoundingClientRect(); if (!box?.width || !box.height) {settled();return;}
+        void send({action:"resize",width:Math.min(2560,Math.max(240,device === "phone" ? 390 : device === "tablet" ? 768 : Math.round(box.width))),height:Math.min(1600,Math.max(200,Math.round(box.height)))}).catch(() => {}).finally(settled);
       },100);
     };
     const observer = new ResizeObserver(resize); observer.observe(surface.current); resize();
-    return () => { observer.disconnect(); clearTimeout(timer); };
+    return () => {alive=false;generation++;observer.disconnect();clearTimeout(timer);resizePending.current=false;setResizing(false);};
   }, [visible,state?.selected,device]);
   const navigate = (url:string) => { const target=/^https?:\/\//i.test(url) ? url : /^(localhost|127\.|\[::1\])/.test(url) ? `http://${url}` : `https://${url}`; supersedePreviewBrowserPage(scope,target); navigationErrorIntent.current=undefined; autoOff.current=true; setNavigationError(""); void send({action:"navigate",url:target}).catch(() => {}); };
   const restored = useRef(false);
@@ -205,6 +206,7 @@ export function InteractiveBrowser() {
     }
   },[state?.selected,selected?.url,servers]);
   const pointer = (event:PointerEvent | WheelEvent, type:string) => {
+    if(resizePending.current&&!pointerActive.current)return;
     const shown = displayed.current, box = canvas.current?.getBoundingClientRect();
     if (!shown || !box) return;
     const scale = Math.min(box.width / shown.width,box.height / shown.height);
@@ -246,8 +248,9 @@ export function InteractiveBrowser() {
     {navigationError || error ? <div class="msg err" role="alert">{navigationError || error}</div> : null}
     {selected && /^https?:\/\//.test(selected.url) ? <LiveBrowserTools key={selected.id} pageKey={`${scope}|${selected.id}`} url={selected.url} width={state!.width} visible={visible} clearConsole={()=>send({action:"clear-console",tab:selected.id})} send={message=>send({action:"overlay",tab:selected.id,message})} />:null}
     <div class="live-browser-surface" ref={surface}>
+      {resizing && showPage && !unavailable ? <span class="live-browser-resizing" role="status">Resizing browser…</span> : null}
       {state?.dialog ? <form class="live-browser-dialog" aria-label="Website dialog" onSubmit={event => {event.preventDefault();act("dialog",{accept:true,text:prompt});}}><p>{state.dialog.message}</p>{state.dialog.type === "prompt" ? <input class="field" aria-label="Website prompt" value={prompt} onInput={event => setPrompt(event.currentTarget.value)} /> : null}<button class="btn primary">OK</button><button type="button" class="btn" onClick={() => act("dialog",{accept:false})}>Cancel</button></form> : null}
-      <canvas ref={canvas} hidden={!showPage || unavailable} role="img" aria-label="Live browser page" data-tab={drawn?.tab} data-view={drawn?.view} data-frame-width={frame?.width} data-frame-height={frame?.height} data-ready={showPage && connected && drawn?.view === state?.view && drawn?.tab === state?.selected} onContextMenu={event => event.preventDefault()} onPointerDown={event => {pointerActive.current=true;event.preventDefault();keyboard.current?.focus({preventScroll:true}); event.currentTarget.setPointerCapture(event.pointerId);pointer(event,"mousePressed");}} onPointerUp={event => {pointer(event,"mouseReleased");pointerActive.current=false;if(event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);}} onLostPointerCapture={() => {pointerActive.current=false;}} onPointerMove={event => {if(event.buttons || performance.now()-hoverAt.current>80) {hoverAt.current=performance.now();pointer(event,"mouseMoved");}}} onWheel={event => {event.preventDefault();pointer(event,"mouseWheel");}} />
+      <canvas ref={canvas} hidden={!showPage || unavailable} role="img" aria-label="Live browser page" data-tab={drawn?.tab} data-view={drawn?.view} data-frame-width={frame?.width} data-frame-height={frame?.height} aria-busy={resizing} data-ready={showPage && connected && !resizing && drawn?.view === state?.view && drawn?.tab === state?.selected} onContextMenu={event => event.preventDefault()} onPointerDown={event => {if(resizePending.current)return;pointerActive.current=true;event.preventDefault();keyboard.current?.focus({preventScroll:true}); event.currentTarget.setPointerCapture(event.pointerId);pointer(event,"mousePressed");}} onPointerUp={event => {pointer(event,"mouseReleased");pointerActive.current=false;if(event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);}} onLostPointerCapture={() => {pointerActive.current=false;}} onPointerMove={event => {if(event.buttons || performance.now()-hoverAt.current>80) {hoverAt.current=performance.now();pointer(event,"mouseMoved");}}} onWheel={event => {event.preventDefault();pointer(event,"mouseWheel");}} />
       <textarea ref={keyboard} disabled={!showPage} tabIndex={showPage ? 0 : -1} class="live-browser-keyboard" aria-label="Type in browser page" autoComplete="off" autoCapitalize="off" spellcheck={false} onKeyDown={key} onInput={event => {if ((event as InputEvent).isComposing) return;const text=event.currentTarget.value; event.currentTarget.value="";if(text) act("text",{text});}} onCompositionEnd={event => {const text=event.currentTarget.value;event.currentTarget.value="";if(text) act("text",{text});}} onPaste={event => {event.preventDefault();const text=event.clipboardData?.getData("text/plain");if(text) act("text",{text});}} />
       {unavailable ? <div class="live-browser-empty" role="status">{paused ? <PolicyPauseNotice what="Interactive browsing is paused" /> : <p class="msg warn">{blocked}</p>}</div> : blank ? <section class="live-browser-empty" aria-label="Browser start page">
         <div class="live-browser-empty-icon"><Icon name="globe" /></div>
