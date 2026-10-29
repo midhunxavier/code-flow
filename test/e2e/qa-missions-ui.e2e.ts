@@ -75,10 +75,12 @@ after(async () => {
 test("mission creation validates all six budgets before sending and detects an existing assignment", async () => {
   await open(); await page.getByRole("button", { name: "Create a mission", exact: true }).click();
   const form = page.locator("form.pt-form");
+  await form.getByRole("button", { name: "Configure manually", exact: true }).click();
+  await form.getByLabel("Autonomy").selectOption("build-within-scope");
   await form.getByLabel("Mission name", { exact: true }).fill("QA mission");
   await form.getByLabel("Mission", { exact: true }).fill("Improve the documented input contract");
   await form.getByLabel("Intended users").fill("Developers");
-  await form.getByLabel("Required check command").fill("node check.mjs");
+  await form.getByLabel("Verification command").fill("node check.mjs");
   await form.getByText("Schedule, budget and scope limits", { exact: true }).click();
   const labels = ["Calls per discovery", "Minutes per discovery", "Calls per implementation", "Minutes per implementation", "Calls per rolling week", "Minutes per rolling week"];
   for (const [index, range] of Object.values(PROJECT_TEAM_BUDGET_RANGES).entries()) {
