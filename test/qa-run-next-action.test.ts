@@ -36,7 +36,7 @@ test("legacy provider prose, structured failures and usage resets lead to distin
   for (const error of ["Claude Code isn't signed in. (Invalid API key · Please run /login)", "Codex isn't signed in on the selected worker", "Your token has expired; please log in again"]) assert.equal(nextRunAction(summary({ status: "failed", error }))?.kind, "provider");
   assert.equal(nextRunAction(summary({ status: "failed", error: "opaque failure", failure: { kind: "auth", agent: "codex" } }))?.kind, "provider");
   const limited = summary({ status: "stopped", stopReason: "usage limit of Claude Code", providerLimit: { agent: "claude", name: "Claude Code", resetsAt: Date.now() + 3_600_000 } });
-  assert.equal(nextRunAction(limited)?.kind, "provider-limit"); assert.match(nextRunAction(limited)!.detail, /Reset reported for/); assert.match(executionLabel(limited), /Provider/);
+  assert.equal(nextRunAction(limited)?.kind, "provider-limit"); assert.match(nextRunAction(limited)!.detail, /Reset reported for/); assert.equal(executionLabel(limited), "Stopped");
   assert.equal(nextRunAction(summary({ status: "stopped", stopReason: "reported API-equivalent usage limit" }))?.label, "Extend budget & resume");
   assert.equal(nextRunAction(summary({ status: "cancelled" }))?.title, "Stopped by you");
 });
@@ -55,7 +55,7 @@ test("dispatch status distinguishes a pending pause from an idle pause in saved 
   assert.equal(dispatchLabel(strip(run)), "Pausing after active work");
   run.steps[0]!.status = "done";
   assert.equal(dispatchLabel(strip(run)), "Dispatch paused");
-  assert.equal(executionLabel(strip(run)), "Dispatch paused");
+  assert.equal(executionLabel(strip(run)), "Stopped");
   assert.equal(dispatchLabel({ ...strip(run), pauseRequested: false }), undefined);
 });
 
@@ -78,7 +78,7 @@ test("auth classification and quota reset survive the engine and journal reload"
 
 test("rejected checkpoints cannot be replayed through Resume, including legacy records", async () => {
   const run = await settled(await manager.start({ pattern: pattern(async () => { throw new RejectedError("You rejected the plan"); }), repo: repository(), task: "Reject checkpoint", roles: {}, options: {} }));
-  assert.equal(run.rejected, true); assert.equal(planRejected(run), true); assert.equal(executionLabel(run), "Plan rejected");
+  assert.equal(run.rejected, true); assert.equal(planRejected(run), true); assert.equal(executionLabel(run), "Stopped");
   assert.equal(nextRunAction(run)?.kind, "rerun");
   await assert.rejects(manager.resume(run.id), /Edit the task and start a new run/);
   delete run.rejected;

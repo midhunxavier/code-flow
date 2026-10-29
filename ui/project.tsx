@@ -1,3 +1,4 @@
+import { executionLabel } from "./run-experience.js";
 import { lazyView } from "./lazy-view.js";
 const MlWorkspace = lazyView(() => import("./ml/workspace.js").then(module => module.MlWorkspace));
 import type { ProjectReport, HistoryPage } from "../src/project-report.js";
@@ -214,7 +215,7 @@ function RunRow({ run }: { run: RunSummary }) {
       : state === "done"
         ? pill("done", "Check passes")
         : run.status !== "done"
-          ? pill(run.status, STATUS_TEXT[run.status] ?? run.status)
+          ? pill(run.status, executionLabel(run))
           : pill(state, checksLabel(run));
   return (
     <a class="pp-row" href={`#/run/${encodeURIComponent(run.id)}`} title={run.task}>

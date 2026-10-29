@@ -23,6 +23,11 @@ export function recoveryMessage(run: Pick<RunSummary, "error" | "stopReason">, s
   return message && message !== shown ? message : "Work is saved. Resume when you're ready.";
 }
 
+export function setupRecovery(output: string): string {
+  if (/docker/i.test(output) && /cannot connect|failed to connect|daemon.*running|docker\.sock.*no such file|is the docker daemon/i.test(output)) return "Repository setup needs Docker, but Docker isn’t available. Start Docker and resume, or edit the setup command for this task.";
+  return "Repository setup failed before the agent could start. Review the setup output, then fix the environment or edit the setup command and retry.";
+}
+
 /** This machine's diagnostics cannot describe a worker or container's credentials. */
 export function replySignInIssue(run: Pick<RunSummary, "loop">, agent: AgentId | undefined, diagnostics: readonly Health[] | null): Health | undefined {
   if (!agent || run.loop.remoteWorker || run.loop.agentContainer) return;

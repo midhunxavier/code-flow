@@ -6,7 +6,7 @@ import type { ComponentChildren } from "preact";
 import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import { Icon } from "./icons.js";
 import { api, enc, showToast, showError } from "./lib.js";
-import { DEFAULT_EXECUTION_BUDGET } from "../src/execution-budget.js";
+import { MAX_EXECUTION_BUDGET, DEFAULT_EXECUTION_BUDGET } from "../src/execution-budget.js";
 import { ModelRow, TRUST } from "./composer.js";
 import { SETTINGS_SECTIONS, searchSettings, type SettingsSection } from "./settings-sections.js";
 import { notificationPermission, canNotify, setDesktopNotifications } from "./preferences.js";
@@ -149,8 +149,8 @@ function RunSettings() {
       <p class={trust.value === "full" ? "full-warn" : "help"}>{TRUST[trust.value].help}</p>
     </SettingsCard>
     <SettingsCard title="Run limits"><p class="help">Stop when a limit is reached. Changes save when you leave a field.</p><div class="settings-grid">
-      <NumberSetting label="Minutes per run" value={savedLimits.maxMinutes} max={720} save={(value) => setLimits({ maxMinutes: value! })} />
-      <NumberSetting label="Agent steps per run" value={savedLimits.maxSteps} max={200} save={(value) => setLimits({ maxSteps: value! })} />
+      <NumberSetting label="Minutes per run" value={savedLimits.maxMinutes} max={MAX_EXECUTION_BUDGET.maxMinutes} save={(value) => setLimits({ maxMinutes: value! })} />
+      <NumberSetting label="Agent steps per run" value={savedLimits.maxSteps} max={MAX_EXECUTION_BUDGET.maxSteps} save={(value) => setLimits({ maxSteps: value! })} />
       <NumberSetting label="Reported token ceiling" value={savedLimits.maxTokens} optional save={(value) => setLimits({ maxTokens: value })} />
       <NumberSetting label="API-equivalent cost ceiling ($)" value={savedLimits.maxCostUsd} optional min={0.01} step={0.01} save={(value) => setLimits({ maxCostUsd: value })} />
     </div><p class="help">Usage ceilings depend on provider reports and are checked between operations. API-equivalent cost is not your subscription bill.</p></SettingsCard>

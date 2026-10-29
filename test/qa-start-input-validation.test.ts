@@ -4,6 +4,8 @@ import assert from "node:assert/strict";
 import { realpathSync, mkdtempSync, mkdirSync, writeFileSync, readdirSync, rmSync, symlinkSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
+import { sanitizeDeferredRequest } from "../src/deferred-runs.js";
+import { EXECUTION_BUDGET_PRESETS } from "../src/execution-budget.js";
 import { EXECUTION_LIMITS, TASK_TEAM_LIMITS, numberProblem, acceptanceCriteriaProblem } from "../src/start-input-validation.js";
 const scratch = mkdtempSync(join(realpathSync(tmpdir()), "cf-qa-start-validation-"));
 process.env.CODEFLOW_HOME = join(scratch, "data");
@@ -29,7 +31,7 @@ test("acceptance criteria report excess text without changing it", () => {
 test("team limits use visible field names and reject invalid saved values", () => {
   const valid = { enabled: true, coordinator: "claude", providers: ["claude", "codex"], preset: "adaptive", maxMembers: 4, maxCalls: 20, maxMinutes: 30, approvePlan: false };
   assert.equal(validateTaskTeam(valid).maxMembers, 4);
-  for (const [field, value, label] of [["maxMembers", 9, "Members"], ["maxCalls", 1000, "Agent calls"], ["maxMinutes", 0, "Minutes"]] as const) assert.throws(() => validateTaskTeam({ ...valid, [field]: value }), new RegExp(label));
+  for (const [field, value, label] of [["maxMembers", 9, "Members"], ["maxCalls", 1001, "Agent calls"], ["maxMinutes", 0, "Minutes"]] as const) assert.throws(() => validateTaskTeam({ ...valid, [field]: value }), new RegExp(label));
 });
 test("repository diagnostics distinguish missing folder, file, non-Git directory and symlinked repository", async () => {
   await assert.rejects(repoRoot(join(scratch, "gone")), /Repository folder .* no longer exists/);
@@ -44,4 +46,18 @@ test("comparison preflight applies engine-only checks without run records, conte
   await assert.rejects(manager.validateStart({ ...input, baseRef: "missing-branch" }), /Base branch .* not found/);
   await assert.rejects(manager.validateStart({ ...input, branchPrefix: "invalid name" }), /branch/i);
   assert.equal(manager.list().length, 0); assert.ok(!readdirSync(repo).includes(".worktrees"));
+});
+
+
+test("larger preset allocations pass admission and deferred storage without truncation", async () => {
+  for (const preset of EXECUTION_BUDGET_PRESETS) {
+    const loop = { maxSteps: preset.maxSteps, maxInvocations: preset.maxSteps, maxMinutes: preset.maxMinutes };
+    const input = { pattern: findPattern("solo")!, repo, task: "Inspect fixture", roles: { agent: ["codex" as const] }, options: {}, loop };
+    await manager.validateStart(input);
+    const deferred = sanitizeDeferredRequest({ ...input, pattern: "solo" });
+    assert.deepEqual(deferred.loop, { copy: [], ...loop });
+    const team = validateTaskTeam({ enabled: true, coordinator: "codex", providers: ["codex"], preset: "adaptive", maxMembers: 4, maxCalls: preset.maxSteps, maxMinutes: preset.maxMinutes, approvePlan: false });
+    assert.equal(team.maxCalls, preset.maxSteps);
+    assert.equal(team.maxMinutes, preset.maxMinutes);
+  }
 });

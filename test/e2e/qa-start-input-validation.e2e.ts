@@ -52,9 +52,22 @@ const {execFileSync,spawnSync}=require("node:child_process"); const fs=require("
 afterEach(async t => { if ((t as { error?: unknown }).error) for (const context of browser.contexts()) for (const p of context.pages()) { await p.screenshot({ path: join(shots, `failed-${t.name.slice(0, 35).replace(/[^a-z0-9]/gi, "-")}.png`), fullPage: true }).catch(() => {}); writeFileSync(join(shots, `failed-${t.name.slice(0, 35).replace(/[^a-z0-9]/gi, "-")}.txt`), await p.locator("body").innerText()); } for (const context of browser.contexts()) await context.close(); for (const run of await allRuns()) if (run.status === "running") await ok(`/api/runs/${run.id}/cancel`, {}); await until(allRuns, rows => rows.every((row: any) => row.status !== "running")); });
 after(async () => { await browser?.close(); await stop(); writeFileSync(join(shots, "server.log"), logs.join("")); writeFileSync(join(shots, "browser.json"), JSON.stringify({ errors, expectedRestartErrors: expected, expectedOfflineErrors: expectedOffline }, null, 2)); rmSync(scratch, { recursive: true, force: true }); });
 
+test("empty setup and check commands disable repository defaults, while omitted commands inherit them", async () => {
+  const { repo, run } = await fixture();
+  writeFileSync(join(repo, ".codeflow/config.json"), JSON.stringify({ prove: false, setup: "echo 'Docker daemon is not running' >&2; exit 1", check: "exit 1" }));
+  git(repo, "add", "."); git(repo, "commit", "-qm", "configured setup");
+  const inherited = await ok("/api/runs", run);
+  const failed = await until(() => ok(`/api/runs/${inherited.id}`), r => r.status !== "running");
+  assert.equal(failed.status, "failed"); assert.equal(failed.usage.agentSteps, 0);
+  const cleared = await ok("/api/runs", { ...run, parentRunId: inherited.id, loop: { setup: "", check: "" } });
+  const finished = await until(() => ok(`/api/runs/${cleared.id}`), r => r.status !== "running");
+  assert.equal(finished.status, "done"); assert.equal(finished.loop.setup, undefined); assert.equal(finished.loop.check, undefined);
+  assert.equal(finished.steps.some((step: any) => step.kind === "setup" || step.kind === "check"), false);
+});
+
 test("malformed admission is 400, exact numeric limits are retained, no invalid run records", async () => {
   const { run, repo } = await fixture(), before = (await allRuns()).length;
-  for (const bad of [{ taskTeam: "bad" }, { permissionRequirements: "bad" }, { antigravityExecution: "bad" }, { trust: "bogus" }, { agentSettings: "bad" }, { roleSettings: [] }, { loop: { contextBudget: { maxPromptBytes: -1 } } }, { loop: { maxMinutes: 999 } }, { loop: { maxSteps: 500 } }, { loop: { maxSteps: 0.5 } }, { loop: { maxMinutes: "5" } }, { loop: { maxTokens: -1 } }, { loop: { maxCostUsd: null } }, { loop: [] }]) {
+  for (const bad of [{ taskTeam: "bad" }, { permissionRequirements: "bad" }, { antigravityExecution: "bad" }, { trust: "bogus" }, { agentSettings: "bad" }, { roleSettings: [] }, { loop: { contextBudget: { maxPromptBytes: -1 } } }, { loop: { maxMinutes: 1441 } }, { loop: { maxSteps: 1001 } }, { loop: { maxSteps: 0.5 } }, { loop: { maxMinutes: "5" } }, { loop: { maxTokens: -1 } }, { loop: { maxCostUsd: null } }, { loop: [] }]) {
     const response = await api("/api/runs", { ...run, ...bad }); assert.equal(response.status, 400, JSON.stringify({ bad, response })); assert.ok(response.body.error);
   }
   for (const endpoint of ["/api/runs", "/api/deferred-runs"]) { const input = { ...run, repo: join(repo, "missing"), project: undefined, projectSelection: undefined }; const response = await api(endpoint, endpoint.includes("deferred") ? { run: input } : input); assert.equal(response.status, 400); assert.match(response.body.error, /no longer exists/); assert.doesNotMatch(response.body.error, /ENOENT|spawn git/); }
@@ -63,10 +76,10 @@ test("malformed admission is 400, exact numeric limits are retained, no invalid 
 });
 
 test("numeric drafts can be cleared and typed; invalid values block start and never alter summaries", async () => {
-  const { project } = await fixture(), p = await page(`#/project/${project.id}/new`, { limits: '{"maxMinutes":-5,"maxSteps":999}' }); await composer(p); await limits(p);
-  assert.equal(await p.locator("#maxMinutes").inputValue(), "240"); assert.equal(await p.locator("#maxSteps").inputValue(), "200");
+  const { project } = await fixture(), p = await page(`#/project/${project.id}/new`, { limits: '{"maxMinutes":-5,"maxSteps":1001}' }); await composer(p); await limits(p);
+  assert.equal(await p.locator("#maxMinutes").inputValue(), "720"); assert.equal(await p.locator("#maxSteps").inputValue(), "500");
   await p.locator("#maxMinutes").focus(); await p.keyboard.press("ControlOrMeta+A"); await p.keyboard.press("Backspace"); assert.equal(await p.locator("#maxMinutes").inputValue(), ""); assert.equal(await p.locator(".task-start").isDisabled(), true); await p.keyboard.type("45"); assert.equal(await p.locator("#maxMinutes").inputValue(), "45");
-  for (const [id, value] of [["maxMinutes", "999"], ["maxMinutes", "-5"], ["maxSteps", "500"], ["maxSteps", "0.5"]]) { await p.locator(`#${id}`).fill(value!); assert.equal(await p.locator(`#${id}`).getAttribute("aria-invalid"), "true"); assert.equal(await p.locator(".task-start").isDisabled(), true); assert.doesNotMatch(await p.locator(".composer-summary").innerText(), /999|500|-5|0\.5/); await p.locator(`#${id}`).fill(id === "maxMinutes" ? "45" : "12"); }
+  for (const [id, value] of [["maxMinutes", "1441"], ["maxMinutes", "-5"], ["maxSteps", "1001"], ["maxSteps", "0.5"]]) { await p.locator(`#${id}`).fill(value!); assert.equal(await p.locator(`#${id}`).getAttribute("aria-invalid"), "true"); assert.equal(await p.locator(".task-start").isDisabled(), true); assert.doesNotMatch(await p.locator(".composer-summary").innerText(), /1441|1001|-5|0\.5/); await p.locator(`#${id}`).fill(id === "maxMinutes" ? "45" : "12"); }
   await p.locator("#maxTokens").focus(); await p.keyboard.type("e"); assert.equal(await p.locator(".task-start").isDisabled(), true); await p.locator("#maxTokens").fill(""); assert.equal(await p.locator(".task-start").isEnabled(), true);
   await p.screenshot({ path: join(shots, "editable-limits.png"), fullPage: true });
   const response = p.waitForResponse(r => r.url().endsWith("/api/runs") && r.request().method() === "POST"); await p.locator(".task-start").click(); const created = await (await response).json(); const result = await ok(`/api/runs/${created.id}`); assert.equal(result.loop.maxMinutes, 45); assert.equal(result.loop.maxSteps, 12);
@@ -85,9 +98,9 @@ test("context byte ceiling can be cleared, retyped and disabled without snapping
 });
 
 test("team bounds disable Apply and stale bad preferences cannot poison a fresh task", async () => {
-  const { project, run } = await fixture(), badTeam = { enabled: false, coordinator: "claude", providers: ["claude", "codex"], settings: {}, preset: "adaptive", maxMembers: 9, maxCalls: 1000, maxMinutes: 0, approvePlan: false };
+  const { project, run } = await fixture(), badTeam = { enabled: false, coordinator: "claude", providers: ["claude", "codex"], settings: {}, preset: "adaptive", maxMembers: 9, maxCalls: 1001, maxMinutes: 0, approvePlan: false };
   const p = await page(`#/project/${project.id}/new`, { taskTeamPreferences: JSON.stringify(badTeam) }); await composer(p); await p.getByRole("switch", { name: "AI team", exact: true }).click(); await p.locator(".task-team-advanced").click(); const dialog = p.getByRole("dialog", { name: "AI team setup", exact: true }); await dialog.locator(".task-team-limits > summary").click(); assert.equal(await dialog.locator("#team-maxMembers").inputValue(), "4");
-  for (const [key, value] of [["maxMembers", "9"], ["maxCalls", "1000"], ["maxMinutes", "0"]]) { await dialog.locator(`#team-${key}`).fill(value!); assert.equal(await dialog.getByRole("button", { name: "Apply team settings" }).isDisabled(), true); const invalid = await api("/api/runs", { ...run, taskTeam: { ...badTeam, enabled: true, maxMembers: 4, maxCalls: 20, maxMinutes: 30, [key!]: Number(value) } }); assert.equal(invalid.status, 400); assert.match(invalid.body.error, /between/); await dialog.locator(`#team-${key}`).fill(key === "maxMembers" ? "4" : "20"); }
+  for (const [key, value] of [["maxMembers", "9"], ["maxCalls", "1001"], ["maxMinutes", "0"]]) { await dialog.locator(`#team-${key}`).fill(value!); assert.equal(await dialog.getByRole("button", { name: "Apply team settings" }).isDisabled(), true); const invalid = await api("/api/runs", { ...run, taskTeam: { ...badTeam, enabled: true, maxMembers: 4, maxCalls: 20, maxMinutes: 30, [key!]: Number(value) } }); assert.equal(invalid.status, 400); assert.match(invalid.body.error, /between/); await dialog.locator(`#team-${key}`).fill(key === "maxMembers" ? "4" : "20"); }
   await dialog.locator("#team-maxMembers").fill(""); assert.equal(await dialog.locator("#team-maxMembers").inputValue(), ""); assert.equal(await dialog.getByRole("button", { name: "Apply team settings" }).isDisabled(), true); await p.screenshot({ path: join(shots, "team-invalid.png"), fullPage: true }); await dialog.getByRole("button", { name: "Cancel", exact: true }).click(); await p.getByRole("switch", { name: "AI team", exact: true }).click();
   const sent = p.waitForRequest(r => r.url().endsWith("/api/runs") && r.method() === "POST"); await p.locator(".task-start").click(); assert.equal((await sent).postDataJSON().taskTeam, undefined);
 });
@@ -130,3 +143,45 @@ test("deferred missing repositories are rejected after restart both with and wit
 });
 
 test("all browser sessions have no unexpected console errors", () => { assert.deepEqual(errors, []); assert.doesNotMatch(logs.join(""), /UnhandledPromiseRejection|uncaughtException|ReferenceError|TypeError/); });
+
+
+test("quick budgets update the summary, team allocation and submitted run, including mobile", async () => {
+  const { project } = await fixture(), p = await page(`#/project/${project.id}/new`);
+  await composer(p);
+  const picker = p.getByRole("button", { name: /^Run budget:/ });
+  assert.match(await picker.innerText(), /500 calls.*12 hours/);
+  const pick = async (name: RegExp) => { await picker.click(); await p.getByRole("menuitem", { name }).click(); };
+  await pick(/^Standard/);
+  assert.match(await picker.innerText(), /200 calls.*4 hours/);
+  await pick(/^Long/);
+  assert.match(await picker.innerText(), /1000 calls.*24 hours/);
+  await p.getByRole("switch", { name: "AI team", exact: true }).click();
+  await pick(/^Custom limits/);
+  assert.equal(await p.locator("#maxSteps").inputValue(), "1000");
+  assert.equal(await p.locator("#maxMinutes").inputValue(), "1440");
+  await p.locator("#maxSteps").fill("");
+  assert.equal(await p.locator(".task-start").isDisabled(), true);
+  await pick(/^Long/);
+  assert.equal(await p.locator("#maxSteps").inputValue(), "1000", "reselecting the same preset repairs an unfinished edit");
+  assert.equal(await p.locator(".task-start").isEnabled(), true);
+  await p.reload(); await composer(p);
+  assert.match(await picker.innerText(), /1000 calls.*24 hours/);
+  await p.getByRole("button", { name: "Advanced", exact: true }).click();
+  const dialog = p.getByRole("dialog", { name: "AI team setup" });
+  await dialog.getByText("Limits and approval", { exact: true }).click();
+  assert.equal(await dialog.locator("#team-maxCalls").inputValue(), "1000");
+  assert.equal(await dialog.locator("#team-maxMinutes").inputValue(), "1440");
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  await p.setViewportSize({ width: 390, height: 844 });
+  await picker.click();
+  assert.equal(await p.locator("body").evaluate(el => el.scrollWidth <= innerWidth), true, "budget menu fits on mobile");
+  assert.equal(await p.getByRole("menu", { name: "Run budget", exact: true }).evaluate(el => { const box = el.getBoundingClientRect(); return box.left >= 0 && box.top >= 0 && box.right <= innerWidth && box.bottom <= innerHeight; }), true, "all preset choices stay inside the viewport");
+  await p.screenshot({ path: join(shots, "budget-presets-mobile.png"), fullPage: true });
+  await p.keyboard.press("Escape");
+  const response = p.waitForResponse(r => r.url().endsWith("/api/runs") && r.request().method() === "POST");
+  await p.locator(".task-start").click();
+  const reply = await response; assert.equal(reply.status(), 201);
+  const body = reply.request().postDataJSON();
+  assert.equal(body.loop.maxSteps, 1000); assert.equal(body.loop.maxMinutes, 1440);
+  assert.equal(body.taskTeam.maxCalls, 1000); assert.equal(body.taskTeam.maxMinutes, 1440);
+});

@@ -205,7 +205,7 @@ test("runs record their project: new repo, a reply, moving a run, and an automat
   assert.equal(later.get(first.id)!.project, moved.id, "the move was saved too");
 });
 
-test("runs from before projects stay put when their project gives up the repo, or is deleted", async () => {
+test("legacy runs stay with an edited project and are deleted with their project", async () => {
   // Runs started without projects record none, like runs from before projects existed.
   const before = new RunManager(findPattern);
   const oldApi = await start(before, api);
@@ -230,11 +230,12 @@ test("runs from before projects stay put when their project gives up the repo, o
   assert.equal(of(oldApi.id), seededApi.id, "still in its project");
 
   await manager.removeProject(seededWeb.id);
-  assert.equal(of(oldWeb.id), undefined, "in no project, not in “Also web”");
+  assert.equal(manager.get(oldWeb.id), undefined, "deleted, not moved to “Also web”");
   await flushWrites();
   const again = new RunManager(findPattern, projects);
   await again.load();
   assert.equal(again.get(oldApi.id)!.project, seededApi.id, "recorded in the run's log");
+  assert.equal(again.get(oldWeb.id), undefined, "deleted history stays deleted after restart");
 });
 
 test("phone view: runs under their project's name, projects that need you first, runs in none last", async () => {
@@ -247,7 +248,7 @@ test("phone view: runs under their project's name, projects that need you first,
   manager.setSeen(apiRun.id);
   const lonely = makeRepo("lonely");
   const loneRun = await start(manager, lonely, { task: "Lone work" });
-  await manager.removeProject(projects.forRepo(lonely)!.id);
+  await projects.remove(projects.forRepo(lonely)!.id); // Legacy orphan from before cascading project deletion.
 
   const html = renderRemote(manager, projects.list(), "/r/tok", "/")!;
   const sections = html.split("<section>").slice(1);

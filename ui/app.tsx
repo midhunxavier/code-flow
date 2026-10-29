@@ -20,10 +20,10 @@ import { DeletedRunRecovery } from "./deleted-run.js";
 const Review = lazyView(() => import("./review.js").then((module) => module.Review));
 import { GitHubPicker } from "./github.js";
 import { SweepDialog } from "./sweeps.js";
-import { ProjectsDialog, RepositoryChoiceDialog } from "./projects.js";
+import { ProjectsDialog, ProjectsPage, RepositoryChoiceDialog } from "./projects.js";
 const ProjectView = lazyView(() => import("./project.js").then(module => module.ProjectView));
-import { TeamPeopleView } from "./collab-people.js";
-import { TeamBoardView } from "./collab-board.js";
+const TeamPeopleView = lazyView(() => import("./collab-people.js").then(module => module.TeamPeopleView));
+const TeamBoardView = lazyView(() => import("./collab-board.js").then(module => module.TeamBoardView));
 // A team task opens on demand, like Review: it keeps the startup bundle within its budget (test/assets.test.ts).
 const TeamTaskView = lazyView(() => import("./collab-task.js").then((module) => module.TeamTaskView));
 import { board as teamBoard, openTask, watchTeam } from "./collab-state.js";
@@ -63,7 +63,7 @@ import {
   loadHealth, healthChecking, providersRefreshing, refreshProviders,
   pickerOpen,
   railOpen,
-  peekRail, railPeek, railIsCollapsed,
+  peekRail, railPeek, railIsCollapsed, railDisplayWidth,
   recentRepos,
   runFilter, railView,
   repo,
@@ -148,7 +148,7 @@ function MainApp() {
     <>
       <a class="skip-link" href={`#${skipTarget}`} onClick={(event) => { event.preventDefault(); document.getElementById(skipTarget)?.focus(); }}>{sideFullWidth.value ? "Skip to side panel" : "Skip to main content"}</a>
       <ApprovalInbox />
-      <div class={`app ${sideOpen.value ? "with-side" : ""} ${sideOpen.value && sideExpanded.value ? "side-expanded" : ""} ${railIsCollapsed.value ? "rail-collapsed" : ""}`} style={`--side-w:${sideDisplayWidth.value}px`}>
+      <div class={`app ${sideOpen.value ? "with-side" : ""} ${sideOpen.value && sideExpanded.value ? "side-expanded" : ""} ${railIsCollapsed.value ? "rail-collapsed" : ""}`} style={`--side-w:${sideDisplayWidth.value}px;--rail-w:${railDisplayWidth.value}px`}>
         <Rail />
         {railOpen.value ? <div class="rail-scrim" aria-hidden="true" onClick={() => (railOpen.value = false)} /> : null}
         <div class="main-col">
@@ -159,6 +159,8 @@ function MainApp() {
               <RunView key={route.value.id} id={route.value.id} />
             ) : route.value.view === "review" ? (
               <Review key={`${route.value.id}:${route.value.branch}`} id={route.value.id} branch={route.value.branch} />
+            ) : route.value.view === "projects" ? (
+              <ProjectsPage />
             ) : route.value.view === "project" ? (
               <ProjectView key={route.value.id} {...route.value} />
             ) : route.value.view === "workspace" && route.value.project ? (
@@ -331,7 +333,7 @@ function Crumbs() {
       </span>
     );
   } else {
-    const page = r.view === "composer" ? "New run" : "";
+    const page = r.view === "composer" ? "New run" : r.view === "projects" ? "Projects" : "";
     trail = page ? (
       <span class="crumb here" aria-current="page">
         {page}

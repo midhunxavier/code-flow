@@ -126,3 +126,11 @@ test("baseline artifact prompts fence malicious delimiters and expose public inp
   assert.throws(() => retainedBaselinePrompt(seed, "unknown"), /pinned rerun plan/);
   assert.equal(dependentTaskClosure(team.tasks, ["inspect"]).size, 4);
 });
+
+
+test("selected task reruns retain a full-day allocation", async () => {
+  const { source, request } = fixture();
+  const budget = { maxSteps: 1000, maxInvocations: 1000, maxMinutes: 1440 };
+  const seed = await prepareTeamRerun(source, { ...request, budget });
+  assert.deepEqual(seed.budget, budget);
+});

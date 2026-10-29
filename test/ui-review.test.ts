@@ -39,7 +39,7 @@ before(async () => {
   const out = await esbuild.build({
     stdin: {
       contents: [
-        `export { markdownNodes } from "./bits.tsx";`,
+        `export { markdownNodes, markdownImageSource } from "./bits.tsx";`,
         `export { latestOnly, safeHref } from "./lib.ts";`,
         `export { editAndRerun } from "./run.tsx";`,
         `export { applyPreset } from "./onboarding.tsx";`,
@@ -111,6 +111,31 @@ test("Markdown: only http(s) links become links, opened without a referrer", () 
   for (const shown of ["[js](javascript:alert(1))", "[JS](JAVASCRIPT:alert(1))", "[data](data:text/html,hi)", "[vb](vbscript:msgbox)"]) {
     assert.ok(out.text.includes(shown), `left as text: ${shown}`);
   }
+});
+
+test("README layout becomes expanded sections while code examples stay literal", () => {
+  const out = rendered('<div align="center">\n\n# Project\n\n</div>\n\n<details>\n<summary><b>Install the client</b></summary>\n\nRun **the client\nwith this setting**.\n\n</details>\n\n<!-- Generated block marker -->\n\n`<details>`\n\n```html\n<div align="center">Code example</div>\n```');
+  assert.ok(out.elements.some(e => e.type === "h4" && e.props.children.includes("Install the client")));
+  assert.ok(!out.types.has("details"), "the proposed instructions remain visible");
+  assert.doesNotMatch(out.text, /<summary>|<b>|Generated block marker|\*\*/);
+  assert.ok(out.text.includes('<div align="center">Code example</div>'), "fenced source stays exact");
+  assert.equal(out.elements.find(e => e.type === "code")?.props.children, "<details>");
+  assert.ok(out.elements.some(e => e.type === "b"), "bold spans can cross a source line break");
+});
+
+test("linked badge images parse as one image inside the destination link", () => {
+  const out = rendered('[![npm version](https://images.example/badge.svg)](https://example.test/package)\n![Screenshot](docs/assets/screenshot.png)\n[![License](https://images.example/license.svg)](LICENSE)');
+  assert.deepEqual(out.elements.filter(e => e.type === "a").map(e => e.props.href), ["https://example.test/package"]);
+  const images = out.elements.filter(e => typeof e.type === "function" && e.props.src);
+  assert.deepEqual(images.map(e => [e.props.alt, e.props.src]), [["npm version", "https://images.example/badge.svg"], ["Screenshot", "docs/assets/screenshot.png"], ["License", "https://images.example/license.svg"]]);
+  assert.doesNotMatch(out.text, /!\[|\]\(|https:/);
+});
+
+test("Markdown image sources use the repository only for safe relative paths", () => {
+  assert.deepEqual(m.markdownImageSource("./docs/assets/my%20image.png", "/repo"), { path: "docs/assets/my image.png" });
+  assert.deepEqual(m.markdownImageSource("https://example.test/badge.svg"), { url: "https://example.test/badge.svg" });
+  for (const source of ["../secret.png", "%2e%2e/secret.png", "/absolute.png", "//example.test/a.png", "file:///secret.png", "javascript:alert(1)", "data:image/svg+xml,bad", "https://token@example.test/a.png", "docs/%00.png"]) assert.deepEqual(m.markdownImageSource(source, "/repo"), {}, source);
+  assert.deepEqual(m.markdownImageSource("docs/image.png"), {}, "a relative image never targets the app's origin without repository context");
 });
 
 // ---------------------------------------------------------------- links from the server

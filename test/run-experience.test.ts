@@ -1,9 +1,22 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { checksLabel, executionLabel, nextRunAction, agentReviewLabel, resultAgent } from "../ui/run-experience.js";
+import { checksLabel, executionLabel, nextRunAction, agentReviewLabel, resultAgent, resultSummary } from "../ui/run-experience.js";
+import { setupRecovery } from "../ui/conversation-feedback.js";
 import type { Run, RunSummary } from "../ui/types.js";
 
 const run = (patch: Partial<RunSummary> = {}) => ({ status: "done", loop: { check: "npm test" }, artifacts: [{ branch: "result", stat: "1 file changed" }], worktrees: [{ branch: "result" }], ...patch }) as RunSummary;
+
+test("task progress uses four plain states and results distinguish empty from unknown changes", () => {
+  assert.equal(executionLabel(run({ status: "running" })), "Working");
+  assert.equal(executionLabel(run({ status: "running", awaiting: {} as RunSummary["awaiting"] })), "Waiting for you");
+  for (const status of ["failed", "cancelled", "interrupted", "stopped"] as const) assert.equal(executionLabel(run({ status })), "Stopped");
+  assert.match(resultSummary(run({ artifacts: [] })).changes, /No file changes/);
+  assert.match(resultSummary(run({ artifacts: [{ branch: "result" } as RunSummary["artifacts"][number]] })).changes, /could not be inspected/);
+  assert.equal(resultSummary(run()).branch, "result");
+  assert.match(resultSummary(run()).check, /not been verified/);
+  assert.match(setupRecovery("failed to connect to the docker API at unix:///tmp/docker.sock"), /Start Docker and resume/);
+  assert.match(setupRecovery("package install failed"), /Review the setup output/);
+});
 
 test("result actions choose the team lead for integration and preserve the current Agent provider", () => {
   const adaptive = { pattern: "auto-team", roles: { coordinator: ["claude"] }, steps: [{ kind: "agent", worktree: "member-one", agent: "codex", mode: "write" }] } as unknown as Run;

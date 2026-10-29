@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-const values = new Map<string, string>([["projectDraftVersion", "1"], ["composerProject", "a"], ["repo", "/a"], ["limits", '{"maxMinutes":-5,"maxSteps":999}']]);
+const values = new Map<string, string>([["projectDraftVersion", "1"], ["composerProject", "a"], ["repo", "/a"], ["limits", '{"maxMinutes":-5,"maxSteps":1001}']]);
 Object.assign(globalThis, { window: { innerWidth: 1440, addEventListener() {} }, document: { addEventListener() {}, hidden: false }, location: { hostname: "localhost", hash: "#/insights", origin: "http://localhost", search: "" }, localStorage: { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => values.set(key, value), removeItem: (key: string) => values.delete(key) } });
 globalThis.fetch = (async (input: string) => { const url = new URL(input, "http://localhost"), repo = url.searchParams.get("repo"); return new Response(JSON.stringify(url.pathname === "/api/branches" ? { repo, current: "main", branches: [{ name: "main", kind: "local" }], worktreeRoot: `${repo}/worktrees` } : url.pathname === "/api/repo-config" ? { found: true, config: {} } : url.pathname === "/api/check" ? { command: null } : url.pathname === "/api/verification/profile" ? { id: url.searchParams.get("preset"), checks: [{ command: `fixture-${url.searchParams.get("preset")}`, required: true }] } : {})); }) as typeof fetch;
 const state = await import("../ui/state.js");
@@ -12,7 +12,7 @@ const pattern = { id: "solo", name: "Agent", summary: "", description: "", roles
 state.patterns.value = [pattern]; state.agents.value = [{ id: "claude", displayName: "Claude", binary: "claude", available: true }];
 state.projects.value = [{ id: "a", name: "A", repos: ["/a"], createdAt: 0 }, { id: "b", name: "B", repos: ["/b"], createdAt: 0 }]; state.projectsLoaded.value = true;
 const wait = () => new Promise(resolve => setTimeout(resolve, 50));
-test("stale stored run limits are safe on load", () => { assert.deepEqual(state.limits.value, { maxMinutes: 240, maxSteps: 200 }); });
+test("stale stored run limits are safe on load", () => { assert.deepEqual(state.limits.value, { maxMinutes: 720, maxSteps: 500 }); });
 test("acceptance editing keeps every character, including an empty 101st line", () => {
   const text = [...Array(100).fill("x".repeat(2001)), ""]; state.setAcceptanceCriteria(text); assert.deepEqual(state.acceptanceCriteria.value, text); assert.deepEqual(JSON.parse(values.get("draftAcceptance")!), text); state.setAcceptanceCriteria([]);
 });

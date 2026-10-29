@@ -27,7 +27,7 @@ Plan approval follows the source's setting. A rerun's held plan cannot be replac
 }
 ```
 
-It returns `201 {"id":"CHILD_RUN_ID"}`. Requests need 1–24 distinct known tasks and an explicit fresh allocation of 4–200 calls and 1–720 minutes. The effective call budget must fund the invalidated tasks, independent review and one recovery allowance. Unknown fields, forged seeds and instructions for unselected tasks are rejected. Stale source state, unavailable pinned roles, or overlapping source operations return 409. Concurrent identical creation requests share one child while pending; after that creation finishes, a repeated request deliberately creates another child. A dropped response should therefore be reconciled by inspecting run history before retrying.
+It returns `201 {"id":"CHILD_RUN_ID"}`. Requests need 1–24 distinct known tasks and an explicit fresh allocation of 4–1000 calls and 1–1440 minutes. The effective call budget must fund the invalidated tasks, independent review and one recovery allowance. Unknown fields, forged seeds and instructions for unselected tasks are rejected. Stale source state, unavailable pinned roles, or overlapping source operations return 409. Concurrent identical creation requests share one child while pending; after that creation finishes, a repeated request deliberately creates another child. A dropped response should therefore be reconciled by inspecting run history before retrying.
 
 ---
 

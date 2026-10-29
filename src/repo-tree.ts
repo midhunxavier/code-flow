@@ -1,4 +1,5 @@
 import { open, readdir, realpath, stat } from "node:fs/promises";
+import { constants } from "node:fs";
 import { basename, join, sep } from "node:path";
 import { git, type GitCwd } from "./git.js";
 import { assertProjectDirectoryAccess, assertProjectFileAccess, filePolicyMetadataOnly, filePolicyRegistryActive, filterAllowedProjectEntries } from "./filesystem-policy.js";
@@ -152,4 +153,33 @@ export async function readRepoFile(repo: GitCwd, relPath: string): Promise<FileC
   } finally {
     await handle.close();
   }
+}
+
+/** Bounded raster preview for Markdown. Never serve arbitrary file bytes as active content. */
+export async function readRepoImage(repo: GitCwd, relPath: string): Promise<{ mimeType: string; data: string }> {
+  await assertProjectFileAccess(folderOf(repo), relPath, "read");
+  const rel = normalizeRepoPath(relPath);
+  if (!rel || /^[\/\\]/.test(relPath)) throw new Error("Name an image inside the repository");
+  const abs = await resolveInsideRepo(folderOf(repo), rel);
+  const handle = await open(abs, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const info = await handle.stat(), limit = 8 * 1024 * 1024;
+    if (!info.isFile() || info.size > limit) throw new Error("Image preview requires a file of 8 MB or less");
+    const buffer = Buffer.alloc(Math.min(info.size + 1, limit + 1));
+    let length = 0;
+    while (length < buffer.length) {
+      const { bytesRead } = await handle.read(buffer, length, buffer.length - length, length);
+      if (!bytesRead) break;
+      length += bytesRead;
+    }
+    if (length > info.size || length > limit) throw new Error("Image changed while loading; try again");
+    await assertProjectFileAccess(folderOf(repo), relPath, "read");
+    const bytes = buffer.subarray(0, length);
+    const mimeType = bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) ? "image/png"
+      : bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff ? "image/jpeg"
+      : /^GIF8[79]a$/.test(bytes.subarray(0, 6).toString("ascii")) ? "image/gif"
+      : bytes.subarray(0, 4).toString("ascii") === "RIFF" && bytes.subarray(8, 12).toString("ascii") === "WEBP" ? "image/webp" : undefined;
+    if (!mimeType) throw new Error("Image preview supports PNG, JPEG, GIF and WebP files");
+    return { mimeType, data: bytes.toString("base64") };
+  } finally { await handle.close(); }
 }

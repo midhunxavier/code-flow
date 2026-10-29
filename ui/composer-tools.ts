@@ -1,3 +1,4 @@
+import { MAX_EXECUTION_BUDGET } from "../src/execution-budget.js";
 import type { TaskIntent } from "../src/experience.js";
 import type { AgentId, AgentSettings, PatternInfo } from "./types.js";
 import type { RoleValue } from "./roles.js";
@@ -83,7 +84,7 @@ export function validatePresetConfig(value: unknown, patterns: readonly PatternI
     if (!pattern.roles.some((r) => r.id === id)) return fail(`Unknown role settings: ${id}.`);
     roleSettings[id] = settings(v);
   }
-  if (!["safe", "standard", "trusted", "full"].includes(String(value.trust)) || typeof value.approvePlan !== "boolean" || !object(value.limits) || !whole(value.limits.maxMinutes, 1, 720) || !whole(value.limits.maxSteps, 1, 200)) return fail("Invalid permissions, approval choice or execution limits.");
+  if (!["safe", "standard", "trusted", "full"].includes(String(value.trust)) || typeof value.approvePlan !== "boolean" || !object(value.limits) || !whole(value.limits.maxMinutes, 1, MAX_EXECUTION_BUDGET.maxMinutes) || !whole(value.limits.maxSteps, 1, MAX_EXECUTION_BUDGET.maxSteps)) return fail("Invalid permissions, approval choice or execution limits.");
   if ((value.limits.maxTokens !== undefined && !whole(value.limits.maxTokens, 1, 1000000000)) || (value.limits.maxCostUsd !== undefined && (typeof value.limits.maxCostUsd !== "number" || !Number.isFinite(value.limits.maxCostUsd) || value.limits.maxCostUsd <= 0 || value.limits.maxCostUsd > 1000000)) || (value.toolApprovals !== undefined && typeof value.toolApprovals !== "boolean")) return fail("Invalid reported usage ceilings or tool approval preference.");
   for (const field of ["check", "setup", "baseRef"] as const) if (value[field] !== undefined && !text(value[field], 10000)) return fail(`Invalid ${field} setting.`);
   const commands = Object.fromEntries(["check", "setup", "baseRef"].filter(key => value[key] !== undefined).map(key => [key, value[key]]));

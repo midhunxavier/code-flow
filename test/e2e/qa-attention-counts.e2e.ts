@@ -69,6 +69,43 @@ test("Settings search and legacy scheduling route still open the standalone dest
   await page.goto(`${base}/#/settings`); await page.getByRole("searchbox", { name: "Search settings", exact: true }).fill("Scheduling"); await page.getByRole("button", { name: /Scheduling/ }).click(); await page.waitForURL(/#\/automations$/); await page.goto(`${base}/#/settings/automations`); await page.waitForURL(/#\/automations$/); assert.equal(await page.locator(".settings-tools").count(), 0);
 });
 
+test("sidebar width can be dragged, restored after collapse and reload, and adapted around the side panel", async () => {
+  const resizePage = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+  try {
+    await resizePage.goto(`${base}/?token=${token}#/inbox`);
+    const rail = resizePage.getByRole("navigation", { name: "Runs", exact: true });
+    const handle = resizePage.getByRole("separator", { name: "Resize sidebar", exact: true });
+    await handle.waitFor();
+    const width = async () => Math.round((await rail.boundingBox())!.width);
+    assert.equal(await width(), 248);
+    const box = (await handle.boundingBox())!;
+    await resizePage.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await resizePage.mouse.down(); await resizePage.mouse.move(box.x + box.width / 2 + 132, box.y + box.height / 2, { steps: 8 }); await resizePage.mouse.up();
+    assert.equal(await width(), 380);
+    await resizePage.reload(); await handle.waitFor(); assert.equal(await width(), 380);
+    await resizePage.getByRole("button", { name: "Collapse sidebar", exact: true }).click();
+    assert.equal(await width(), 64); assert.equal(await handle.count(), 0);
+    await resizePage.getByRole("button", { name: "Expand sidebar", exact: true }).click();
+    assert.equal(await width(), 380);
+    await handle.press("ArrowRight"); assert.equal(await width(), 404);
+    await handle.dblclick(); assert.equal(await width(), 248);
+    assert.equal(await resizePage.evaluate(() => localStorage.getItem("railWidth")), null);
+    await handle.press("End"); assert.equal(await width(), 520);
+    await resizePage.getByRole("button", { name: "Side panel", exact: true }).click();
+    await resizePage.setViewportSize({ width: 900, height: 1000 });
+    await until(width, value => value === 240);
+    assert.ok((await resizePage.locator(".main-col").boundingBox())!.width >= 360);
+    assert.equal(await resizePage.evaluate(() => localStorage.getItem("railWidth")), "520", "temporary viewport constraints do not replace the saved width");
+    await resizePage.getByRole("button", { name: "Side panel", exact: true }).click();
+    await resizePage.setViewportSize({ width: 390, height: 844 });
+    await resizePage.getByRole("button", { name: "Show runs", exact: true }).click();
+    await resizePage.getByRole("dialog", { name: "Runs", exact: true }).waitFor();
+    assert.equal(await handle.count(), 0, "the mobile drawer stays fixed to the screen");
+    await resizePage.setViewportSize({ width: 1440, height: 1000 });
+    await handle.waitFor(); assert.equal(await width(), 520);
+  } finally { await resizePage.close(); }
+});
+
 test("default solo uncommitted work appears in Inbox and live approvals still notify", async () => {
   const changed = await api<Run>("/api/runs", { repo, pattern: "solo", task: "QA attention writes uncommitted work", roles: { agent: ["claude"] } }); const result = await until(() => api<Run>(`/api/runs/${changed.id}`), run => run.status !== "running"); assert.equal(result.status, "done", result.error); assert.match(result.artifacts[0]!.stat!, /new untracked file/); assert.equal(git("rev-parse", result.artifacts[0]!.branch), git("rev-parse", "HEAD"), "default solo changes remain uncommitted");
   const noop = await api<Run>("/api/runs", { repo, pattern: "solo", task: "QA attention no-op", roles: { agent: ["codex"] } }); const clean = await until(() => api<Run>(`/api/runs/${noop.id}`), run => run.status !== "running"); assert.deepEqual(clean.artifacts, []);

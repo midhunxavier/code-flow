@@ -4,7 +4,7 @@ import { mkdir, open, readdir, rename, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { CODEFLOW_HOME } from "./config.js";
 import { PT_LIMITS, validateTeamDocument, type ProjectTeam } from "./project-team-model.js";
-import { repositoryIdentity } from "./repository-identity.js";
+import { repositoryIdentity, repositoryIdentities } from "./repository-identity.js";
 
 export class ProjectTeamConflict extends Error { readonly status = 409; }
 /** Where a storage fault lives and what kind it is, so the owner can repair the right file. */
@@ -49,8 +49,8 @@ export class ProjectTeamStore {
     const owners = new Map<string, string[]>();
     for (const team of this.teams.values()) if (team.status !== "archived") {
       try {
-        const identity = await repositoryIdentity(team.repo);
-        if (team.repositoryId && team.repositoryId !== identity) throw new Error("Repository metadata was replaced; inspect ownership before dispatch");
+        const { current: identity, legacy } = await repositoryIdentities(team.repo);
+        if (team.repositoryId && team.repositoryId !== identity && team.repositoryId !== legacy) throw new Error("Repository metadata was replaced; inspect ownership before dispatch");
         if (team.repositoryId !== identity) {
           // Add ownership metadata only. Never rewrite mission snapshots, launch receipts or usage.
           team.repositoryId = identity; team.revision++; team.updatedAt = Date.now();

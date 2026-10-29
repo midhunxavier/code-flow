@@ -67,18 +67,18 @@ test("config limits are the draft's limits until Settings or the draft sets its 
   await reopen("a");
   assert.deepEqual([state.limits.value.maxMinutes, state.limits.value.maxSteps], [15, 12]);
   assert.equal(values.get("limits"), undefined, "a repository's limits are not saved as this browser's defaults");
-  configs.set("/a@", { check: "true", limits: { maxSteps: 900 } });
+  configs.set("/a@", { check: "true", limits: { maxSteps: 2000 } });
   await reopen("a");
-  assert.deepEqual([state.limits.value.maxMinutes, state.limits.value.maxSteps], [240, 200], "within what the limit fields accept");
+  assert.deepEqual([state.limits.value.maxMinutes, state.limits.value.maxSteps], [720, 1000], "within what the limit fields accept");
   state.setRunLimits({ maxMinutes: 30 });
   await reopen("a");
   assert.equal(state.limits.value.maxMinutes, 30, "limits typed for the draft stay");
   assert.equal(state.composerOrigins.value.limits, "This run override");
   state.setLimits({ maxSteps: 40 });
-  assert.deepEqual(JSON.parse(values.get("limits")!), { maxMinutes: 240, maxSteps: 40 }, "Settings saves its own values, not the draft's");
+  assert.deepEqual(JSON.parse(values.get("limits")!), { maxMinutes: 720, maxSteps: 40 }, "Settings saves its own values, not the draft's");
   assert.deepEqual([state.limits.value.maxMinutes, state.limits.value.maxSteps], [30, 40]);
   await state.openComposer("b"); await settled();
-  assert.deepEqual([state.limits.value.maxMinutes, state.limits.value.maxSteps], [240, 40], "your saved limits win over a repository's");
+  assert.deepEqual([state.limits.value.maxMinutes, state.limits.value.maxSteps], [720, 40], "your saved limits win over a repository's");
   values.delete("limits"); state.limitPreference.value = null;
 });
 

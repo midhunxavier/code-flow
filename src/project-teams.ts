@@ -46,7 +46,7 @@ function runFailure(run: Run, phase: ProjectTeamLaunch["phase"]): string {
   if (run.status === "cancelled") return `${what} run was stopped before it finished`;
   return bounded(`${what} ${run.status === "failed" ? "run failed" : "is incomplete"}${detail ? `: ${detail}` : ""}`);
 }
-type Host = Pick<RunManager, "get" | "list" | "start" | "cancel" | "subscribeAll" | "reviewCoverage" | "setProjectTeamGuard" | "setProjectTeamShippingGuard" | "setProjectTeamDeletionGuard">;
+type Host = Pick<RunManager, "get" | "list" | "start" | "cancel" | "subscribeAll" | "reviewCoverage" | "setProjectTeamGuard" | "setProjectTeamShippingGuard" | "setProjectTeamDeletionGuard" | "isProjectDeleting">;
 export interface ProjectTeamsOptions {
   manager: Host; projects: Pick<Projects, "get">; automations: Automations;
   build: (body: Record<string, any>) => Promise<StartRunInput>; store?: ProjectTeamStore;
@@ -66,12 +66,12 @@ export class ProjectTeams {
     options.automations.setProjectTeams({ fire: async (id, key) => { const team = await this.cycle(id, key); const c = team.cycles.find((c) => c.operationId === key); const runId = c?.launches[0]?.runId; return { run: runId ? options.manager.get(runId) : undefined, skipped: c?.reason }; }, preview: (id) => this.preview(id), tick: () => this.reconcile() });
     options.manager.setProjectTeamGuard((run) => this.guard(run));
     options.manager.setProjectTeamShippingGuard((run, branch) => this.shippingGuard(run, branch));
-    options.manager.setProjectTeamDeletionGuard((run) => {
+    options.manager.setProjectTeamDeletionGuard((run, deletingProject) => {
       // Use the mission's original project, even if its run was moved elsewhere.
       let team: ProjectTeam;
       try { team = this.store.deletionHistory(run.projectTeam!.teamId); }
       catch { throw new ProjectTeamConflict("Project mission history could not be checked. Restore access to the mission before deleting this run."); }
-      if (!options.projects.get(team.projectId)) return;
+      if (team.projectId === deletingProject || !options.projects.get(team.projectId)) return;
       const ref = run.projectTeam!;
       const cycle = team.cycles.find(cycle => cycle.id === ref.cycleId);
       const launch = cycle?.launches.find(launch => launch.runId === run.id && launch.claimId === ref.claimId && launch.inputHash === ref.inputHash && launch.phase === ref.phase && launch.attempt === ref.attempt);
@@ -93,7 +93,7 @@ export class ProjectTeams {
   }
   private serialize<T>(fn: () => Promise<T>): Promise<T> { const work = this.queue.then(fn); this.queue = work.catch(() => undefined); return work; }
   async load() { await this.store.load(); await this.definitions.load().catch((error) => { this.definitions.faults.set("definitions", (error as Error).message); }); }
-  start() { if (!this.stopped) return; this.stopped = false; this.off = this.options.manager.subscribeAll((r) => { if (r.projectTeam && r.endedAt) void this.reconcile().catch(() => undefined); }); }
+  start() { if (!this.stopped) return; this.stopped = false; this.off = this.options.manager.subscribeAll((r) => { if (!r.deleted && r.projectTeam && r.endedAt) void this.reconcile().catch(() => undefined); }); }
   async stop() { this.stopped = true; this.off?.(); this.off = undefined; await this.queue; await this.store.flush(); await this.definitions.flush(); }
   configuration() { return { ...this.store.configuration(projectTeamsEnabled()), autoTeamEnabled: autoTeamEnabled() }; }
   enabled() { return this.configuration().enabled; }
@@ -455,11 +455,13 @@ export class ProjectTeams {
     if (selected) await this.launch(t, c.id, "implementation", selected.id);
   }
   private async refreshResults(t: ProjectTeam) {
+    const deleting = () => this.options.manager.isProjectDeleting(t.projectId) || !this.options.projects.get(t.projectId);
+    if (deleting()) return; // Project deletion preserves mission evidence while removing its chats.
     for (const o of t.opportunities.filter((o) => ["ready", "accepted"].includes(o.status) && o.result)) {
       const run = this.options.manager.get(o.result!.runId);
       if (o.status === "accepted" && run?.merges.some((m) => m.branch === o.result!.branch)) { await this.store.change(t.id, undefined, undefined, (t) => { t.opportunities.find((v) => v.id === o.id)!.status = "shipped"; }); continue; }
       try { if (!run || digest(await this.verified(run)) !== digest(o.result)) throw new Error("Result no longer matches its verification"); }
-      catch (error) { await this.store.change(t.id, undefined, undefined, (t) => { const v = t.opportunities.find((v) => v.id === o.id)!; v.status = "blocked"; v.reason = (error as Error).message; }); }
+      catch (error) { if (deleting()) return; await this.store.change(t.id, undefined, undefined, (t) => { const v = t.opportunities.find((v) => v.id === o.id)!; v.status = "blocked"; v.reason = (error as Error).message; }); }
     }
   }
   decide(id: string, opportunityId: string, raw: unknown) { return this.serialize(async () => {

@@ -19,11 +19,14 @@ import {
   activeProject,
   currentProject,
   loadProjects,
+  discardProjectDraft,
   pickerChoose,
   pickerOpen,
   projectFor,
   projectEdit,
   projects,
+  projectsLoaded,
+  projectsStatus,
   projectsOpen,
   repo,
   projectCounts,
@@ -37,6 +40,16 @@ const byName = (list: Project[]) => [...list].sort((a, b) => a.name.localeCompar
 const reposText = (p: Project) => (p.repos.length ? p.repos.map(baseName).join(", ") : "no repositories yet");
 /** Shortened from the left: the end of a path tells repos apart. The marks keep its slashes where they belong. */
 const Tail = ({ text }: { text: string }) => <span class="pr-path">{`\u200E${text}\u200E`}</span>;
+
+export function ProjectsPage() {
+  return <div class="project-page projects-page">
+    <header class="page-head"><div><h1>Projects</h1><p>Choose a project, describe a task, and review the result.</p></div><button class="btn primary" onClick={() => { projectEdit.value = "new"; projectsOpen.value = true; }}>New project</button></header>
+    {!projectsLoaded.value ? <p role="status">Loading projects…</p> : !projectsStatus.value.available ? <p role="alert">Projects couldn’t be loaded. <button class="btn" onClick={() => void loadProjects()}>Try again</button></p> : projects.value.length ? <div class="projects-grid">{byName(projects.value).map(project => <article class="pp-card" key={project.id}>
+      <h2><a href={`#/project/${encodeURIComponent(project.id)}`}>{project.name}</a></h2><p class="help">{reposText(project)}</p>
+      <div class="settings-actions"><button class="btn primary" disabled={composerLoading.value} onClick={() => void openComposer(project.id)}>Describe a task</button><a class="btn" href={`#/project/${encodeURIComponent(project.id)}/runs`}>View results</a></div>
+    </article>)}</div> : <section class="pp-card"><h2>Your first project</h2><p>Create a project and add its repository to start a task.</p></section>}
+  </div>;
+}
 
 /**
  * The project picker, where its choice is used: in the composer it names the project the run
@@ -181,15 +194,20 @@ function ProjectEditor({ project, onDone, onCreated }: { project?: Project; onDo
     await loadAutomations();
     const remaining = automations.value.filter(a => !a.target && automationProject(a.run)?.id === project.id).length;
     const automationWarning = remaining ? ` Its ${plural(remaining, "automation")} ${remaining === 1 ? "remains" : "remain"} saved with the current on/off settings. Future runs fall back to the repository's project (or create one if needed); saved automations will appear under Without a project.` : "";
-    const archived = missions.length ? ` Its ${missions.length === 1 ? "mission" : "missions"} ${missions.join(", ")} will be archived: ${missions.length === 1 ? "its" : "their"} history and budget records are kept, active work stops, and results waiting for approval can no longer be approved.` : "";
-    if (!await confirmAction(`Delete the project “${project.name}”? ${count ? `Its ${plural(count, "run")} ${count === 1 ? "stays" : "stay"}, in no project.` : "It has no runs."}${archived}${automationWarning}`, {"title":"Delete this project?","confirmLabel":"Delete project","danger":true})) return;
+    const archived = missions.length ? ` Its ${missions.length === 1 ? "mission" : "missions"} ${missions.join(", ")} will be archived: ${missions.length === 1 ? "its" : "their"} mission history and budget records are kept, and results waiting for approval can no longer be approved.` : "";
+    if (!await confirmAction(`Delete the project “${project.name}”? ${count ? `${count === 1 ? "Its" : "All"} ${plural(count, "run")}, including archived runs and related chats, will be permanently deleted. This cannot be undone. Stop active runs before deleting. Git branches, worktrees and repository files are kept.` : "It has no runs."} Its saved draft and draft attachments will also be deleted.${archived}${automationWarning}`, {"title":"Delete this project?","confirmLabel":"Delete project","danger":true})) return;
+    setBusy(true); setError("");
     try {
       await api(`/api/projects/${project.id}`, { method: "DELETE" });
+      await discardProjectDraft(project.id);
       await loadProjects();
       showToast(`Deleted the project ${project.name}`);
-      onDone();
+      projectsOpen.value = false; projectEdit.value = null;
+      route.value = { view: "projects" };
     } catch (err) {
       setError((err as Error).message);
+    } finally {
+      setBusy(false);
     }
   };
   const addRepo = () => {

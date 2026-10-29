@@ -1,11 +1,12 @@
 import { useDialog } from "./app.js";
 import { runTitle } from "../src/run-title.js";
+import { executionLabel } from "./run-experience.js";
 import { dispatchLabel } from "../src/run-outcome.js";
 import { chatTaskId, chatUpdatedAt, groupChatTasks } from "../src/chat-family.js";
 import { peopleEnabled } from "./preferences.js";
 import { DesktopUpdateNotice } from "./desktop-updates.js";
 import { ComputerProjects, useComputerProjects } from "./connected-projects.js";
-import { useCallback, useEffect, useState } from "preact/hooks";
+import { useCallback, useEffect, useRef, useState } from "preact/hooks";
 import { inbox } from "./automations.js";
 import { pendingApprovals } from "./approval-inbox.js";
 import { Icon } from "./icons.js";
@@ -48,7 +49,7 @@ import {
   projects,
   projectsOpen,
   railOpen,
-  setRailCollapsed, peekRail, railPeek, railIsCollapsed,
+  setRailCollapsed, peekRail, railPeek, railIsCollapsed, railDisplayWidth, railMaxWidth, setRailWidth,
   railView,
   repo,
   route,
@@ -76,17 +77,36 @@ const STATUS_FILTERS: [RunFilter["status"], string][] = [
 /** A project lists this many runs until you ask for the rest. */
 const PER_PROJECT = 5;
 
+function RailResizeHandle() {
+  const drag = useRef<{ pointer: number; x: number; width: number } | null>(null);
+  const [dragging, setDragging] = useState(false);
+  const stop = (event: PointerEvent) => {
+    if (drag.current?.pointer !== event.pointerId) return;
+    drag.current = null; setDragging(false);
+    const handle = event.currentTarget as HTMLElement;
+    if (handle.hasPointerCapture(event.pointerId)) handle.releasePointerCapture(event.pointerId);
+  };
+  return <div class={`rail-handle ${dragging ? "dragging" : ""}`} role="separator" tabIndex={0} aria-label="Resize sidebar" aria-orientation="vertical" aria-controls="run-navigation" aria-valuemin={220} aria-valuemax={railMaxWidth.value} aria-valuenow={railDisplayWidth.value} aria-valuetext={`${railDisplayWidth.value} pixels`} title="Drag or use arrow keys to resize; double-click to reset"
+    onPointerDown={event => {
+      if (event.button !== 0 || !event.isPrimary) return;
+      event.preventDefault(); event.currentTarget.focus();
+      drag.current = { pointer: event.pointerId, x: event.clientX, width: railDisplayWidth.value };
+      event.currentTarget.setPointerCapture(event.pointerId); setDragging(true);
+    }}
+    onPointerMove={event => { const start = drag.current; if (start?.pointer === event.pointerId) setRailWidth(start.width + event.clientX - start.x); }}
+    onPointerUp={stop} onPointerCancel={stop} onLostPointerCapture={() => { drag.current = null; setDragging(false); }}
+    onDblClick={() => setRailWidth(null)}
+    onKeyDown={event => {
+      const width = event.key === "ArrowLeft" ? railDisplayWidth.value - 24 : event.key === "ArrowRight" ? railDisplayWidth.value + 24 : event.key === "Home" ? 220 : event.key === "End" ? railMaxWidth.value : undefined;
+      if (width !== undefined) { event.preventDefault(); event.stopPropagation(); setRailWidth(width); }
+    }} />;
+}
+
 /** What a run's dot means, in words: the dot alone says nothing to a screen reader. */
-const statusText = (r: RunSummary) =>
-  r.awaiting || teamAwaitingAnswer(r)
-    ? "Waiting for you"
-    : dispatchLabel(r) ?? (teamNeedsResume(r) ? "Unresolved work" : r.triage?.state === "pending"
-      ? "In your inbox"
-      : runState(r) === "failing"
-        ? "Check failing"
-        : runState(r) === "unchecked"
-          ? "Check can't run"
-          : runState(r) === "unverified" ? "Finished · not verified" : STATUS_TEXT[r.status] ?? r.status);
+const statusText = (r: RunSummary) => {
+  const label = executionLabel(r);
+  return label === "Finished" && runState(r) === "unverified" ? "Finished · not verified" : label;
+};
 const short = (ts: number) => ago(ts).replace(" ago", "").replace("just now", "now");
 
 interface Group {
@@ -114,15 +134,15 @@ export function Rail() {
   const computers = computerProjects.directory;
   const currentComputer = computers && computers.computers.length > 1 ? computers.computers.find((computer) => computer.id === computers.currentComputerId) : undefined;
   const [showFilters, setShowFilters] = useState(false);
-  const [showMore, setShowMore] = useState(false);
   const [selecting, setSelecting] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkDeleting, setBulkDeleting] = useState<RunSummary[] | null>(null);
   const [cleaning, setCleaning] = useState<{ run: RunSummary; members?: RunSummary[] } | null>(null);
   const [bulkBusy, setBulkBusy] = useState(false);
   const [bulkError, setBulkError] = useState("");
-  const [long, setLong] = useState<Set<string>>(new Set());
   const view = railView.value;
+  const long = new Set(view.expanded ?? []);
+  const setLong = (keys: Set<string>) => setRailView({ expanded: [...keys] });
   const f = runFilter.value;
   const filtering = filterActive.value;
   const r = route.value;
@@ -378,11 +398,8 @@ export function Rail() {
       g.last = Math.max(g.last, activityAt(r));
       if (taskArchived(r)) g.archived++;
     }
-    for (const r of list) if (!taskNeedsYou(r)) groupOf(r).runs.push(r);
+    for (const r of list) if (!taskNeedsYou(r) && !taskArchived(r)) groupOf(r).runs.push(r);
     const groups = [...byKey.values()].sort((a, b) => b.last - a.last || a.name.localeCompare(b.name));
-    const busy = groups.filter((g) => g.runs.length);
-    // Projects with nothing to list fold into one line, unless you're searching (then they're simply left out).
-    const quiet = filtering ? [] : groups.filter((g) => !g.runs.length && g.project);
     body = (
       <>
         {waiting.length ? (
@@ -410,18 +427,10 @@ export function Rail() {
             </button>
           </div>
           <ComputerProjects directory={computers} error={computerProjects.error} query={f.q}>
-            {currentComputer ? groups.filter((g) => g.runs.length || !filtering && g.project).sort((a, b) => a.name.localeCompare(b.name) || a.key.localeCompare(b.key)).map(projectGroup) : busy.map(projectGroup)}
-            {!currentComputer && quiet.length ? (
-              <>
-                <button type="button" class="rail-more quiet" aria-expanded={showMore} onClick={() => setShowMore(!showMore)}>
-                  <Icon name="chevron" class="caret" />
-                  {quiet.length} more project{quiet.length === 1 ? "" : "s"}
-                </button>
-                {showMore ? quiet.map(projectGroup) : null}
-              </>
-            ) : null}
+            {groups.filter(g => g.runs.length || !filtering && g.project).map(projectGroup)}
           </ComputerProjects>
         </section>
+        {view.archived && list.some(taskArchived) ? <section aria-label="Archived runs"><div class="rail-title rail-section">Archived runs</div>{list.filter(taskArchived).map(run => row(run, projectFor(run)?.name ?? baseName(run.repo)))}</section> : null}
       </>
     );
   }
@@ -439,6 +448,7 @@ export function Rail() {
       // Expanding replaces the focused search icon; allow its next-frame search focus to settle.
       requestAnimationFrame(() => requestAnimationFrame(() => { if (!nav.contains(document.activeElement)) railPeek.value = false; }));
     }}>
+      {!phone && !collapsed ? <RailResizeHandle /> : null}
       <div class="rail-head">
         <a class="brand" href="#/" aria-label="code-flow: new run" onClick={() => (railOpen.value = false)}>
           <span class="brand-name">
@@ -454,6 +464,7 @@ export function Rail() {
         <Icon name="plus" /> <span>New run</span>
       </button>
       <div class="rail-destinations" role="group" aria-label="Work navigation">
+        <a class="nav-item" href="#/projects" title="Projects" aria-current={r.view === "projects" ? "page" : undefined}><Icon name="project" /><span class="nav-label">Projects</span></a>
         <a class="nav-item" href="#/inbox" aria-label={`Inbox${pending ? ` ${collapsed && pending > 99 ? "99+ · " : ""}${pending} need attention` : ""}`} title="Inbox" aria-current={r.view === "inbox" ? "page" : undefined}><Icon name="bell" /><span class="nav-label">Inbox</span> {pending ? <span class="count">{collapsed && pending > 99 ? "99+" : pending}</span> : null}</a>
         <a class="nav-item" href="#/automations" title="Scheduling" aria-label="Scheduling" aria-current={r.view === "automations" ? "page" : undefined}><Icon name="clock" /><span class="nav-label">Scheduling</span></a>
       </div>
@@ -549,7 +560,7 @@ export function Rail() {
       ) : null}
       <div class="rail-list" id="run-navigation">
         {view.group === "status" ? <ComputerProjects directory={computers} error={computerProjects.error} query={f.q}>{body}</ComputerProjects> : body}
-        {empty ? <div class="rail-empty">{filtering ? "No runs match" : currentComputer ? "No runs in this workspace yet" : "No runs yet — start one on the right"}</div> : null}
+        {empty ? <div class="rail-empty">{filtering ? "No runs match. Clear your search or filters to see more." : "Choose a project above, then select New run to start a task."}</div> : null}
       </div>
       <div class="rail-history" role="region" aria-label="Run history pages">
         {projectCountsError.value ? <span class="help" role="status">Complete history totals are unavailable. Counts show loaded items. <button class="btn small" onClick={() => void refreshProjectCounts().catch(() => {})}>Retry totals</button></span> : null}

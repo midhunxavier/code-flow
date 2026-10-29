@@ -1,17 +1,18 @@
+import { MAX_EXECUTION_BUDGET } from "./execution-budget.js";
 /** Pure admission rules shared by forms and the API. Never silently change a requested budget. */
 export type NumberRule = { label: string; min: number; max: number; integer?: boolean };
 export const EXECUTION_LIMITS = {
-  maxMinutes: { label: "Minutes", min: 1, max: 720, integer: true },
-  maxSteps: { label: "Agent steps", min: 1, max: 200, integer: true },
-  maxInvocations: { label: "Agent calls", min: 1, max: 200, integer: true },
+  maxMinutes: { label: "Minutes", min: 1, max: MAX_EXECUTION_BUDGET.maxMinutes, integer: true },
+  maxSteps: { label: "Agent steps", min: 1, max: MAX_EXECUTION_BUDGET.maxSteps, integer: true },
+  maxInvocations: { label: "Agent calls", min: 1, max: MAX_EXECUTION_BUDGET.maxSteps, integer: true },
   maxTokens: { label: "Token budget", min: 1, max: 1_000_000_000, integer: true },
   maxCostUsd: { label: "Cost budget", min: 0.001, max: 1_000_000 },
   checkTimeoutMin: { label: "Check timeout", min: 1, max: 120, integer: true },
 } satisfies Record<string, NumberRule>;
 export const TASK_TEAM_LIMITS = {
   maxMembers: { label: "Members", min: 3, max: 6, integer: true },
-  maxCalls: { label: "Agent calls", min: 4, max: 200, integer: true },
-  maxMinutes: { label: "Minutes", min: 1, max: 720, integer: true },
+  maxCalls: { label: "Agent calls", min: 4, max: MAX_EXECUTION_BUDGET.maxSteps, integer: true },
+  maxMinutes: { label: "Minutes", min: 1, max: MAX_EXECUTION_BUDGET.maxMinutes, integer: true },
 } satisfies Record<string, NumberRule>;
 export function numberProblem(value: unknown, rule: NumberRule): string {
   return typeof value !== "number" || !Number.isFinite(value) || value < rule.min || value > rule.max || rule.integer && !Number.isInteger(value)

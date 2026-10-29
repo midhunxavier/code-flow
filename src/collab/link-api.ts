@@ -1,3 +1,4 @@
+import { MAX_EXECUTION_BUDGET } from "../execution-budget.js";
 import { TEAM_JOIN_SETTINGS } from "./settings-location.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { isAbsolute } from "node:path";
@@ -56,7 +57,7 @@ function loop(value: unknown): Partial<LoopSettings> {
   if (!object(value)) throw new CollabError("Send loop as { check?, setup?, maxMinutes?, maxSteps? }"); assertKeys(value, LOOP_FIELDS, "loop"); const out: Partial<LoopSettings> = {};
   const command = (key: "check" | "setup") => { if (absent(value[key])) return; const line = value[key]; if (typeof line !== "string" || line.length > 1000 || /[\r\n\x00]/.test(line)) throw new CollabError(`The ${key} command must be a single line of at most 1000 characters`); if (line.trim()) out[key] = line.trim(); };
   const number = (key: "maxMinutes" | "maxSteps", min: number, max: number) => { if (absent(value[key])) return; const n = Number(value[key]); if (!Number.isFinite(n)) throw new CollabError(`Send ${key} as a number between ${min} and ${max}`); out[key] = Math.min(max, Math.max(min, Math.round(n))); };
-  command("check"); command("setup"); number("maxMinutes", 1, 720); number("maxSteps", 1, 200); return out;
+  command("check"); command("setup"); number("maxMinutes", 1, MAX_EXECUTION_BUDGET.maxMinutes); number("maxSteps", 1, MAX_EXECUTION_BUDGET.maxSteps); return out;
 }
 export function validateStartBody(raw: Record<string, unknown>, host: Pick<TeamLinkApiHost, "findPattern" | "agents">): StartAttemptInput {
   assertKeys(raw, START_FIELDS, "start"); const pattern = typeof raw.pattern === "string" && /^[a-z0-9-]{1,40}$/.test(raw.pattern) ? host.findPattern(raw.pattern) : undefined; if (!pattern) throw new CollabError("Unknown pattern");

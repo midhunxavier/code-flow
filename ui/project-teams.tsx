@@ -33,6 +33,17 @@ function faultText(id: string, reason: string, fault?: ProjectTeamFault) {
   if (fault) return `Mission record ${id} can’t be read: ${reason}. Restore ${fault.file} from a backup, or move it out of that folder and restart Code Flow. Until then its repository is unknown, so no new mission can be created on this host.`;
   return `Mission storage needs repair (${id}): ${reason}`;
 }
+function MissionRepair({ id, reason, fault, projectId, refresh }: { id: string; reason: string; fault?: ProjectTeamFault; projectId: string; refresh: () => Promise<void> }) {
+  const ownership = fault?.kind === "ownership";
+  return <div class="mission-repair" role="alert">
+    <p><strong>{ownership ? `“${fault.name}” needs a repository review.` : "A saved mission needs repair."}</strong> {ownership ? "The repository changed since this mission was saved. Work is paused and its history is retained." : "Work is paused until the saved record can be read."}</p>
+    <details><summary>Review repair</summary>
+      <p>{ownership ? "Review the repository linked to this project before restoring or replacing the mission record." : "Restore the saved record from a backup, then restart Code Flow and check again."}</p>
+      <div class="settings-actions"><a class="btn small" href={`#/project/${encodeURIComponent(projectId)}/repositories`}>Review repository</a><button class="btn small" onClick={() => void refresh()}>Check again</button></div>
+      <details><summary>Technical details</summary><p class="help">{faultText(id, reason, fault)}</p></details>
+    </details>
+  </div>;
+}
 export function ProjectTeamsPanel({ projectId, repos }: { projectId: string; repos: string[] }) {
   const [data, setData] = useState<Inventory>(), [error, setError] = useState<{ message: string; status?: number }>(), [creating, setCreating] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -90,8 +101,8 @@ export function ProjectTeamsPanel({ projectId, repos }: { projectId: string; rep
     <p class="help">This setting applies to all projects on this host. New missions need separate activation. Enabling it resumes schedules for missions already active; stop active cycles before disabling it.</p>
     {!data.autoTeamEnabled && <p class="help">Auto team execution is disabled by this host’s configuration. Project missions can run once the host permits Auto team execution.</p>}
     {featureError && <p role="alert">{featureError}</p>}
-    {Object.entries(data.faults).map(([id, reason]) => <p role="alert" key={id}>{faultText(id, reason, data.faultDetails?.[id])}</p>)}
-    {Object.entries(data.definitionFaults ?? {}).map(([id, reason]) => <p role="alert" key={id}>Reusable team storage needs repair ({id}): {reason}</p>)}
+    {Object.entries(data.faults).map(([id, reason]) => <MissionRepair key={id} id={id} reason={reason} fault={data.faultDetails?.[id]} projectId={projectId} refresh={load} />)}
+    {Object.entries(data.definitionFaults ?? {}).map(([id, reason]) => <div class="mission-repair" role="alert" key={id}><p>A saved team can’t be loaded.</p><details><summary>Review repair</summary><p>Restore its saved record from a backup, then restart Code Flow.</p><details><summary>Technical details</summary><p class="help">{id}: {reason}</p></details></details></div>)}
     <AgentTeamLibrary definitions={data.definitions ?? []} providers={data.providers} canAssign={ready && repos.some((repo) => !!assigned(repo) || !ownerOf(repo) && !data.creationBlocked)} assign={(definition) => { setInitialDefinition(definition); setCreating(true); }} changed={load} />
     {creating && ready && (initialDefinition
       ? <AssignmentForm key={`${initialDefinition.id}:${initialDefinition.revision}`} definition={initialDefinition} projectId={projectId} repos={repos} assignments={data.teams} ownerOf={ownerOf} creationBlocked={!!data.creationBlocked} providers={data.providers} definitions={data.definitions ?? []} saved={() => { setCreating(false); void load(); }} refresh={load} />

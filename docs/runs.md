@@ -93,7 +93,7 @@ Runs are grouped into projects. A project has a name and the repositories its ru
 - **Moving a run:** click the project chip at the top of the run. Provider tabs, side chats and delegated team executions move with their conversation; side chats cannot move separately. Branches and worktrees stay where they are.
 - **A side-panel chat** starts in the project you're in, like a run from the composer.
 - **Runs started from other runs stay in that run's project:** replies to the whole team, chats started from a run's result, comparisons, sweeps and automations. An automation whose project was deleted starts its runs in its repository's project.
-- **Deleting a project** keeps its runs; they show under *No project*. Taking a repository out of a project keeps the runs already in it.
+- **Deleting a project** permanently deletes all its conversations and run history, including archived runs and related chats, and clears its saved composer draft and draft attachments. Open tabs return to the Projects page. Stop active runs first. Git branches, worktrees and repository files are kept, along with archived mission records and budget accounting. Taking a repository out of a project keeps the runs already in it.
 - Project edits detect stale name or repository changes from another tab. Reload the current project in the editor, review it, then reapply your changes. An unreadable browser draft is retained without being overwritten; other project drafts remain available.
 - Projects are saved in `~/.codeflow/projects.json`. Each run records its project in its own log.
 

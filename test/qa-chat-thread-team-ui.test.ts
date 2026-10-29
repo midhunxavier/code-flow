@@ -156,7 +156,7 @@ test("t11-9: the reply budget starts valid for the chosen target after a one-cal
   assert.equal(defaultFollowupCalls(afterDirectReply, followupMinimumCalls(true, false, "claude@auto-alpha")), 1, "the direct reply keeps its own allocation");
   assert.equal(defaultFollowupCalls({ maxSteps: 12, maxInvocations: 12 }, 4), 12);
   assert.equal(defaultFollowupCalls({ maxSteps: 20 }, 4), 20);
-  assert.equal(defaultFollowupCalls({ maxSteps: 500 }, 4), 200);
+  assert.equal(defaultFollowupCalls({ maxSteps: 500 }, 4), 500);
 });
 
 test("t11-10: provider changes read the same wherever Team activity shows them", () => {

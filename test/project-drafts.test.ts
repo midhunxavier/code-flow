@@ -80,3 +80,30 @@ test("editable retry identity and execution settings stay with their project dra
   assert.equal(rerunDraft.value, null, "changing repository clears the original run identity");
   assert.equal(state.composerRunOptions.value.remoteWorker, undefined);
 });
+
+test("project deletion clears inactive and current drafts, including attachments and retry settings", async () => {
+  await state.openComposer("b"); state.setTask("Keep B");
+  state.attachments.value = [{ name: "keep.txt", data: "a2VlcA==", size: 4 }];
+  await state.saveComposerDraft();
+  await state.discardProjectDraft("a");
+  assert.equal(state.composerProject.value, "b"); assert.equal(state.task.value, "Keep B");
+  assert.equal(await state.savedDraftTask("a"), "");
+  assert.equal(values.has("project-draft-v1:a"), false);
+  state.projects.value = [b];
+  await state.openComposer("a");
+  assert.equal(state.composerProject.value, "", "old links cannot recreate the deleted draft");
+  await state.openComposer("b");
+  assert.equal(state.task.value, "Keep B"); assert.equal(state.attachments.value[0]?.name, "keep.txt");
+  state.route.value = { view: "project", id: "b" };
+  await state.discardProjectDraft("b");
+  state.projects.value = [];
+  await state.saveComposerDraft();
+  assert.equal(state.composerProject.value, "");
+  assert.equal(state.target.value.unavailable, false);
+  assert.equal(values.has("project-draft-v1:b"), false);
+  assert.deepEqual(state.attachments.value, []);
+  assert.equal(rerunDraft.value, null);
+  assert.deepEqual(state.composerRunOptions.value, {});
+  assert.equal(state.task.value, "legacy ambiguous draft", "a separate unassigned draft stays available");
+  assert.deepEqual(state.route.value, { view: "projects" });
+});

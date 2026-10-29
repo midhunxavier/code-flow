@@ -1,3 +1,4 @@
+import { MAX_EXECUTION_BUDGET } from "./execution-budget.js";
 import { createHash } from "node:crypto";
 import type { AgentId } from "./adapters/types.js";
 import { git, resolveCommit } from "./git.js";
@@ -75,7 +76,7 @@ function requestValue(value: unknown, tasks: TeamTask[]): { request: TeamRerunRe
   }
   if (!object(value.budget) || Object.keys(value.budget).some((key) => !["maxSteps", "maxInvocations", "maxMinutes"].includes(key))) throw new TeamRerunError("Allocate a fresh invocation and time budget for the child run");
   const budget = { maxSteps: value.budget.maxSteps, maxInvocations: value.budget.maxInvocations ?? value.budget.maxSteps, maxMinutes: value.budget.maxMinutes };
-  if (!Number.isSafeInteger(budget.maxSteps) || (budget.maxSteps as number) < 4 || (budget.maxSteps as number) > 200 || !Number.isSafeInteger(budget.maxInvocations) || (budget.maxInvocations as number) < 4 || (budget.maxInvocations as number) > 200 || typeof budget.maxMinutes !== "number" || !Number.isFinite(budget.maxMinutes) || budget.maxMinutes < 1 || budget.maxMinutes > 720) throw new TeamRerunError("A rerun budget needs 4–200 calls and 1–720 minutes");
+  if (!Number.isSafeInteger(budget.maxSteps) || (budget.maxSteps as number) < 4 || (budget.maxSteps as number) > MAX_EXECUTION_BUDGET.maxSteps || !Number.isSafeInteger(budget.maxInvocations) || (budget.maxInvocations as number) < 4 || (budget.maxInvocations as number) > MAX_EXECUTION_BUDGET.maxSteps || typeof budget.maxMinutes !== "number" || !Number.isFinite(budget.maxMinutes) || budget.maxMinutes < 1 || budget.maxMinutes > MAX_EXECUTION_BUDGET.maxMinutes) throw new TeamRerunError(`A rerun budget needs 4–${MAX_EXECUTION_BUDGET.maxSteps} calls and 1–${MAX_EXECUTION_BUDGET.maxMinutes} minutes`);
   return { request: value as unknown as TeamRerunRequest, selected, instructions, budget: budget as TeamRerunBudget };
 }
 
