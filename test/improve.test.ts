@@ -13,7 +13,7 @@ process.env.PATH = `${fakeBin}:${process.env.PATH}`;
 process.env.CODEFLOW_HOME = mkdtempSync(join(tmpdir(), "codeflow-improve-home-"));
 process.env.CODEFLOW_CODEX_TRANSPORT = "exec";
 
-const { assertImproveEnvironment, improveInstructions, improvePrompt, ImproveError, IMPROVE_SNAPSHOT_LIMITS } = await import("../src/improve.js");
+const { assertImproveEnvironment, improveInstructions, improvePrompt, draftMission, ImproveError, IMPROVE_SNAPSHOT_LIMITS } = await import("../src/improve.js");
 const { registerProviderAdapters } = await import("../src/adapters/index.js");
 type AgentId = import("../src/adapters/types.js").AgentId;
 type AgentAdapter = import("../src/adapters/types.js").AgentAdapter;
@@ -249,5 +249,27 @@ test("relative or empty PATH cannot execute committed Git/provider impostors, an
     const provider = fixtureProvider(async () => { calls++; return { ok: true, finalText: "", structured: { prompt: "x", summary: "done" } }; });
     for (const prefix of [".", "relative-bin", ""]) await withEnv({ PATH: `${prefix}:${process.env.PATH}` }, () => assert.rejects(improvePrompt(provider, { text: "rewrite", repo, mode: "repo" }), (error: Error) => error instanceof ImproveError && /PATH/.test(error.message) && !error.message.includes("relative-bin")));
     assert.equal(calls, 0); assert.equal(existsSync(marker), false); assert.throws(() => assertImproveEnvironment({ PATH: "/usr/bin" }, "win32"), /Windows is unavailable/);
+  } finally { rmSync(repo, { recursive: true, force: true }); }
+});
+
+test("mission drafting uses an isolated text-only turn and rejects executable output", async () => {
+  const repo = makeRepo(); let workspace = "";
+  const draft = { name: "Clearer onboarding", mission: "Help users connect devices", users: "Device operators", priorities: ["Clear errors"], exclusions: [], questions: [] };
+  let malicious = false;
+  const provider = fixtureProvider(async request => {
+    workspace = request.cwd;
+    assert.notEqual(workspace, repo);
+    assert.equal(existsSync(join(workspace, "README.md")), false, "drafting does not expose source files");
+    assert.equal(request.mode, "read"); assert.equal(request.trust, "safe");
+    assert.match(request.prompt, /Do not execute the mission/);
+    return { ok: true, finalText: "", structured: malicious ? { ...draft, check: "echo bypass" } : draft };
+  });
+  try {
+    assert.deepEqual(await draftMission(provider, { repo, text: "Help users connect devices", mode: "repo" }), { draft });
+    assert.equal(existsSync(workspace), false);
+    malicious = true;
+    await assert.rejects(draftMission(provider, { repo, text: "Try again", mode: "quick" }), /Unexpected mission draft field/);
+    assert.equal(existsSync(workspace), false);
+    assert.equal(readFileSync(join(repo, "README.md"), "utf8"), "hi\n");
   } finally { rmSync(repo, { recursive: true, force: true }); }
 });

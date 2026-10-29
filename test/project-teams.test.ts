@@ -111,11 +111,11 @@ test("invented evidence and high risk reports remain proposals without implement
 test("claim-before-dispatch fails closed, restart does not replay unknown launches or refund their budget", async () => {
   const f = await fixture({}, { persist: async () => { throw new Error("simulated disk failure before dispatch"); } });
   const t = await f.service.cycle(f.team.id, "crash"); assert.equal(t.cycles[0]!.status, "unknown");
-  assert.equal(f.manager.get(f.manager.list()[0]!.id)!.steps.length, 0); assert.equal(allowance(t).calls, 40);
+  assert.equal(f.manager.get(f.manager.list()[0]!.id)!.steps.length, 0); assert.equal(allowance(t).calls, 460);
   await f.service.stop();
   const manager = new RunManager(findPattern, f.projects);
   const recovered = new ProjectTeams({ manager, projects: f.projects, automations: f.automations, store: new ProjectTeamStore(f.store.directory), build: async () => { throw new Error("No replay permitted"); } }); services.push(recovered); await recovered.load(); recovered.start(); await recovered.reconcile();
-  const after = recovered.store.get(t.id); assert.equal(after.cycles[0]!.status, "unknown"); assert.equal(allowance(after).calls, 40); assert.equal(manager.list().length, 0);
+  const after = recovered.store.get(t.id); assert.equal(after.cycles[0]!.status, "unknown"); assert.equal(allowance(after).calls, 460); assert.equal(manager.list().length, 0);
 });
 
 test("operation IDs, revisions, one repository ownership and weekly reservations are enforced", async () => {
@@ -507,7 +507,7 @@ test("reusable teams have durable versions and project assignments explicitly pi
   const secondProject = await f.projects.create({ name: "Second product", repos: [secondRepo] });
   const second = await f.service.create({ operationId: "second-project-assignment", projectId: secondProject.id, repo: secondRepo, name: "Second mission", definition: { id: definition.id, revision: 1 }, scheduleEnabled: false, mission: mission({ mission: "Improve another product" }) });
   assert.equal(second.definition!.id, t.definition!.id); assert.notEqual(second.projectId, t.projectId);
-  assert.equal(second.status, "draft"); assert.deepEqual(second.cycles, []); assert.deepEqual(allowance(second), { calls: 48, minutes: 120 });
+  assert.equal(second.status, "draft"); assert.deepEqual(second.cycles, []); assert.deepEqual(allowance(second), { calls: 500, minutes: 1440 });
   const updated = await f.service.saveDefinition({ operationId: "revise-team", revision: 1, name: "Product engineers", configuration: { ...definition.configuration, coordinator: "codex" } }, definition.id);
   assert.equal(updated.revision, 2); assert.equal(f.store.get(t.id).mission.coordinator, "claude"); assert.equal(f.store.get(second.id).definition!.revision, 1);
   await assert.rejects(f.service.saveDefinition({ operationId: "stale-team-version", revision: 1, name: "stale", configuration: definition.configuration }, definition.id), /changed/);
@@ -527,7 +527,7 @@ test("direct owner tasks use one bounded implementation, independent review, exa
   const [first, duplicate] = await Promise.all([f.service.assignTask(t.id, request), f.service.assignTask(t.id, request)]);
   assert.equal(first.cycles.length, 1); assert.equal(duplicate.cycles.length, 1);
   assert.deepEqual(first.cycles[0]!.launches.map((l) => l.phase), ["implementation"]);
-  assert.equal(allowance(first).calls, 32); assert.equal(allowance(first).minutes, 75);
+  assert.equal(allowance(first).calls, 420); assert.equal(allowance(first).minutes, 1320);
   await assert.rejects(f.service.cycle(t.id, "schedule:manual-team"), /Recurring discovery is disabled/);
   t = await settled(f);
   const o = t.opportunities[0]!; assert.equal(o.origin, "owner"); assert.equal(o.evidenceVerified, false); assert.deepEqual(o.evidence, []);

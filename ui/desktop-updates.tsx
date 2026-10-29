@@ -10,6 +10,7 @@ export interface DesktopUpdateState {
   releaseUrl?: string;
   downloadUrl?: string;
   checkedAt?: string;
+  progress?: number;
 }
 interface DesktopBridge {
   getUpdateState(): Promise<DesktopUpdateState>;
@@ -54,6 +55,7 @@ export function DesktopUpdatesCard() {
         {state?.phase === "checking" ? "Checking…" : state?.phase === "downloading" ? "Downloading…" : state?.phase === "installing" ? "Restarting…" : ready ? "Restart to update" : available ? state.canInstall ? "Download update" : "Download installer" : "Check for updates"}
       </button></div>
     </div>
+    {state?.phase === "downloading" && state.progress !== undefined ? <progress aria-label="Update download progress" value={state.progress} max={100} /> : null}
     {state?.releaseUrl ? <div class="settings-actions"><a href={state.releaseUrl} target="_blank" rel="noreferrer">Release notes ↗</a>{state.phase === "error" && state.downloadUrl ? <button class="btn small" onClick={() => void act(() => bridge.openUpdateInstaller())}>Download installer</button> : null}</div> : null}
     {state?.checkedAt ? <p class="help">Last checked {new Date(state.checkedAt).toLocaleString()}.</p> : null}
     {error ? <p class="msg err" role="alert">{error}</p> : null}

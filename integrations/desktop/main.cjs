@@ -4,7 +4,7 @@ const { fork, execFile } = require('node:child_process');
 const { createServer } = require('node:net');
 const { randomBytes } = require('node:crypto');
 const { readFile, writeFile, mkdir, stat } = require('node:fs/promises');
-const { join, isAbsolute } = require('node:path');
+const { join, isAbsolute, dirname } = require('node:path');
 const { homedir } = require('node:os');
 
 app.setName('Code Flow');
@@ -208,11 +208,14 @@ async function quit(installUpdate = false) {
     if (!stopped && installUpdate) { quitting = false; return false; }
   }
   if (installUpdate) {
-    try { autoUpdater.quitAndInstall(); }
+    try {
+      if (updates) { if (!await updates.quitAndInstall()) setImmediate(() => app.quit()); }
+      else autoUpdater.quitAndInstall();
+    }
     catch (error) { quitting = false; throw error; }
   }
   // Electron must finish the outer, prevented before-quit dispatch before retrying.
-  else setImmediate(() => app.quit());
+  else { await updates?.dispose().catch(() => {}); setImmediate(() => app.quit()); }
   return true;
 }
 async function showUpdates() {
@@ -226,9 +229,12 @@ async function showUpdates() {
 function setupUpdates() {
   let nativeUpdates = false;
   try { nativeUpdates = require('./update-config.json').nativeUpdates === true; } catch {}
+  const previewInstaller = app.isPackaged && process.platform === 'darwin' && !nativeUpdates && !dockerDesktop
+    ? new (require('./macos-update.cjs').MacUpdateInstaller)({ appPath: dirname(dirname(dirname(app.getPath('exe')))),
+      cachePath: join(app.getPath('userData'), 'updates'), nodePath: node, arch: process.arch }) : undefined;
   updates = new DesktopUpdates({ version: app.getVersion(), arch: process.arch, platform: process.platform,
     enabled: app.isPackaged && ['darwin', 'win32'].includes(process.platform), nativeUpdates, autoUpdater,
-    openExternal: url => shell.openExternal(url), restart: () => quit(true) });
+    previewInstaller, openExternal: url => shell.openExternal(url), restart: () => quit(true) });
   for (const [action, handler] of Object.entries({ state: () => updates.state, check: () => updates.check(), download: () => updates.download(), installer: () => updates.openInstaller(), install: () => updates.install() })) {
     ipcMain.handle(`codeflow:updates:${action}`, (event) => {
       if (!trustedSender(event, window, origin)) throw new Error('Desktop updates are only available from the app window.');
@@ -266,9 +272,16 @@ else {
     await startBackend();
     if (quitting || !ownerURL) return;
     await createWindow(); startingWindow?.destroy(); startingWindow = undefined;
+    const updateResult = join(app.getPath('userData'), 'updates/last-result.json');
+    try {
+      const result = JSON.parse(await readFile(updateResult, 'utf8'));
+      if (result.ok === false) await dialog.showMessageBox(window, { type: 'error', message: 'Code Flow could not finish updating',
+        detail: `${result.message}\nThe previous app was kept. Recovery files: ${result.recoveryPath}`, buttons: ['OK'] });
+      await require('node:fs/promises').rm(updateResult, { force: true });
+    } catch {}
     if (process.env.CODEFLOW_DESKTOP_TEST !== '1') {
-      setTimeout(() => { void updates.check(); }, 10000).unref();
-      setInterval(() => { void updates.check(); }, 6 * 60 * 60 * 1000).unref();
+      setTimeout(() => { void updates.backgroundCheck(); }, 10000).unref();
+      setInterval(() => { void updates.backgroundCheck(); }, 6 * 60 * 60 * 1000).unref();
     }
   }).catch(async error => { startingWindow?.destroy(); startingWindow = undefined; if (quitting) return; await dialog.showMessageBox({ type: 'error', message: 'Code Flow could not start', detail: String(error.message).replaceAll(token, '[redacted]'), buttons: ['Quit'] }); exitApproved = true; void quit(); });
 }

@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { childEnv } from "./env.js";
 import { defaultImproveChoice, improveEfforts, IMPROVE_AGENTS, type ImproveAgent, type ImproveChoice } from "./improve-settings.js";
 import { sensitiveContextPath } from "./context-inspection.js";
+import { MISSION_DRAFT_SCHEMA, missionDraftInstructions, validateMissionDraft } from "./mission-draft.js";
 
 /**
  * Improve in the composer: one short read-only turn that rewrites a rough task so an agent can act
@@ -129,6 +130,21 @@ export async function improvePrompt(
   req: ImproveRequest,
   opts: { signal?: AbortSignal; onEvent?: (e: AgentEvent) => void } = {},
 ): Promise<ImproveResult> {
+  const { answer, scope, name } = await structuredDraftTurn(agent, req, opts);
+  const result = answer as ImproveResult | undefined;
+  const prompt = typeof result?.prompt === "string" ? result.prompt.trim() : "";
+  if (shapeProblem(SCHEMA, result) || !prompt || prompt.length > MAX_IMPROVE_CHARS || result!.summary.length > MAX_SUMMARY_CHARS || Object.keys(result!).some((key) => key !== "prompt" && key !== "summary")) throw new ImproveError(`${name} didn't return a rewritten task. Try again.`);
+  return { prompt, summary: `${result!.summary.replace(/\s+/g, " ").trim().slice(0, MAX_SUMMARY_CHARS - scope.length - 1)} ${scope}`.trim() };
+}
+
+export async function draftMission(agent: AgentId, req: ImproveRequest, opts: { signal?: AbortSignal; onEvent?: (e: AgentEvent) => void } = {}) {
+  const { answer } = await structuredDraftTurn(agent, { ...req, mode: "quick" }, opts, true);
+  try { return { draft: validateMissionDraft(answer) }; }
+  catch (error) { throw new ImproveError(`${(error as Error).message}. Try drafting again.`); }
+}
+
+/** Both drafting flows share the same private workspace, CLI limits and cleanup. */
+async function structuredDraftTurn(agent: AgentId, req: ImproveRequest, opts: { signal?: AbortSignal; onEvent?: (e: AgentEvent) => void }, mission = false) {
   const cancelled = () => { if (opts.signal?.aborted) throw new ImproveError("Stopped.", "cancelled"); };
   cancelled();
   if (!req.text?.trim() || req.text.length > MAX_IMPROVE_CHARS || !["quick", "repo"].includes(req.mode)) throw new ImproveError("Choose a nonempty task within the prompt improvement limit.", "other");
@@ -157,14 +173,14 @@ export async function improvePrompt(
     cancelled();
     result = await adapter.run(
       {
-        prompt: improveInstructions(req, context),
+        prompt: mission ? missionDraftInstructions(req.text) : improveInstructions(req, context),
         cwd: workspace,
         mode: "read",
         trust: "safe",
         questionProtocol: "structured",
         interactiveApprovals: false,
         ...settings,
-        jsonSchema: SCHEMA,
+        jsonSchema: mission ? MISSION_DRAFT_SCHEMA : SCHEMA,
         signal: opts.signal,
         timeoutMs: TIMEOUT_MS[req.mode],
         idleTimeoutMs: 90_000,
@@ -183,10 +199,7 @@ export async function improvePrompt(
   }
   cancelled();
   if (!result.ok) throw new ImproveError(failure(adapter.displayName, result.errorKind, result.error), result.errorKind, result.resetsAt);
-  const answer = (result.structured ?? extractJson(result.finalText)) as ImproveResult | undefined;
-  const prompt = typeof answer?.prompt === "string" ? answer.prompt.trim() : "";
-  if (shapeProblem(SCHEMA, answer) || !prompt || prompt.length > MAX_IMPROVE_CHARS || answer!.summary.length > MAX_SUMMARY_CHARS || Object.keys(answer!).some((key) => key !== "prompt" && key !== "summary")) throw new ImproveError(`${adapter.displayName} didn't return a rewritten task. Try again.`);
-  return { prompt, summary: `${answer!.summary.replace(/\s+/g, " ").trim().slice(0, MAX_SUMMARY_CHARS - scope.length - 1)} ${scope}`.trim() };
+  return { answer: result.structured ?? extractJson(result.finalText), scope, name: adapter.displayName };
 }
 
 function failure(name: string, kind: ErrorKind | undefined, error = ""): string {

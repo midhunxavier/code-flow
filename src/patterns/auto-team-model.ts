@@ -91,6 +91,12 @@ export function overlaps(a: TeamTask, b: TeamTask): boolean {
   return a.kind === "implementation" && b.kind === "implementation" && a.paths.some((p) => b.paths.some((q) => p === "*" || q === "*" || p === q || p.startsWith(`${q}/`) || q.startsWith(`${p}/`)));
 }
 
+/** Review independence follows the task author, including read-only discovery. */
+export function primaryTaskAuthor(plan: Pick<TeamPlan, "members" | "tasks">): TeamMember | undefined {
+  const task = plan.tasks.find(task => task.kind === "implementation") ?? plan.tasks[0];
+  return plan.members.find(member => member.id === task?.owner) ?? plan.members.find(member => member.role === "coordinator");
+}
+
 /** Schema handles types; this validates the permissions and graph before any dispatch. */
 export function planProblem(plan: TeamPlan, policy: TeamPolicy, retainedMembers: ReadonlySet<string> = new Set()): string | undefined {
   if (!plan.requirements.length || !plan.tasks.length) return "include requirements and at least one task";
@@ -160,8 +166,8 @@ export function planProblem(plan: TeamPlan, policy: TeamPolicy, retainedMembers:
     visiting.delete(id); visited.add(id); return false;
   };
   if (plan.tasks.some((t) => cycle(t.id))) return "task dependencies must be acyclic";
-  const author = plan.members.find((m) => m.id === plan.tasks.find((t) => t.kind === "implementation")?.owner) ?? coordinator[0]!;
-  if (reviewers[0]!.provider === author.provider && (policy.differentProviderReview || available.some((p) => policy.pool.includes(p.id) && p.id !== author.provider))) return "use a reviewer from another eligible provider (or disable strict provider independence when only one provider is available)";
+  const author = primaryTaskAuthor(plan)!;
+  if (reviewers[0]!.provider === author.provider && (policy.differentProviderReview || available.some((p) => policy.pool.includes(p.id) && p.id !== author.provider))) return `reviewer must use a different eligible provider from task author ${author.id} (${author.provider}); eligible alternatives: ${available.filter(p => policy.pool.includes(p.id) && p.id !== author.provider).map(p => p.id).join(", ") || "none (strict provider independence is enabled)"}`;
   return undefined;
 }
 

@@ -23,6 +23,30 @@ test("team composition rejects identity collisions, cycles, orphan requirements,
   p = plan(); p.tasks[0]!.owner = "reviewer"; assert.match(planProblem(p, policy)!, /non-reviewer/);
 });
 
+test("discovery reviewer independence is measured against the investigator, not the coordinator", () => {
+  const p = plan();
+  p.tasks[0]!.kind = "investigation";
+  p.members[1]!.provider = "codex";
+  p.members[2]!.provider = "claude";
+  assert.equal(planProblem(p, policy), undefined);
+  assert.equal(planProblem(p, { ...policy, differentProviderReview: true }), undefined);
+  p.members[2]!.provider = "codex";
+  assert.match(planProblem(p, policy)!, /reviewer.*builder.*codex/);
+  p.tasks[0]!.owner = "coordinator";
+  assert.equal(planProblem(p, policy), undefined, "coordinator-owned investigations still need independent review");
+  p.members[2]!.provider = "claude";
+  assert.match(planProblem(p, policy)!, /reviewer.*coordinator.*claude/);
+});
+
+test("discovery allows same-provider review only when no eligible alternative exists and strict review is off", () => {
+  const p = plan(); p.tasks[0]!.kind = "investigation";
+  p.members[2]!.provider = "claude";
+  const limited = structuredClone(policy);
+  limited.inventory.providers[1]!.blockedReason = "unavailable";
+  assert.equal(planProblem(p, limited), undefined);
+  assert.match(planProblem(p, { ...limited, differentProviderReview: true })!, /reviewer/);
+});
+
 test("directory ownership normalization preserves scope and still rejects unsafe paths", () => {
   const paths = ["mqtt-python/src/mqtt_mcp/adapters/", "mqtt-python/src/mqtt_mcp/infrastructure/"].map(normalizeOwnedPath);
   const p = plan(); p.tasks[0]!.paths = paths;

@@ -7,7 +7,7 @@ import vm from 'node:vm';
 const require = createRequire(import.meta.url);
 const source = await readFile(new URL('../../integrations/desktop/main.cjs', import.meta.url), 'utf8');
 
-function fixture({ runs = [{ status: 'running' }], response = 0, offline = false, stalled = false, installFailures = 0 } = {}) {
+function fixture({ runs = [{ status: 'running' }], response = 0, offline = false, stalled = false, installFailures = 0, preview = false } = {}) {
   const calls = [], child = new EventEmitter();
   const timers = new Map(); let timerId = 0;
   child.connected = true;
@@ -20,9 +20,10 @@ function fixture({ runs = [{ status: 'running' }], response = 0, offline = false
     __dirname: '/fixture', process: { env: {}, platform: 'darwin', arch: 'arm64' }, fixtureChild: child,
     fetch: async () => { if (offline) throw new Error('offline'); return { ok: true, json: async () => runs }; },
     setTimeout: stalled ? callback => { timers.set(++timerId, callback); return timerId; } : setTimeout,
-    clearTimeout: stalled ? id => timers.delete(id) : clearTimeout, URL, AbortSignal,
+    clearTimeout: stalled ? id => timers.delete(id) : clearTimeout, setImmediate, URL, AbortSignal,
+    fixtureUpdates: preview ? { quitAndInstall: async () => { calls.push('preview-helper-ready'); return false; } } : undefined,
   });
-  vm.runInContext(`${source}\nbackend = fixtureChild; fixtureChild.once('exit', () => { backend = undefined; }); origin = 'http://localhost:4318'; globalThis.restart = () => quit(true);`, context);
+  vm.runInContext(`${source}\nupdates = fixtureUpdates; backend = fixtureChild; fixtureChild.once('exit', () => { backend = undefined; }); origin = 'http://localhost:4318'; globalThis.restart = () => quit(true);`, context);
   calls.length = 0;
   return { calls, restart: context.restart, advance: () => { const [id, callback] = timers.entries().next().value; timers.delete(id); callback(); } };
 }
@@ -68,4 +69,14 @@ test('a synchronous installer failure leaves restart retryable', async () => {
   await assert.rejects(f.restart(), /Installer unavailable/);
   assert.equal(await f.restart(), true);
   assert.deepEqual(f.calls, ['disconnect', 'backend-exit', 'install', 'install']);
+});
+
+test('preview helper starts only after backend exit, followed by a normal Electron quit', async () => {
+  const cancelled = fixture({ preview: true });
+  assert.equal(await cancelled.restart(), false);
+  assert.equal(cancelled.calls.includes('preview-helper-ready'), false);
+  const f = fixture({ preview: true, runs: [] });
+  assert.equal(await f.restart(), true);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(f.calls, ['disconnect', 'backend-exit', 'preview-helper-ready', 'quit']);
 });

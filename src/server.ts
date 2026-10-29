@@ -124,7 +124,7 @@ import { listSweep, runSweep, sourceKeys, type SweepKind } from "./sweeps.js";
 import { parseImproveSettings, IMPROVE_AGENTS, type ImproveAgent } from "./improve-settings.js";
 import { exhausted, resolveAuto } from "./routing.js";
 import { DocsHelp, serveDocs, parseHelpRequest } from "./docs-help.js";
-import { improvePrompt, assertImproveEnvironment, ImproveError, MAX_IMPROVE_CHARS, type ImproveRequest } from "./improve.js";
+import { improvePrompt, draftMission, assertImproveEnvironment, ImproveError, MAX_IMPROVE_CHARS, type ImproveRequest } from "./improve.js";
 import { templates } from "./templates.js";
 import { PrWatcher } from "./watch.js";
 import { AutomationStorageError, ManagedAutomationError, AutomationValidationError, AutomationConflictError, Automations, describeSchedule, readWebhook, validateSchedule, previewSchedule } from "./automation.js";
@@ -714,7 +714,7 @@ const MAX_IMPROVING = 3;
 const improvingControllers = new Set<AbortController>();
 
 /** The composer's Improve: rewrite the task in one read-only turn (see improve.ts). */
-async function improveTask(body: any, res: ServerResponse) {
+async function improveTask(body: any, res: ServerResponse, mission = false) {
   if (body.execution !== undefined && body.execution !== "local" || body.remoteWorker || body.agentContainer || body.loop?.remoteWorker || body.loop?.agentContainer) throw new HttpError(400, "Prompt improvement supports local execution only; remote and container profiles cannot fall back to a host CLI");
   const text = typeof body.text === "string" ? body.text : "";
   if (!text.trim()) throw new HttpError(400, "Write a task to improve first");
@@ -738,6 +738,7 @@ async function improveTask(body: any, res: ServerResponse) {
         ? { kind: body.source.kind, number: body.source.number, title: typeof body.source.title === "string" ? body.source.title.slice(0, 200) : undefined }
         : undefined,
   };
+  if (mission && !projects.get(body.projectId)?.repos.includes(request.repo)) throw new HttpError(400, "Choose a repository belonging to this project");
   if (improving >= MAX_IMPROVING) throw new HttpError(429, "Other tasks are being improved right now. Try again in a moment.");
   // Closing the request (Stop in the composer, or leaving the page) stops the turn.
   improving++; improvingControllers.add(stop);
@@ -758,7 +759,8 @@ async function improveTask(body: any, res: ServerResponse) {
       await manager.assertExecutionAllowed(request.repo, undefined, "Prompt improvement");
       stop.signal.throwIfAborted(); manager.noteActivity();
       try {
-        const result = await improvePrompt(agent, request, { signal: stop.signal, onEvent: (event) => { if (event.kind === "quota") manager.recordQuota(agent, event.status, event.windows); } });
+        if (mission) await projectTeams.draftDefaults(body.projectId, request.repo);
+        const result = await (mission ? draftMission : improvePrompt)(agent, request, { signal: stop.signal, onEvent: (event) => { if (event.kind === "quota") manager.recordQuota(agent, event.status, event.windows); } });
         return send(res, 200, { ...result, agent });
       } catch (error) {
         if (!(error instanceof ImproveError)) throw error;
@@ -1719,8 +1721,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
   }
   if (parts[1] === "docs-help" && req.method === "POST") parseHelpRequest(await readJson(req, 64 * 1024, { timeoutMs: 10_000 }));
   // Check before ownerGate/validRepo: even repository discovery can invoke Git in its cwd.
-  if (parts[1] === "improve-prompt") {
-    if (req.method !== "POST" || parts.length !== 2) throw new HttpError(404, "Unknown prompt improvement operation");
+  if (parts[1] === "improve-prompt" || parts[1] === "project-teams" && parts[2] === "draft") {
+    if (req.method !== "POST" || parts.length !== (parts[1] === "improve-prompt" ? 2 : 3)) throw new HttpError(404, "Unknown drafting operation");
     await attempt(async () => assertImproveEnvironment());
   }
   await attempt(() => fileAccess.ownerGate(req, url, parts));
@@ -1894,6 +1896,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     if (req.method === "DELETE" && parts[2] && parts.length === 3) return send(res, 200, await attempt(() => acpConnections.remove(Number(url.searchParams.get("revision")), parts[2]!)));
     throw new HttpError(404, "Unknown ACP connection operation");
   }
+  if (parts[1] === "project-teams" && parts[2] === "draft") return improveTask({ ...await readJson(req, 128 * 1024), mode: "quick" }, res, true);
   if (parts[1] === "project-teams") return handleProjectTeams(projectTeams, req, res, parts, url);
   if (parts[1] === "coordinated-changes") return coordinatedApi.handle(req, res, parts);
   // The team board: served here in hub mode, forwarded to the team server under this computer's runner credential in linked mode. The link itself (connect, mappings, start/stop/hand over on this computer) is always local and the owner's own.

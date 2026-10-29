@@ -46,7 +46,7 @@ test("desktop updates are hidden in browsers and show download/restart states ac
         getUpdateState: async () => state,
         onUpdateState: callback => { listeners.add(callback); return () => { listeners.delete(callback); }; },
         checkForUpdates: async () => fixture.update({ phase: "available", version: "0.1.0-preview.10", canInstall: true, message: "Code Flow 0.1.0-preview.10 is available.", releaseUrl: "https://github.com/midhunxavier/code-flow/releases/tag/v0.1.0-preview.10" }),
-        downloadUpdate: async () => fixture.update({ phase: "downloading", message: "Downloading and verifying your update. You can keep working." }),
+        downloadUpdate: async () => fixture.update({ phase: "downloading", progress: 42, message: "Downloading update… 42%" }),
         installUpdate: async () => fixture.update({ phase: "downloaded", message: "Your update is ready whenever you’re ready to restart." }),
         openUpdateInstaller: async () => state,
       };
@@ -59,6 +59,7 @@ test("desktop updates are hidden in browsers and show download/restart states ac
     await desktop.getByRole("link", { name: "Update available", exact: true }).waitFor();
     await card.getByRole("button", { name: "Download update", exact: true }).click();
     assert.equal(await card.getByRole("button", { name: "Downloading…" }).isDisabled(), true);
+    assert.equal(await card.getByRole("progressbar", { name: "Update download progress" }).getAttribute("value"), "42");
     await desktop.evaluate(() => window.dispatchEvent(new CustomEvent("desktop-update-fixture", { detail: { phase: "downloaded", message: "Your update is ready. Restart Code Flow to install it." } })));
     await card.getByRole("button", { name: "Restart to update", exact: true }).click();
     await card.getByText("Your update is ready whenever you’re ready to restart.").waitFor();

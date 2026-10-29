@@ -9,6 +9,9 @@ import { providerEligibility } from "./provider-eligibility.js";
 export async function handleProjectTeams(service: ProjectTeams, req: IncomingMessage, res: ServerResponse, parts: string[], url: URL) {
   try {
     const id = parts[2];
+    if (id === "defaults" && req.method === "GET" && parts.length === 3) {
+      return send(res, 200, await service.draftDefaults(text(url.searchParams.get("project"), 100, "project"), text(url.searchParams.get("repo"), 4000, "repository")));
+    }
     if (id === "definitions") {
       if (req.method === "GET" && parts.length === 3) return send(res, 200, { definitions: service.teamLibrary(), faults: Object.fromEntries(service.definitions.faults) });
       if (req.method === "GET" && parts.length === 4) return send(res, 200, service.definitions.get(parts[3]!));

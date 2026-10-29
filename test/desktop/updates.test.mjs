@@ -5,18 +5,19 @@ import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const { DesktopUpdates, selectRelease, compareVersions, trustedSender } = require('../../integrations/desktop/updates.cjs');
 const version = '0.1.0-preview.2';
-function release(next = '0.1.0-preview.10', { arch = 'arm64', signed = true, draft = false, native = true } = {}) {
+function release(next = '0.1.0-preview.10', { arch = 'arm64', signed = true, draft = false, native = true, checksum = false } = {}) {
   const tag_name = `v${next}`, base = `https://github.com/midhunxavier/code-flow/releases/download/${tag_name}/`;
   const names = [`code-flow-${next}-macos-${arch}${signed ? '' : '-unnotarized'}.dmg`, ...(native ? [`code-flow-${next}-macos-${arch}.zip`, `releases-${arch}.json`] : [])];
+  if (checksum) names.push(names[0] + '.sha256');
   return { tag_name, draft, prerelease: next.includes('-'), assets: names.map(name => ({ name, size: 123, browser_download_url: base + name })) };
 }
-function fixture({ releases = [release()], nativeUpdates = true, enabled = true, fetch: fetchRelease, restart } = {}) {
+function fixture({ releases = [release()], nativeUpdates = true, enabled = true, fetch: fetchRelease, restart, previewInstaller } = {}) {
   const autoUpdater = new EventEmitter();
   let checks = 0, feed, opened;
   autoUpdater.setFeedURL = value => { feed = value; };
   autoUpdater.checkForUpdates = () => { checks++; };
   const updates = new DesktopUpdates({ version, arch: 'arm64', enabled, nativeUpdates, autoUpdater,
-    fetch: fetchRelease ?? (async () => ({ ok: true, json: async () => releases })), openExternal: async url => { opened = url; }, restart: restart ?? (async () => true) });
+    previewInstaller, fetch: fetchRelease ?? (async () => ({ ok: true, json: async () => releases })), openExternal: async url => { opened = url; }, restart: restart ?? (async () => true) });
   return { updates, autoUpdater, checks: () => checks, feed: () => feed, opened: () => opened };
 }
 
@@ -124,4 +125,53 @@ test('IPC accepts only the trusted app main frame, never subframes or other wind
   assert.equal(trustedSender(event, { ...window, isDestroyed: () => true }, 'http://localhost:4318'), false);
   mainFrame.url = 'https://example.com';
   assert.equal(trustedSender(event, window, 'http://localhost:4318'), false);
+});
+
+test('preview installation requires a checksum and a writable supported installation', async () => {
+  const releases = [release(undefined, { signed: false, checksum: true })];
+  assert.equal(selectRelease(releases, version, 'arm64', false, 'darwin', true).installer, 'preview');
+  assert.equal(selectRelease(releases, version, 'arm64', false, 'darwin', false).canInstall, false);
+  assert.equal(selectRelease([release(undefined, { signed: false })], version, 'arm64', false, 'darwin', true).canInstall, false);
+  // A signed install never falls back to an ad-hoc update, even with a checksum.
+  assert.equal(selectRelease(releases, version, 'arm64', true, 'darwin', true), undefined);
+  const f = fixture({ releases, nativeUpdates: false, previewInstaller: { supported: async () => false } });
+  await f.updates.backgroundCheck();
+  assert.equal(f.updates.state.phase, 'available');
+  assert.equal(f.opened(), undefined, 'background checks never open external installers');
+});
+
+test('background preview download reports progress, prevents duplicates and delegates installation', async () => {
+  let finish, downloads = 0, installs = 0;
+  const states = [];
+  const f = fixture({ nativeUpdates: false, releases: [release(undefined, { signed: false, checksum: true })], previewInstaller: {
+    supported: async () => true,
+    prepare: async (_candidate, progress) => { downloads++; progress(25); await new Promise(resolve => { finish = resolve; }); },
+    install: async () => { installs++; },
+  } });
+  f.updates.on('change', state => states.push(state));
+  const pending = f.updates.backgroundCheck();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(f.updates.state.progress, 25);
+  await f.updates.download(); await f.updates.check();
+  assert.equal(downloads, 1);
+  finish(); await pending;
+  assert.equal(f.updates.state.phase, 'downloaded');
+  assert.equal(f.checks(), 0);
+  assert.equal(await f.updates.quitAndInstall(), false);
+  assert.equal(installs, 1);
+  assert.equal(states.some(state => state.phase === 'downloading' && state.progress === 25), true);
+});
+
+test('failed preview verification remains retryable and keeps manual recovery available', async () => {
+  let fail = true;
+  const f = fixture({ nativeUpdates: false, releases: [release(undefined, { signed: false, checksum: true })], previewInstaller: {
+    supported: async () => true,
+    prepare: async () => { if (fail) throw new Error('checksum mismatch'); },
+  } });
+  await f.updates.backgroundCheck();
+  assert.equal(f.updates.state.phase, 'error');
+  assert.ok(f.updates.state.downloadUrl);
+  fail = false;
+  await f.updates.download();
+  assert.equal(f.updates.state.phase, 'downloaded');
 });
