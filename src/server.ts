@@ -1414,7 +1414,10 @@ const topics: Record<string, TopicSource> = {
     }
     const client = (e: { seq: number; run: RunSummary }) => { if (!fileAccess.restrictedRun(e.run)) deliver({ type: "run", seq: e.seq, run: e.run }, e.seq); };
     runFeed.clients.add(client);
-    return () => runFeed.clients.delete(client);
+    // Project deletion commits after its run tombstones. Notify open owner tabs at that commit,
+    // including projects with no runs, instead of leaving them on the 30-second inventory poll.
+    const stopProjects = projects.onChange(() => deliver({ type: "projects" }));
+    return () => { runFeed.clients.delete(client); stopProjects(); };
   },
 
   async "run-page"(id, after, deliver) {

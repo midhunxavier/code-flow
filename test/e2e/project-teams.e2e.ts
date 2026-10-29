@@ -310,7 +310,7 @@ test("project deletion removes mission runs and preserves mission evidence", asy
   await main.getByText(/Project mission implementation/).waitFor();
   const removed = await fetch(`${base}/api/projects/${team.projectId}`, { method: "DELETE", headers: { authorization: `Bearer ${token}` } });
   assert.equal(removed.status, 200);
-  await page.getByRole("heading", { name: "Projects", exact: true }).waitFor();
+  await page.getByRole("heading", { name: "Projects", exact: true }).waitFor({ timeout: 10_000 });
   for (const id of ids) assert.equal((await api(`/api/runs/${id}`)).status, 404);
   await page.reload();
   await page.getByRole("heading", { name: "Projects", exact: true }).waitFor();

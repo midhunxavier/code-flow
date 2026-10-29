@@ -292,15 +292,20 @@ export function editProject(id: string) {
   projectsOpen.value = true;
 }
 
-export async function loadProjects() {
+let projectLoadRequest = 0;
+export async function loadProjects(fresh = false) {
+  const request = ++projectLoadRequest;
   const previous = projects.value;
   completeProjectInventory = false;
   try {
-    const diagnosis = sharedGet<{ projects?: import("../src/projects.js").ProjectsStatus }>("/api/health").catch(() => null);
+    const diagnosis = api<{ projects?: import("../src/projects.js").ProjectsStatus }>("/api/health", { signal: AbortSignal.timeout(10_000) }).catch(() => null);
     // Show available choices promptly; boot still awaits the storage diagnosis below
     // before restoring drafts or treating project storage as fully loaded.
-    projects.value = await sharedGet<Project[]>("/api/projects");
+    const inventory = await (fresh ? api<Project[]>("/api/projects") : sharedGet<Project[]>("/api/projects"));
+    if (request !== projectLoadRequest) return;
+    projects.value = inventory;
     const status = await diagnosis;
+    if (request !== projectLoadRequest) return;
     if (status?.projects) projectsStatus.value = status.projects;
     completeProjectInventory = !!status?.projects?.available && !status.projects.recovery;
     projectsLoaded.value = true;
@@ -1370,6 +1375,7 @@ const fetchedFor = new Set<string>();
 type FeedMessage =
   | { type: "hello"; epoch: string; seq: number; runs?: RunSummary[]; resumed?: boolean; nextCursor?: string; total?: number; attentionTotal?: number; attentionTruncated?: boolean; attentionNextCursor?: string }
   | { type: "error"; status: number; message: string }
+  | { type: "projects" }
   | { type: "run"; seq: number; run: RunSummary };
 
 export function watchAllRuns(notify: (run: RunSummary) => void) {
@@ -1383,8 +1389,11 @@ export function watchAllRuns(notify: (run: RunSummary) => void) {
     "runs",
     (data: FeedMessage) => {
       if (data?.type === "error") { historyError.value = data.message; return; }
+      if (data?.type === "projects") { void loadProjects(true); return; }
       if (!data || (data.type !== "hello" && data.type !== "run") || !Number.isSafeInteger(data.seq) || (data.type === "hello" && typeof data.epoch !== "string") || (data.type === "run" && !data.run?.id)) return;
       if (data.type === "hello") {
+        // Refresh on reconnect too: project changes are invalidations, not replayed run records.
+        void loadProjects(true);
         if (typeof data.attentionTotal === "number") attentionTotal.value = data.attentionTotal;
         if (typeof data.attentionTruncated === "boolean") attentionTruncated.value = data.attentionTruncated;
         // Another server start numbers its events afresh: what we kept from the last one says nothing.
