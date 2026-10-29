@@ -228,9 +228,10 @@ test("the mission form saves the schedule it shows, without a separate schedule 
   const { page, errors } = await open(context, `#/project/${encodeURIComponent(project)}/automation/missions`);
   await page.getByRole("button", { name: "Create a mission", exact: true }).click();
   const form = page.locator("form.pt-form");
+  await form.getByRole("button", { name: "Configure manually", exact: true }).click();
   await form.getByLabel("Mission", { exact: true }).fill("Keep the schedule editor honest");
   await form.getByLabel("Intended users").fill("Developers");
-  await form.getByLabel("Required check command").fill("node check.mjs");
+  await form.getByLabel("Verification command").fill("node check.mjs");
   await form.getByText("Schedule, budget and scope limits", { exact: true }).click();
   await form.getByText("Schedule and next times", { exact: true }).click();
   assert.equal(await form.getByRole("button", { name: "Save schedule", exact: true }).count(), 0, "the form's own Save saves it");

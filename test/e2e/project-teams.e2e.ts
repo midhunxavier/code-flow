@@ -1,7 +1,7 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { createServer, type AddressInfo } from "node:net";
 import { join } from "node:path";
@@ -57,6 +57,78 @@ after(async () => {
   }
 });
 
+test("AI drafts a reviewable mission, detects repository defaults and allows proposals without checks", async () => {
+  const draftRepo = join(home, "draft-repo"); mkdirSync(draftRepo);
+  execFileSync("git", ["init", "-q", "-b", "trunk"], { cwd: draftRepo });
+  writeFileSync(join(draftRepo, "README.md"), "Device onboarding\n");
+  mkdirSync(join(draftRepo, ".codeflow")); writeFileSync(join(draftRepo, ".codeflow/config.json"), JSON.stringify({ check: "node --test", setup: "echo setup", prove: false }));
+  execFileSync("git", ["add", "."], { cwd: draftRepo }); execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init"], { cwd: draftRepo });
+  const project = (await api("/api/projects", { name: "Mission drafting", repos: [draftRepo] })).body;
+  const settings = (await api("/api/project-teams/settings")).body;
+  if (!settings.enabled) await api("/api/project-teams/settings", { enabled: true, revision: settings.revision });
+  const context = await browser.newContext({ viewport: { width: 1156, height: 785 } }), page = await context.newPage();
+  try {
+    const invalid = await api("/api/project-teams/draft", { projectId: project.id, repo, text: "Wrong project", agent: "claude" });
+    assert.equal(invalid.status, 400);
+    assert.equal((await fetch(`${base}/api/project-teams/draft`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ projectId: project.id, repo: draftRepo, text: "Goal" }) })).status, 401);
+    await page.goto(`${base}/?token=${token}#/project/${project.id}/automation/missions`);
+    await page.getByRole("button", { name: "Create a mission", exact: true }).click();
+    assert.equal(await page.getByLabel("Mission name", { exact: true }).isVisible(), false);
+    await page.getByLabel("Mission", { exact: true }).fill("Make it easier for engineers to connect OPC UA devices");
+    await page.getByRole("button", { name: "Draft with AI", exact: true }).click();
+    await page.getByText("Draft ready. Review the mission and intended users before saving.").waitFor({ timeout: 30000 });
+    assert.equal(await page.getByLabel("Mission name", { exact: true }).inputValue(), "Improve device onboarding");
+    assert.equal(await page.getByLabel("Base branch", { exact: true }).inputValue(), "trunk");
+    assert.equal(await page.getByLabel("Verification command", { exact: true }).inputValue(), "node --test");
+    assert.equal(await page.getByLabel("Autonomy").inputValue(), "propose");
+    assert.equal(await page.getByLabel("Run recurring discovery", { exact: true }).isChecked(), false);
+    assert.equal((await api(`/api/project-teams?project=${project.id}`)).body.teams.length, 0, "AI drafting never saves or activates a mission");
+    await page.getByLabel("Mission", { exact: true }).fill("MISSION-INVALID");
+    await page.getByRole("button", { name: "Redraft with AI", exact: true }).click();
+    await page.getByRole("alert").filter({ hasText: "Invalid mission draft" }).waitFor();
+    assert.equal(await page.getByLabel("Mission name", { exact: true }).inputValue(), "Improve device onboarding", "a failed redraft preserves prior details");
+    assert.equal(await page.getByLabel("Mission", { exact: true }).inputValue(), "MISSION-INVALID", "a failed request preserves the goal");
+    await page.getByLabel("Mission", { exact: true }).fill("Make it easier for engineers to connect OPC UA devices");
+    await page.getByRole("button", { name: "Redraft with AI", exact: true }).click();
+    await page.getByText("Draft ready. Review the mission and intended users before saving.").waitFor();
+    await page.getByLabel("Mission", { exact: true }).fill("MISSION-QUESTIONS: improve device onboarding");
+    await page.getByRole("button", { name: "Redraft with AI", exact: true }).click();
+    const questions = page.getByRole("region", { name: "Clarify your mission" });
+    await questions.waitFor();
+    const update = questions.getByRole("button", { name: "Update draft with answers", exact: true });
+    assert.equal(await update.isDisabled(), true);
+    await page.getByLabel("Mission name", { exact: true }).fill("Owner edited onboarding mission");
+    await questions.getByLabel("Which connection step needs improvement?", { exact: true }).fill("MISSION-INVALID");
+    assert.equal(await page.getByRole("button", { name: "Save draft mission", exact: true }).isDisabled(), true, "typed replies cannot be silently discarded on save");
+    await update.click();
+    await page.getByRole("alert").filter({ hasText: "Invalid mission draft" }).waitFor();
+    assert.equal(await questions.getByLabel("Which connection step needs improvement?", { exact: true }).inputValue(), "MISSION-INVALID");
+    await questions.getByLabel("Which connection step needs improvement?", { exact: true }).fill("Explain authentication failures");
+    // Partial answers are allowed; the unfilled question is not sent as an answer.
+    await update.click();
+    await questions.waitFor({ state: "detached" });
+    assert.match(await page.getByLabel("Mission", { exact: true }).inputValue(), /Explain authentication failures/);
+    assert.equal(await page.getByLabel("Mission name", { exact: true }).inputValue(), "Owner edited onboarding mission");
+    await page.getByRole("button", { name: "Redraft with AI", exact: true }).click();
+    await page.getByText("Draft ready. Review the mission and intended users before saving.").waitFor();
+    assert.match(await page.getByLabel("Mission", { exact: true }).inputValue(), /Explain authentication failures/, "earlier replies remain in subsequent drafting context");
+    await page.getByLabel("Verification command", { exact: true }).fill("");
+    await page.getByLabel("Autonomy").selectOption("build-within-scope");
+    await page.getByRole("button", { name: "Save draft mission", exact: true }).click();
+    await page.getByText("Add a verification command before enabling automatic builds, or choose proposals only.").waitFor();
+    assert.equal((await api(`/api/project-teams?project=${project.id}`)).body.teams.length, 0);
+    await page.getByLabel("Autonomy").selectOption("propose");
+    await page.getByRole("button", { name: "Save draft mission", exact: true }).click();
+    await page.getByRole("button", { name: "Activate", exact: true }).waitFor();
+    const mission = (await api(`/api/project-teams?project=${project.id}`)).body.teams[0];
+    assert.equal(mission.status, "draft"); assert.equal(mission.mission.check, ""); assert.equal(mission.scheduleEnabled, false);
+  } finally {
+    await context.close();
+    const settings = (await api("/api/project-teams/settings")).body;
+    await api("/api/project-teams/settings", { enabled: false, revision: settings.revision });
+  }
+});
+
 test("owner creates a standing team, previews, runs, reviews and approves with one shared stream", async () => {
   const project = await api("/api/projects", { name: "Standing product", repos: [repo] }); assert.equal(project.status, 201, JSON.stringify(project));
   const id = project.body.id;
@@ -88,10 +160,11 @@ test("owner creates a standing team, previews, runs, reviews and approves with o
   assert.equal((await api("/api/project-teams/settings", { enabled: "yes", revision: 1 })).status, 400);
   assert.equal((await fetch(base + "/api/project-teams/settings", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ enabled: true, revision: 1 }) })).status, 401);
   await page.getByRole("button", { name: "Create a mission", exact: true }).click();
+  await page.getByRole("button", { name: "Configure manually", exact: true }).click();
   await page.getByLabel("Mission", { exact: true }).fill("Improve the documented input contract");
   await page.getByLabel("Intended users").fill("Developers");
   await page.getByLabel("Autonomy").selectOption("build-within-scope");
-  await page.getByLabel("Required check command").fill("node check.mjs");
+  await page.getByLabel("Verification command").fill("node check.mjs");
   await page.getByText("Schedule, budget and scope limits", { exact: true }).click();
   await page.getByRole("button", { name: /^Claude Code model:/ }).click();
   await page.getByRole("combobox", { name: "Search Claude Code model", exact: true }).fill("standing");
@@ -142,7 +215,7 @@ test("owner creates a standing team, previews, runs, reviews and approves with o
 
 test("reusable teams attach without losing mission history and owner tasks survive a lost admission response", async () => {
   const inventory = (await api("/api/project-teams")).body;
-  const previous = inventory.teams[0], projectId = previous.projectId;
+  const previous = inventory.teams.find((team: { repo: string }) => team.repo === realpathSync(repo)), projectId = previous.projectId;
   const context = await browser.newContext({ viewport: { width: 1280, height: 1100 } });
   const page = await context.newPage(), pageErrors: string[] = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
@@ -226,7 +299,7 @@ test("reusable teams attach without losing mission history and owner tasks survi
 });
 
 test("orphaned mission runs offer individual and bulk deletion after project removal", async () => {
-  const team = (await api("/api/project-teams")).body.teams[0];
+  const team = (await api("/api/project-teams")).body.teams.find((team: { repo: string }) => team.repo === realpathSync(repo));
   const ids = team.cycles.flatMap((cycle: { launches: { runId: string }[] }) => cycle.launches.map(launch => launch.runId));
   assert.ok(ids.length >= 2);
   const resultId = team.opportunities[0].result.runId;
@@ -270,7 +343,7 @@ test("orphaned mission runs offer individual and bulk deletion after project rem
 });
 
 test("a stopped, settled mission run is deletable without removing its project", async () => {
-  const mission = (await api("/api/project-teams")).body.teams[0].mission;
+  const mission = (await api("/api/project-teams")).body.teams.find((team: { repo: string }) => team.repo === realpathSync(repo)).mission;
   const stoppedRepo = join(home, "stopped-repo");
   execFileSync("git", ["clone", "-q", "--no-hardlinks", repo, stoppedRepo]);
   const project = (await api("/api/projects", { name: "Stopped mission project", repos: [stoppedRepo] })).body;

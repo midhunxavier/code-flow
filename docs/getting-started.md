@@ -45,6 +45,10 @@ Open the DMG, drag **Code Flow** to **Applications**, then open Code Flow. The E
 
 These are **unnotarized preview builds**. macOS may block them; use npm if blocked. Quit Code Flow before replacing it with a newer download. Run one launcher at a time. [Release notes and checksums](https://github.com/midhunxavier/code-flow/releases/tag/v0.1.0-preview.8).
 
+New builds include in-app updates for macOS previews. After installing a build with this updater, background checks download compatible updates automatically. **Settings → General → App updates** shows download progress and **Restart to update** when ready. Restarting saves active work after confirmation, replaces the app, and reopens it. The updater verifies the release checksum, bundle identity, version, architecture and code signature, and restores the previous bundle if replacement or launch fails. Signed installations continue to use the native signed-update mechanism.
+
+The app must be in a writable folder, such as Applications; copies running from a mounted DMG or macOS App Translocation still offer the manual installer. Windows portable ZIPs also continue to use manual installation. Existing releases through preview.8 need one manual installation of a newer build to acquire the new updater. Settings and history remain in their existing data directories.
+
 The preview stores settings and history in `~/.codeflow`, outside the installation. Updating or removing the launcher preserves that folder.
 
 ### Install from source

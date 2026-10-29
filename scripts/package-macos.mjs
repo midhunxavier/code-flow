@@ -39,7 +39,7 @@ await rm(desktop, { recursive: true, force: true });
 await mkdir(join(desktop, "node"), { recursive: true });
 run("tar", ["-xzf", archive, "--strip-components=1", "-C", join(desktop, "node"), `node-v${nodeVersion}-darwin-${arch}/bin/node`, `node-v${nodeVersion}-darwin-${arch}/LICENSE`]);
 await cp(join(root, "dist/npm"), join(desktop, "backend"), { recursive: true });
-for (const file of ["main.cjs", "preload.cjs", "updates.cjs"]) await cp(join(root, "integrations/desktop", file), join(desktop, file));
+for (const file of ["main.cjs", "preload.cjs", "updates.cjs", "macos-update.cjs"]) await cp(join(root, "integrations/desktop", file), join(desktop, file));
 await writeFile(join(desktop, "update-config.json"), JSON.stringify({ nativeUpdates: Boolean(identity && notary) }));
 await writeFile(join(desktop, "package.json"), JSON.stringify({ name: "code-flow-desktop", productName: "Code Flow", version: pkg.version, description: pkg.description, main: "main.cjs", author: "Code Flow contributors", license: "MIT" }, null, 2));
 const computerHelper = join(desktop, "backend/scripts/computer-use");

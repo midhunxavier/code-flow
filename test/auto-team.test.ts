@@ -464,7 +464,7 @@ test("Auto team resumes a final-wave user question after replaying the earlier f
   assert.equal(run.team!.status, "completed", JSON.stringify(run.team!.gaps));
   assert.equal(run.loop.maxMinutes, 240);
   assert.equal(run.team!.invocationLimit, 200);
-  assert.equal(run.team!.coordinationLimit, 50);
+  assert.equal(run.team!.coordinationLimit, 100);
   assert.ok(run.usage.agentSteps >= earlierUsage, "extending the allowance preserves lifetime usage");
   assert.equal(run.steps.filter((s) => s.title === "Plan Auto team").length, 1);
   assert.equal(run.steps.filter((s) => s.title.startsWith("Auto task")).length, 2);
@@ -667,7 +667,7 @@ test("Auto plans and reserves review against the smaller actual invocation ceili
   const { run } = await finish("Implement the sample", { loop: { check: "node --test", maxSteps: 20, maxInvocations: 4 } });
   assert.equal(run.status, "done", run.error);
   assert.equal(run.team!.invocationLimit, 4);
-  assert.equal(run.team!.coordinationLimit, 1);
+  assert.equal(run.team!.coordinationLimit, 2);
   assert.equal(run.team!.verification!.approved, true);
   assert.ok(run.team!.metrics.invocations <= 4);
 });

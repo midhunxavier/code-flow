@@ -128,7 +128,8 @@ test("legacy load warnings clear after schedule repair; mission guards return 40
 test("a mission created in the UI keeps ownership of its projected automation", { timeout: 60_000 }, async () => {
   const settings = await api("/api/project-teams/settings"); await api("/api/project-teams/settings", { enabled: true, revision: settings.revision });
   await open(`#/project/${project}/automation/missions`); await page.getByRole("button", { name: "Create a mission", exact: true }).click(); const form = page.locator("form.pt-form");
-  await form.getByLabel("Mission", { exact: true }).fill("Record ownership QA"); await form.getByLabel("Intended users").fill("Developers"); await form.getByLabel("Required check command").fill("true"); await form.getByRole("button", { name: "Save draft mission", exact: true }).click(); await form.waitFor({ state: "detached" });
+  await form.getByRole("button", { name: "Configure manually", exact: true }).click();
+  await form.getByLabel("Mission", { exact: true }).fill("Record ownership QA"); await form.getByLabel("Intended users").fill("Developers"); await form.getByLabel("Verification command").fill("true"); await form.getByRole("button", { name: "Save draft mission", exact: true }).click(); await form.waitFor({ state: "detached" });
   const teams = await api(`/api/project-teams?project=${project}`), team = teams.teams.find((t: any) => t.mission.objective === "Record ownership QA" || t.mission.goal === "Record ownership QA") ?? teams.teams.at(-1);
   const a = (await api("/api/automations")).find((a: any) => a.target?.teamId === team.id); assert.ok(a, "mission projection exists");
   for (const [method, body] of [["POST", { enabled: true }], ["DELETE", undefined]] as const) { const result = await request(`/api/automations/${a.id}`, body, method); assert.equal(result.status, 409); assert.match(result.value.error, /project mission/); }

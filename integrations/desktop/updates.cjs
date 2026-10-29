@@ -19,7 +19,7 @@ function compareVersions(a, b) {
   }
   return 0;
 }
-function selectRelease(releases, currentVersion, arch, nativeUpdates, platform = 'darwin') {
+function selectRelease(releases, currentVersion, arch, nativeUpdates, platform = 'darwin', previewInstaller = false) {
   if (!Array.isArray(releases)) throw new Error('Invalid release response');
   const current = versionParts(currentVersion);
   if (!current) throw new Error('Unsupported installed version');
@@ -42,16 +42,20 @@ function selectRelease(releases, currentVersion, arch, nativeUpdates, platform =
     if (!installer) continue;
     const manifest = asset(`releases-${arch}.json`);
     const zip = asset(`${name}.zip`);
+    const checksum = asset(`${installer.name}.sha256`);
+    const native = Boolean(nativeUpdates && signed && manifest && zip);
+    const preview = Boolean(!nativeUpdates && previewInstaller && checksum);
     candidates.push({ version, releaseUrl: `${RELEASES}/tag/${release.tag_name}`, downloadUrl: installer.browser_download_url,
-      canInstall: Boolean(nativeUpdates && signed && manifest && zip), feedUrl: manifest?.browser_download_url });
+      canInstall: native || preview, feedUrl: manifest?.browser_download_url,
+      ...(preview ? { installer: 'preview', checksumUrl: checksum.browser_download_url, size: installer.size } : {}) });
   }
   return candidates.sort((a, b) => compareVersions(b.version, a.version))[0];
 }
 
 class DesktopUpdates extends EventEmitter {
-  constructor({ version, arch, enabled, nativeUpdates, platform = 'darwin', autoUpdater, fetch: fetchRelease = (...args) => fetch(...args), openExternal, restart }) {
+  constructor({ version, arch, enabled, nativeUpdates, platform = 'darwin', autoUpdater, fetch: fetchRelease = (...args) => fetch(...args), openExternal, restart, previewInstaller }) {
     super();
-    this.options = { version, arch, enabled, nativeUpdates, platform, autoUpdater, fetchRelease, openExternal, restart };
+    this.options = { version, arch, enabled, nativeUpdates, platform, autoUpdater, fetchRelease, openExternal, restart, previewInstaller };
     this.state = { currentVersion: version, phase: enabled ? 'idle' : 'unsupported',
       message: enabled ? 'Check for a newer version of Code Flow.' : 'Updates are available in the installed desktop app.' };
     this.nativeBusy = false;
@@ -79,10 +83,11 @@ class DesktopUpdates extends EventEmitter {
     try {
       const response = await this.options.fetchRelease(API, { headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'Code-Flow-Desktop' }, signal: AbortSignal.timeout(15000) });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      this.candidate = selectRelease(await response.json(), this.options.version, this.options.arch, this.options.nativeUpdates, this.options.platform);
+      const previewInstaller = await this.options.previewInstaller?.supported();
+      this.candidate = selectRelease(await response.json(), this.options.version, this.options.arch, this.options.nativeUpdates, this.options.platform, previewInstaller);
       const checkedAt = new Date().toISOString();
       if (!this.candidate) return this.set({ phase: 'up-to-date', checkedAt, message: 'You’re up to date.' });
-      const { feedUrl, ...release } = this.candidate;
+      const { feedUrl, installer, checksumUrl, size, ...release } = this.candidate;
       return this.set({ ...release, phase: 'available', checkedAt,
         message: release.canInstall ? `Code Flow ${release.version} is available.` : this.options.platform === 'win32' ? `Code Flow ${release.version} is available. Download the ZIP, quit Code Flow, then extract and open the new copy.` : `Code Flow ${release.version} is available. Download the installer, then quit Code Flow and replace it in Applications.` });
     } catch {
@@ -93,13 +98,36 @@ class DesktopUpdates extends EventEmitter {
     if (!this.candidate || !['available', 'error'].includes(this.state.phase) || this.nativeBusy) return this.state;
     if (!this.candidate.canInstall) return this.openInstaller();
     this.nativeBusy = true;
-    this.set({ phase: 'downloading', message: 'Downloading and verifying your update. You can keep working.' });
+    this.set({ phase: 'downloading', progress: undefined, message: 'Downloading and verifying your update. You can keep working.' });
+    if (this.candidate.installer === 'preview') {
+      try {
+        await this.options.previewInstaller.prepare(this.candidate, progress => this.set({ progress,
+          message: progress === 100 ? 'Verifying and preparing your update…' : `Downloading update… ${progress}%` }));
+        return this.set({ phase: 'downloaded', progress: undefined, message: 'Your update is ready. Restart Code Flow to install it.' });
+      } catch {
+        return this.set({ phase: 'error', progress: undefined, message: 'The update could not be downloaded or verified. Try again, or download the installer.' });
+      } finally { this.nativeBusy = false; }
+    }
     try {
       this.options.autoUpdater.setFeedURL({ url: this.candidate.feedUrl, serverType: 'json' });
       this.options.autoUpdater.checkForUpdates();
     } catch (error) { this.options.autoUpdater.emit('error', error); }
     return this.state;
   }
+  async backgroundCheck() {
+    await this.check();
+    if (this.state.phase === 'available' && this.candidate?.canInstall) await this.download();
+    return this.state;
+  }
+  async quitAndInstall() {
+    if (this.candidate?.installer === 'preview') {
+      await this.options.previewInstaller.install();
+      return false; // The helper waits for a normal app quit before replacing it.
+    }
+    this.options.autoUpdater.quitAndInstall();
+    return true;
+  }
+  async dispose() { await this.options.previewInstaller?.dispose(); }
   async openInstaller() {
     if (this.candidate) {
       try { await this.options.openExternal(this.candidate.downloadUrl); }

@@ -28,9 +28,9 @@ Workers submit completed artifacts; Code Flow commits and integrates them, runs 
 
 1. Open **Project → More → Automation → Pursue a mission** and click **Enable project missions**. The choice applies immediately to every project on this host and is saved across restarts; no startup flag is required. Auto team must also be permitted by the host (`CODEFLOW_AUTO_TEAM_ENABLED` defaults to enabled).
 2. Open a project that explicitly contains the repository. Select **Create a mission**.
-3. Enter its mission, intended users, priorities, exclusions and named local base branch. Select a coordinator and worker/reviewer providers. Claude, Codex and Antigravity are eligible when installed; ACP and extension providers are currently excluded from unattended project missions.
-4. Choose **Build within scope** and supply a required check command, or choose proposals only. Set allowed paths, categories and change limits. Models and reasoning use the existing provider catalog.
-5. Review the schedule and budgets, save the draft, then **Activate**. Use **Preview next cycle** before **Run cycle now**.
+3. Describe the outcome in **Mission**, then choose **Draft with AI**. One short CLI turn drafts the name, mission, intended users, priorities and exclusions from your goal. If it asks questions under **To clarify**, enter your replies and choose **Update draft with answers**. You can answer only the questions you know; the next draft incorporates your replies and preserves your edits. Failed requests keep your answers for retry. Review the updated fields before saving. **Configure manually** opens the same editable details without a model call. Drafting does not save, activate or run a mission.
+4. New missions start with proposals only and recurring discovery off. The form detects the named local base branch, verification command and setup from the repository, preferring `.codeflow/config.json`. Proposals do not need a check; **Also build one eligible draft per cycle** requires a verification command. Review allowed paths, providers, categories and limits under **Mission details**. Claude, Codex and Antigravity are eligible when installed; ACP and extension providers are currently excluded from unattended project missions.
+5. Review the schedule and budgets, save the draft, then **Activate**. Enable **Run recurring discovery** if desired. Use **Preview next cycle** before **Run cycle now**.
 
 **Disable project missions** prevents new cycles on this host. Stop active or unresolved cycles first. Individual teams keep their activation state; enabling the feature again resumes schedules for teams already active. `CODEFLOW_PROJECT_TEAMS_ENABLED` remains an optional initial default until a UI choice is saved in `CODEFLOW_HOME/project-teams/settings.json`. Separate local and SSH hosts keep their own settings.
 
@@ -38,7 +38,7 @@ The default schedule is Monday at 09:00 in the browser's time zone. Daily, selec
 
 The default scope permits the repository except `.codeflow` and `.github/workflows`, with eight changed files and 400 added/deleted lines. Credential paths and binary changes are excluded. File bounds enforce mechanical scope; a model's risk and benefit estimates remain judgments to review.
 
-Discovery reserves eight calls and 15 minutes. Implementation reserves 16 calls and 45 minutes. The rolling seven-day allowance is 48 calls and 120 minutes. Each launch reserves its full limit before starting. An exact, durable terminal-run receipt replaces that reservation with observed calls and elapsed time rounded up to whole minutes, including cancelled, failed and stopped runs. Original allocation fields and historical mission budgets remain saved. Unknown or interrupted launches remain fully reserved even after seven days; missing evidence never becomes zero usage. Legacy runs can gain additive usage receipts without resetting their history. Increase budgets deliberately in the mission editor when the defaults do not fit your cadence.
+New missions reserve 40 calls and 60 minutes for discovery, and 80 calls and 120 minutes for implementation. The rolling seven-day allowance is 500 calls and 1,440 minutes. Teams allow six members, six attempts per task, and four implementation repair rounds; discovery stays read-only. Existing missions retain their saved budgets until edited. Each launch reserves its full limit before starting. An exact, durable terminal-run receipt replaces that reservation with observed calls and elapsed time rounded up to whole minutes, including cancelled, failed and stopped runs. Original allocation fields and historical mission budgets remain saved. Unknown or interrupted launches remain fully reserved even after seven days; missing evidence never becomes zero usage. Legacy runs can gain additive usage receipts without resetting their history. Increase budgets deliberately in the mission editor when the defaults do not fit your cadence.
 
 ## What a cycle does
 
@@ -84,11 +84,13 @@ Owner APIs, managed child runs and the project-scoped event topic are unavailabl
 
 ## API
 
-All mutations use a client-generated `operationId`. Team edits and opportunity decisions require the current `revision`; opportunity decisions also require `opportunityRevision`. A replay with the same operation and content is idempotent; changing its content or acting on a stale revision returns a conflict.
+All saved mutations use a client-generated `operationId`. Team edits and opportunity decisions require the current `revision`; opportunity decisions also require `opportunityRevision`. A replay with the same operation and content is idempotent; changing its content or acting on a stale revision returns a conflict. Draft generation is a cancellable model request and creates no saved mission. It shares prompt improvement's private workspace, execution lease, provider quota handling and concurrency limit; AI output cannot set executable commands or execution policy.
 
 | Method and path | Purpose |
 |---|---|
 | `GET /api/project-teams?project=ID` | Scoped assignments, reusable team summaries, storage faults and provider eligibility |
+| `GET /api/project-teams/defaults?project=ID&repo=PATH` | Detect editable branch, verification and setup defaults for a project repository |
+| `POST /api/project-teams/draft` | Draft prose from projectId, repo, text and optional agent; returns draft and agent without saving |
 | `GET /api/project-teams/definitions` | Reusable team summaries and definition storage faults |
 | `GET /api/project-teams/definitions/:id` | One definition and its retained versions |
 | `POST /api/project-teams/definitions` | Create from name/configuration, or name/sourceTeamId |

@@ -15,6 +15,8 @@ import { AgentTeamLibrary, type TeamProvider } from "./agent-team-library.js";
 import { PROJECT_TEAM_BUDGET_RANGES, allowance, defaultProjectTeamBudget, projectTeamUsage } from "../src/project-team-budget.js";
 import { CHECK_REQUIRED, buildRefusal, candidateProblem, taskAdmissionProblem } from "../src/project-team-admission.js";
 import { projectTeamInboxSummary, projectTeamNeedsOwner } from "./project-team-inbox.js";
+import type { MissionDefaults, MissionDraft } from "../src/mission-draft.js";
+import { missionDraftInput } from "./mission-draft-input.js";
 
 type Provider = TeamProvider;
 type Owner = { name: string; projectId: string; repair?: true };
@@ -126,23 +128,65 @@ function MissionForm({ projectId, repos, repoChosen, providers, definitions, ini
   useEffect(() => { void loadModels(); }, []);
   const eligible = providers.filter((p) => p.available && !p.reason);
   const [definition, setDefinition] = useState(initialDefinition ?? team?.definition);
-  const [scheduleEnabled, setScheduleEnabled] = useState(team ? team.scheduleEnabled !== false : !initialDefinition);
-  const [name, setName] = useState(team?.name ?? "Product mission"), [repo, setRepo] = useState(team?.repo ?? repos[0] ?? ""), [mission, setMission] = useState(team?.mission.mission ?? ""), [users, setUsers] = useState(team?.mission.users ?? ""), [branch, setBranch] = useState(team?.mission.baseBranch ?? "main"), [check, setCheck] = useState(team?.mission.check ?? ""), [mode, setMode] = useState(team?.mission.mode ?? "build-within-scope"), [coordinator, setCoordinator] = useState(team?.mission.coordinator ?? eligible[0]?.id ?? ""), [pool, setPool] = useState<string[]>(team?.mission.pool ?? eligible.map((p) => p.id)), [paths, setPaths] = useState(team?.mission.paths.join("\n") ?? "*"), [priorities, setPriorities] = useState(team?.mission.priorities.join("\n") ?? ""), [exclusions, setExclusions] = useState(team?.mission.exclusions.join("\n") ?? ""), [busy, setBusy] = useState(false), [error, setError] = useState("");
+  const [scheduleEnabled, setScheduleEnabled] = useState(team ? team.scheduleEnabled !== false : false);
+  const [name, setName] = useState(team?.name ?? "Product mission"), [repo, setRepo] = useState(team?.repo ?? repos[0] ?? ""), [mission, setMission] = useState(team?.mission.mission ?? ""), [users, setUsers] = useState(team?.mission.users ?? ""), [branch, setBranch] = useState(team?.mission.baseBranch ?? "main"), [check, setCheck] = useState(team?.mission.check ?? ""), [mode, setMode] = useState(team?.mission.mode ?? "propose"), [coordinator, setCoordinator] = useState(team?.mission.coordinator ?? eligible[0]?.id ?? ""), [pool, setPool] = useState<string[]>(team?.mission.pool ?? eligible.map((p) => p.id)), [paths, setPaths] = useState(team?.mission.paths.join("\n") ?? "*"), [priorities, setPriorities] = useState(team?.mission.priorities.join("\n") ?? ""), [exclusions, setExclusions] = useState(team?.mission.exclusions.join("\n") ?? ""), [busy, setBusy] = useState(false), [error, setError] = useState("");
   const [advanced, setAdvanced] = useState({ excludedPaths: team?.mission.excludedPaths ?? [".codeflow", ".github/workflows"], maxFiles: team?.mission.maxFiles ?? 8, maxLines: team?.mission.maxLines ?? 400, rescanDays: team?.mission.rescanDays ?? 28, budget: team?.mission.budget ?? defaultProjectTeamBudget(), schedule: team?.schedule ?? team?.mission.schedule ?? { at: "09:00", days: [1], timezone: localTimezone() }, categories: team?.mission.categories ?? ["bug", "usability", "performance", "tests", "docs"], trust: team?.mission.trust ?? "standard", setup: team?.mission.setup ?? "", agentSettings: team?.mission.agentSettings ?? {} });
-  const submit = async (event: Event) => { event.preventDefault(); setBusy(true); setError(""); try { const value = { ...advanced, ...(team?.mission.verification && check === team.mission.check ? { verification: team.mission.verification } : {}), ...(team?.mission.roleSettings ? { roleSettings: team.mission.roleSettings } : {}), mission, users, baseBranch: branch, mode, check, coordinator, pool, paths: lines(paths), priorities: lines(priorities), exclusions: lines(exclusions) }; await post(team ? `/api/project-teams/${team.id}` : "/api/project-teams", { operationId: key(), ...(team ? { revision } : { projectId, repo }), ...(definition ? { definition: { id: definition.id, revision: definition.revision } } : team ? { definition: null } : {}), scheduleEnabled, name, mission: value }); saved(); } catch (e) { setError((e as Error).message); if (e instanceof ApiError && e.status === 409) void refresh?.(); } finally { setBusy(false); } };
+  const [detailsOpen, setDetailsOpen] = useState(!!team || !!initialDefinition), [drafting, setDrafting] = useState(false), [drafted, setDrafted] = useState(false), [questions, setQuestions] = useState<string[]>([]);
+  const [draftError, setDraftError] = useState("");
+  const [answers, setAnswers] = useState<Record<string, string>>({}), [appliedAnswers, setAppliedAnswers] = useState<Record<string, string>>({});
+  const pendingAnswers = Object.entries(answers).some(([question, answer]) => answer.trim() && answer.trim() !== appliedAnswers[question]);
+  const [defaults, setDefaults] = useState<MissionDefaults>(), [defaultsBusy, setDefaultsBusy] = useState(false), [defaultsError, setDefaultsError] = useState("");
+  const touched = useRef({ check: false, setup: false, branch: false });
+  const draftController = useRef<AbortController>();
+  useEffect(() => () => draftController.current?.abort(), []);
+  useEffect(() => {
+    if (team || !repo) return;
+    let live = true; setDefaults(undefined); setDefaultsBusy(true); setDefaultsError("");
+    void api<MissionDefaults>(`/api/project-teams/defaults?project=${encodeURIComponent(projectId)}&repo=${encodeURIComponent(repo)}`).then(value => {
+      if (!live) return;
+      setDefaults(value);
+      if (!touched.current.check) setCheck(value.check);
+      if (!touched.current.branch) setBranch(value.baseBranch);
+      if (!touched.current.setup) setAdvanced(current => ({ ...current, setup: value.setup }));
+    }, error => { if (live) setDefaultsError((error as Error).message); }).finally(() => { if (live) setDefaultsBusy(false); });
+    return () => { live = false; };
+  }, [repo, projectId]);
+  const generate = async () => {
+    if (!mission.trim() || drafting) return;
+    const controller = new AbortController(); draftController.current = controller;
+    setDrafting(true); setError(""); setDraftError("");
+    try {
+      const text = drafted ? missionDraftInput({ name, mission, users, priorities: lines(priorities), exclusions: lines(exclusions), questions }, answers) : mission;
+      const result = await api<{ draft: MissionDraft }>("/api/project-teams/draft", { method: "POST", body: JSON.stringify({ projectId, repo, text, agent: definition?.configuration.coordinator ?? coordinator }), signal: controller.signal });
+      if (controller.signal.aborted) return;
+      setName(result.draft.name); setMission(result.draft.mission); setUsers(result.draft.users); setPriorities(result.draft.priorities.join("\n")); setExclusions(result.draft.exclusions.join("\n")); setQuestions(result.draft.questions); setDrafted(true); setDetailsOpen(true);
+      setAppliedAnswers(Object.fromEntries(Object.entries(answers).filter(([, answer]) => answer.trim()).map(([question, answer]) => [question, answer.trim()])));
+    } catch (error) { if (!controller.signal.aborted) setDraftError((error as Error).message); }
+    finally { if (!controller.signal.aborted) setDrafting(false); }
+  };
+  const hasCheck = !!check.trim() || !!team?.mission.verification?.checks.some(c => c.required) && check === team.mission.check;
+  const submit = async (event: Event) => { event.preventDefault(); if (busy || drafting || pendingAnswers) return; if (mode === "build-within-scope" && !hasCheck) { setError("Add a verification command before enabling automatic builds, or choose proposals only."); setDetailsOpen(true); return; } setBusy(true); setError(""); try { const value = { ...advanced, ...(team?.mission.verification && check === team.mission.check ? { verification: team.mission.verification } : {}), ...(team?.mission.roleSettings ? { roleSettings: team.mission.roleSettings } : {}), mission, users, baseBranch: branch, mode, check, coordinator, pool, paths: lines(paths), priorities: lines(priorities), exclusions: lines(exclusions) }; await post(team ? `/api/project-teams/${team.id}` : "/api/project-teams", { operationId: key(), ...(team ? { revision } : { projectId, repo }), ...(definition ? { definition: { id: definition.id, revision: definition.revision } } : team ? { definition: null } : {}), scheduleEnabled, name, mission: value }); saved(); } catch (e) { setError((e as Error).message); if (e instanceof ApiError && e.status === 409) void refresh?.(); } finally { setBusy(false); } };
   // A server error describes the values that were submitted; editing them makes it stale.
-  return <form class="pt-form" onSubmit={submit} onInput={() => setError("")}>
+  return <form class="pt-form" aria-label={team ? "Edit mission" : "Create mission"} aria-busy={drafting || busy} onSubmit={submit} onInput={() => { setError(""); setDraftError(""); }}>
+    <fieldset class="pt-fields" disabled={busy || drafting}>
+    {!team && !repoChosen && <label>Repository<select class="field" value={repo} onChange={(e) => { touched.current = { check: false, setup: false, branch: false }; setCheck(""); setBranch(""); setAdvanced(current => ({ ...current, setup: "" })); setDrafted(false); setQuestions([]); setAnswers({}); setAppliedAnswers({}); setRepo(e.currentTarget.value); }}>{repos.map((r) => <option key={r}>{r}</option>)}</select></label>}
+    <label>Mission<textarea class="field" required rows={3} value={mission} placeholder="What should the agents improve, and why?" onInput={(e) => setMission(e.currentTarget.value)} /></label>
+    {!team && <div class="pt-draft-assist"><p class="help">Describe the outcome. AI can draft the mission details for you to review. Saving a draft does not start work.</p><div class="pt-actions"><button class="btn primary" type="button" disabled={!mission.trim() || !eligible.length || !!blocked || defaultsBusy} onClick={() => void generate()}>{drafting ? "Drafting mission…" : drafted ? "Redraft with AI" : "Draft with AI"}</button><button class="btn" type="button" onClick={() => setDetailsOpen(true)}>Configure manually</button></div></div>}
+    {draftError && <p role="alert">{draftError}</p>}
+    {drafted && !draftError && !drafting && <p class="help" role="status">{pendingAnswers ? "Update the draft with your answers before saving." : "Draft ready. Review the mission and intended users before saving."}</p>}
+    {questions.length > 0 && <section class="pt-draft-questions" aria-label="Clarify your mission"><h3>To clarify</h3><p class="help">Answer what you know, then update the draft. You can leave a question blank if you’re unsure.</p>{questions.map((question, index) => <label key={`${index}:${question}`}>{question}<textarea class="field" rows={2} maxLength={2000} value={Object.hasOwn(answers, question) ? answers[question] : ""} placeholder="Your answer" onInput={(e) => setAnswers(current => ({ ...current, [question]: e.currentTarget.value }))} /></label>)}<button class="btn" type="button" disabled={!pendingAnswers || !mission.trim() || !eligible.length || !!blocked || defaultsBusy} onClick={() => void generate()}>{drafting ? "Updating draft…" : "Update draft with answers"}</button></section>}
+    <details open={detailsOpen} onToggle={(e) => setDetailsOpen(e.currentTarget.open)}><summary>Mission details</summary><div class="pt-fields">
     <label>Mission name<input class="field" required value={name} onInput={(e) => setName(e.currentTarget.value)} /></label>
-    {!team && !repoChosen && <label>Repository<select class="field" value={repo} onChange={(e) => setRepo(e.currentTarget.value)}>{repos.map((r) => <option key={r}>{r}</option>)}</select></label>}
     <label>Agent team<select class="field" aria-label="Agent team" value={definition ? `${definition.id}:${definition.revision}` : ""} onChange={(e) => setDefinition(definitions.find((entry) => `${entry.id}:${entry.revision}` === e.currentTarget.value))}><option value="">Custom team for this assignment</option>{definition && !definitions.some((entry) => entry.id === definition.id && entry.revision === definition.revision) && <option value={`${definition.id}:${definition.revision}`}>{definition.name} · pinned version {definition.revision}</option>}{definitions.map((entry) => <option key={entry.id} value={`${entry.id}:${entry.revision}`}>{entry.name} · version {entry.revision}</option>)}</select></label>
     {definition && <p class="help">Using {definition.name}, version {definition.revision}. Its coordinator, provider pool and model settings are pinned to this assignment.</p>}
-    <label>Mission<textarea class="field" required rows={3} value={mission} placeholder="What should the agents improve, and why?" onInput={(e) => setMission(e.currentTarget.value)} /></label>
     <label>Intended users<textarea class="field" required value={users} onInput={(e) => setUsers(e.currentTarget.value)} /></label>
     <label>Priorities, one per line<textarea class="field" value={priorities} onInput={(e) => setPriorities(e.currentTarget.value)} /></label>
     <label>Things to avoid, one per line<textarea class="field" value={exclusions} onInput={(e) => setExclusions(e.currentTarget.value)} /></label>
-    <label>Base branch<input class="field" required value={branch} onInput={(e) => setBranch(e.currentTarget.value)} /></label>
+    <label>Base branch<input class="field" required value={branch} onInput={(e) => { touched.current.branch = true; setBranch(e.currentTarget.value); }} /></label>
     <label>Autonomy<select class="field" value={mode} onChange={(e) => setMode(e.currentTarget.value as typeof mode)}><option value="propose">Propose improvements for me to choose</option><option value="build-within-scope">Also build one eligible draft per cycle</option></select></label>
-    <label>Required check command<input class="field" value={check} placeholder="npm test" required={mode === "build-within-scope"} onInput={(e) => setCheck(e.currentTarget.value)} /></label>
+    <label>Verification command<input class="field" value={check} placeholder="Optional for proposals" onInput={(e) => { touched.current.check = true; setCheck(e.currentTarget.value); }} /></label>
+    <p class="help">{defaultsBusy ? "Finding repository defaults…" : defaults?.source && check === defaults.check ? `Detected from ${defaults.source}. ` : ""}{mode === "propose" ? "Not required to propose improvements. Add a check before asking the team to build changes." : "Required before the team can build changes automatically."}</p>
+    {defaultsError && <p class="help" role="alert">Couldn’t load repository defaults: {defaultsError}. You can enter them manually.</p>}{defaults?.warning && <p class="help">{defaults.warning}</p>}
     <label>Allowed paths, one per line<textarea class="field" value={paths} onInput={(e) => setPaths(e.currentTarget.value)} /></label>
     {!definition && <><label>Coordinator<select class="field" value={coordinator} required onChange={(e) => setCoordinator(e.currentTarget.value)}>{eligible.map((p) => <option value={p.id} key={p.id}>{p.name}</option>)}</select></label>
     <fieldset><legend>Workers and independent reviewer</legend>{providers.map((p) => <label key={p.id}><input type="checkbox" checked={pool.includes(p.id)} disabled={!p.available || !!p.reason} onChange={(e) => setPool(e.currentTarget.checked ? [...pool, p.id] : pool.filter((id) => id !== p.id))} /> {p.name}{p.reason ? ` — ${p.reason}` : !p.available ? " — unavailable" : ""}</label>)}</fieldset></>}
@@ -158,11 +202,13 @@ function MissionForm({ projectId, repos, repoChosen, providers, definitions, ini
       <label>Excluded paths, one per line<textarea class="field" value={advanced.excludedPaths.join("\n")} onInput={(e) => setAdvanced({ ...advanced, excludedPaths: lines(e.currentTarget.value) })} /></label>
       <fieldset><legend>Allowed work categories</legend>{(["bug", "usability", "performance", "tests", "docs", "experiment"] as const).map((category) => <label key={category}><input type="checkbox" checked={advanced.categories.includes(category)} onChange={(e) => setAdvanced({ ...advanced, categories: e.currentTarget.checked ? [...advanced.categories, category] : advanced.categories.filter((c) => c !== category) })} />{category}</label>)}</fieldset>
       <label>Execution permissions<select class="field" value={advanced.trust} onChange={(e) => setAdvanced({ ...advanced, trust: e.currentTarget.value as ProjectTeamMission["trust"] })}><option value="safe">Safe</option><option value="standard">Standard</option><option value="trusted">Trusted</option></select></label>
-      <label>Setup command<input class="field" value={advanced.setup} onInput={(e) => setAdvanced({ ...advanced, setup: e.currentTarget.value })} /></label>
+      <label>Setup command<input class="field" value={advanced.setup} onInput={(e) => { touched.current.setup = true; setAdvanced({ ...advanced, setup: e.currentTarget.value }); }} /></label>
       {!definition && <fieldset><legend>Models and reasoning</legend>{agents.value.filter((a) => eligible.some((p) => p.id === a.id)).map((agent) => <ModelRow key={agent.id} agent={agent} used={pool.includes(agent.id) || coordinator === agent.id} settings={advanced.agentSettings[agent.id] ?? {}} onChange={(patch) => setAdvanced({ ...advanced, agentSettings: { ...advanced.agentSettings, [agent.id]: { ...advanced.agentSettings[agent.id], ...patch } } })} />)}</fieldset>}
     </details>
+    </div></details>
+    </fieldset>
     {reload && <div role="alert"><p>This mission was changed elsewhere after you opened this form, so saving it here is refused. Reload the form to edit the latest version; your unsaved changes here are discarded.</p><button type="button" class="btn small" onClick={reload}>Reload form</button></div>}
-    {error && <p role="alert">{error}</p>}<button class="btn primary" disabled={busy || !eligible.length || !!blocked || !!reload}>{busy ? "Saving…" : team ? "Save mission" : "Save draft mission"}</button><button type="button" class="btn" onClick={saved}>Cancel</button>
+    {error && <p role="alert">{error}</p>}{detailsOpen && <button class="btn primary" disabled={busy || drafting || pendingAnswers || defaultsBusy || !eligible.length || !!blocked || !!reload}>{busy ? "Saving…" : team ? "Save mission" : "Save draft mission"}</button>}<button type="button" class="btn" disabled={busy} onClick={saved}>Cancel</button>
   </form>;
 }
 function TeamCard({ team: t, projectId, enabled, providers, definitions, changed }: { team: ProjectTeam; projectId: string; enabled: boolean; providers: Provider[]; definitions: AgentTeamSnapshot[]; changed: () => unknown }) {

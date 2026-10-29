@@ -64,6 +64,11 @@ export function work({ vendor, prompt, write, schemaRequested, fail }) {
 
   if (prompt.includes("You are the code-flow documentation assistant.")) {
     answer = json({ answer: "Open the composer, choose a repository, describe the task and select Start run. See Getting started for the full walkthrough." });
+  } else if (prompt.includes("Draft an editable project mission from the owner's goal.")) {
+    const clarificationContext = prompt.split("Mission drafting context:\n")[1];
+    const context = clarificationContext ? JSON.parse(clarificationContext) : undefined;
+    const replies = context?.clarifications ?? [];
+    answer = prompt.includes("MISSION-INVALID") ? json({ name: "Invalid draft", check: "echo unsafe" }) : json({ name: context?.draft.name ?? "Improve device onboarding", mission: replies.length ? `Improve device onboarding. ${replies.map(reply => reply.answer).join(" ")}` : "Make it easier for users to connect their OPC UA devices and understand connection errors.", users: context?.draft.users ?? "Engineers connecting OPC UA devices", priorities: context?.draft.priorities ?? ["Clear connection setup", "Actionable error messages"], exclusions: context?.draft.exclusions ?? [], questions: prompt.includes("MISSION-QUESTIONS") && !replies.length ? ["Which connection step needs improvement?", "How often do users connect devices?"] : [] });
   } else if (prompt.includes("## Task to improve")) {
     // The composer's Improve: the task restated with a done line. IMPROVE-EMPTY answers with nothing usable.
     const original = prompt.slice(prompt.indexOf("## Task to improve") + "## Task to improve".length).trim();
