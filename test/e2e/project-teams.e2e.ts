@@ -1,7 +1,7 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { createServer, type AddressInfo } from "node:net";
 import { join } from "node:path";
@@ -215,7 +215,7 @@ test("owner creates a standing team, previews, runs, reviews and approves with o
 
 test("reusable teams attach without losing mission history and owner tasks survive a lost admission response", async () => {
   const inventory = (await api("/api/project-teams")).body;
-  const previous = inventory.teams[0], projectId = previous.projectId;
+  const previous = inventory.teams.find((team: { repo: string }) => team.repo === realpathSync(repo)), projectId = previous.projectId;
   const context = await browser.newContext({ viewport: { width: 1280, height: 1100 } });
   const page = await context.newPage(), pageErrors: string[] = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
@@ -299,7 +299,7 @@ test("reusable teams attach without losing mission history and owner tasks survi
 });
 
 test("orphaned mission runs offer individual and bulk deletion after project removal", async () => {
-  const team = (await api("/api/project-teams")).body.teams[0];
+  const team = (await api("/api/project-teams")).body.teams.find((team: { repo: string }) => team.repo === realpathSync(repo));
   const ids = team.cycles.flatMap((cycle: { launches: { runId: string }[] }) => cycle.launches.map(launch => launch.runId));
   assert.ok(ids.length >= 2);
   const resultId = team.opportunities[0].result.runId;
@@ -343,7 +343,7 @@ test("orphaned mission runs offer individual and bulk deletion after project rem
 });
 
 test("a stopped, settled mission run is deletable without removing its project", async () => {
-  const mission = (await api("/api/project-teams")).body.teams[0].mission;
+  const mission = (await api("/api/project-teams")).body.teams.find((team: { repo: string }) => team.repo === realpathSync(repo)).mission;
   const stoppedRepo = join(home, "stopped-repo");
   execFileSync("git", ["clone", "-q", "--no-hardlinks", repo, stoppedRepo]);
   const project = (await api("/api/projects", { name: "Stopped mission project", repos: [stoppedRepo] })).body;
