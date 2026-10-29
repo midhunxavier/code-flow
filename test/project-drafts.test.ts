@@ -10,6 +10,8 @@ Object.assign(globalThis, {
 });
 globalThis.fetch = (async (input: string) => {
   const url = new URL(input, "http://localhost"), repo = url.searchParams.get("repo");
+  if (url.pathname === "/api/projects") return Response.json([]);
+  if (url.pathname === "/api/health") return Response.json({ projects: { available: true } });
   return new Response(JSON.stringify(url.pathname === "/api/branches" ? { repo, current: "main", branches: [{ name: "main" }, { name: "feature/a" }], worktreeRoot: `${repo}/worktrees` } : url.pathname === "/api/repo-config" ? { found: true, config: { setup: `setup ${repo}`, check: `test ${repo}` } } : {}), { status: 200 });
 }) as typeof fetch;
 const state = await import("../ui/state.js");
@@ -116,7 +118,7 @@ test("project deletion leaves a removed run even when the project inventory disa
     state.runs.value = new Map(cached ? [[id, run]] : []);
     state.route.value = { view: "run", id };
     state.upsertRun({ ...run, deleted: true });
-    await state.discardProjectDraft(project);
+    await state.loadProjects(true);
     assert.deepEqual(state.route.value, { view: "projects" });
     assert.equal(state.deletedRunNotice.value, null, "project deletion does not leave an orphaned run recovery banner");
   }

@@ -317,6 +317,8 @@ export async function loadProjects(fresh = false) {
   if (completeProjectInventory && draftsReady.value) {
     const gone = previous.filter(project => !projects.value.some(item => item.id === project.id)).map(project => project.id);
     if (composerProject.value && !projects.value.some(project => project.id === composerProject.value)) gone.push(composerProject.value);
+    const deletedProject = deletedRunNotice.value && deletedRunProjects.get(deletedRunNotice.value.id);
+    if (deletedProject && !projects.value.some(project => project.id === deletedProject)) gone.push(deletedProject);
     for (const project of new Set(gone)) await discardProjectDraft(project);
   }
   if (completeProjectInventory) {
