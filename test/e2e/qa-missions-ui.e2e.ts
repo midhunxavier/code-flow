@@ -189,7 +189,7 @@ test("new reusable assignments have one repository picker and archived cards are
   // The archived card streams before the ownership inventory finishes reloading.
   // Exercise the newly available action once that authoritative refresh settles.
   await page.getByRole("button", { name: "Create a mission", exact: true }).click();
-  await page.getByLabel("Mission name", { exact: true }).waitFor();
+  await page.getByLabel("Mission", { exact: true }).waitFor();
   await page.getByRole("button", { name: "Cancel", exact: true }).click();
 });
 
