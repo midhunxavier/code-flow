@@ -19,6 +19,24 @@ function repository() { const repo = mkdtempSync(join(tmpdir(), "cf-team-repo-")
 async function until(fn: () => boolean, ms = 30000) { const start = Date.now(); while (!fn()) { if (Date.now() - start > ms) throw new Error("Timed out"); await new Promise(r => setTimeout(r, 30)); } }
 async function done(run: Run) { await until(() => run.status !== "running"); assert.equal(run.status, "done", run.error); }
 
+test("a delegated team preserves disabled setup and check commands", async () => {
+  const repo = repository(); mkdirSync(join(repo, ".codeflow"));
+  writeFileSync(join(repo, ".codeflow/config.json"), JSON.stringify({ setup: "echo unwanted-setup >&2; exit 1", check: "exit 1" }));
+  git(repo, "add", "."); git(repo, "-c", "user.name=T", "-c", "user.email=t@t", "commit", "-qm", "repository commands");
+  let delegated = false;
+  const team = { ...findPattern("auto-team")!, run: async (ctx: import("../src/engine.js").TeamContext) => {
+    assert.equal(ctx.run.loop.setup, undefined); assert.equal(ctx.run.loop.check, undefined);
+    await ctx.worktree("integration"); delegated = true; return "Research answer; no file changes.";
+  } };
+  const manager = new RunManager(id => id === "auto-team" ? team : findPattern(id));
+  try {
+    const run = await manager.start({ pattern: findPattern("solo")!, repo, roles: { agent: ["claude"] }, options: {}, task: "Investigate supported protocols", trust: "standard", taskTeam: config, loop: { setup: "", check: "" } });
+    await done(run); assert.equal(delegated, true);
+    const child = manager.get(run.teamTurns![0]!.executionId)!;
+    assert.equal(child.status, "done"); assert.equal(child.steps.some(step => step.kind === "setup"), false);
+  } finally { await manager.shutdown(); }
+});
+
 test("private team checkpoints retain staged/unstaged files and apply exactly once without moving HEAD", async () => {
   const repo = repository();
   writeFileSync(join(repo, "README.md"), "Staged\n"); git(repo, "add", "."); writeFileSync(join(repo, "README.md"), "Unstaged\n"); writeFileSync(join(repo, "draft.txt"), "Untracked\n");
@@ -54,7 +72,7 @@ test("Agent → Team → Agent retains one task, native session and unsaved edit
     const session = run.steps[0]!.sessionId, tree = run.worktrees[0]!;
     writeFileSync(join(tree.path, "draft.txt"), "Preserve me\n");
     await manager.configureTaskTeam(run.id, config);
-    await assert.rejects(manager.configureTaskTeam(run.id, { ...config, maxCalls: 0 }), /Agent calls.*between 4 and 200/);
+    await assert.rejects(manager.configureTaskTeam(run.id, { ...config, maxCalls: 0 }), /Agent calls.*between 4 and 1000/);
     assert.deepEqual(run.taskTeam, config, "invalid settings do not replace the configured team");
     await manager.followUp(run.id, { kind: "reply", agent: "claude", worktree: "solo", message: "Implement the result" }); await done(run);
     assert.equal(readFileSync(join(tree.path, "result.txt"), "utf8"), "Team result\n");

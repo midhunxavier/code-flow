@@ -194,10 +194,11 @@ export class Projects {
     });
   }
 
-  /** Delete a project. Its runs are kept and belong to no project. */
-  remove(id: string): Promise<void> {
-    return this.change(() => {
-      this.require(id);
+  /** Serialize dependent cleanup with placement and membership edits before removing the project. */
+  remove(id: string, beforeRemove?: (project: Project) => Promise<void>): Promise<void> {
+    return this.change(async () => {
+      const project = this.require(id);
+      await beforeRemove?.(copy(project));
       this.projects = this.projects.filter((p) => p.id !== id);
     });
   }

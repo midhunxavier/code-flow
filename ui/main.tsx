@@ -9,7 +9,6 @@ import { render } from "preact";
 import { useEffect, useState } from "preact/hooks";
 import { App, notifyFinished } from "./app.js";
 import { ConfirmationHost } from "./confirm-dialog.js";
-import { SharedDashboard, SharedLogin } from "./shared.js";
 import type { SharedPrincipal } from "../src/shared-accounts.js";
 import { configureStreamSharing, type StreamSharing } from "./stream.js";
 import logo from "./brand/code-flow-mark.svg";
@@ -65,8 +64,8 @@ async function boot() {
   try {
     if (location.hash.startsWith("#/join/") && !workspaceId) { const { JoinProject } = await import("./join-project.js"); render(<JoinProject token={location.hash.slice("#/join/".length)} />, root); return; }
     const identity = await localApi<{ kind: "owner"; streamSharing?: StreamSharing; localOnlyApis?: boolean } | { kind: "anonymous" } | SharedPrincipal>("/api/auth/self");
-    if (identity.kind === "anonymous") { render(<SharedLogin />, root); return; }
-    if (identity.kind === "shared") { render(<><SharedDashboard identity={identity} /><ConfirmationHost /></>, root); return; }
+    if (identity.kind === "anonymous") { const { SharedLogin } = await import("./shared.js"); render(<SharedLogin />, root); return; }
+    if (identity.kind === "shared") { const { SharedDashboard } = await import("./shared.js"); render(<><SharedDashboard identity={identity} /><ConfirmationHost /></>, root); return; }
     ownerOnLocalListener.value = identity.localOnlyApis !== false;
     await loadExecutionHost();
     await initializeTeamConnection();

@@ -1,3 +1,4 @@
+import { MAX_EXECUTION_BUDGET } from "../src/execution-budget.js";
 import type { TeamMember, TeamState, TeamTask } from "./types.js";
 export { teamStatusLabel } from "../src/run-status.js";
 
@@ -15,7 +16,7 @@ export function followupMinimumCalls(autoTeam: boolean, running: boolean, target
  * reply's own (as small as one call) replaces, raised to what the chosen target needs.
  */
 export function defaultFollowupCalls(loop: { maxSteps: number; maxInvocations?: number }, minimumCalls: number): number {
-  return Math.min(200, Math.max(minimumCalls, loop.maxInvocations ?? loop.maxSteps));
+  return Math.min(MAX_EXECUTION_BUDGET.maxSteps, Math.max(minimumCalls, loop.maxInvocations ?? loop.maxSteps));
 }
 
 /** Budgets are whole minutes; a correction's replacement team may have kept the fractional remainder. */

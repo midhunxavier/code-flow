@@ -33,6 +33,7 @@ export class ProjectDraftStore<T> {
   private memory = new Map<string, T>();
   private failures = new Set<string>();
   private unreadable = new Map<string, ProjectDraftReadError>();
+  private removed = new Set<string>();
   get unsavedKeys(): string[] { return [...this.failures]; }
   constructor(private readonly prefix: string, private readonly fallback: Storage | undefined = globalThis.localStorage, private readonly validate?: (value: T) => void) {}
 
@@ -48,6 +49,7 @@ export class ProjectDraftStore<T> {
   }
 
   async read(key: string): Promise<T | undefined> {
+    if (this.removed.has(key)) return undefined;
     if (this.unreadable.has(key)) throw this.unreadable.get(key)!;
     try {
       const value = await this.readValue(key);
@@ -77,6 +79,7 @@ export class ProjectDraftStore<T> {
   }
 
   write(key: string, value: T): Promise<void> {
+    if (this.removed.has(key)) return Promise.resolve();
     if (this.unreadable.has(key)) return Promise.reject(this.unreadable.get(key)!);
     const id = this.prefix + key;
     const snapshot = structuredClone(value);
@@ -104,6 +107,29 @@ export class ProjectDraftStore<T> {
     this.writes = Promise.all([this.writes.catch(() => undefined), work]).then(() => undefined);
     // Callers handle each write's error; the barrier is also read by read().
     void this.writes.catch(() => undefined);
+    return work;
+  }
+
+  /** Remove both persistence layers after earlier writes; stale local saves cannot recreate it. */
+  remove(key: string): Promise<void> {
+    this.removed.add(key);
+    const id = this.prefix + key;
+    this.memory.delete(id); this.unreadable.delete(key); this.failures.delete(key);
+    const work = this.writes.catch(() => undefined).then(async () => {
+      const db = typeof indexedDB === "undefined" ? undefined : this.connection ?? await this.open();
+      if (db) await new Promise<void>((resolve, reject) => {
+        const tx = db.transaction("drafts", "readwrite");
+        tx.objectStore("drafts").delete(id);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+        tx.onabort = () => reject(tx.error ?? new Error("Draft removal was interrupted."));
+        tx.commit?.();
+      });
+      this.fallback?.removeItem(id);
+      this.failures.delete(key);
+    });
+    this.writes = work;
+    void work.catch(() => undefined);
     return work;
   }
 }

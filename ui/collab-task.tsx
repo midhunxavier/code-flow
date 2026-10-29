@@ -1,3 +1,4 @@
+import { MAX_EXECUTION_BUDGET } from "../src/execution-budget.js";
 import { useTaskEditDraft } from "./task-edit-draft.js";
 import { selfReview, MAX, historyLimitMessage } from "../src/collab/presentation.js";
 import { teamConnectionRequired } from "./lib.js";
@@ -342,7 +343,7 @@ function StartDialog({ task, checkpoint, onClose, onStarted }: { task: Task; che
     return selected.length ? role.multiple ? selected : selected.slice(0, 1) : sorted[0] ? [sorted[0].id] : [];
   };
   const minimumCalls = pattern?.id === "auto-team" ? 4 : 1;
-  const valid = !!pattern && sorted.length > 0 && !!path.trim() && pattern.roles.every((role) => role.optional || agentsFor(role).length > 0) && Number.isInteger(calls) && calls >= minimumCalls && calls <= 200 && Number.isInteger(minutes) && minutes >= 1 && minutes <= 720 && (!pattern.requiresCheck || !!check.trim());
+  const valid = !!pattern && sorted.length > 0 && !!path.trim() && pattern.roles.every((role) => role.optional || agentsFor(role).length > 0) && Number.isInteger(calls) && calls >= minimumCalls && calls <= MAX_EXECUTION_BUDGET.maxSteps && Number.isInteger(minutes) && minutes >= 1 && minutes <= MAX_EXECUTION_BUDGET.maxMinutes && (!pattern.requiresCheck || !!check.trim());
   const submit = async (event: Event) => {
     event.preventDefault(); if (busy || !pattern || !valid) return; setBusy(true); setError("");
     try {
@@ -361,7 +362,7 @@ function StartDialog({ task, checkpoint, onClose, onStarted }: { task: Task; che
       {!sorted.length ? <p class="msg warn">Install and sign in to an agent on this computer before building.</p> : null}
       <details><summary>Models and reasoning</summary><fieldset disabled={busy}>{sorted.filter((agent) => pattern?.roles.some((role) => agentsFor(role).includes(agent.id))).map((agent) => <ModelRow key={agent.id} agent={agent} used settings={settings[agent.id] ?? {}} onChange={(patch) => setSettings({ ...settings, [agent.id]: { ...settings[agent.id], ...patch } })} />)}</fieldset></details>
       <label>Check command<input class="field" maxLength={1000} required={pattern?.requiresCheck} placeholder="Use repository default, or enter e.g. npm test" value={check} disabled={busy} onInput={(event) => setCheck(event.currentTarget.value)} /></label>
-      <div class="team-fields"><label>Time budget (minutes)<input class="field" type="number" min={1} max={720} value={minutes} disabled={busy} onInput={(event) => setMinutes(Number(event.currentTarget.value))} /></label><label>Agent call budget<input class="field" type="number" min={minimumCalls} max={200} value={calls} disabled={busy} onInput={(event) => setCalls(Number(event.currentTarget.value))} /></label></div>
+      <div class="team-fields"><label>Time budget (minutes)<input class="field" type="number" min={1} max={MAX_EXECUTION_BUDGET.maxMinutes} value={minutes} disabled={busy} onInput={(event) => setMinutes(Number(event.currentTarget.value))} /></label><label>Agent call budget<input class="field" type="number" min={minimumCalls} max={MAX_EXECUTION_BUDGET.maxSteps} value={calls} disabled={busy} onInput={(event) => setCalls(Number(event.currentTarget.value))} /></label></div>
       <label for="tt-start-trust">Agent permissions</label><select id="tt-start-trust" class="field" value={trustValue} disabled={busy} onChange={(event) => setTrustValue(event.currentTarget.value as Trust)}>{(Object.keys(TRUST) as Trust[]).map((value) => <option key={value} value={value}>{TRUST[value].label}</option>)}</select>
       <p class={trustValue === "full" ? "msg warn" : "help"}>{TRUST[trustValue].help}</p>
       {checkpoint ? <label class="check"><input type="checkbox" checked={fromCheckpoint} disabled={busy || !continuable} onChange={(event) => setFromCheckpoint(event.currentTarget.checked)} /> Continue from the latest checkpoint ({shortCommit(checkpoint.commit)}, {ago(checkpoint.at)}){continuable ? "" : " — its bundle is not available"}</label> : null}

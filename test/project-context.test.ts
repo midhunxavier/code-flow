@@ -58,6 +58,21 @@ test("storage failure is reported while retaining a recoverable in-tab draft", a
   assert.deepEqual(drafts.unsavedKeys, []);
 });
 
+test("removing a draft clears its attachments and blocks stale saves without touching another computer", async () => {
+  const values = new Map<string, string>();
+  const storage = { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => values.set(key, value), removeItem: (key: string) => values.delete(key) } as unknown as Storage;
+  const local = new ProjectDraftStore<{ attachments: string[] }>("local:", storage);
+  const remote = new ProjectDraftStore<{ attachments: string[] }>("remote:", storage);
+  const pending = local.write("a", { attachments: ["discard"] });
+  await remote.write("a", { attachments: ["keep"] });
+  await Promise.all([pending, local.remove("a")]);
+  await local.write("a", { attachments: ["stale pagehide save"] });
+  assert.equal(await local.read("a"), undefined);
+  assert.equal(values.has("local:a"), false);
+  assert.deepEqual(await remote.read("a"), { attachments: ["keep"] });
+  assert.equal(await new ProjectDraftStore("local:", storage).read("a"), undefined);
+});
+
 test("denied and blocked IndexedDB opens restore and save drafts through localStorage", async () => {
   const original = Object.getOwnPropertyDescriptor(globalThis, "indexedDB");
   try {

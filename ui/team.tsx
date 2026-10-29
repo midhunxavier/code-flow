@@ -1,3 +1,4 @@
+import { MAX_EXECUTION_BUDGET } from "../src/execution-budget.js";
 import { scrollBehavior } from "./lib.js";
 import { useEffect, useState } from "preact/hooks";
 import { AgentTag, Markdown } from "./bits.js";
@@ -174,9 +175,9 @@ function TaskRerunPanel({ run }: { run: RunSummary }) {
     <fieldset disabled={busy}><legend>Tasks to execute again</legend>{team.tasks.map((task) => <div key={task.id}><label class="check"><input type="checkbox" checked={selected.includes(task.id)} onChange={(event) => setSelected(event.currentTarget.checked ? [...selected, task.id] : selected.filter((id) => id !== task.id))} />Rerun {task.title}</label>{selected.includes(task.id) ? <label>New instructions for {task.id}<textarea class="field" rows={2} maxLength={16000} placeholder="Leave blank to reuse the accepted instructions" value={instructions[task.id] ?? ""} onInput={(event) => setInstructions({ ...instructions, [task.id]: event.currentTarget.value })} /></label> : null}</div>)}</fieldset>
     <div class="rerun-preview" role="group" aria-label="Task rerun preview"><p>Execute: {team.tasks.filter((task) => invalidated.has(task.id)).map((task) => task.id).join(", ") || "Choose a task"}</p><p>Retain as baseline inputs: {retained.map((task) => task.id).join(", ") || "None"}</p></div>
     {unfinished.length ? <p class="at-notice">Also select unfinished or stale tasks: {unfinished.map((task) => task.id).join(", ")}.</p> : null}
-    <div class="at-row"><label>New invocation budget<input class="field" type="number" min={minimum} max="200" value={calls} disabled={busy} onInput={(event) => setCalls(Number(event.currentTarget.value))} /></label><label>Rerun time budget (minutes)<input class="field" type="number" min="1" max="720" value={minutes} disabled={busy} onInput={(event) => setMinutes(Number(event.currentTarget.value))} /></label></div>
+    <div class="at-row"><label>New invocation budget<input class="field" type="number" min={minimum} max={MAX_EXECUTION_BUDGET.maxSteps} value={calls} disabled={busy} onInput={(event) => setCalls(Number(event.currentTarget.value))} /></label><label>Rerun time budget (minutes)<input class="field" type="number" min="1" max={MAX_EXECUTION_BUDGET.maxMinutes} value={minutes} disabled={busy} onInput={(event) => setMinutes(Number(event.currentTarget.value))} /></label></div>
     <p class="help">At least {minimum} calls fund invalidated work, independent review and one recovery allowance. Provider/model/permission settings stay pinned. An unchanged implementation must still pass the current check and independent review; it does not create new fail-to-pass proof.</p>
-    <button class="btn primary" disabled={busy || !head || !selected.length || !!unfinished.length || !Number.isInteger(calls) || calls < minimum || calls > 200 || !Number.isFinite(minutes) || minutes < 1 || minutes > 720} onClick={start}>{busy ? "Starting child…" : "Start selected task rerun"}</button>
+    <button class="btn primary" disabled={busy || !head || !selected.length || !!unfinished.length || !Number.isInteger(calls) || calls < minimum || calls > MAX_EXECUTION_BUDGET.maxSteps || !Number.isFinite(minutes) || minutes < 1 || minutes > MAX_EXECUTION_BUDGET.maxMinutes} onClick={start}>{busy ? "Starting child…" : "Start selected task rerun"}</button>
     {error ? <p class="msg err" role="alert">{error}</p> : null}
   </details>;
 }

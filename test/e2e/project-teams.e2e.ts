@@ -265,11 +265,10 @@ test("reusable teams attach without losing mission history and owner tasks survi
   await page.getByText("Schedule and next times", { exact: true }).click();
   await page.getByLabel("Time", { exact: true }).fill("11:45");
   await page.getByRole("button", { name: "Save schedule", exact: true }).click();
-  await page.waitForFunction(async ({ base, id, token }) => {
-    const response = await fetch(`${base}/api/project-teams/${id}`, { headers: { authorization: `Bearer ${token}` } });
-    return (await response.json()).team.schedule?.at === "11:45";
-  }, { base, id: team.id, token });
+  // The editor remounts closed once its saved schedule reaches the UI.
+  await page.getByLabel("Time", { exact: true }).waitFor({ state: "hidden" });
   let scheduled = (await api(`/api/project-teams/${team.id}`)).body.team;
+  assert.equal(scheduled.schedule?.at, "11:45");
   assert.equal(scheduled.missionRevision, team.missionRevision); assert.deepEqual(scheduled.opportunities, team.opportunities);
   assert.deepEqual(scheduled.cycles, team.cycles, "schedule edits preserve all prior usage receipts");
   const approvalResponse = page.waitForResponse(response => response.request().method() === "POST" && response.url().includes(`/api/project-teams/${team.id}/opportunities/`));
@@ -298,7 +297,7 @@ test("reusable teams attach without losing mission history and owner tasks survi
   await context.close();
 });
 
-test("orphaned mission runs offer individual and bulk deletion after project removal", async () => {
+test("project deletion removes mission runs and preserves mission evidence", async () => {
   const team = (await api("/api/project-teams")).body.teams.find((team: { repo: string }) => team.repo === realpathSync(repo));
   const ids = team.cycles.flatMap((cycle: { launches: { runId: string }[] }) => cycle.launches.map(launch => launch.runId));
   assert.ok(ids.length >= 2);
@@ -311,30 +310,12 @@ test("orphaned mission runs offer individual and bulk deletion after project rem
   await main.getByText(/Project mission implementation/).waitFor();
   const removed = await fetch(`${base}/api/projects/${team.projectId}`, { method: "DELETE", headers: { authorization: `Bearer ${token}` } });
   assert.equal(removed.status, 200);
-  await page.reload();
-  await main.getByRole("button", { name: "More run actions", exact: true }).click();
-  await main.getByRole("menuitem", { name: "Delete…", exact: true }).click();
-  const dialog = page.getByRole("dialog", { name: "Delete this run?", exact: true });
-  await dialog.getByText("The mission's saved records and budget accounting are kept.", { exact: true }).waitFor();
-  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
-  assert.equal((await api(`/api/runs/${resultId}`)).status, 200);
-
-  const rail = page.getByRole("navigation", { name: "Runs", exact: true });
-  await rail.getByRole("button", { name: "Run actions", exact: true }).first().click();
-  const rowDelete = rail.getByRole("menuitem", { name: "Delete…", exact: true });
-  assert.equal(await rowDelete.isEnabled(), true);
-  await rowDelete.click();
-  await page.getByRole("dialog", { name: "Delete this run?", exact: true }).getByRole("button", { name: "Delete run", exact: true }).click();
-  await page.getByRole("dialog").waitFor({ state: "detached" });
-  assert.equal((await Promise.all(ids.map((id: string) => api(`/api/runs/${id}`)))).filter(value => value.status === 404).length, 1);
-
-  await rail.getByRole("button", { name: "Select runs", exact: true }).click();
-  await rail.getByRole("button", { name: "Select loaded", exact: true }).click();
-  assert.equal(await rail.getByRole("button", { name: "Delete…", exact: true }).isEnabled(), true);
-  await rail.getByRole("button", { name: "Delete…", exact: true }).click();
-  await page.getByRole("dialog").getByRole("button", { name: /^Delete \d+ runs?$|^Delete run$/ }).click();
-  await page.getByRole("dialog").waitFor({ state: "detached" });
+  await page.getByRole("heading", { name: "Projects", exact: true }).waitFor({ timeout: 10_000 });
   for (const id of ids) assert.equal((await api(`/api/runs/${id}`)).status, 404);
+  await page.reload();
+  await page.getByRole("heading", { name: "Projects", exact: true }).waitFor();
+  assert.equal(await main.getByRole("button", { name: "More run actions", exact: true }).count(), 0);
+  assert.equal(await page.getByText(/project is unavailable/).count(), 0);
   const retained = (await api(`/api/project-teams/${team.id}`)).body.team;
   assert.deepEqual(retained.cycles, team.cycles);
   assert.deepEqual(retained.decisions, team.decisions);

@@ -229,7 +229,7 @@ test("the inbox offers the viewed run first, then the soonest deadline; options 
   assert.deepEqual([optionPicked("Unit, Browser", "Browser", true), optionPicked("Red", "Red", false), optionPicked("Redder", "Red", false)], [true, true, false]);
   const running = { status: "running", artifacts: [], worktrees: [], loop: {} } as unknown as import("../ui/types.js").RunSummary;
   assert.equal(executionLabel(running, true), "Waiting for you");
-  assert.equal(executionLabel(running), "Running");
+  assert.equal(executionLabel(running), "Working");
   // A finished turn shows what code-flow declined unasked outside "Show work"; ordinary status lines stay folded.
   assert.deepEqual([CODEX_DECLINE, CLAUDE_RULED, "Codex command declined", "Not approved: Bash (rm -rf build)"].map(declinedUnasked), [true, true, false, false]);
 });

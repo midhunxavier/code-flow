@@ -10,6 +10,8 @@ Object.assign(globalThis, {
 });
 globalThis.fetch = (async (input: string) => {
   const url = new URL(input, "http://localhost"), repo = url.searchParams.get("repo");
+  if (url.pathname === "/api/projects") return Response.json([]);
+  if (url.pathname === "/api/health") return Response.json({ projects: { available: true } });
   return new Response(JSON.stringify(url.pathname === "/api/branches" ? { repo, current: "main", branches: [{ name: "main" }, { name: "feature/a" }], worktreeRoot: `${repo}/worktrees` } : url.pathname === "/api/repo-config" ? { found: true, config: { setup: `setup ${repo}`, check: `test ${repo}` } } : {}), { status: 200 });
 }) as typeof fetch;
 const state = await import("../ui/state.js");
@@ -79,4 +81,45 @@ test("editable retry identity and execution settings stay with their project dra
   await state.chooseComposerRepository("/a");
   assert.equal(rerunDraft.value, null, "changing repository clears the original run identity");
   assert.equal(state.composerRunOptions.value.remoteWorker, undefined);
+});
+
+test("project deletion clears inactive and current drafts, including attachments and retry settings", async () => {
+  await state.openComposer("b"); state.setTask("Keep B");
+  state.attachments.value = [{ name: "keep.txt", data: "a2VlcA==", size: 4 }];
+  await state.saveComposerDraft();
+  await state.discardProjectDraft("a");
+  assert.equal(state.composerProject.value, "b"); assert.equal(state.task.value, "Keep B");
+  assert.equal(await state.savedDraftTask("a"), "");
+  assert.equal(values.has("project-draft-v1:a"), false);
+  state.projects.value = [b];
+  await state.openComposer("a");
+  assert.equal(state.composerProject.value, "", "old links cannot recreate the deleted draft");
+  await state.openComposer("b");
+  assert.equal(state.task.value, "Keep B"); assert.equal(state.attachments.value[0]?.name, "keep.txt");
+  state.route.value = { view: "project", id: "b" };
+  await state.discardProjectDraft("b");
+  state.projects.value = [];
+  await state.saveComposerDraft();
+  assert.equal(state.composerProject.value, "");
+  assert.equal(state.target.value.unavailable, false);
+  assert.equal(values.has("project-draft-v1:b"), false);
+  assert.deepEqual(state.attachments.value, []);
+  assert.equal(rerunDraft.value, null);
+  assert.deepEqual(state.composerRunOptions.value, {});
+  assert.equal(state.task.value, "legacy ambiguous draft", "a separate unassigned draft stays available");
+  assert.deepEqual(state.route.value, { view: "projects" });
+});
+
+test("project deletion leaves a removed run even when the project inventory disappears first", async () => {
+  for (const cached of [true, false]) {
+    const project = `deleted-${cached}`, id = `run-${cached}`;
+    const run = { id, project, repo: "/deleted" } as import("../ui/types.js").RunSummary;
+    state.projects.value = [];
+    state.runs.value = new Map(cached ? [[id, run]] : []);
+    state.route.value = { view: "run", id };
+    state.upsertRun({ ...run, deleted: true });
+    await state.loadProjects(true);
+    assert.deepEqual(state.route.value, { view: "projects" });
+    assert.equal(state.deletedRunNotice.value, null, "project deletion does not leave an orphaned run recovery banner");
+  }
 });

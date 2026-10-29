@@ -178,3 +178,20 @@ test("repository ownership rejects a different volume even if the path and inode
   assert.equal(loaded.list().length, 0);
   assert.equal(loaded.deletionHistory(f.team.id).repositoryId, differentVolume);
 });
+
+test("matching legacy repository ownership migrates without changing mission history", async () => {
+  const f = await fixture(); await f.service.stop();
+  const common = realpathSync(join(f.repo, ".git")), info = lstatSync(common, { bigint: true });
+  const legacy = createHash("sha256").update(JSON.stringify({ common, device: String(info.dev), inode: String(info.ino) })).digest("hex");
+  const file = join(f.store.directory, `${f.team.id}.json`), saved = JSON.parse(readFileSync(file, "utf8")) as Team;
+  saved.repositoryId = legacy;
+  writeFileSync(file, JSON.stringify(saved));
+  const loaded = new ProjectTeamStore(f.store.directory); await loaded.load();
+  assert.equal(loaded.faults.size, 0);
+  const migrated = loaded.get(saved.id);
+  assert.equal(migrated.repositoryId, await repositoryIdentity(f.repo));
+  assert.deepEqual({ ...migrated, repositoryId: saved.repositoryId, revision: saved.revision, updatedAt: saved.updatedAt }, saved);
+  const persisted = readFileSync(file, "utf8");
+  await loaded.load();
+  assert.equal(readFileSync(file, "utf8"), persisted, "reloading does not rewrite a migrated record");
+});

@@ -198,7 +198,7 @@ test("orphaned mission runs can be deleted without losing mission records or Git
   await f.manager.setProject(result.id, other.id); await f.projects.remove(other.id);
   await assert.rejects(f.manager.deleteRun(result.id), /awaiting approval or shipping/, "moving a run cannot bypass the original mission's protection");
   await f.manager.setProject(result.id, f.project.id);
-  await f.manager.removeProject(f.project.id);
+  await f.projects.remove(f.project.id); // Legacy orphan history remains individually deletable.
 
   const unavailable = test.mock.getter(f.projects, "available", () => false);
   await assert.rejects(f.manager.deleteRun(result.id), /Restore access to projects/);
@@ -228,7 +228,7 @@ test("orphaned mission runs cannot be deleted while their agents are active", as
   const admitted = await f.service.cycle(f.team.id, "active-orphan");
   const id = admitted.cycles[0]!.launches[0]!.runId!;
   assert.equal(f.manager.get(id)!.status, "running");
-  await f.manager.removeProject(f.project.id);
+  await f.projects.remove(f.project.id); // Simulate a project deleted by an older server.
   await assert.rejects(f.manager.deleteRun(id), /Finish or stop/);
   f.manager.cancel(id);
   await f.manager.shutdown();

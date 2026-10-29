@@ -91,7 +91,7 @@ async function send(task: string) {
 test("a saved draft follows the repository's config, and keeps only what was typed for it", { timeout: 60_000 }, async () => {
   await newRun("echo A");
   assert.equal(await page.locator("#setupCmd").inputValue(), "echo SA");
-  assert.match(await page.getByLabel("Run configuration summary").innerText(), /Limit 12 calls · 15 minutes/);
+  assert.match(await page.getByLabel("Run configuration summary").innerText(), /12 calls · 15 minutes/);
   assert.match(await row("Limits").innerText(), /15 minutes · 12 steps\s+\.codeflow\/config\.json/);
   assert.match(await row("agent · claude").innerText(), /haiku · low\s+\.codeflow\/config\.json/);
   const first = await send("Use the configured limits");
@@ -103,7 +103,7 @@ test("a saved draft follows the repository's config, and keeps only what was typ
   await page.reload();
   await newRun("echo B");
   assert.equal(await page.locator("#setupCmd").inputValue(), "echo SB");
-  assert.match(await row("Limits").innerText(), /240 minutes · 200 steps\s+Application defaults/);
+  assert.match(await row("Limits").innerText(), /720 minutes · 500 steps\s+Application defaults/);
 
   await page.locator("#setupCmd").fill("echo TYPED");
   await until(() => row("Worktree setup").innerText({ timeout: 1000 }), /echo TYPED\s+This run override/, "typed setup source");
@@ -186,7 +186,7 @@ test("Edit & run again asks before replacing unsent work, and its pins end with 
   const stored = await page.evaluate(() => ({ baseRef: localStorage.getItem("baseRef"), trust: localStorage.getItem("trust"), limits: localStorage.getItem("limits") }));
   assert.deepEqual(stored, { baseRef: "", trust: null, limits: null }, "nothing from the retry is remembered for later drafts");
   const later = await send("Later unrelated run");
-  assert.deepEqual([later.parentRunId, later.baseRef, later.trust, later.loop.maxMinutes, later.loop.maxSteps], [undefined, "", "standard", 240, 200]);
+  assert.deepEqual([later.parentRunId, later.baseRef, later.trust, later.loop.maxMinutes, later.loop.maxSteps], [undefined, "", "standard", 720, 500]);
   assert.deepEqual(errors, []);
 });
 

@@ -146,16 +146,14 @@ finally {
     await one.context.close();
     await two.context.close();
 } });
-test('missing project with no repository gives a usable destination prompt', async () => { const { context, page } = await fresh(); try {
-    await composer(page, 'missing-project');
-    await page.getByLabel('Task', { exact: true }).fill('Preserve my missing project draft');
-    await page.locator('.banner').filter({ hasText: 'project is unavailable' }).waitFor();
-    assert.equal(await page.locator('.task-start').isDisabled(), true);
-    assert.match(await page.locator('.task-start').getAttribute('title') ?? '', /unavailable/);
+test('a missing project route returns to Projects with a clean destination', async () => { const { context, page } = await fresh(); try {
+    await page.goto(`${base}/#/project/missing-project/new`);
+    await page.getByRole('heading', { name: 'Projects', exact: true }).waitFor();
+    assert.equal(await page.getByText(/project is unavailable/).count(), 0);
+    await page.getByRole('article').filter({ has: page.getByRole('heading', { name: 'Project Beta', exact: true }) }).getByRole('button', { name: 'Describe a task', exact: true }).click();
+    await page.getByLabel('Task', { exact: true }).waitFor();
+    assert.equal(await page.getByLabel('Task', { exact: true }).inputValue(), '');
     await shot(page, '06-missing-project-destination');
-    await page.getByRole('button', { name: 'Choose destination', exact: true }).click();
-    await page.getByRole('dialog', { name: 'Projects', exact: true }).getByRole('button', { name: /^Project Beta/ }).click();
-    assert.equal(await page.getByLabel('Task', { exact: true }).inputValue(), 'Preserve my missing project draft');
 }
 finally {
     await context.close();
@@ -201,7 +199,7 @@ test('HTTP storage failures consistently return500 and preserve every committed 
     for (const [path, body, method] of [['/api/projects', { name: 'Blocked' }, 'POST'], [`/api/projects/${b.id}`, { name: 'Blocked' }, 'POST'], [`/api/projects/${b.id}/repositories`, { repo: extra }, 'POST'], [`/api/projects/${b.id}`, undefined, 'DELETE']] as const) {
         const result = await request(path, body, method);
         assert.equal(result.status, 500, JSON.stringify(result));
-        assert.match(result.value.error, /couldn't save projects/);
+        assert.match(result.value.error, /couldn't save projects|Could not remove project history/);
         expectedFaults.push(path);
     }
 }

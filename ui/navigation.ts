@@ -11,6 +11,7 @@ export const validAutomationKind = (kind: string) => (AUTOMATION_KINDS as readon
 
 export type Route =
   | { view: "composer"; project?: string }
+  | { view: "projects" }
   | { view: "inbox" }
   | { view: "automations"; kind?: string }
   | { view: "workspace"; project?: string }
@@ -41,6 +42,7 @@ export function parseRouteHash(hash: string): Route {
   if (view === "workspace") return { view: "workspace" };
   if (view === "automations") return rest.length || id && !validAutomationKind(id) ? { view: "invalid", hash } : { view, ...(id ? { kind: id } : {}) };
   if (view === "inbox") return { view };
+  if (view === "projects" && !id) return { view };
   if (view === "insights") return { view: "insights", ...(id ? { group: id } : {}) };
   if (view === "new" && id === "unassigned" && !rest.length) return { view: "composer", project: "" };
   if (view === "project" && id && rest[0] === "new" && rest.length === 1) return { view: "composer", project: id };
@@ -62,6 +64,7 @@ export function hashFor(r: Route): string {
   if (r.view === "composer" && r.project !== undefined) return r.project ? `#/project/${encodeURIComponent(r.project)}/new` : "#/new/unassigned";
   if (r.view === "invalid") return r.hash;
   if (r.view === "inbox") return "#/inbox";
+  if (r.view === "projects") return "#/projects";
   if (r.view === "automations") return `#/automations${r.kind ? `/${encodeURIComponent(r.kind)}` : ""}`;
   if (r.view === "workspace") return r.project ? `#/project/${encodeURIComponent(r.project)}/workspace` : "#/workspace";
   if (r.view === "insights") return `#/insights${r.group ? `/${encodeURIComponent(r.group)}` : ""}`;

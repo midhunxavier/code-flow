@@ -1,3 +1,4 @@
+import { MAX_EXECUTION_BUDGET } from "./execution-budget.js";
 import { permissionRequirements } from "./run-permissions.js";
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
@@ -97,7 +98,7 @@ export function sanitizeDeferredRequest(value: unknown): DeferredRunRequest {
   const loopRaw = raw.loop === undefined ? {} : keys(raw.loop, ["check", "setup", "copy", "maxMinutes", "maxSteps", "maxInvocations", "maxTokens", "maxCostUsd", "checkTimeoutMin", "verification", "container", "agentContainer", "contextBudget", "remoteWorker"], "loop");
   const loop: DeferredRunRequest["loop"] = { copy: [] };
   for (const key of ["check", "setup"] as const) if (loopRaw[key] !== undefined && loopRaw[key] !== "") loop[key] = text(loopRaw[key], 4000, `${key} command`);
-  const bounds = { maxMinutes: [1, 720], maxSteps: [1, 200], maxInvocations: [1, 200], maxTokens: [1, 1_000_000_000], maxCostUsd: [0.001, 1_000_000], checkTimeoutMin: [1, 120] };
+  const bounds = { maxMinutes: [1, MAX_EXECUTION_BUDGET.maxMinutes], maxSteps: [1, MAX_EXECUTION_BUDGET.maxSteps], maxInvocations: [1, MAX_EXECUTION_BUDGET.maxSteps], maxTokens: [1, 1_000_000_000], maxCostUsd: [0.001, 1_000_000], checkTimeoutMin: [1, 120] };
   for (const key of Object.keys(bounds) as (keyof typeof bounds)[]) if (loopRaw[key] !== undefined) {
     const number = loopRaw[key], [min, max] = bounds[key];
     if (typeof number !== "number" || !Number.isFinite(number) || number < min! || number > max!) throw new Error(`Invalid deferred ${key}`);

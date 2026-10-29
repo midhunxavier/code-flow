@@ -11,13 +11,13 @@ const root = fileURLToPath(new URL("../..", import.meta.url));
 const token = "qa-history-counts", headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
 let directory: string, repo: string, other: string, home: string, base: string, server: ChildProcess, browser: Browser, page: Page;
 const historyReads: { url: string; status: number; total?: number; nextCursor?: string | null; error?: string }[] = [];
-const errors: string[] = [], expected: string[] = []; let output = "", injectingFailure = false;
+const errors: string[] = [], expected: string[] = []; let output = "", injectingFailure = false, injectingDeleteConflict = false;
 const evidence = join(root, "output/playwright/qa-history-paging-counts");
 const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
 async function api<T = any>(path: string, body?: unknown): Promise<T> { const response = await fetch(base + path, { headers, ...(body === undefined ? {} : { method: "POST", body: JSON.stringify(body) }) }); assert.ok(response.ok, `${response.status}: ${await response.clone().text()}`); return response.json() as Promise<T>; }
 async function until<T>(read: () => Promise<T>, ready: (value: T) => boolean) { const deadline = Date.now() + 15000; for (;;) { const value = await read(); if (ready(value)) return value; if (Date.now() > deadline) throw new Error(`History fixture timed out: ${JSON.stringify(value)}`); await new Promise(resolve => setTimeout(resolve, 50)); } }
 async function fresh(hash: string, filter?: unknown) {
-  await page?.close(); page = await browser.newPage({ viewport: { width: 1440, height: 1000 } }); page.setDefaultTimeout(12000);
+  await page?.context().close(); const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } }); page = await context.newPage(); page.setDefaultTimeout(12000);
   page.on("pageerror", error => errors.push(error.message));
   page.on("response", response => {
     if (new URL(response.url()).pathname !== "/api/runs") return;
@@ -25,7 +25,7 @@ async function fresh(hash: string, filter?: unknown) {
     void response.json().then(body => Object.assign(record, { total: body.total, nextCursor: body.nextCursor ?? null, error: body.error })).catch(() => {});
   });
   page.on("response", response => { if (response.status() >= 500) { const url = new URL(response.url()); const fixture = injectingFailure && (url.pathname === "/api/runs" && !!url.searchParams.get("cursor") || url.pathname === "/api/runs/bulk-6/archive"); if (!fixture) errors.push(`Unexpected ${response.status()}: ${url.pathname}${url.search}`); } });
-  page.on("console", message => { if (message.type() === "error") { if (injectingFailure && /500 \(Internal Server Error\)/.test(message.text())) expected.push(message.text()); else errors.push(message.text()); } });
+  page.on("console", message => { if (message.type() === "error") { if (injectingFailure && /500 \(Internal Server Error\)/.test(message.text()) || injectingDeleteConflict && /409/.test(message.text())) expected.push(message.text()); else errors.push(message.text()); } });
   await page.addInitScript(({ repo, filter }) => { localStorage.setItem("repo", repo); localStorage.setItem("sideOpen", "0"); if (filter) localStorage.setItem("runFilter", JSON.stringify(filter)); }, { repo, filter });
   await page.goto(`${base}/?token=${token}#/${hash}`); await page.getByRole("navigation", { name: "Runs", exact: true }).waitFor();
 }
@@ -70,9 +70,9 @@ test("project picker and editor count unloaded history, and singular delete word
   assert.match(await dialog.getByRole("listitem").filter({ hasText: "Without a project" }).innerText(), /1 run/);
   await dialog.getByRole("button", { name: "Edit Big history", exact: true }).click(); await dialog.getByText("130 runs in this project.", { exact: true }).waitFor();
   await dialog.getByRole("button", { name: "Delete project", exact: true }).click(); const confirm = page.getByRole("dialog", { name: "Delete this project?", exact: true });
-  assert.match(await confirm.innerText(), /Its 130 runs stay/); await shot("project-counts"); await confirm.getByRole("button", { name: "Cancel", exact: true }).click();
+  assert.match(await confirm.innerText(), /All 130 runs.*will be permanently deleted/); await shot("project-counts"); await confirm.getByRole("button", { name: "Cancel", exact: true }).click();
   await dialog.getByRole("button", { name: "Remove repo", exact: true }).click(); await dialog.getByText(/Runs already in this project from repo stay in it/).waitFor(); await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
-  await dialog.getByRole("button", { name: "Edit One run", exact: true }).click(); await dialog.getByRole("button", { name: "Delete project", exact: true }).click(); assert.match(await confirm.innerText(), /Its 1 run stays/); await confirm.getByRole("button", { name: "Cancel", exact: true }).click();
+  await dialog.getByRole("button", { name: "Edit One run", exact: true }).click(); await dialog.getByRole("button", { name: "Delete project", exact: true }).click(); assert.match(await confirm.innerText(), /Its 1 run.*will be permanently deleted/); await confirm.getByRole("button", { name: "Cancel", exact: true }).click();
   assert.deepEqual(errors, []);
 });
 
@@ -138,8 +138,7 @@ test("bulk selection discloses hidden rows and clears obsolete action errors", a
 
 test("live archive and delete reconcile project rows and totals without discarding loaded pages", async () => {
   await fresh("project/p-big/runs"); const history = page.getByRole("region", { name: "Project run history", exact: true });
-  await history.getByRole("button", { name: "Load older runs", exact: true }).click();
-  await until(() => history.locator(".pp-row").count(), count => count === 118);
+  await until(async () => { const more = history.getByRole("button", { name: "Load older runs", exact: true }); if (await more.isVisible() && await more.isEnabled()) await more.click(); return history.locator(".pp-row").count(); }, count => count === 118);
   await api("/api/runs/big-006/archive", { archived: true, cleanup: false });
   await until(() => history.innerText(), text => /117 loaded of 117 matching runs/.test(text));
   assert.equal(await history.getByRole("link", { name: /Ancient hidden loop/ }).count(), 0);
@@ -152,4 +151,113 @@ test("live archive and delete reconcile project rows and totals without discardi
   assert.equal((await fetch(base + "/api/runs/big-007", { method: "DELETE", headers })).status, 200);
   await until(() => history.innerText(), text => /128 loaded of 128 matching runs/.test(text));
   assert.equal(await history.getByRole("link", { name: /Big history task 7 ·/ }).count(), 0); await shot("live-history-reconciled"); assert.deepEqual(errors, []);
+});
+
+test("project selection chooses its repository, remembers the draft, and shows every sidebar project", async () => {
+  await fresh("project/p-big/new");
+  await until(() => page.locator(".composer-summary").innerText(), text => text.includes("Big history") && text.includes("Repository repo"));
+  const rail = page.getByRole("navigation", { name: "Runs", exact: true });
+  await rail.getByRole("button", { name: "Empty history", exact: true }).waitFor();
+  const group = rail.getByRole("group", { name: "Big history", exact: true });
+  await group.getByRole("button", { name: "Hide the runs in Big history", exact: true }).click();
+  await page.reload();
+  await group.getByRole("button", { name: "Show the runs in Big history", exact: true }).click();
+  await group.getByRole("button", { name: /^Show \d+ more$/ }).click();
+  await until(() => group.locator(".run-item").count(), count => count > 5);
+  await page.reload();
+  await until(() => group.locator(".run-item").count(), count => count > 5);
+  await rail.getByRole("button", { name: /^Show archived runs/ }).click();
+  await rail.getByRole("region", { name: "Archived runs", exact: true }).waitFor();
+  assert.equal(await group.locator(".run-item.archived").count(), 0);
+  await page.getByRole("textbox", { name: "Task", exact: true }).fill("Keep my project task");
+  await page.reload();
+  await until(() => page.getByRole("textbox", { name: "Task", exact: true }).inputValue(), value => value === "Keep my project task");
+  assert.doesNotMatch(await page.locator(".composer-summary").innerText(), /Choose project/);
+  await page.goto(`${base}/#/projects`);
+  await page.getByRole("heading", { name: "Projects", exact: true }).waitFor();
+  await page.getByRole("navigation", { name: "Runs", exact: true }).getByRole("button", { name: "New run", exact: true }).click();
+  assert.equal(await page.getByRole("textbox", { name: "Task", exact: true }).inputValue(), "Keep my project task");
+});
+
+test("an older deleted project draft is removed on startup, including unreadable stored bytes", async () => {
+  await fresh("projects");
+  await page.evaluate(() => {
+    localStorage.setItem("projectDraftVersion", "1"); localStorage.setItem("composerProject", "p-deleted");
+    localStorage.setItem("project-draft-v1:p-deleted", "unreadable old draft"); localStorage.setItem("draftTask", "old deleted text");
+  });
+  await page.goto(`${base}/#/project/p-deleted/new`); await page.reload();
+  await page.getByRole("heading", { name: "Projects", exact: true }).waitFor();
+  assert.equal(await page.getByText(/project is unavailable/).count(), 0);
+  await until(() => page.evaluate(() => localStorage.getItem("project-draft-v1:p-deleted")), value => value === null);
+});
+
+test("mission repair presents an action and keeps diagnostic paths behind technical details", async () => {
+  await fresh("project/p-big");
+  await page.route("**/api/project-teams?project=p-big", route => route.fulfill({ json: { enabled: true, revision: 1, autoTeamEnabled: true, source: "saved", teams: [], providers: [], faults: { held: "Repository metadata was replaced" }, faultDetails: { held: { kind: "ownership", name: "Documentation", projectId: "p-big", repo, file: "/saved/missions/held.json" } } } }));
+  await page.goto(`${base}/#/project/p-big/automation/missions`);
+  const repair = page.locator(".mission-repair");
+  await repair.getByText(/needs a repository review/).waitFor();
+  const technical = repair.getByText(/Its history is kept in/);
+  assert.equal(await technical.isVisible(), false);
+  await repair.getByText("Review repair", { exact: true }).click();
+  await repair.getByRole("link", { name: "Review repository", exact: true }).waitFor();
+  assert.equal(await technical.isVisible(), false);
+  await repair.getByText("Technical details", { exact: true }).click();
+  assert.match(await technical.innerText(), /\/saved\/missions\/held.json/);
+  await shot("mission-repair-disclosure");
+});
+
+test("deleting a project removes its history and draft across tabs, but failed deletion retains the draft", async () => {
+  await fresh("project/p-big/new");
+  await page.getByRole("textbox", { name: "Task", exact: true }).fill("Delete this project draft too");
+  await page.locator('input[type="file"]').setInputFiles({ name: "draft-spec.txt", mimeType: "text/plain", buffer: Buffer.from("Delete the draft attachment too") });
+  const mirror = await page.context().newPage();
+  await mirror.goto(`${base}/#/project/p-big/new`);
+  await until(() => mirror.getByRole("textbox", { name: "Task", exact: true }).inputValue(), value => value === "Delete this project draft too");
+  const runTab = await page.context().newPage(); await runTab.goto(`${base}/#/run/big-050`);
+  await runTab.getByRole("heading", { name: "Big history task 50", exact: true }).waitFor();
+  await page.getByRole("textbox", { name: "Task", exact: true }).blur();
+  await page.keyboard.press("p");
+  const editor = page.locator("dialog.projects-dialog");
+  await editor.getByRole("button", { name: "Edit Big history", exact: true }).click();
+  await editor.getByRole("button", { name: "Delete project", exact: true }).click();
+  const confirm = page.getByRole("dialog", { name: "Delete this project?", exact: true });
+  assert.match(await confirm.innerText(), /All 128 runs.*will be permanently deleted/);
+  assert.match(await confirm.innerText(), /saved draft and draft attachments will also be deleted/);
+  injectingDeleteConflict = true;
+  await page.route("**/api/projects/p-big", async route => route.request().method() === "DELETE" ? route.fulfill({ status: 409, contentType: "application/json", body: JSON.stringify({ error: "Stop active runs before deleting" }) }) : route.continue());
+  await confirm.getByRole("button", { name: "Delete project", exact: true }).click();
+  await editor.getByText("Stop active runs before deleting", { exact: true }).waitFor();
+  assert.equal(await page.getByRole("textbox", { name: "Task", exact: true }).inputValue(), "Delete this project draft too");
+  assert.equal(await mirror.getByRole("textbox", { name: "Task", exact: true }).inputValue(), "Delete this project draft too");
+  await page.unroute("**/api/projects/p-big"); injectingDeleteConflict = false;
+  await editor.getByRole("button", { name: "Delete project", exact: true }).click();
+  await confirm.getByRole("button", { name: "Delete project", exact: true }).click();
+  await until(() => api("/api/projects"), list => !list.some((project: any) => project.id === "p-big"));
+  for (const id of ["big-000", "big-129", "big-050"]) assert.equal((await fetch(`${base}/api/runs/${id}`, { headers })).status, 404);
+  assert.equal((await api("/api/projects/counts"))["p-big"], undefined);
+  assert.equal((await api("/api/runs/one")).id, "one");
+  await page.getByRole("heading", { name: "Projects", exact: true }).waitFor();
+  assert.equal(await editor.count(), 0);
+  for (const tab of [page, mirror, runTab]) {
+    await tab.getByRole("heading", { name: "Projects", exact: true }).waitFor();
+    await tab.goto(`${base}/#/new/unassigned`);
+    await until(() => tab.getByRole("textbox", { name: "Task", exact: true }).inputValue(), value => value === "");
+    assert.equal(await tab.getByText(/project is unavailable/).count(), 0);
+    assert.equal(await tab.getByText("draft-spec.txt", { exact: true }).count(), 0);
+    await tab.reload();
+    await tab.getByRole("textbox", { name: "Task", exact: true }).waitFor();
+    assert.equal(await tab.getByText(/project is unavailable/).count(), 0);
+    assert.equal(await tab.getByRole("textbox", { name: "Task", exact: true }).inputValue(), "");
+  }
+  assert.equal(await page.evaluate(async () => {
+    const request = indexedDB.open("codeflow-project-drafts", 1);
+    const db = await new Promise<IDBDatabase>((resolve, reject) => { request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); });
+    try { return await new Promise((resolve, reject) => { const read = db.transaction("drafts", "readonly").objectStore("drafts").get("project-draft-v1:p-big"); read.onsuccess = () => resolve(read.result); read.onerror = () => reject(read.error); }); }
+    finally { db.close(); }
+  }), undefined);
+  await mirror.close();
+  await runTab.close();
+  assert.deepEqual(errors, []);
+  await shot("project-deleted-with-history");
 });

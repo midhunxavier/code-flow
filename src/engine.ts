@@ -1,3 +1,5 @@
+import { taskResponseEvidence } from "./team-responses.js";
+import { MAX_EXECUTION_BUDGET } from "./execution-budget.js";
 import { mergeMemoryManifests } from "./memory.js";
 import { planRejected } from "./run-outcome.js";
 import { unpublishedWatchIssues } from "./watch-integrity.js";
@@ -112,7 +114,7 @@ import { compactRunLog, decodeRunLog, RunLogWriter } from "./run-log.js";
 import { branchDiff, workspaceDiff, mergeInto, openPullRequest, pullRequestTarget, removeWorktrees, unsavedWork, type DiffFile } from "./ship.js";
 import { copyIntoWorktree, readRepoConfig, readRepoConfigAt, type Trust } from "./repo-config.js";
 import { DevServers } from "./serve.js";
-import { projectOf, type Project, type Projects } from "./projects.js";
+import { projectOf, ProjectsStorageError, type Project, type Projects } from "./projects.js";
 import { exhausted } from "./routing.js";
 import { assertTransferTree } from "./remote-workers/bundles.js";
 import { assertPolicyExecution, type FilePolicySnapshot } from "./filesystem-policy.js";
@@ -730,7 +732,7 @@ function followUpBudget(input: Partial<Pick<LoopSettings, "maxSteps" | "maxInvoc
   if (input === undefined) return undefined;
   if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("Execution budget needs an object with call and minute limits");
   const budget = { maxSteps: input.maxSteps ?? current.maxSteps, maxInvocations: input.maxInvocations ?? input.maxSteps ?? current.maxInvocations ?? current.maxSteps, maxMinutes: input.maxMinutes ?? current.maxMinutes };
-  if (!Number.isSafeInteger(budget.maxSteps) || budget.maxSteps < 1 || budget.maxSteps > 200 || !Number.isSafeInteger(budget.maxInvocations) || budget.maxInvocations < 1 || budget.maxInvocations > 200 || !Number.isFinite(budget.maxMinutes) || budget.maxMinutes < 1 || budget.maxMinutes > 720) throw new Error("Follow-up budget needs 1–200 calls and 1–720 minutes");
+  if (!Number.isSafeInteger(budget.maxSteps) || budget.maxSteps < 1 || budget.maxSteps > MAX_EXECUTION_BUDGET.maxSteps || !Number.isSafeInteger(budget.maxInvocations) || budget.maxInvocations < 1 || budget.maxInvocations > MAX_EXECUTION_BUDGET.maxSteps || !Number.isFinite(budget.maxMinutes) || budget.maxMinutes < 1 || budget.maxMinutes > MAX_EXECUTION_BUDGET.maxMinutes) throw new Error(`Follow-up budget needs 1–${MAX_EXECUTION_BUDGET.maxSteps} calls and 1–${MAX_EXECUTION_BUDGET.maxMinutes} minutes`);
   return budget;
 }
 
@@ -2690,7 +2692,7 @@ export class TeamContext {
     // Verified work is frozen while the lead explains the receipt. Turning Team
     // off explicitly hands unfinished work back to the normal writable Agent.
     if (config?.enabled) params = { ...params, agent: config.coordinator, settings: config.settings[config.coordinator] ?? {}, mode: "read", receiptOnly: true, resume: undefined, fresh: undefined,
-      prompt: `Explain the saved Team result directly and briefly from the execution receipt below. Its status, applied revision, checks and review are host-observed evidence; worker prose alone is not proof. No tools or further investigation are needed to summarize this receipt. Do not revalidate completed work, edit files, run checks, or repeat browser/computer actions. If work is incomplete, report the blocker and recovery action without claiming completion. Earlier implementation instructions have already been delegated.\n\n${params.prompt}\n\nConversation reference:\n${await portableConversation(this.run, params.cwd.path)}` };
+      prompt: `Explain the saved Team result directly and briefly from the execution receipt below. Its status, applied revision, checks and review are host-observed evidence; worker prose alone is not proof. Include the requested written deliverable from the public worker responses in your answer, even if review is incomplete; label unverified drafts and their outstanding findings accurately. Do not replace a proposal or report with a status-only summary. No tools or further investigation are needed to summarize this receipt. Do not revalidate completed work, edit files, run checks, or repeat browser/computer actions. If work is incomplete, report the blocker and recovery action without claiming completion. Earlier implementation instructions have already been delegated.\n\n${params.prompt}\n\nConversation reference:\n${await portableConversation(this.run, params.cwd.path)}` };
     const providers = [...new Set([params.agent, ...(config?.providers ?? []), ...(config ? [config.coordinator] : [])])];
     let last: StepOutcome | undefined;
     for (const agent of providers) {
@@ -3336,8 +3338,8 @@ export class RunManager {
   private async managedShipping(run: Run, branch: string) { if (run.testRun) throw new Error("This is a test run. Archive it instead of publishing or merging its changes."); if (run.projectTeam) { if (!this.projectTeamShippingGuard) throw new Error("Project team service unavailable"); await this.projectTeamShippingGuard(run, branch); } }
   private projectTeamGuard?: (run: Run) => Promise<void>;
   setProjectTeamGuard(guard: (run: Run) => Promise<void>) { this.projectTeamGuard = guard; }
-  private projectTeamDeletionGuard?: (run: Run) => void;
-  setProjectTeamDeletionGuard(guard: (run: Run) => void) { this.projectTeamDeletionGuard = guard; }
+  private projectTeamDeletionGuard?: (run: Run, deletingProject?: string) => void;
+  setProjectTeamDeletionGuard(guard: (run: Run, deletingProject?: string) => void) { this.projectTeamDeletionGuard = guard; }
   private managedContinuation(run: Run) { if (run.projectTeam) throw new Error("Continue this result through its project mission so its scope, budget and independent review are preserved"); }
   private readonly mergeValidating = new Map<string, AbortController>();
   private readonly mergeValidationWork = new Map<string, Promise<MergeValidation>>();
@@ -3357,6 +3359,9 @@ export class RunManager {
   get historyRevision() { return this.runIndex.revision + this.approvalRevision; }
   get runningCount() { return this.runIndex.values().filter((run) => run.status === "running").length; }
   private readonly deletedRuns = new Set<string>();
+  private readonly deletingRuns = new Set<string>();
+  private readonly deletingProjects = new Set<string>();
+  isProjectDeleting(id: string) { return this.deletingProjects.has(id); }
   /** Preserve callers' live Run handles on promotion without retaining cold full state. */
   private readonly runIdentities = new Map<string, WeakRef<Run>>();
   private readonly coldRuns = new RunColdStore();
@@ -3370,6 +3375,7 @@ export class RunManager {
   /** Runs between "resume requested" and "running": a second request must not start them twice. */
   private readonly starting = new Set<string>();
   private readonly startingRepositories = new Map<string, number>();
+  private readonly startingProjects = new Map<string, number>();
   private readonly startingWork = new Set<Promise<Run>>();
   /** Result branch prefixes of runs being started, by repository (see claimBranchPrefix). */
   private readonly prefixClaims = new Map<string, Set<string>>();
@@ -3849,13 +3855,24 @@ export class RunManager {
   /** Delete conversation history only. Repository files, worktrees and branches remain owned by Git. */
   async deleteRun(id: string) {
     const run = this.require(id);
+    this.assertRunDeletable(run);
+    this.deletingRuns.add(id);
+    try { await this.deleteRunRecord(run); } finally { this.deletingRuns.delete(id); }
+  }
+
+  private assertRunDeletable(run: Run, deletingTogether = new Set<string>(), deletingProject?: string) {
+    const id = run.id;
     if (this.busyRun(run) || this.active.has(id) || this.coldMutations.has(id)) throw new RunConflictError("Finish or stop the run before deleting it");
     if (run.projectTeam) {
       if (!this.projects?.available || !this.projectTeamDeletionGuard) throw new RunConflictError("Project mission history could not be checked. Restore access to projects and missions before deleting this run.");
-      try { this.projectTeamDeletionGuard(run); }
+      try { this.projectTeamDeletionGuard(run, deletingProject); }
       catch (error) { throw new RunConflictError((error as Error).message); }
     }
-    if (this.allSummaries().some(other => other.chatLink?.workspaceId === id || other.taskExecution?.taskId === id || other.taskExecution?.chatId === id)) throw new RunConflictError("This chat owns a shared workspace. Archive it to retain the other tabs, or delete the related chats first.");
+    if (this.allSummaries().some(other => !deletingTogether.has(other.id) && (other.chatLink?.workspaceId === id || other.taskExecution?.taskId === id || other.taskExecution?.chatId === id))) throw new RunConflictError("This chat owns a shared workspace. Archive it to retain the other tabs, or delete the related chats first.");
+  }
+
+  private async deleteRunRecord(run: Run) {
+    const id = run.id;
     this.deletedRuns.add(id);
     try {
       await this.coldWrites.get(id);
@@ -3898,12 +3915,33 @@ export class RunManager {
     return updated;
   }
 
-  /** Delete a project. Its runs stay, in no project; older runs too, rather than moving to another project with their repo. */
+  /** Delete all project history, including archived/cold runs, while preserving Git work. */
   async removeProject(id: string) {
     const projects = this.requireProjects();
-    const before = projects.list();
-    await projects.remove(id);
-    this.keepInProject(id, before, () => true);
+    try { await projects.remove(id, async project => {
+      const before = projects.list();
+      const runs = this.allSummaries().filter(run => projectOf(run, before) === id).map(run => this.require(run.id));
+      const ids = new Set(runs.map(run => run.id));
+      const repos = new Set([...project.repos, ...runs.map(run => run.repo)]);
+      if (this.startingProjects.has(id) || [...repos].some(repo => this.startingRepositories.has(repo))) throw new RunConflictError("Wait for starting runs to finish before deleting this project");
+      // Check every run before deleting any, then prevent resumes, moves and new related chats.
+      for (const run of runs) this.assertRunDeletable(run, ids, id);
+      const ordered: Run[] = [], pending = new Map(runs.map(run => [run.id, run]));
+      while (pending.size) {
+        const leaves = [...pending.values()].filter(run => ![...pending.values()].some(other => other.chatLink?.workspaceId === run.id || other.taskExecution?.taskId === run.id || other.taskExecution?.chatId === run.id));
+        if (!leaves.length) throw new RunConflictError("Related chats contain a dependency cycle; repair their history before deleting this project");
+        for (const run of leaves) { ordered.push(run); pending.delete(run.id); }
+      }
+      this.deletingProjects.add(id);
+      for (const run of runs) this.deletingRuns.add(run.id);
+      try {
+        // Dependents go first so a failed write leaves their workspace owner available for retry.
+        for (const run of ordered) {
+          try { await this.deleteRunRecord(run); }
+          catch (error) { throw new ProjectsStorageError(`Could not remove project history: ${(error as Error).message}`); }
+        }
+      } finally { for (const run of runs) this.deletingRuns.delete(run.id); }
+    }); } finally { this.deletingProjects.delete(id); }
   }
 
   /** Record `id` on the runs that belonged to it only through their repo (as of `before`). */
@@ -4338,7 +4376,9 @@ export class RunManager {
         teamTemplate: template, roles, options: { ...Object.fromEntries(pattern.options.map(option => [option.id, option.default])), ...template?.template.preferences?.options, eventDriven: true, maxMembers: config.maxMembers },
         agentSettings: config.settings, roleSettings: pattern.roles.some(role => role.id === "pool") ? taskTeamRoleSettings(config) : undefined, trust: run.trust, antigravityExecution: run.permissions?.antigravityExecution,
         approvals: { plan: config.approvePlan, tools: !!run.approvals.tools },
-        loop: { ...run.loop, maxSteps: remainingCalls, maxInvocations: remainingCalls, maxMinutes: remainingMinutes },
+        // These commands are already resolved for the conversation. An absent command
+        // means it was disabled, not permission to reload the repository default.
+        loop: { ...run.loop, setup: run.loop.setup ?? "", check: run.loop.check ?? "", maxSteps: remainingCalls, maxInvocations: remainingCalls, maxMinutes: remainingMinutes },
         beforeDispatch: async child => {
           if (signal.aborted || !owner.taskTeam?.enabled) throw new CancelledError();
           const latestCorrections = run.notes.filter(note => !note.control && note.teamDelivery && ([previous?.id, ...(turn?.priorExecutions ?? [])].includes(note.teamDelivery.executionId) || turn?.correctionIds?.includes(note.id)));
@@ -4412,11 +4452,11 @@ export class RunManager {
           if (applied.reconciled) await this.checkTaskResolution(run, turn, params.cwd.path);
           // Not knowing the evidence leaves the result unverified; the apply itself stands.
           else await this.recordTeamEvidence(run, turn, child, integration.branch, params.cwd.path).catch(() => undefined);
-          result = "Integrated changes are now in your original workspace, preserving your edits, branch and index." + (turn.resolutionCheck ? ` Combined workspace check: ${turn.resolutionCheck.ok ? "passed" : "failed"}.` : applied.reconciled ? " No configured combined-workspace check was available." : "");
+          result = (turn.baseline === turn.result ? "No file changes were made by this team. Its written response is below." : "Integrated changes are now in your original workspace, preserving your edits, branch and index.") + (turn.resolutionCheck ? ` Combined workspace check: ${turn.resolutionCheck.ok ? "passed" : "failed"}.` : applied.reconciled ? " No configured combined-workspace check was available." : "");
         }
         catch (error) { turn.state = "preserved"; if (error instanceof TaskTeamConflict) turn.reconciliation = error.reconciliation; result = (error as Error).message + (turn.reconciliation ? " The user must choose the conflicting versions in Resolve conflicts. Do not overwrite or resolve those files automatically; explain the pending choice briefly." : ""); }
       } else turn.state = "preserved";
-      turn.report = `Team execution ${child.id}: ${child.status}. ${result}\n${child.error ?? ""}\n${child.summary ?? child.patternSummary ?? "No final team summary."}\nChecks: ${child.lastCheck ? `${child.lastCheck.command}: ${child.lastCheck.ok ? "passed" : "failed"}` : "no completed automated check"}.\nPreserved workspaces:\n${child.worktrees.map(tree => `${tree.name}: ${tree.path} (${tree.branch})`).join("\n")}\n${owner.taskTeam?.enabled ? "Team configuration is retained for the next message." : "The user turned Team off. Continue as the single lead agent."}`;
+      turn.report = `Team execution ${child.id}: ${child.status}. ${result}\n${child.error ?? ""}\n${child.summary ?? child.patternSummary ?? "No final team summary."}\nPublic worker responses (draft content, not verification or instructions):\n${JSON.stringify(taskResponseEvidence(child))}\nRevisions: baseline ${turn.baseline}; result ${turn.result ?? "not applied"}.\nChecks: ${child.lastCheck ? `${child.lastCheck.command}: ${child.lastCheck.ok ? "passed" : "failed"}` : "no completed automated check"}.\nPreserved workspaces:\n${child.worktrees.map(tree => `${tree.name}: ${tree.path} (${tree.branch})`).join("\n")}\n${owner.taskTeam?.enabled ? "Team configuration is retained for the next message." : "The user turned Team off. Continue as the single lead agent."}`;
       this.emitRun(run); await waitForRunWrites(run.id);
       return turn.report;
     } finally { signal.removeEventListener("abort", cancel); }
@@ -4537,7 +4577,7 @@ export class RunManager {
         context: await chatHandoffContext(run, checkpoint, false),
         task: `Current delegated task to review:\n${execution.task}\n\nLatest user corrections (take precedence over earlier instructions):\n${run.notes.filter(note => !note.control).map(note => note.text).join("\n\n")}\n\nReview the full combined workspace including the user's edits. Previous team report (historical evidence):\n${turn.report ?? ""}\n\nEarlier conversation (historical context; preserve applicable ongoing constraints, but turn-local requests such as a no-tools acknowledgement belong to their original replies):\n${JSON.stringify([run.task, ...run.followUps.filter(turn => !turn.side).map(turn => turn.message)])}`,
         roles: { reviewer: providers }, options: {}, agentSettings: config.settings, trust: run.trust, antigravityExecution: run.permissions?.antigravityExecution,
-        approvals: { plan: false, tools: !!run.approvals.tools }, loop: { ...run.loop, setup: undefined, check: undefined, verification: undefined, maxSteps: 6, maxInvocations: 6, maxMinutes: config.maxMinutes },
+        approvals: { plan: false, tools: !!run.approvals.tools }, loop: { ...run.loop, setup: "", check: "", verification: undefined, maxSteps: 6, maxInvocations: 6, maxMinutes: config.maxMinutes },
         parentRunId: run.id, taskExecution: { taskId: chatTaskId(run), chatId: run.id, key: `review:${turn.key}` },
         beforeDispatch: async child => { turn.resolutionReview = { executionId: child.id, checkpoint }; this.emitRun(run); await waitForRunWrites(id); },
       });
@@ -5510,6 +5550,7 @@ export class RunManager {
   }
 
   private require(id: string): Run {
+    if (this.deletingRuns.has(id)) throw new RunConflictError("This run is being deleted; wait for deletion to finish");
     const run = this.readRun(id);
     this.coldRuns.drop(id);
     return this.adoptRun(run);
@@ -5543,6 +5584,7 @@ export class RunManager {
     this.assertNoWorkspaceLease(repo);
     if (this.shuttingDown) throw new Error("code-flow is shutting down; new runs cannot start");
     this.startingRepositories.set(repo, (this.startingRepositories.get(repo) ?? 0) + 1);
+    if (input.project) this.startingProjects.set(input.project, (this.startingProjects.get(input.project) ?? 0) + 1);
     const prefix: { release?: () => void } = {};
     const work = this.startResolved({ ...input, repo }, prefix);
     this.startingWork.add(work);
@@ -5552,6 +5594,10 @@ export class RunManager {
       this.startingWork.delete(work);
       const remaining = (this.startingRepositories.get(repo) ?? 1) - 1;
       if (remaining) this.startingRepositories.set(repo, remaining); else this.startingRepositories.delete(repo);
+      if (input.project) {
+        const projects = (this.startingProjects.get(input.project) ?? 1) - 1;
+        if (projects) this.startingProjects.set(input.project, projects); else this.startingProjects.delete(input.project);
+      }
     }
   }
 

@@ -111,9 +111,11 @@ Open a project in the sidebar. **Overview** shows work needing attention, runnin
 
 ![Project Overview groups the saved draft, work needing attention and recent results on its owning computer (demo data)](images/project-light.png)
 
-**New run** opens the project's saved draft. Text, attachments, selected files, workflow and run options are saved separately for each project on each computer. Browsing another project's page or filtering Inbox does not change the draft's destination. The composer shows one repository directly or a selector for multiple repositories. **Open another repository** asks you to choose or explicitly extend a project before launching.
+**Projects** lists every project on this computer. Choosing a project with one repository selects that repository automatically. **New run** remembers the last valid project and opens its saved draft. Text, attachments, selected files, workflow and run options are saved separately for each project on each computer. Browsing another project's page or filtering Inbox does not change the draft's destination. The composer shows one repository directly or a selector for multiple repositories. **Open another repository** asks you to choose or explicitly extend a project before launching.
 
-Existing browser drafts migrate once. Ambiguous drafts remain **Unassigned draft** in the composer project picker until you choose a destination. A removed project or repository blocks launching into it; the draft remains available. If draft storage fails, keep the tab open and use **Retry saving**.
+Existing browser drafts migrate once. Ambiguous drafts remain **Unassigned draft** in the composer project picker until you choose a destination. Deleting a project clears its saved draft and attachments; open tabs return to the Projects page without retaining an unavailable-project warning. Other projects' drafts stay intact. Removing only a repository retains the draft but blocks launching into the removed destination. If draft storage fails, keep the tab open and use **Retry saving**.
+
+Every project is visible in the sidebar. Expanded project groups and longer run lists are remembered. Archived runs appear in their own section when shown. Drag the sidebar's right edge to widen the project and run list. Its width is remembered after reload and collapse. You can also focus the edge and use the arrow keys; double-click it to restore the default width. On smaller screens it leaves room for the main page, and phones keep the drawer layout.
 
 ## Find help in the app
 
@@ -162,3 +164,7 @@ git worktree add -b <prefix>/<name> <repo>/.worktrees/<run-id>/<name> <base>
 - **Cleanup:** remove a run's worktrees with `git worktree remove .worktrees/<run-id>/<name>`, or delete the folder and run `git worktree prune`. The branches stay until you delete them. **Archive…** on a run (**Archive and clean up…** in an Agent conversation's sidebar menu), and **Clean up** in [Insights](runs.md#insights-comparisons-and-finding-runs), do this for you. code-flow only ever removes git's record of its own worktrees: it never runs `git worktree prune`, which would also forget your own worktrees whose folder is missing just now (a drive that isn't mounted).
 
 Next: [Team patterns](patterns.md) · [Talking to a run](runs.md)
+
+Tasks use four main states: **Working**, **Waiting for you**, **Stopped**, and **Finished**. Finished tasks show recorded file changes, check results and a next action; no-change answers are identified explicitly. Written proposals and reports appear directly in the chat reply. Older conversations automatically show the latest saved worker response when the lead omitted it. Earlier attempts remain in Team details; displaying a response does not imply that independent review passed.
+
+Mission repair notices explain what is paused. **Review repair** shows recovery actions; file paths and diagnostic information stay under **Technical details**. Setup failures show the underlying problem and actions to resume after fixing it or edit the setup command. Clearing setup or check explicitly disables that command for this run instead of restoring the repository default.

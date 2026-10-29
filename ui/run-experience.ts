@@ -1,6 +1,6 @@
 import { planRejected, dispatchLabel } from "../src/run-outcome.js";
 import { classifyError } from "../src/adapters/errors.js";
-import { checksLabel, integrityFor } from "../src/run-status.js";
+import { checksLabel, integrityFor, runState } from "../src/run-status.js";
 export { checksLabel, integrityFor } from "../src/run-status.js";
 import type { AgentId, Run, RunSummary, Step } from "./types.js";
 import { teamAwaitingAnswer, teamNeedsResume } from "./team-state.js";
@@ -55,13 +55,28 @@ export function declinedUnasked(text: string): boolean {
  */
 export function executionLabel(run: RunSummary, approvalPending = false): string {
   if (run.status === "running" && (run.awaiting || teamAwaitingAnswer(run) || approvalPending)) return "Waiting for you";
-  if (planRejected(run)) return "Plan rejected";
-  const paused = dispatchLabel(run, "steps" in run ? (run as Run).steps : undefined);
-  if (paused) return paused;
-  if (run.status === "stopped" && (run.providerLimit || /^usage limit of /.test(run.stopReason ?? ""))) return "Provider usage limit";
+  if (planRejected(run) || dispatchLabel(run, "steps" in run ? (run as Run).steps : undefined) === "Dispatch paused") return "Stopped";
   const turn = run.teamTurns?.at(-1);
-  if (run.status === "done" && turn && (turn.executionStatus && turn.executionStatus !== "done" || turn.reconciliation || turn.resolutionCheck?.ok === false || turn.teamEvidence?.check?.ok === false || turn.resolutionReview?.approved === false || turn.reviewStale)) return "Needs attention";
-  return { running: "Running", done: "Finished", failed: "Failed", stopped: "Paused", interrupted: "Interrupted", cancelled: "Stopped" }[run.status] ?? run.status;
+  if (run.status === "done" && (run.triage?.state === "pending" || turn && (turn.executionStatus && turn.executionStatus !== "done" || turn.reconciliation || turn.resolutionCheck?.ok === false || turn.teamEvidence?.check?.ok === false || turn.resolutionReview?.approved === false || turn.reviewStale))) return "Waiting for you";
+  return { running: "Working", done: "Finished", failed: "Stopped", stopped: "Stopped", interrupted: "Stopped", cancelled: "Stopped" }[run.status] ?? run.status;
+}
+
+/** A status dot must communicate its evidence state in text as well as color. */
+export function sidebarStatusLabel(run: RunSummary): string {
+  const label = executionLabel(run);
+  const evidence = ({ failing: "Check failing", unchecked: "Check can't run", unverified: "not verified" } as Record<string, string>)[runState(run)];
+  return label === "Finished" && evidence ? `${label} · ${evidence}` : label;
+}
+
+/** Describe only recorded evidence; a completed answer is not proof that checks passed. */
+export function resultSummary(run: RunSummary) {
+  const changes = run.artifacts.filter(artifact => artifact.stat?.trim());
+  const unknown = run.artifacts.some(artifact => artifact.stat === undefined);
+  return {
+    changes: changes.length ? changes.map(artifact => artifact.stat!.trim()).join("\n") : unknown ? "The file changes could not be inspected." : "No file changes were recorded. Review the answer for the result.",
+    check: ({ Passed: "Recorded checks passed.", Failed: "Checks failed. Review the failures before using the changes.", Blocked: "Checks could not run.", "Not verified": "Checks have not been verified.", "Not configured": "No automated checks were configured." } as Record<string, string>)[checksLabel(run)] ?? checksLabel(run),
+    branch: run.artifacts.find(artifact => artifact.stat === undefined || artifact.stat.trim())?.branch,
+  };
 }
 
 /** What the header says besides execution: that the run is archived history, and where its result was merged. */

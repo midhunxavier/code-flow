@@ -172,8 +172,8 @@
   .command-btn:hover .kbd-key { color: var(--text-2); }
 
   /* ---------- layout: the sidebar full height, the top bar and page beside it ---------- */
-  .app { flex: 1; min-height: 0; display: grid; grid-template-columns: 248px minmax(0, 1fr); }
-  .app.with-side { grid-template-columns: 248px minmax(0, 1fr) var(--side-w, 420px); }
+  .app { flex: 1; min-height: 0; display: grid; grid-template-columns: var(--rail-w, 248px) minmax(0, 1fr); }
+  .app.with-side { grid-template-columns: var(--rail-w, 248px) minmax(0, 1fr) var(--side-w, 420px); }
   .main-col { container: main / inline-size; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
   /* A docked tool narrows the chat even on a wide monitor. Keep its header inside that column. */
   @container main (max-width: 620px) {
@@ -190,7 +190,15 @@
   @container main (max-width: 320px) {
     .topbar .host-switcher { max-width: 82px; }
   }
-  .rail { border-right: 1px solid var(--border); background: var(--panel); overflow: hidden; padding: 0 10px; display: flex; flex-direction: column; gap: 1px; min-height: 0; }
+  .rail { position: relative; border-right: 1px solid var(--border); background: var(--panel); overflow: hidden; padding: 0 10px; display: flex; flex-direction: column; gap: 1px; min-height: 0; }
+  .rail-handle { position: absolute; right: 0; top: 0; bottom: 0; width: 8px; cursor: col-resize; touch-action: none; z-index: 4; }
+  .rail-handle::before { content: ""; position: absolute; right: 1px; top: 50%; width: 5px; height: 44px; margin-top: -22px; border-radius: 3px; background: var(--muted); opacity: .55; }
+  .rail-handle::after { content: ""; position: absolute; right: 0; top: 0; bottom: 0; width: 2px; }
+  .rail-handle:hover::after, .rail-handle.dragging::after { background: var(--border-strong); }
+  .rail-handle:focus-visible { outline: none; }
+  .rail-handle:focus-visible::before, .rail-handle:focus-visible::after { background: var(--focus); }
+  .app:has(.rail-handle.dragging) { user-select: none; cursor: col-resize; }
+  .app:has(.rail-handle.dragging) iframe { pointer-events: none; }
   .rail-head { flex: none; display: flex; align-items: center; gap: 8px; min-height: 48px; padding: 0 2px 0 6px; }
   .brand { flex: 1; min-width: 0; color: var(--text); text-decoration: none; border-radius: var(--radius-xs); }
   .brand-name { font-size: 17px; font-weight: 600; letter-spacing: -.045em; white-space: nowrap; }
@@ -787,6 +795,9 @@
   .md hr { border: 0; border-top: 1px solid var(--border); margin: 1em 0; }
   .md pre { margin: .3em 0 .8em; }
   .md a { color: var(--accent-ink); text-decoration: underline; text-underline-offset: 2px; }
+  .md-image { max-width: 100%; height: auto; vertical-align: middle; }
+  .md-image-fallback { color: var(--muted); font-size: .92em; }
+  .md-badges { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
   .md-table { overflow-x: auto; margin: 0 0 .8em; border: 1px solid var(--border); border-radius: var(--radius-sm); }
   .md table { border-collapse: collapse; width: 100%; font-size: 13px; line-height: 1.5; }
   .md th, .md td { padding: 7px 10px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
@@ -1322,8 +1333,8 @@
 
   /* ---------- small screens ---------- */
   @media (max-width: 1180px) {
-    .app { grid-template-columns: 236px minmax(0, 1fr); }
-    .app.with-side { grid-template-columns: 236px minmax(0, 1fr) var(--side-w, 420px); }
+    .app { grid-template-columns: var(--rail-w, 236px) minmax(0, 1fr); }
+    .app.with-side { grid-template-columns: var(--rail-w, 236px) minmax(0, 1fr) var(--side-w, 420px); }
   }
   @media (max-width: 760px) {
     .app, .app.with-side { grid-template-columns: minmax(0, 1fr); }
@@ -3374,6 +3385,7 @@ dialog.picker.team-build-dialog { max-height: min(780px, calc(100dvh - 32px)); }
 .standing-teams .field { min-width: 0; max-width: 100%; }
 .pt-json { font-family: var(--mono); width: 100%; }
 .pt-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+.pt-schedule { border: 0; margin: 0; padding: 0; min-width: 0; }
 .pt-opportunities { display: grid; gap: 12px; margin: 16px 0; }
 .pt-opportunity { border: 1px solid var(--border); border-radius: 8px; padding: 14px; }
 .pt-opportunity pre { white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -3412,6 +3424,9 @@ dialog.picker.team-build-dialog { max-height: min(780px, calc(100dvh - 32px)); }
 .composer-summary > span { overflow-wrap: anywhere; }
 .composer-summary b { color: var(--text-2); font-weight: 600; }
 .composer-summary .composer-problem { flex-basis: 100%; color: var(--warn); }
+.composer-budget { display: flex; align-items: center; gap: 6px; }
+.budget-picker > .icon-btn { display: inline-flex; align-items: center; gap: 6px; width: auto; height: auto; padding: 4px 8px; border: 1px solid var(--border); border-radius: 6px; font: inherit; color: var(--text-2); }
+.budget-picker .pop-menu { min-width: 230px; }
 .composer-summary .warn { color: var(--warn); font-weight: 500; }
 .run-evidence { display: flex; flex-wrap: wrap; gap: 10px 28px; margin: 0 0 16px; padding: 12px 0; border-bottom: 1px solid var(--border); }
 .run-evidence div { min-width: 100px; }
@@ -3978,3 +3993,21 @@ dialog.rail::backdrop { background: rgb(0 0 0 / .28); }
 .toast { display: flex; align-items: center; gap: 10px; max-width: min(640px, calc(100vw - 32px)); }
 .toast-dismiss { color: inherit; background: transparent; border: 0; display: inline-flex; align-items: center; justify-content: center; min-width: 32px; min-height: 32px; flex-shrink: 0; border-radius: 4px; cursor: pointer; }
 .toast-dismiss:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
+
+/* Project selection and result summaries keep the next action visible. */
+.projects-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 270px), 1fr)); gap: 16px; }
+.projects-grid h2 { margin-top: 0; }
+.projects-grid a { overflow-wrap: anywhere; }
+.mission-repair { margin-block: 12px; padding: 14px; border: 1px solid var(--border); border-radius: 8px; }
+.mission-repair > p { margin-top: 0; }
+.mission-repair details { margin-top: 10px; }
+.mission-repair summary { cursor: pointer; }
+.mission-repair .help { overflow-wrap: anywhere; }
+.run-result-summary { margin: 16px 0; padding: 16px; border: 1px solid var(--border); border-radius: 8px; }
+.run-result-summary h2 { font-size: 16px; margin: 0 0 12px; }
+.run-result-summary dl { display: grid; grid-template-columns: max-content 1fr; gap: 8px 16px; margin: 0 0 12px; }
+.run-result-summary dt { font-weight: 600; }
+.run-result-summary dd { margin: 0; overflow-wrap: anywhere; }
+.run-result-summary pre { white-space: pre-wrap; }
+.team-reply { margin-top: 16px; }
+.team-reply > .help { margin-bottom: 12px; }

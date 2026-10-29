@@ -1,3 +1,4 @@
+import { MAX_EXECUTION_BUDGET } from "../src/execution-budget.js";
 import { describeGithubRunEvents } from "../src/github-webhook-events.js";
 import { runTitle } from "../src/run-title.js";
 import { confirmAction } from "./confirm-state.js";
@@ -263,7 +264,7 @@ export function TriageActions({ run }: { run: RunSummary }) {
   const [busy, setBusy] = useState("");
   const [calls, setCalls] = useState(String(run.loop.maxInvocations ?? run.loop.maxSteps));
   const [minutes, setMinutes] = useState(String(run.loop.maxMinutes));
-  const budgetValid = calls.trim() !== "" && Number.isSafeInteger(Number(calls)) && Number(calls) >= 1 && Number(calls) <= 200 && minutes.trim() !== "" && Number.isFinite(Number(minutes)) && Number(minutes) >= 1 && Number(minutes) <= 720;
+  const budgetValid = calls.trim() !== "" && Number.isSafeInteger(Number(calls)) && Number(calls) >= 1 && Number(calls) <= MAX_EXECUTION_BUDGET.maxSteps && minutes.trim() !== "" && Number.isFinite(Number(minutes)) && Number(minutes) >= 1 && Number(minutes) <= MAX_EXECUTION_BUDGET.maxMinutes;
   const act = async (decision: "approve" | "revise" | "reject", extra: Record<string, unknown> = {}) => {
     if (busy || run.status === "running" || (decision === "revise" && (!note.trim() || !budgetValid))) return;
     if (decision === "reject" && !await confirmAction("Reject this result? Its worktrees and branches are deleted.", {"title":"Reject this result?","confirmLabel":"Reject result","danger":true})) return;
@@ -296,8 +297,8 @@ export function TriageActions({ run }: { run: RunSummary }) {
   return (
     <div class="triage">
       <input class="field" placeholder="What should change? (for Revise)" value={note} onInput={(e) => setNote(e.currentTarget.value)} disabled={running} />
-      {note.trim() ? <details class="followup-budget"><summary>Revision budget · {calls || "—"} calls · {minutes || "—"} min</summary><label>Maximum calls<input class="field" aria-label="Revision maximum calls" aria-invalid={!budgetValid} type="number" min={1} max={200} value={calls} onInput={(event) => setCalls(event.currentTarget.value)} /></label><label>Maximum minutes<input class="field" aria-label="Revision maximum minutes" aria-invalid={!budgetValid} type="number" step="any" min={1} max={720} value={minutes} onInput={(event) => setMinutes(event.currentTarget.value)} /></label></details> : null}
-      {note.trim() && !budgetValid ? <p class="msg err" role="alert">Choose 1–200 whole calls and 1–720 minutes.</p> : null}
+      {note.trim() ? <details class="followup-budget"><summary>Revision budget · {calls || "—"} calls · {minutes || "—"} min</summary><label>Maximum calls<input class="field" aria-label="Revision maximum calls" aria-invalid={!budgetValid} type="number" min={1} max={MAX_EXECUTION_BUDGET.maxSteps} value={calls} onInput={(event) => setCalls(event.currentTarget.value)} /></label><label>Maximum minutes<input class="field" aria-label="Revision maximum minutes" aria-invalid={!budgetValid} type="number" step="any" min={1} max={MAX_EXECUTION_BUDGET.maxMinutes} value={minutes} onInput={(event) => setMinutes(event.currentTarget.value)} /></label></details> : null}
+      {note.trim() && !budgetValid ? <p class="msg err" role="alert">Choose 1–{MAX_EXECUTION_BUDGET.maxSteps} whole calls and 1–{MAX_EXECUTION_BUDGET.maxMinutes} minutes.</p> : null}
       <button class="btn small" disabled={running || !!busy || !note.trim() || !budgetValid} onClick={() => act("revise")}>
         {busy === "revise" ? "Sending…" : "Revise"}
       </button>

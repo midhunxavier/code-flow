@@ -74,6 +74,7 @@ test("archiving removes worktrees without invalidating the exact verified result
 test("releasing a deleted project archives missions while preserving settled history and frees its repository", async () => {
   const f = await fixture(); await f.service.cycle(f.team.id, "cycle");
   const before = await settled(f); await f.manager.removeProject(f.project.id); await f.service.releaseProject(f.project.id);
+  for (const cycle of before.cycles) for (const launch of cycle.launches) if (launch.runId) assert.equal(f.manager.get(launch.runId), undefined, "project deletion removes mission runs too");
   const released = f.store.get(before.id); assert.equal(released.status, "archived");
   assert.deepEqual(released.cycles, before.cycles); assert.deepEqual(released.opportunities, before.opportunities);
   assert.deepEqual(allowance(released), allowance(before)); assert.equal(f.automations.get(`t-${before.id}`)!.enabled, false);

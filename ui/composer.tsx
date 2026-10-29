@@ -1,3 +1,4 @@
+import { EXECUTION_BUDGET_PRESETS, budgetDuration } from "../src/execution-budget.js";
 import { teamApprovalProblem } from "./task-team-choices.js";
 import { composerCheckMode, checkExplanation, type CheckMode } from "./composer-checks.js";
 import { modelIdProblem } from "../src/model-id.js";
@@ -5,7 +6,7 @@ import { providerProblem, providerSetupProblem } from "./provider-readiness.js";
 import { startBranchLabel } from "./start-branch.js";
 import { BrowserDraftCards } from "./browser-context-cards.js";
 import { browserImageNames, editBrowserText, parseBrowserMessage } from "./browser-context.js";
-import { TaskTeamControl } from "./task-team.js";
+import { TaskTeamControl, defaultTaskTeam } from "./task-team.js";
 import type { TaskTeamConfig } from "../src/task-team.js";
 import { WorkerModelCatalog, discoveredCatalogs } from "./model-catalog.js";
 import { runProviderProblem, supportsRunPermissions, type PermissionRequirement } from "../src/run-permissions.js";
@@ -163,6 +164,17 @@ export function Composer() {
   const checkMode = composerCheckMode(p?.id, { checkpointOnFinish: restored?.checkpointOnFinish, remote: !!remoteWorker, team: !!taskTeam?.enabled, container: containerEnabled });
   const automaticChecks = checkMode !== "conversation";
   const [moreOptions, setMoreOptions] = useState(false);
+  const [limitsOpen, setLimitsOpen] = useState(false);
+  const [budgetRevision, setBudgetRevision] = useState(0);
+  const chooseBudget = (budget: typeof EXECUTION_BUDGET_PRESETS[number]) => {
+    batch(() => {
+      setRunLimits({ maxSteps: budget.maxSteps, maxMinutes: budget.maxMinutes });
+      // Choosing a preset explicitly replaces a retry's original call ceiling too.
+      if (rerunDraft.value) rerunDraft.value = { ...rerunDraft.value, loop: { ...rerunDraft.value.loop, maxInvocations: budget.maxSteps } };
+    });
+    if (single) setTaskTeam(previous => ({ ...(previous ?? defaultTaskTeam(soloAgent && soloAgent !== "auto" ? soloAgent : "claude")), maxCalls: budget.maxSteps, maxMinutes: budget.maxMinutes }));
+    setBudgetRevision(value => value + 1);
+  };
   const [advancedOpen, setAdvancedOpen] = useState(() => store.get("composerAdvanced") === "1");
   const selectVerification = async (selected: string) => {
     const request = ++profileRequest.current;
@@ -352,7 +364,16 @@ export function Composer() {
         <span><b>Computer</b> {computerLabel()}{remoteWorker ? ` · Agent worker: ${remoteWorker.workerId}` : ""}</span>
         <span><b>Project</b> {target.value.project?.name ?? "Choose project"}</span>
         <span><b>Repository</b> {repo.value ? baseName(repo.value) : "Choose repository"} · {startBranchLabel(source.value, baseRef.value, repoInfo.value?.current)}</span>
-        <span><b>Limit</b> {plural(restored?.loop.maxInvocations ?? limits.value.maxSteps, "call")} · {limits.value.maxMinutes} minutes</span>
+        <div class="composer-budget">
+          <b>Limit</b>
+          <Menu above align="end" label="Run budget" icon="clock" class="budget-picker chat-choice" trigger={<>{plural(restored?.loop.maxInvocations ?? limits.value.maxSteps, "call")} · {budgetDuration(limits.value.maxMinutes)}<Icon name="chevron" /></>}>
+            {close => <>
+              <MenuTitle>Run budget</MenuTitle>
+              {EXECUTION_BUDGET_PRESETS.map(budget => <MenuItem key={budget.id} on={limits.value.maxSteps === budget.maxSteps && limits.value.maxMinutes === budget.maxMinutes && (restored?.loop.maxInvocations ?? budget.maxSteps) === budget.maxSteps} sub={`${budget.maxSteps.toLocaleString()} calls · ${budgetDuration(budget.maxMinutes)}`} onClick={() => { chooseBudget(budget); close(); }}>{budget.label}{budget.id === "extended" ? " · default" : ""}</MenuItem>)}
+              <MenuItem onClick={() => { close(); setMoreOptions(true); setLimitsOpen(true); }}>Custom limits…</MenuItem>
+            </>}
+          </Menu>
+        </div>
         {problem ? <span class="composer-problem" role="status">{problem}{/Settings/.test(problem) ? <> <a href="#/settings/agents">Open provider settings</a></> : null}</span> : null}
         {trust.value === "full" ? <span class="warn">Full access · no provider sandbox</span> : null}
         {nativeAntigravity ? <span class="warn">Unrestricted Antigravity · no Code Flow sandbox</span> : null}
@@ -413,9 +434,9 @@ export function Composer() {
         {remoteWorker ? <p class="help">Provider availability comes from this worker. Checks and setup run on the application server. Copied workspace files and native interactive approvals are unavailable; use explicitly staged references.</p> : null}
         {p && !single ? <Team p={p} roles={roles} providers={remoteAgents} remote={!!remoteWorker} /> : null}
         <div class="section"><label class="lbl" for="verification-profile">Verification gates</label><select class="field" id="verification-profile" value={verificationPreset} disabled={!repo.value} onChange={(event) => void selectVerification(event.currentTarget.value)}><option value="">Single configured check</option>{verificationPreset === "restored" ? <option value="restored">From original run · {verificationProfile?.name}</option> : null}<option value="lightweight">Lightweight profile</option><option value="standard">Standard profile</option><option value="thorough">Thorough profile</option></select>{automaticChecks && profileError ? <p class="msg err" role="alert">{profileError}</p> : null}{!automaticChecks ? <p class="help">Verification gates are inactive for Agent conversations. Turn on AI team or choose a managed workflow to run them.</p> : verificationProfile ? <p class="help">Required gates: {verificationProfile.checks.map((gate) => gate.command).join(" · ") || "No runnable gates detected"}. Each gate appears in the run's evidence.</p> : null}</div>
-      {p ? <Settings p={p} roles={roles} /> : null}
         </div>
       </details>
+      {p ? <Settings p={p} roles={roles} open={limitsOpen} onToggle={setLimitsOpen} budgetRevision={budgetRevision} /> : null}
       {p ? <EffectiveSettings p={p} checkMode={checkMode} toolApprovals={approvals} verificationProfile={verificationProfile} container={{ enabled: containerEnabled, image: containerImage, authVolume: containerVolume, network: restored?.loop.agentContainer?.network }} /> : null}
       <ContextInspector />
 
@@ -1190,7 +1211,7 @@ export function RoleModels({ p, roleId, roleLabel, agents: ids, remote }: { p: P
 }
 
 // ---------------------------------------------------------------- settings
-function Settings({ p, roles }: { p: PatternInfo; roles: Record<string, RoleValue[]> }) {
+function Settings({ p, roles, open, onToggle, budgetRevision }: { p: PatternInfo; roles: Record<string, RoleValue[]>; open: boolean; onToggle: (open: boolean) => void; budgetRevision: number }) {
   const info = repoInfo.value;
   const used = new Set(Object.values(roles).flat().filter((id): id is AgentId => id !== "auto"));
   const models = [...used]
@@ -1204,11 +1225,11 @@ function Settings({ p, roles }: { p: PatternInfo; roles: Record<string, RoleValu
   const opts = optionsFor(p);
   const setLimits = (patch: Partial<typeof limits.value>) => setRunLimits(patch);
   return (
-    <details class="settings">
+    <details class="settings" open={open} onToggle={event => onToggle(event.currentTarget.open)}>
       <summary>
         <span class="st">Branches and limits</span>
         <span class="ss">
-          from {baseLabel} · {models.length ? models.join(", ") : "default models"} · stops after {limits.value.maxMinutes} min or {plural(limits.value.maxSteps, "step")}
+          from {baseLabel} · {models.length ? models.join(", ") : "default models"} · stops after {budgetDuration(limits.value.maxMinutes)} or {plural(limits.value.maxSteps, "step")}
           {trust.value === "full" ? <span class="full-access"> · ⚠ full access</span> : null}
         </span>
       </summary>
@@ -1238,18 +1259,19 @@ function Settings({ p, roles }: { p: PatternInfo; roles: Record<string, RoleValu
         </div>
         <div>
           <span class="lbl">Limits — the run stops when it reaches either</span>
+          <p class="help">This is the maximum allowance, not a target. Runs finish sooner when the work is complete. Time waiting for approval or a free slot does not count.</p>
           <div class="settings-grid">
             <div>
               <label class="lbl" for="maxMinutes">
                 Minutes
               </label>
-              <NumberField id="maxMinutes" problemKey="composer:maxMinutes" value={limits.value.maxMinutes} rule={EXECUTION_LIMITS.maxMinutes} onChange={value => setLimits({ maxMinutes: value! })} />
+              <NumberField key={`minutes:${budgetRevision}`} id="maxMinutes" problemKey="composer:maxMinutes" value={limits.value.maxMinutes} rule={EXECUTION_LIMITS.maxMinutes} onChange={value => setLimits({ maxMinutes: value! })} />
             </div>
             <div>
               <label class="lbl" for="maxSteps">
                 Agent steps
               </label>
-              <NumberField id="maxSteps" problemKey="composer:maxSteps" value={limits.value.maxSteps} rule={EXECUTION_LIMITS.maxSteps} onChange={value => setLimits({ maxSteps: value! })} />
+              <NumberField key={`steps:${budgetRevision}`} id="maxSteps" problemKey="composer:maxSteps" value={limits.value.maxSteps} rule={EXECUTION_LIMITS.maxSteps} onChange={value => setLimits({ maxSteps: value! })} />
             </div>
             <div><label class="lbl" for="maxTokens">Reported token ceiling</label><NumberField id="maxTokens" problemKey="composer:maxTokens" value={limits.value.maxTokens} rule={EXECUTION_LIMITS.maxTokens} optional placeholder="Optional" onChange={value => setLimits({ maxTokens: value })} /></div>
             <div><label class="lbl" for="maxCostUsd">Reported API-equivalent ceiling ($)</label><NumberField id="maxCostUsd" problemKey="composer:maxCostUsd" value={limits.value.maxCostUsd} rule={EXECUTION_LIMITS.maxCostUsd} optional placeholder="Optional" onChange={value => setLimits({ maxCostUsd: value })} /></div>

@@ -61,7 +61,7 @@ import {
   validateAgentSettings,
   type AgentId,
 } from "./adapters/index.js";
-import { listTree, readRepoFile, searchFiles } from "./repo-tree.js";
+import { listTree, readRepoFile, readRepoImage, searchFiles } from "./repo-tree.js";
 import { checkGit, doctor } from "./doctor.js";
 import { readRepoConfig, readRepoConfigAt, type Trust } from "./repo-config.js";
 import { openFolder } from "./serve.js";
@@ -871,7 +871,8 @@ function validateLoop(input: unknown): Partial<LoopSettings> {
     const value = typeof raw[key] === "string" ? (raw[key] as string).trim() : "";
     if (value.length > 1_000) throw new HttpError(400, `${key} command is too long`);
     if (/[\r\n]/.test(value)) throw new HttpError(400, `${key} command must be a single line`);
-    return value || undefined;
+    // An explicitly empty command disables the repository default for this run.
+    return typeof raw[key] === "string" ? value : undefined;
   };
   const number = (key: keyof typeof EXECUTION_LIMITS) => {
     if (raw[key] === undefined) return undefined;
@@ -1413,7 +1414,10 @@ const topics: Record<string, TopicSource> = {
     }
     const client = (e: { seq: number; run: RunSummary }) => { if (!fileAccess.restrictedRun(e.run)) deliver({ type: "run", seq: e.seq, run: e.run }, e.seq); };
     runFeed.clients.add(client);
-    return () => runFeed.clients.delete(client);
+    // Project deletion commits after its run tombstones. Notify open owner tabs at that commit,
+    // including projects with no runs, instead of leaving them on the 30-second inventory poll.
+    const stopProjects = projects.onChange(() => deliver({ type: "projects" }));
+    return () => { runFeed.clients.delete(client); stopProjects(); };
   },
 
   async "run-page"(id, after, deliver) {
@@ -2420,7 +2424,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
   }
   if (req.method === "GET" && parts[1] === "file") {
     const repo = await requestedFolder(url);
-    const content = await readRepoFile(repo, url.searchParams.get("path") ?? "").catch((err: NodeJS.ErrnoException) => {
+    const read = url.searchParams.get("image") === "1" ? readRepoImage : readRepoFile;
+    const content = await read(repo, url.searchParams.get("path") ?? "").catch((err: NodeJS.ErrnoException) => {
       if (err instanceof FilePolicyError) throw new HttpError(err.status, err.message);
       const missing = err.code === "ENOENT" || err.code === "ENOTDIR"; // a file used as a folder names no file either
       throw new HttpError(missing ? 404 : 400, missing ? "File not found" : err.message);

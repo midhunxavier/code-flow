@@ -89,10 +89,21 @@ export const sideWidth = signal(Math.min(Math.max(Number(store.get("sideWidth"))
 const viewportWidth = signal(window.innerWidth);
 window.addEventListener("resize", () => { viewportWidth.value = window.innerWidth; });
 export const railIsCollapsed = computed(() => viewportWidth.value > 760 && railCollapsed.value && !railPeek.value);
-/** Leave room for the conversation when the panel is docked; retain the saved width on resize. */
-export const sideMaxWidth = computed(() => Math.max(300, Math.min(900, viewportWidth.value - (railIsCollapsed.value ? 64 : viewportWidth.value <= 1180 ? 236 : 248) - 360)));
-export const sideDisplayWidth = computed(() => Math.min(sideWidth.value, sideMaxWidth.value));
 export const sideExpanded = signal(false);
+const savedRailWidth = Number(store.get("railWidth"));
+/** A custom desktop width survives collapse and smaller viewports; null follows the default. */
+export const railWidth = signal<number | null>(Number.isFinite(savedRailWidth) && savedRailWidth > 0 ? Math.min(520, Math.max(220, savedRailWidth)) : null);
+export const railMaxWidth = computed(() => Math.max(220, Math.min(520, viewportWidth.value - 360 - (sideOpen.value && !sideExpanded.value ? 300 : 0))));
+export const railDisplayWidth = computed(() => Math.min(railWidth.value ?? (viewportWidth.value <= 1180 ? 236 : 248), railMaxWidth.value));
+export function setRailWidth(px: number | null) {
+  if (px !== null && !Number.isFinite(px)) return;
+  railWidth.value = px === null ? null : Math.min(Math.max(Math.round(px), 220), railMaxWidth.value);
+  if (railWidth.value === null) store.remove("railWidth");
+  else store.set("railWidth", String(railWidth.value));
+}
+/** Leave room for the conversation when the panel is docked; retain the saved width on resize. */
+export const sideMaxWidth = computed(() => Math.max(300, Math.min(900, viewportWidth.value - (railIsCollapsed.value ? 64 : railDisplayWidth.value) - 360)));
+export const sideDisplayWidth = computed(() => Math.min(sideWidth.value, sideMaxWidth.value));
 export const sideFullWidth = computed(() => sideOpen.value && (sideExpanded.value || viewportWidth.value <= 760));
 export function openSide(tab?: SideTab) {
   if (tab) {
@@ -211,7 +222,7 @@ export async function setRepo(path: string, remember = true) {
   configChecking.value = false;
   repoChecking.value = true;
   repoError.value = "";
-  if (!path) { repoChecking.value = false; return true; }
+  if (!path) { if (remember) store.remove("repo"); repoChecking.value = false; return true; }
   try {
     const info = await api<RepoInfo>(`/api/branches?repo=${encodeURIComponent(path)}`);
     if (request !== repoSelection) return false;
@@ -250,6 +261,7 @@ export const projects = signal<Project[]>([]);
 /** The list of projects has come: until then, an empty list says nothing about a project being gone. */
 export const projectsLoaded = signal(false);
 export const projectsStatus = signal<import("../src/projects.js").ProjectsStatus>({ available: true });
+let completeProjectInventory = false;
 export const currentProject = signal(store.get("project") ?? ALL);
 export const activeProject = computed(() => projects.value.find((p) => p.id === currentProject.value));
 /** The draft's destination is independent of global list filters and the page being viewed. */
@@ -280,20 +292,40 @@ export function editProject(id: string) {
   projectsOpen.value = true;
 }
 
-export async function loadProjects() {
+let projectLoadRequest = 0;
+export async function loadProjects(fresh = false) {
+  const request = ++projectLoadRequest;
+  const previous = projects.value;
+  completeProjectInventory = false;
   try {
-    const diagnosis = sharedGet<{ projects?: import("../src/projects.js").ProjectsStatus }>("/api/health").catch(() => null);
+    const diagnosis = api<{ projects?: import("../src/projects.js").ProjectsStatus }>("/api/health", { signal: AbortSignal.timeout(10_000) }).catch(() => null);
     // Show available choices promptly; boot still awaits the storage diagnosis below
     // before restoring drafts or treating project storage as fully loaded.
-    projects.value = await sharedGet<Project[]>("/api/projects");
+    const inventory = await (fresh ? api<Project[]>("/api/projects") : sharedGet<Project[]>("/api/projects"));
+    if (request !== projectLoadRequest) return;
+    projects.value = inventory;
     const status = await diagnosis;
+    if (request !== projectLoadRequest) return;
     if (status?.projects) projectsStatus.value = status.projects;
+    completeProjectInventory = !!status?.projects?.available && !status.projects.recovery;
     projectsLoaded.value = true;
   } catch {
     return; // keep what we have
   }
   const id = currentProject.value;
   if (id !== ALL && id !== NONE && !projects.value.some((p) => p.id === id)) setCurrentProject(ALL); // deleted, maybe in another tab
+  if (completeProjectInventory && draftsReady.value) {
+    const gone = previous.filter(project => !projects.value.some(item => item.id === project.id)).map(project => project.id);
+    if (composerProject.value && !projects.value.some(project => project.id === composerProject.value)) gone.push(composerProject.value);
+    const deletedProject = deletedRunNotice.value && deletedRunProjects.get(deletedRunNotice.value.id);
+    if (deletedProject && !projects.value.some(project => project.id === deletedProject)) gone.push(deletedProject);
+    for (const project of new Set(gone)) await discardProjectDraft(project);
+  }
+  if (completeProjectInventory) {
+    const r = route.value;
+    const destination = r.view === "project" ? r.id : r.view === "composer" || r.view === "workspace" ? r.project : undefined;
+    if (destination && !projects.value.some(project => project.id === destination)) route.value = { view: "projects" };
+  }
 }
 
 /** The project a run belongs to, as the server decides it (projectOf in projects.ts). */
@@ -781,8 +813,8 @@ function deriveDefaults(config: Record<string, any>) {
   limits.value = limitPreference.value ? { ...limitPreference.value } : {
     ...DEFAULT_EXECUTION_BUDGET,
     // Within what the limit fields accept.
-    ...(configured.maxMinutes ? { maxMinutes: Math.min(720, configured.maxMinutes) } : {}),
-    ...(configured.maxSteps ? { maxSteps: Math.min(200, configured.maxSteps) } : {}),
+    ...(configured.maxMinutes ? { maxMinutes: Math.min(EXECUTION_LIMITS.maxMinutes.max, configured.maxMinutes) } : {}),
+    ...(configured.maxSteps ? { maxSteps: Math.min(EXECUTION_LIMITS.maxSteps.max, configured.maxSteps) } : {}),
   };
 }
 /** Per-role model/effort overrides, per pattern: { pattern: { role: { agent: { model, effort } } } }. */
@@ -1076,24 +1108,32 @@ export async function loadModels(force = false) {
 
 // ---------------------------------------------------------------- runs
 const deletedRunIds = signal(new Set<string>());
+const deletedRunProjects = new Map<string, string>();
 const deletingLocally = new Set<string>();
 export const deletedRunNotice = signal<{ id: string; elsewhere: boolean } | null>(null);
 export const replaceRouteHistory = signal(false);
 export const isRunDeleted = (id: string) => deletedRunIds.value.has(id);
 export function beginRunDeletion(id: string) { deletingLocally.add(id); return () => deletingLocally.delete(id); }
-export function forgetRun(id: string, local = false, elsewhere = true) {
+export function forgetRun(id: string, local = false, elsewhere = true, projectHint?: string) {
   const fresh = !deletedRunIds.value.has(id);
   const removed = runs.value.get(id);
+  // The project inventory may already have lost this project before its run deletion arrives.
+  const project = removed?.project || projectHint || (removed && projectFor(removed)?.id);
+  if (project) deletedRunProjects.set(id, project);
   deletedRunIds.value = new Set([...deletedRunIds.value, id]);
   const next = new Map(runs.value); next.delete(id); runs.value = next;
   if (fresh && historyTotal.value !== null && (!historyRequestQuery() || removed && matchesFilter(removed))) historyTotal.value = Math.max(0, historyTotal.value - 1);
   if ((route.value.view === "run" || route.value.view === "review") && route.value.id === id) {
     if (!local && !deletingLocally.has(id)) deletedRunNotice.value = { id, elsewhere };
-    batch(() => { replaceRouteHistory.value = true; route.value = { view: "composer" }; });
+    batch(() => {
+      replaceRouteHistory.value = true;
+      if (project && (projectDraftDiscarded(project) || completeProjectInventory && !projects.value.some(item => item.id === project))) { deletedRunNotice.value = null; route.value = { view: "projects" }; }
+      else route.value = { view: "composer" };
+    });
   }
 }
 export function upsertRun(run: RunSummary) {
-  if (run.deleted) { forgetRun(run.id); return; }
+  if (run.deleted) { forgetRun(run.id, false, true, run.project); return; }
   if (deletedRunIds.value.has(run.id)) return;
   const next = new Map(runs.value);
   next.set(run.id, run);
@@ -1324,6 +1364,7 @@ export interface RailView {
   group: "project" | "status";
   archived: boolean;
   collapsed: string[];
+  expanded?: string[];
 }
 export const railView = signal<RailView>({ group: "project", archived: false, collapsed: [], ...store.json<Partial<RailView>>("railView", {}) });
 export function setRailView(patch: Partial<RailView>) {
@@ -1336,6 +1377,7 @@ const fetchedFor = new Set<string>();
 type FeedMessage =
   | { type: "hello"; epoch: string; seq: number; runs?: RunSummary[]; resumed?: boolean; nextCursor?: string; total?: number; attentionTotal?: number; attentionTruncated?: boolean; attentionNextCursor?: string }
   | { type: "error"; status: number; message: string }
+  | { type: "projects" }
   | { type: "run"; seq: number; run: RunSummary };
 
 export function watchAllRuns(notify: (run: RunSummary) => void) {
@@ -1349,8 +1391,11 @@ export function watchAllRuns(notify: (run: RunSummary) => void) {
     "runs",
     (data: FeedMessage) => {
       if (data?.type === "error") { historyError.value = data.message; return; }
+      if (data?.type === "projects") { void loadProjects(true); return; }
       if (!data || (data.type !== "hello" && data.type !== "run") || !Number.isSafeInteger(data.seq) || (data.type === "hello" && typeof data.epoch !== "string") || (data.type === "run" && !data.run?.id)) return;
       if (data.type === "hello") {
+        // Refresh on reconnect too: project changes are invalidations, not replayed run records.
+        void loadProjects(true);
         if (typeof data.attentionTotal === "number") attentionTotal.value = data.attentionTotal;
         if (typeof data.attentionTruncated === "boolean") attentionTruncated.value = data.attentionTruncated;
         // Another server start numbers its events afresh: what we kept from the last one says nothing.
@@ -1499,7 +1544,10 @@ const draftStore = new ProjectDraftStore<ComposerSnapshot>(workspaceKey("project
   if (!snapshot || snapshot.version !== 1) throw new Error("This draft uses an unsupported format");
   if (typeof snapshot.task !== "string" || !Array.isArray(snapshot.paths) || snapshot.paths.some(entry => !Array.isArray(entry) || entry.length !== 2) || !Array.isArray(snapshot.attachments) || !Array.isArray(snapshot.acceptance)) throw new Error("This draft contains unreadable fields");
 });
+const discardedProjectDrafts = new Set<string>();
+const projectDraftDiscarded = (id: string) => !!id && (discardedProjectDrafts.has(id) || store.get(`deletedProjectDraft:${id}`) === "1");
 async function readComposerDraft(id: string) {
+  if (projectDraftDiscarded(id)) return undefined;
   try { return await draftStore.read(id); }
   catch (error) { unreadableDrafts.value = { ...unreadableDrafts.value, [id]: (error as Error).message }; throw error; }
 }
@@ -1511,6 +1559,41 @@ export async function savedDraftTask(id: string): Promise<string> {
 let composerSwitch = 0;
 let composerWork: Promise<boolean> = Promise.resolve(true);
 let draftWatching = false;
+
+/** Successful project deletion also owns its draft; never carry that text into another project. */
+export function discardProjectDraft(id: string): Promise<void> {
+  if (!id) return Promise.resolve();
+  discardedProjectDrafts.add(id);
+  store.set(`deletedProjectDraft:${id}`, "1");
+  store.remove(`projectRepo:${id}`);
+  if (store.get("lastComposerProject") === id) store.remove("lastComposerProject");
+  const removal = draftStore.remove(id);
+  const work = composerWork.then(async () => {
+    const unreadable = { ...unreadableDrafts.value }; delete unreadable[id]; unreadableDrafts.value = unreadable;
+    if (draftsReady.value && composerProject.value === id) {
+      if (!await switchComposer("", { stay: true }, composerSwitch)) {
+        composerLoading.value = true;
+        try { await setRepo(""); batch(() => { resetComposer(); composerProject.value = ""; store.set("composerProject", ""); }); }
+        finally { composerLoading.value = false; }
+      }
+      store.remove("draftTask"); store.remove("draftAcceptance");
+    }
+    const r = route.value;
+    const deletedChat = deletedRunNotice.value && deletedRunProjects.get(deletedRunNotice.value.id) === id;
+    if (deletedChat) deletedRunNotice.value = null;
+    if (deletedChat || r.view === "project" && r.id === id || (r.view === "composer" || r.view === "workspace") && r.project === id || (r.view === "run" || r.view === "review") && runs.value.get(r.id)?.project === id) route.value = { view: "projects" };
+    try { await removal; }
+    catch { throw new Error("The project was deleted, but its saved draft could not be cleared. Reload to retry."); }
+    draftError.value = unsavedDraftWarning();
+  });
+  composerWork = work.then(() => true, () => false);
+  return work;
+}
+
+window.addEventListener("storage", event => {
+  const prefix = workspaceKey("deletedProjectDraft:");
+  if (event.key?.startsWith(prefix) && event.newValue === "1") void discardProjectDraft(event.key.slice(prefix.length)).catch(() => { draftError.value = "The project was deleted, but its saved draft could not be cleared. Reload to retry."; });
+});
 
 function unsavedDraftWarning() {
   const names = draftStore.unsavedKeys.map(id => projects.value.find(project => project.id === id)?.name ?? (id || "Unassigned draft"));
@@ -1535,7 +1618,7 @@ export async function unsentDraft(project: string): Promise<{ task: string } | n
 }
 
 export async function saveComposerDraft() {
-  if (!draftsReady.value || composerLoading.value || draftUnavailable.value) return;
+  if (!draftsReady.value || composerLoading.value || draftUnavailable.value || projectDraftDiscarded(composerProject.value)) return;
   try {
     await draftStore.write(composerProject.value, composerSnapshot());
     draftError.value = unsavedDraftWarning();
@@ -1571,10 +1654,25 @@ function restoreComposer(snapshot: ComposerSnapshot) {
   });
 }
 
+function resetComposer(project?: Project) {
+  intentDraft.value = undefined; journeyDraft.value = undefined; contextBudget.value = undefined; contextBudgetOrigin.value = "Application default";
+  task.value = ""; acceptanceCriteria.value = []; attachments.value = []; contextPaths.value = new Map();
+  source.value = null; externalSource.value = null; branchPrefix.value = ""; baseRef.value = "";
+  roleSel.value = store.json("roleSel", {}); roleModels.value = store.json("roleModels", {});
+  patternId.value = defaultPattern.value; agentSettings.value = structuredClone(providerDefaults.value);
+  optionValues.value = {};
+  approvalChoices.value = store.json("approvePlanByPattern", {}); selectedTeamTemplate.value = null; composerRunOptions.value = {}; rerunDraft.value = null;
+  composerOrigins.value = browserOrigins();
+  if (project?.defaults) applyDefaults(project.defaults);
+}
+
 /** Switch only the draft destination. Viewing a project or filtering lists never calls this. */
 export function openComposer(id?: string, options: { repository?: string; carryUnassigned?: boolean; stay?: boolean } = {}): Promise<boolean> {
   const r = route.value;
-  const next = id ?? (r.view === "project" ? r.id : r.view === "workspace" && r.project ? r.project : composerProject.value);
+  const destination = id ?? (r.view === "project" ? r.id : r.view === "workspace" && r.project ? r.project : composerProject.value);
+  const remembered = store.get("lastComposerProject");
+  const fallback = id === undefined && !destination && !task.value.trim() && !attachments.value.length ? projects.value.find(project => project.id === remembered)?.id ?? legacyDraftProject(projects.value, "", repo.value) ?? "" : "";
+  const next = projectDraftDiscarded(destination) ? "" : destination || fallback;
   const request = ++composerSwitch;
   // Complete an in-flight restore before taking another snapshot. Only the most
   // recent queued selection runs, and older requests cannot rewrite navigation.
@@ -1599,25 +1697,17 @@ async function switchComposer(next: string, options: { repository?: string; carr
     const stored = await readComposerDraft(next);
     if (stored && stored.version !== 1) throw new Error("This draft uses an unsupported format. It has been retained.");
     const saved = stored ?? carried;
-    const repository = options.repository ?? saved?.repository ?? (project ? lastRepo(project) : "");
+    const repository = options.repository ?? (saved?.repository || (project ? lastRepo(project) : ""));
     // Retry metadata belongs to the saved project draft, even when two projects share a repository.
     rerunDraft.value = null;
     baseNotice.value = "";
     await setRepo(repository);
+    if (projectDraftDiscarded(next)) return false;
     const detectedCheck = checkCmd.value, detectedSetup = setupCmd.value, detectedTrust = trust.value;
     batch(() => {
       if (saved) restoreComposer(saved);
       else {
-        intentDraft.value = undefined; journeyDraft.value = undefined; contextBudget.value = undefined; contextBudgetOrigin.value = "Application default";
-        task.value = ""; acceptanceCriteria.value = []; attachments.value = []; contextPaths.value = new Map();
-        source.value = null; externalSource.value = null; branchPrefix.value = ""; baseRef.value = "";
-        roleSel.value = store.json("roleSel", {}); roleModels.value = store.json("roleModels", {});
-        patternId.value = defaultPattern.value; agentSettings.value = structuredClone(providerDefaults.value);
-        optionValues.value = {};
-        approvalChoices.value = store.json("approvePlanByPattern", {}); selectedTeamTemplate.value = null; composerRunOptions.value = {}; rerunDraft.value = null;
-        // Labels describe this draft: another project's "Project defaults" must not carry over.
-        composerOrigins.value = browserOrigins();
-        if (project?.defaults) applyDefaults(project.defaults);
+        resetComposer(project);
       }
       if (saved && repository !== saved.repository) {
         contextPaths.value = new Map(); source.value = null; externalSource.value = null; baseRef.value = ""; journeyDraft.value = undefined;
@@ -1627,6 +1717,7 @@ async function switchComposer(next: string, options: { repository?: string; carr
       dropMissingBase();
       composerProject.value = next;
       store.set("composerProject", next);
+      if (project) store.set("lastComposerProject", next);
     });
     if (project && project.repos.includes(repository)) store.set(`projectRepo:${next}`, repository);
     if (!options.stay && request === composerSwitch) route.value = { view: "composer", project: next };
@@ -1658,15 +1749,37 @@ export async function initializeProjectDrafts() {
       store.set("composerProject", id);
       store.set("projectDraftVersion", "1");
     }
+    // A healthy inventory confirms an older saved destination was deleted. Storage recovery
+    // or a failed request is not evidence of deletion, so those drafts remain protected.
+    if (id && (projectDraftDiscarded(id) || completeProjectInventory && !projects.value.some(project => project.id === id))) {
+      discardedProjectDrafts.add(id); store.set(`deletedProjectDraft:${id}`, "1");
+      await draftStore.remove(id); store.remove(`projectRepo:${id}`);
+      const r = route.value;
+      if (r.view === "project" && r.id === id || r.view === "composer" && r.project === id) route.value = { view: "projects" };
+      id = ""; store.set("composerProject", "");
+      store.remove("repo"); store.remove("draftTask"); store.remove("draftAcceptance");
+      await setRepo("", false);
+      batch(() => resetComposer());
+    }
     const saved = await readComposerDraft(id);
     if (saved && saved.version !== 1) throw new Error("Saved draft format is unavailable.");
     composerProject.value = id;
     const repository = saved?.repository ?? store.get("repo") ?? "";
     if ((repoInfo.value?.repo ?? "") !== repository) await setRepo(repository, false);
     if (saved) restoreComposer(saved);
+    if (projects.value.some(project => project.id === id)) store.set("lastComposerProject", id);
     dropMissingBase();
     draftsReady.value = true;
     draftWatching = true;
+    const r = route.value;
+    // Explicit project routes already restore through openComposer's serialized queue.
+    // A second restore here can overwrite typing or options after the first one appears.
+    if (!id && r.view === "composer" && r.project === undefined && !task.value.trim() && !attachments.value.length && completeProjectInventory) {
+      const preferred = projects.value.find(project => project.id === store.get("lastComposerProject"))?.id
+        || legacyDraftProject(projects.value, "", repository)
+        || (projects.value.length === 1 ? projects.value[0]!.id : "");
+      if (preferred) await switchComposer(preferred, { stay: true }, composerSwitch);
+    }
   } catch (error) {
     draftError.value = `Could not restore this draft: ${(error as Error).message}`;
     // One unreadable key must not disable healthy project drafts. Its bytes stay protected.
@@ -1674,7 +1787,7 @@ export async function initializeProjectDrafts() {
   } finally { composerLoading.value = false; }
   if (!draftWatching) return;
   effect(() => {
-    if (composerLoading.value || draftUnavailable.value) return;
+    if (composerLoading.value || draftUnavailable.value || projectDraftDiscarded(composerProject.value)) return;
     const snapshot = composerSnapshot(), id = composerProject.value;
     // Start persistence in the input turn: a debounce can lose an attachment or edit
     // when the next action reloads or leaves the page.

@@ -1,24 +1,25 @@
 import { scrollBehavior } from "./lib.js";
 import { useMessageDraft } from "./message-draft.js";
-import { appendDraftText, conversationAnswer, recoveryMessage, replySignInIssue } from "./conversation-feedback.js";
+import { appendDraftText, conversationAnswer, recoveryMessage, setupRecovery, replySignInIssue } from "./conversation-feedback.js";
 import { runTitle } from "../src/run-title.js";
 import { planRejected, failedWork, dispatchLabel } from "../src/run-outcome.js";
 import { BrowserMessage, BrowserDraftCards } from "./browser-context-cards.js";
 import { browserImageNames, editBrowserText, parseBrowserMessage } from "./browser-context.js";
 import { chatTaskId } from "../src/chat-family.js";
 import { TaskTeamControl, TaskTeamActivity, TaskTeamStatus } from "./task-team.js";
+import { TeamReply } from "./team-reply.js";
 import { TeamTemplateLibrary } from "./team-template-library.js";
 import { templateFromPlan, type TeamTemplate } from "../src/team-templates.js";
 import { confirmAction } from "./confirm-state.js";
 import { pendingApprovals } from "./approval-inbox.js";
-import { DEFAULT_EXECUTION_BUDGET, coordinatorInvocationLimit } from "../src/execution-budget.js";
+import { MAX_EXECUTION_BUDGET, DEFAULT_EXECUTION_BUDGET, coordinatorInvocationLimit } from "../src/execution-budget.js";
 import { localAppUrls } from "../src/local-app-url.js";
 import { intentDraft, LiveProgress, ResultStudio } from "./experience.js";
 import { PREVIEW_REQUEST } from "./result-preview.js";
 import { journeyDraft } from "./journeys.js";
 import { rerunDraft } from "./rerun-draft.js";
 import { setContextBudget } from "./context-budget.js";
-import { nextRunAction, executionLabel, agentReviewLabel, declinedUnasked, chatProvider, branchesGone, runStateBadges, integrityFor, replyTargets } from "./run-experience.js";
+import { nextRunAction, executionLabel, resultSummary, agentReviewLabel, declinedUnasked, chatProvider, branchesGone, runStateBadges, integrityFor, replyTargets } from "./run-experience.js";
 import { IntegrityNote, MergeValidationGates, RunEvidence, VerificationEvidence } from "./run-evidence.js";
 import { ArchiveDialog, DeleteRunDialog } from "./run-actions.js";
 import { MissionRunNote, MissionTask, missionBrief, missionHref } from "./mission-brief.js";
@@ -235,11 +236,12 @@ export function RunView({ id }: { id: string }) {
   chatNavigation.current = chat;
 
   const next = nextRunAction(run);
+  const failedSetup = run.status === "failed" && steps.at(-1)?.kind === "setup" && steps.at(-1)?.status === "failed" ? steps.at(-1) : undefined;
   const brief = run.projectTeam ? missionBrief(run.task) : undefined;
   const hasResult = finished && !run.archived && run.worktrees.some(tree => run.artifacts.some(artifact => artifact.branch === tree.branch));
   const allocation = resumeBudget?.id === run.id ? resumeBudget : { id: run.id, maxSteps: Math.min(run.loop.maxSteps, run.loop.maxInvocations ?? run.loop.maxSteps), maxMinutes: wholeMinutes(run.loop.maxMinutes) };
   const minimumCalls = run.pattern === "auto-team" ? 4 : 1;
-  const allocationValid = Number.isSafeInteger(allocation.maxSteps) && allocation.maxSteps >= minimumCalls && allocation.maxSteps <= 200 && Number.isFinite(allocation.maxMinutes) && allocation.maxMinutes >= 1 && allocation.maxMinutes <= 720;
+  const allocationValid = Number.isSafeInteger(allocation.maxSteps) && allocation.maxSteps >= minimumCalls && allocation.maxSteps <= MAX_EXECUTION_BUDGET.maxSteps && Number.isFinite(allocation.maxMinutes) && allocation.maxMinutes >= 1 && allocation.maxMinutes <= MAX_EXECUTION_BUDGET.maxMinutes;
   const focusSection = (id: string) => {
     const section = document.getElementById(id);
     section?.scrollIntoView({ block: "center", behavior: scrollBehavior() });
@@ -282,7 +284,7 @@ export function RunView({ id }: { id: string }) {
             <div class="run-name">
               <div class="run-kicker">
                 <span class={`status-pill ${awaitingInput ? "awaiting" : dispatchLabel(run, steps) === "Dispatch paused" ? "stopped" : state}`}>
-                  {approvalPending ? executionLabel(run, true) : dispatchLabel(run, steps) ?? executionLabel(run)}
+                  {executionLabel(run, approvalPending)}
                 </span>
                 {runStateBadges(run).map((label) => <span key={label} class="status-pill run-state" title={label}>{label}</span>)}
                 {run.chatLink?.kind !== "side" ? <ProjectChip run={run} /> : null}
@@ -340,12 +342,12 @@ export function RunView({ id }: { id: string }) {
             <div><h3>{next.title}</h3><p>{next.detail}</p>
               {next.kind === "resume" ? <div class="resume-budget" role="group" aria-label="Resume budget">
                 <div class="resume-budget-fields">
-                  <label>Maximum calls<input class="field" aria-label="Resume maximum calls" type="number" min={minimumCalls} max={200} value={allocation.maxSteps} disabled={actionBusy} onInput={(event) => setResumeBudget({ ...allocation, maxSteps: Number(event.currentTarget.value) })} /></label>
-                  <label>Maximum minutes<input class="field" aria-label="Resume maximum minutes" type="number" min={1} max={720} value={allocation.maxMinutes} disabled={actionBusy} onInput={(event) => setResumeBudget({ ...allocation, maxMinutes: Number(event.currentTarget.value) })} /></label>
+                  <label>Maximum calls<input class="field" aria-label="Resume maximum calls" type="number" min={minimumCalls} max={MAX_EXECUTION_BUDGET.maxSteps} value={allocation.maxSteps} disabled={actionBusy} onInput={(event) => setResumeBudget({ ...allocation, maxSteps: Number(event.currentTarget.value) })} /></label>
+                  <label>Maximum minutes<input class="field" aria-label="Resume maximum minutes" type="number" min={1} max={MAX_EXECUTION_BUDGET.maxMinutes} value={allocation.maxMinutes} disabled={actionBusy} onInput={(event) => setResumeBudget({ ...allocation, maxMinutes: Number(event.currentTarget.value) })} /></label>
                   <button class="btn small" disabled={actionBusy} onClick={() => setResumeBudget({ id: run.id, ...DEFAULT_EXECUTION_BUDGET })}>Use extended budget</button>
                 </div>
                 <p class="help">New allowance: {plural(allocation.maxSteps, "call")} · {allocation.maxMinutes} minutes.{run.team ? ` Up to ${plural(coordinatorInvocationLimit(allocation.maxSteps), "coordinator call")}.` : ""} Earlier usage is retained.</p>
-                {!allocationValid ? <p class="msg err" role="alert">Choose {minimumCalls}–200 calls and 1–720 minutes.</p> : null}
+                {!allocationValid ? <p class="msg err" role="alert">Choose {minimumCalls}–{MAX_EXECUTION_BUDGET.maxSteps} calls and 1–{MAX_EXECUTION_BUDGET.maxMinutes} minutes.</p> : null}
               </div> : null}
               {finished && run.worktrees.length ? <p class="help">Saved work: {run.worktrees.length} {run.worktrees.length === 1 ? "worktree" : "worktrees"}. Branches and files are kept.</p> : null}
             </div>
@@ -382,8 +384,9 @@ export function RunView({ id }: { id: string }) {
             </div>
           ) : null}
 
+          {run.status === "done" ? <RunResultSummary run={run} /> : null}
           {chat ? (
-            <><ChatThread run={run} steps={steps} data={data.current} />{["failed", "stopped", "interrupted", "cancelled"].includes(run.status) ? <div class="chat-recovery" role="status"><p>{next?.kind === "provider-limit" ? next.detail : recoveryMessage(run, steps)}</p>{next?.kind === "provider" || next?.kind === "provider-limit" ? <button class="btn small" onClick={() => { healthOpen.value = true; }}>{next.label}</button> : null}<button class="btn small" disabled={actionBusy || next?.kind === "provider-limit" && (run.providerLimit?.resetsAt ?? 0) > providerTime} onClick={() => planRejected(run) ? void editAndRerun(run) : void resume()}>{actionBusy ? "Resuming…" : planRejected(run) ? "Edit & run again" : next?.kind === "provider-limit" ? "Resume after reset" : run.providerRecovery ? "Retry reply" : "Resume"}</button>{actionError ? <p class="help" role="alert">{actionError}</p> : null}</div> : null}</>
+            <><ChatThread run={run} steps={steps} data={data.current} />{failedSetup ? <SetupRecoveryCard run={run} step={failedSetup} data={data.current} resume={resume} busy={actionBusy} error={actionError} /> : ["failed", "stopped", "interrupted", "cancelled"].includes(run.status) ? <div class="chat-recovery" role="status"><p>{next?.kind === "provider-limit" ? next.detail : recoveryMessage(run, steps)}</p>{next?.kind === "provider" || next?.kind === "provider-limit" ? <button class="btn small" onClick={() => { healthOpen.value = true; }}>{next.label}</button> : null}<button class="btn small" disabled={actionBusy || next?.kind === "provider-limit" && (run.providerLimit?.resetsAt ?? 0) > providerTime} onClick={() => planRejected(run) ? void editAndRerun(run) : void resume()}>{actionBusy ? "Resuming…" : planRejected(run) ? "Edit & run again" : next?.kind === "provider-limit" ? "Resume after reset" : run.providerRecovery ? "Retry reply" : "Resume"}</button>{actionError ? <p class="help" role="alert">{actionError}</p> : null}</div> : null}</>
           ) : (
             /* The agents' work: one disclosure, each step opening inline to its transcript. */
             <details class={`work ${finished ? "" : "live"}`} open={showWork}>
@@ -788,6 +791,7 @@ export function TurnBody({ run, step, data, answer }: { run: RunSummary; step: S
   const [open, setOpen] = useState(false);
   const version = data.events.get(step.id)?.length ?? 0;
   const text = conversationAnswer(answer ?? step.finalText, step.error);
+  const teamTurn = step.teamResponseFor ? run.teamTurns?.find(turn => turn.key === step.teamResponseFor && turn.report) : undefined;
   const latestTurn = [...data.steps.values()].filter(value => (value.kind ?? "agent") === "agent" && !sideWork(value)).sort((a, b) => a.startedAt - b.startedAt).at(-1)?.id;
   useEffect(() => {
     const identity = `${run.id}:${step.id}:${step.endedAt}`;
@@ -822,7 +826,8 @@ export function TurnBody({ run, step, data, answer }: { run: RunSummary; step: S
         {step.endedAt ? ` · ${duration(step.endedAt - step.startedAt)}` : ""}
       </button>
       {open ? <>{step.teamResponseFor ? [...data.steps.values()].filter(previous => previous.teamResponseFor === step.teamResponseFor && previous.id !== step.id).map(previous => <p class="help" key={previous.id}>{SHORT[previous.agent ?? "claude"]}: {previous.error ?? previous.status}. Continued with {SHORT[step.agent ?? "claude"]}.</p>) : null}<Transcript run={run} step={step} data={data} version={version} /></> : null}
-      {text ? <Markdown text={text} /> : step.status !== "done" && !step.error && !open ? <Transcript run={run} step={step} data={data} version={version} /> : null}
+      {text ? <Markdown text={text} repo={run.worktrees.find(tree => tree.name === step.worktree)?.path ?? run.repo} /> : step.status !== "done" && !step.error && !open ? <Transcript run={run} step={step} data={data} version={version} /> : null}
+      {teamTurn ? <TeamReply turn={teamTurn} answer={text ?? ""} /> : null}
       {!open && (text || step.status === "done") ? unasked.map((item, n) => <p key={n} class="ev declined" role="note">{item.text}</p>) : null}
       {step.error ? <div class="ev error" role="status">{step.error}</div> : null}
     </div>
@@ -1879,7 +1884,7 @@ export function ConversationBar({ run, steps, chat, onOpenChat }: { run: RunSumm
   const member = run.team?.members.find((item) => item.id === memberId);
   const minimumCalls = followupMinimumCalls(!!run.team, running, chosen);
   const followupSteps = editedSteps ?? defaultFollowupCalls(run.loop, minimumCalls);
-  const budgetValid = Number.isInteger(followupSteps) && followupSteps >= minimumCalls && followupSteps <= 200 && Number.isFinite(followupMinutes) && followupMinutes >= 1 && followupMinutes <= 720;
+  const budgetValid = Number.isInteger(followupSteps) && followupSteps >= minimumCalls && followupSteps <= MAX_EXECUTION_BUDGET.maxSteps && Number.isFinite(followupMinutes) && followupMinutes >= 1 && followupMinutes <= MAX_EXECUTION_BUDGET.maxMinutes;
   const undelivered = (run.notes ?? []).filter(note => note.status === "undelivered");
   const signedOut = !running ? replySignInIssue(run, replyAgent, health.value) : undefined;
   const latestReply = !running ? run.followUps.filter(turn => !turn.side).at(-1) : undefined;
@@ -2004,8 +2009,8 @@ export function ConversationBar({ run, steps, chat, onOpenChat }: { run: RunSumm
       <div class="convo-inner">
         {chat ? <TaskTeamStatus run={run} /> : null}
         {handoff ? <ProviderChatDialog run={run} initialAgent={handoff.agent} initialSettings={handoff.settings} initialPermissions={selectedPermissions} initialMessage={text} attachments={images} onClose={() => setHandoff(null)} onOpenChat={openChat} /> : null}
-        {!budgetValid ? <p class="msg err" role="alert">Send is off until the budget below allows {minimumCalls}–200 calls and 1–720 minutes.</p> : null}
-        {!chat && (!running || run.team) ? <details class="followup-budget"><summary>{running ? "Goal revision budget" : "New execution budget"} · {followupSteps} {followupSteps === 1 ? "call" : "calls"} · {followupMinutes} min</summary><div class="at-row"><label>Maximum calls<input class="field" aria-label="Follow-up maximum calls" type="number" min={minimumCalls} max={200} value={followupSteps} onInput={(event) => setEditedSteps(Number(event.currentTarget.value))} /></label><label>Maximum minutes<input class="field" aria-label="Follow-up maximum minutes" type="number" min={1} max={720} value={followupMinutes} onInput={(event) => setFollowupMinutes(Number(event.currentTarget.value))} /></label></div><p class="help">{sideOnly ? "A reply queued behind a side chat joins the running execution's allowance; this budget applies when a reply starts a new execution. " : "This is a new allocation. "}The result branch, project memory and applicable context are retained. Earlier spend remains in lifetime usage.</p></details> : null}
+        {!budgetValid ? <p class="msg err" role="alert">Send is off until the budget below allows {minimumCalls}–{MAX_EXECUTION_BUDGET.maxSteps} calls and 1–{MAX_EXECUTION_BUDGET.maxMinutes} minutes.</p> : null}
+        {!chat && (!running || run.team) ? <details class="followup-budget"><summary>{running ? "Goal revision budget" : "New execution budget"} · {followupSteps} {followupSteps === 1 ? "call" : "calls"} · {followupMinutes} min</summary><div class="at-row"><label>Maximum calls<input class="field" aria-label="Follow-up maximum calls" type="number" min={minimumCalls} max={MAX_EXECUTION_BUDGET.maxSteps} value={followupSteps} onInput={(event) => setEditedSteps(Number(event.currentTarget.value))} /></label><label>Maximum minutes<input class="field" aria-label="Follow-up maximum minutes" type="number" min={1} max={MAX_EXECUTION_BUDGET.maxMinutes} value={followupMinutes} onInput={(event) => setFollowupMinutes(Number(event.currentTarget.value))} /></label></div><p class="help">{sideOnly ? "A reply queued behind a side chat joins the running execution's allowance; this budget applies when a reply starts a new execution. " : "This is a new allocation. "}The result branch, project memory and applicable context are retained. Earlier spend remains in lifetime usage.</p></details> : null}
         {running && sentNotes.length ? <details key={run.id} class="activity note-history">
           <summary>Sent messages ({sentNotes.length})</summary>
           <div class="notes">{sentNotes.map(noteChip)}</div>
@@ -2417,6 +2422,26 @@ export async function editAndRerun(run: RunSummary) {
       : null;
   // Back in the run's project, so the new run goes there too.
   navigate({ view: "composer", project: destination?.id ?? "" });
+}
+
+function RunResultSummary({ run }: { run: RunSummary }) {
+  const result = resultSummary(run);
+  const teamResponse = !!run.teamTurns?.length;
+  return <section class="run-result-summary" aria-label="Task result"><h2>Result</h2><dl>
+    <dt>What changed</dt><dd>{result.branch ? <details><summary>File changes recorded</summary><pre>{result.changes}</pre></details> : result.changes}</dd>
+    <dt>What was checked</dt><dd>{result.check}</dd>
+    <dt>Next step</dt><dd>{result.branch ? "Review the changes and checks before merging." : teamResponse ? "Review the answer below and address any review findings." : "Review the answer, or send a follow-up to continue."}</dd>
+  </dl>{result.branch ? <a class="btn small" href={`#/review/${encodeURIComponent(run.id)}/${result.branch.split("/").map(encodeURIComponent).join("/")}`}>Review changes</a> : <button class="btn small" onClick={() => document.querySelector<HTMLTextAreaElement>(".convo textarea")?.focus()}>Ask a follow-up</button>}</section>;
+}
+
+function SetupRecoveryCard({ run, step, data, resume, busy, error }: { run: RunSummary; step: Step; data: RunData; resume: () => Promise<void>; busy: boolean; error: string }) {
+  transcriptVersion(run.id);
+  useEffect(() => { if (data.pagedTranscript && !data.pages.get(step.id)?.loaded) void loadStepTranscript(run.id, step.id); }, [run.id, step.id, data.pages]);
+  const output = (data.events.get(step.id) ?? []).filter((event): event is Extract<AgentEvent, { kind: "tool_result" }> => event.kind === "tool_result").map(event => event.output).join("\n");
+  return <div class="chat-recovery" role="status"><p>{setupRecovery(output)}</p>
+    <button class="btn small" disabled={busy} onClick={() => void resume()}>{busy ? "Resuming…" : "Resume after fixing setup"}</button>{!run.projectTeam ? <button class="btn small" disabled={busy || !draftsReady.value || composerLoading.value} onClick={() => void editAndRerun(run)}>Edit setup &amp; retry</button> : null}
+    <details><summary>Technical details</summary><pre>{run.loop.setup}</pre><pre>{output || data.pages.get(step.id)?.error || step.finalText}</pre></details>{error ? <p role="alert">{error}</p> : null}
+  </div>;
 }
 
 function RecoveryCheckDialog({ run, onClose }: { run: RunSummary; onClose: () => void }) {
