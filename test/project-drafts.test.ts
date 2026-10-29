@@ -111,7 +111,7 @@ test("project deletion clears inactive and current drafts, including attachments
 test("project deletion leaves a removed run even when the project inventory disappears first", async () => {
   for (const cached of [true, false]) {
     const project = `deleted-${cached}`, id = `run-${cached}`;
-    const run = { id, project, repo: "/deleted", deleted: false } as import("../ui/types.js").RunSummary;
+    const run = { id, project, repo: "/deleted" } as import("../ui/types.js").RunSummary;
     state.projects.value = [];
     state.runs.value = new Map(cached ? [[id, run]] : []);
     state.route.value = { view: "run", id };
