@@ -1107,10 +1107,11 @@ export const deletedRunNotice = signal<{ id: string; elsewhere: boolean } | null
 export const replaceRouteHistory = signal(false);
 export const isRunDeleted = (id: string) => deletedRunIds.value.has(id);
 export function beginRunDeletion(id: string) { deletingLocally.add(id); return () => deletingLocally.delete(id); }
-export function forgetRun(id: string, local = false, elsewhere = true) {
+export function forgetRun(id: string, local = false, elsewhere = true, projectHint?: string) {
   const fresh = !deletedRunIds.value.has(id);
   const removed = runs.value.get(id);
-  const project = removed && projectFor(removed)?.id;
+  // The project inventory may already have lost this project before its run deletion arrives.
+  const project = removed?.project || projectHint || (removed && projectFor(removed)?.id);
   if (project) deletedRunProjects.set(id, project);
   deletedRunIds.value = new Set([...deletedRunIds.value, id]);
   const next = new Map(runs.value); next.delete(id); runs.value = next;
@@ -1119,13 +1120,13 @@ export function forgetRun(id: string, local = false, elsewhere = true) {
     if (!local && !deletingLocally.has(id)) deletedRunNotice.value = { id, elsewhere };
     batch(() => {
       replaceRouteHistory.value = true;
-      if (project && projectDraftDiscarded(project)) { deletedRunNotice.value = null; route.value = { view: "projects" }; }
+      if (project && (projectDraftDiscarded(project) || completeProjectInventory && !projects.value.some(item => item.id === project))) { deletedRunNotice.value = null; route.value = { view: "projects" }; }
       else route.value = { view: "composer" };
     });
   }
 }
 export function upsertRun(run: RunSummary) {
-  if (run.deleted) { forgetRun(run.id); return; }
+  if (run.deleted) { forgetRun(run.id, false, true, run.project); return; }
   if (deletedRunIds.value.has(run.id)) return;
   const next = new Map(runs.value);
   next.set(run.id, run);

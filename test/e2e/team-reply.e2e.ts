@@ -62,9 +62,11 @@ after(async () => {
 test("an existing summary-only chat displays the complete latest proposal directly in its reply, including after reload", async () => {
   const page = await browser.newPage({ viewport: { width: 1440, height: 1100 } });
   page.on("pageerror", error => errors.push(error.message));
-  await page.route("https://images.example.test/**", route => route.fulfill(route.request().url().endsWith("missing.png") ? { status: 404, body: "" } : { status: 200, contentType: "image/png", body: png }));
+  const remoteRequests: string[] = [];
+  await page.route("https://images.example.test/**", route => { remoteRequests.push(route.request().url()); return route.fulfill(route.request().url().endsWith("missing.png") ? { status: 404, body: "" } : { status: 200, contentType: "image/png", body: png }); });
   await page.goto(`${base}/?token=${token}#/run/proposal-chat`);
   for (const reload of [false, true]) {
+    const requestsBefore = remoteRequests.length;
     if (reload) await page.reload();
     const reply = page.locator('[data-agent-turn="s1"] .turn-body');
     const heading = reply.getByRole("heading", { name: "Proposed README", exact: true });
@@ -73,6 +75,11 @@ test("an existing summary-only chat displays the complete latest proposal direct
     await reply.getByRole("heading", { name: "Client setup", exact: true }).waitFor();
     const screenshot = reply.getByRole("img", { name: "Repository screenshot", exact: true });
     await screenshot.waitFor();
+    assert.equal(remoteRequests.length, requestsBefore, "opening or reloading a proposal does not contact remote image hosts");
+    assert.equal(await reply.getByRole("img").count(), 1, "only the repository image loads automatically");
+    await reply.getByRole("button", { name: "Load image: Package version from images.example.test", exact: true }).click();
+    await reply.getByRole("button", { name: "Load image: Unavailable badge from images.example.test", exact: true }).click();
+    await reply.locator('.md-image-fallback[title="Image unavailable"]').waitFor();
     await page.waitForFunction(() => [...document.querySelectorAll<HTMLImageElement>(".team-reply img")].length === 2 && [...document.querySelectorAll<HTMLImageElement>(".team-reply img")].every(image => image.complete && image.naturalWidth > 0));
     assert.match((await screenshot.getAttribute("src"))!, /^data:image\/png;base64,/);
     assert.equal(await reply.getByRole("link", { name: "Package version", exact: true }).getAttribute("href"), "https://example.test/package");

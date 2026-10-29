@@ -123,10 +123,10 @@ test("README layout becomes expanded sections while code examples stay literal",
   assert.ok(out.elements.some(e => e.type === "b"), "bold spans can cross a source line break");
 });
 
-test("linked badge images parse as one image inside the destination link", () => {
+test("linked badge images retain their destination without mounting an image automatically", () => {
   const out = rendered('[![npm version](https://images.example/badge.svg)](https://example.test/package)\n![Screenshot](docs/assets/screenshot.png)\n[![License](https://images.example/license.svg)](LICENSE)');
-  assert.deepEqual(out.elements.filter(e => e.type === "a").map(e => e.props.href), ["https://example.test/package"]);
   const images = out.elements.filter(e => typeof e.type === "function" && e.props.src);
+  assert.deepEqual(images.map(e => e.props.href), ["https://example.test/package", undefined, "LICENSE"]);
   assert.deepEqual(images.map(e => [e.props.alt, e.props.src]), [["npm version", "https://images.example/badge.svg"], ["Screenshot", "docs/assets/screenshot.png"], ["License", "https://images.example/license.svg"]]);
   assert.doesNotMatch(out.text, /!\[|\]\(|https:/);
 });

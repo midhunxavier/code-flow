@@ -265,11 +265,10 @@ test("reusable teams attach without losing mission history and owner tasks survi
   await page.getByText("Schedule and next times", { exact: true }).click();
   await page.getByLabel("Time", { exact: true }).fill("11:45");
   await page.getByRole("button", { name: "Save schedule", exact: true }).click();
-  await page.waitForFunction(async ({ base, id, token }) => {
-    const response = await fetch(`${base}/api/project-teams/${id}`, { headers: { authorization: `Bearer ${token}` } });
-    return (await response.json()).team.schedule?.at === "11:45";
-  }, { base, id: team.id, token });
+  // The editor remounts closed once its saved schedule reaches the UI.
+  await page.getByLabel("Time", { exact: true }).waitFor({ state: "hidden" });
   let scheduled = (await api(`/api/project-teams/${team.id}`)).body.team;
+  assert.equal(scheduled.schedule?.at, "11:45");
   assert.equal(scheduled.missionRevision, team.missionRevision); assert.deepEqual(scheduled.opportunities, team.opportunities);
   assert.deepEqual(scheduled.cycles, team.cycles, "schedule edits preserve all prior usage receipts");
   const approvalResponse = page.waitForResponse(response => response.request().method() === "POST" && response.url().includes(`/api/project-teams/${team.id}/opportunities/`));

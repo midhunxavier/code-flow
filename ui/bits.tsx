@@ -187,9 +187,8 @@ function inline(text: string, repo?: string): ComponentChildren[] {
     const image = part.match(/^!\[([^\]]*)\]\(([^\s)]+)\)$/);
     if (image || imageLink) {
       const [alt, src] = (image ?? imageLink)!.slice(1);
-      const picture = <MarkdownImage key={`${repo}:${src}`} src={src!} alt={alt || "Image"} repo={repo} />;
       const href = imageLink?.[3];
-      return href && /^https?:\/\//i.test(href) ? <a key={i} href={href} target="_blank" rel="noreferrer">{picture}</a> : <span key={i} title={href}>{picture}</span>;
+      return <MarkdownImage key={`${i}:${repo}:${src}`} src={src!} alt={alt || "Image"} repo={repo} href={href} />;
     }
     const link = part.match(/^\[([^\]]+)\]\(([^\s)]+)\)$/);
     if (link && /^https?:\/\//i.test(link[2]!))
@@ -220,16 +219,20 @@ export function markdownImageSource(src: string, repo?: string): { url?: string;
   return { path: parts.join("/") };
 }
 
-function MarkdownImage({ src, alt, repo }: { src: string; alt: string; repo?: string }) {
+function MarkdownImage({ src, alt, repo, href }: { src: string; alt: string; repo?: string; href?: string }) {
   const source = markdownImageSource(src, repo);
-  const [url, setUrl] = useState(source.url), [failed, setFailed] = useState(false);
+  const [url, setUrl] = useState<string>(), [failed, setFailed] = useState(false);
   useEffect(() => {
-    const stop = new AbortController(); setUrl(source.url); setFailed(false);
+    const stop = new AbortController(); setUrl(undefined); setFailed(false);
     if (source.path && repo) void api<{ mimeType: string; data: string }>(`/api/file?image=1&repo=${encodeURIComponent(repo)}&path=${encodeURIComponent(source.path)}`, { signal: stop.signal }).then(image => {
       if (!stop.signal.aborted && /^image\/(?:png|jpeg|gif|webp)$/.test(image.mimeType) && /^[A-Za-z0-9+/=]+$/.test(image.data)) setUrl(`data:${image.mimeType};base64,${image.data}`);
       else if (!stop.signal.aborted) setFailed(true);
     }, () => { if (!stop.signal.aborted) setFailed(true); });
     return () => stop.abort();
   }, [src, repo]);
-  return url && !failed ? <img class="md-image" src={url} alt={alt} loading="lazy" decoding="async" referrerPolicy="no-referrer" onError={() => setFailed(true)} /> : <span class="md-image-fallback" title={failed || !source.path ? "Image unavailable" : "Loading image"}>{alt}</span>;
+  const linked = (picture: ComponentChildren) => href && /^https?:\/\//i.test(href) ? <a href={href} target="_blank" rel="noreferrer">{picture}</a> : <span title={href}>{picture}</span>;
+  // Agent-authored URLs are untrusted. Even an image GET can contact local services or trackers.
+  // Keep the destination link usable without loading its badge, and load each remote image only on request.
+  if (source.url && !url && !failed) return <span class="md-image-fallback">{linked(alt)} <button type="button" class="linkish" title={source.url} aria-label={`Load image: ${alt} from ${new URL(source.url).host}`} onClick={() => setUrl(source.url)}>Load image</button></span>;
+  return linked(url && !failed ? <img class="md-image" src={url} alt={alt} loading="lazy" decoding="async" referrerPolicy="no-referrer" onError={() => setFailed(true)} /> : <span class="md-image-fallback" title={failed || !source.path ? "Image unavailable" : "Loading image"}>{alt}</span>);
 }

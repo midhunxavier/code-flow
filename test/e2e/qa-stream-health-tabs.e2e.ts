@@ -14,9 +14,13 @@ const errors: string[] = [], consoleErrors: string[] = [], expectedNetworkErrors
 let disruptingStream = false;
 const deletedRuns = new Set<string>(), missingRunReads = new Map<string, number>();
 const shutdownReads = new Set<string>();
+let signingOut = false;
+const signedOutReads = new Set<string>();
 const runPath = (url: string) => new URL(url).origin === base ? new URL(url).pathname.match(/^\/api\/runs\/([^/]+)$/) : null;
 function unmatchedConsoleErrors() {
   return consoleErrors.filter(line => {
+    const signedOut = /^Failed to load resource: the server responded with a status of 401 \(Unauthorized\) \[(.+)\]$/.exec(line);
+    if (signedOut && signedOutReads.has(signedOut[1]!)) { expectedNetworkErrors.push(line); return false; }
     const shutdown = /^Failed to load resource: the server responded with a status of 503 \(Service Unavailable\) \[(.+)\]$/.exec(line);
     if (shutdown && shutdownReads.has(shutdown[1]!)) { expectedNetworkErrors.push(line); return false; }
     const match = /^Failed to load resource: the server responded with a status of 404 \(Not Found\) \[(.+)\]$/.exec(line);
@@ -35,6 +39,7 @@ async function page(hash = "") { context ??= await browser.newContext({ viewport
   const method = response.request().method(), run = runPath(response.url());
   if (method === "DELETE" && response.status() === 200 && run) deletedRuns.add(run[1]!);
   if (method === "GET" && response.status() === 404) missingRunReads.set(response.url(), (missingRunReads.get(response.url()) ?? 0) + 1);
+  if (signingOut && method === "GET" && response.status() === 401 && new URL(response.url()).origin === base) signedOutReads.add(response.url());
   if (disruptingStream && method === "GET" && response.status() === 503 && new URL(response.url()).origin === base) {
     const body = await response.json().catch(() => null);
     if (body?.error === "The backend is stopping") shutdownReads.add(response.url());
@@ -107,8 +112,9 @@ test("HTTP observers retain the same event-loop stall", async () => {
 test("sign-out rotates identity and closes streams even when its nonce cannot be saved", async () => {
   const p = await page(), before = (await api("/api/auth/self")).streamSharing;
   rmSync(join(home, "stream-sharing.json")); mkdirSync(join(home, "stream-sharing.json"));
-  disruptingStream = true;
-  const status = await p.evaluate(async () => (await fetch("/api/auth/logout", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })).status); assert.equal(status, 200);
+  disruptingStream = true; signingOut = true;
+  // Use this browser's cookie jar; the stream may reload its document as soon as identity rotates.
+  const response = await p.request.post(base + "/api/auth/logout", { data: {}, headers: { origin: base }, timeout: 12_000 }); assert.equal(response.status(), 200);
   assert.notDeepEqual((await api("/api/auth/self")).streamSharing, before); await until(() => api("/api/health"), value => value.streams.streams === 0);
-  assert.equal(await p.evaluate(async () => (await (await fetch("/api/auth/self")).json()).kind), "anonymous");
+  assert.equal((await (await p.request.get(base + "/api/auth/self", { timeout: 12_000 })).json()).kind, "anonymous");
 });

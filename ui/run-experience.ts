@@ -1,6 +1,6 @@
 import { planRejected, dispatchLabel } from "../src/run-outcome.js";
 import { classifyError } from "../src/adapters/errors.js";
-import { checksLabel, integrityFor } from "../src/run-status.js";
+import { checksLabel, integrityFor, runState } from "../src/run-status.js";
 export { checksLabel, integrityFor } from "../src/run-status.js";
 import type { AgentId, Run, RunSummary, Step } from "./types.js";
 import { teamAwaitingAnswer, teamNeedsResume } from "./team-state.js";
@@ -61,6 +61,13 @@ export function executionLabel(run: RunSummary, approvalPending = false): string
   return { running: "Working", done: "Finished", failed: "Stopped", stopped: "Stopped", interrupted: "Stopped", cancelled: "Stopped" }[run.status] ?? run.status;
 }
 
+/** A status dot must communicate its evidence state in text as well as color. */
+export function sidebarStatusLabel(run: RunSummary): string {
+  const label = executionLabel(run);
+  const evidence = ({ failing: "Check failing", unchecked: "Check can't run", unverified: "not verified" } as Record<string, string>)[runState(run)];
+  return label === "Finished" && evidence ? `${label} · ${evidence}` : label;
+}
+
 /** Describe only recorded evidence; a completed answer is not proof that checks passed. */
 export function resultSummary(run: RunSummary) {
   const changes = run.artifacts.filter(artifact => artifact.stat?.trim());
@@ -68,7 +75,7 @@ export function resultSummary(run: RunSummary) {
   return {
     changes: changes.length ? changes.map(artifact => artifact.stat!.trim()).join("\n") : unknown ? "The file changes could not be inspected." : "No file changes were recorded. Review the answer for the result.",
     check: ({ Passed: "Recorded checks passed.", Failed: "Checks failed. Review the failures before using the changes.", Blocked: "Checks could not run.", "Not verified": "Checks have not been verified.", "Not configured": "No automated checks were configured." } as Record<string, string>)[checksLabel(run)] ?? checksLabel(run),
-    branch: changes[0]?.branch,
+    branch: run.artifacts.find(artifact => artifact.stat === undefined || artifact.stat.trim())?.branch,
   };
 }
 

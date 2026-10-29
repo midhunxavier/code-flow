@@ -450,7 +450,7 @@ test("phone: with full control, the phone link signs a phone in to the whole app
   await scanned.route("http://qr-scanner.example/", (route) => route.fulfill({ contentType: "text/html", body: `<a href="${PHONE}${phonePath}">Open link</a>` }));
   await scanned.goto("http://qr-scanner.example/");
   await scanned.getByRole("link", { name: "Open link" }).click();
-  await scanned.getByRole("heading", { name: "What would you like to work on?" }).waitFor();
+  await scanned.getByRole("textbox", { name: "Task", exact: true }).waitFor();
   assert.equal(new URL(scanned.url()).pathname, "/");
   await scanner.close();
 

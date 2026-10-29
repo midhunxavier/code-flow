@@ -1,6 +1,6 @@
 import { useDialog } from "./app.js";
 import { runTitle } from "../src/run-title.js";
-import { executionLabel } from "./run-experience.js";
+import { sidebarStatusLabel as statusText } from "./run-experience.js";
 import { dispatchLabel } from "../src/run-outcome.js";
 import { chatTaskId, chatUpdatedAt, groupChatTasks } from "../src/chat-family.js";
 import { peopleEnabled } from "./preferences.js";
@@ -102,11 +102,6 @@ function RailResizeHandle() {
     }} />;
 }
 
-/** What a run's dot means, in words: the dot alone says nothing to a screen reader. */
-const statusText = (r: RunSummary) => {
-  const label = executionLabel(r);
-  return label === "Finished" && runState(r) === "unverified" ? "Finished · not verified" : label;
-};
 const short = (ts: number) => ago(ts).replace(" ago", "").replace("just now", "now");
 
 interface Group {
