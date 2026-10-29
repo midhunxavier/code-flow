@@ -13,9 +13,12 @@ let base: string, server: ChildProcess, browser: Browser, context: BrowserContex
 const errors: string[] = [], consoleErrors: string[] = [], expectedNetworkErrors: string[] = [];
 let disruptingStream = false;
 const deletedRuns = new Set<string>(), missingRunReads = new Map<string, number>();
+const shutdownReads = new Set<string>();
 const runPath = (url: string) => new URL(url).origin === base ? new URL(url).pathname.match(/^\/api\/runs\/([^/]+)$/) : null;
 function unmatchedConsoleErrors() {
   return consoleErrors.filter(line => {
+    const shutdown = /^Failed to load resource: the server responded with a status of 503 \(Service Unavailable\) \[(.+)\]$/.exec(line);
+    if (shutdown && shutdownReads.has(shutdown[1]!)) { expectedNetworkErrors.push(line); return false; }
     const match = /^Failed to load resource: the server responded with a status of 404 \(Not Found\) \[(.+)\]$/.exec(line);
     if (!match) return true;
     if (new URL(match[1]!).origin !== base) return true;
@@ -28,10 +31,14 @@ async function until<T>(read: () => Promise<T>, accepts: (value: T) => boolean, 
 async function api(path: string, body?: unknown, method = body === undefined ? "GET" : "POST") { const response = await fetch(base + path, { headers, method, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }); assert.ok(response.ok, `${response.status} ${path}: ${await response.clone().text()}`); if (method === "DELETE") { const run = runPath(base + path); if (run) deletedRuns.add(run[1]!); } return response.json(); }
 async function stop() { disruptingStream = true; if (server && server.exitCode === null && server.signalCode === null) { const done = new Promise(r => server.once("exit", r)); server.kill("SIGTERM"); await done; } }
 async function launch() { server = spawn(process.execPath, ["--import", "tsx", "src/server.ts"], { cwd: root, env: { ...process.env, CODEFLOW_HOME: home, CODEFLOW_TOKEN: token, PORT: new URL(base).port, PATH: `${join(root, "test/fake-bin")}:${process.env.PATH}` }, stdio: "pipe" }); for (const stream of [server.stdout, server.stderr]) stream?.on("data", value => log += String(value)); await until(() => fetch(base + "/api/health", { headers }).then(r => r.ok, () => false), Boolean); }
-async function page(hash = "") { context ??= await browser.newContext({ viewport: { width: 1440, height: 1000 } }); const p = await context.newPage(); p.on("response", response => {
+async function page(hash = "") { context ??= await browser.newContext({ viewport: { width: 1440, height: 1000 } }); const p = await context.newPage(); p.on("response", async response => {
   const method = response.request().method(), run = runPath(response.url());
   if (method === "DELETE" && response.status() === 200 && run) deletedRuns.add(run[1]!);
   if (method === "GET" && response.status() === 404) missingRunReads.set(response.url(), (missingRunReads.get(response.url()) ?? 0) + 1);
+  if (disruptingStream && method === "GET" && response.status() === 503 && new URL(response.url()).origin === base) {
+    const body = await response.json().catch(() => null);
+    if (body?.error === "The backend is stopping") shutdownReads.add(response.url());
+  }
 }); p.setDefaultTimeout(12_000); await p.addInitScript(() => localStorage.setItem("sideOpen", "0")); p.on("pageerror", e => errors.push(e.message)); p.on("console", m => { if (m.type() !== "error") return; const expected = disruptingStream && m.location().url.startsWith(base + "/api/") && /^Failed to load resource: net::ERR_(?:INCOMPLETE_CHUNKED_ENCODING|CONNECTION_REFUSED)$/.test(m.text()); (expected ? expectedNetworkErrors : consoleErrors).push(`${m.text()} [${m.location().url}]`); }); await p.goto(`${base}/?token=${token}#/${hash}`); await until(() => p.locator(".connection-status").innerText(), v => v === "Connected"); return p; }
 async function shot(p: Page, name: string) { if (evidence) { mkdirSync(evidence, { recursive: true }); await p.screenshot({ path: join(evidence, name + ".png"), animations: "disabled" }); } }
 let tasks = 0;

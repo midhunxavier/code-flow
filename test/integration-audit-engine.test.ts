@@ -21,7 +21,7 @@ execFileSync("git", ["init", "-q", "-b", "main"], { cwd: repo });
 await writeFile(join(repo, "README.md"), "Audit fixture\n");
 execFileSync("git", ["add", "."], { cwd: repo });
 execFileSync("git", ["-c", "user.name=test", "-c", "user.email=test@test", "commit", "-qm", "initial"], { cwd: repo });
-after(async () => { await flushWrites(); await rm(repo, { recursive: true, force: true }); await rm(home, { recursive: true, force: true }); });
+after(async () => { await flushWrites(); await rm(repo, { recursive: true, force: true, maxRetries: 3 }); await rm(home, { recursive: true, force: true, maxRetries: 3 }); });
 
 const pattern = (run: (ctx: Context) => Promise<string>): Pattern => ({ id: "audit", name: "Audit", description: "", summary: "", roles: [], options: [], run });
 async function until(condition: () => boolean) { const deadline = Date.now() + 10_000; while (!condition()) { if (Date.now() > deadline) throw new Error("Timed out waiting for audit fixture"); await new Promise((resolve) => setTimeout(resolve, 10)); } }

@@ -1760,7 +1760,9 @@ export async function initializeProjectDrafts() {
     draftsReady.value = true;
     draftWatching = true;
     const r = route.value;
-    if (!id && r.view === "composer" && r.project !== "" && !task.value.trim() && !attachments.value.length && completeProjectInventory) {
+    // Explicit project routes already restore through openComposer's serialized queue.
+    // A second restore here can overwrite typing or options after the first one appears.
+    if (!id && r.view === "composer" && r.project === undefined && !task.value.trim() && !attachments.value.length && completeProjectInventory) {
       const preferred = projects.value.find(project => project.id === store.get("lastComposerProject"))?.id
         || legacyDraftProject(projects.value, "", repository)
         || (projects.value.length === 1 ? projects.value[0]!.id : "");

@@ -114,7 +114,7 @@ import { compactRunLog, decodeRunLog, RunLogWriter } from "./run-log.js";
 import { branchDiff, workspaceDiff, mergeInto, openPullRequest, pullRequestTarget, removeWorktrees, unsavedWork, type DiffFile } from "./ship.js";
 import { copyIntoWorktree, readRepoConfig, readRepoConfigAt, type Trust } from "./repo-config.js";
 import { DevServers } from "./serve.js";
-import { projectOf, type Project, type Projects } from "./projects.js";
+import { projectOf, ProjectsStorageError, type Project, type Projects } from "./projects.js";
 import { exhausted } from "./routing.js";
 import { assertTransferTree } from "./remote-workers/bundles.js";
 import { assertPolicyExecution, type FilePolicySnapshot } from "./filesystem-policy.js";
@@ -3936,7 +3936,10 @@ export class RunManager {
       for (const run of runs) this.deletingRuns.add(run.id);
       try {
         // Dependents go first so a failed write leaves their workspace owner available for retry.
-        for (const run of ordered) await this.deleteRunRecord(run);
+        for (const run of ordered) {
+          try { await this.deleteRunRecord(run); }
+          catch (error) { throw new ProjectsStorageError(`Could not remove project history: ${(error as Error).message}`); }
+        }
       } finally { for (const run of runs) this.deletingRuns.delete(run.id); }
     }); } finally { this.deletingProjects.delete(id); }
   }

@@ -107,7 +107,7 @@ test("Agent is the fresh default and Advanced team workflows survive reload and 
     await library.getByLabel("Name", { exact: true }).fill("Revised strategy");
     await library.getByRole("button", { name: "Publish template version" }).click();
     await fresh.getByText("Saved Revised strategy v2", { exact: true }).waitFor();
-    const versions = await fetch(`${base}/api/team-templates?history=1`, { headers }).then(r => r.json());
+    const versions = await fetch(`${base}/api/team-templates?history=1${definition.project ? `&project=${encodeURIComponent(definition.project)}` : ""}`, { headers }).then(r => r.json());
     assert.deepEqual(versions.templates.filter((t: any) => t.id === definition.id).map((t: any) => t.version), [1, 2]);
     assert.equal(await fresh.evaluate(() => JSON.parse(localStorage.getItem("selectedTeamTemplate")!).template.version), 1, "editing the library cannot silently update a selected run template");
     await fresh.getByRole("button", { name: "Back to Agent conversation", exact: true }).click();

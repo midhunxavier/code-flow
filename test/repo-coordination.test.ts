@@ -25,6 +25,24 @@ async function fixture(overrides: Partial<CoordinatedChangesOptions> = {}) {
   return { directory, repos, options, service, claims, observations, cancellations, shipping, targets, request, create, latest, verify, tick, completed, advance: (amount: number) => { now += amount; } };
 }
 
+test("reconciling while an upstream result ships keeps its verified dependents and shipping preview", async () => {
+  const f = await fixture();
+  let job = await f.completed();
+  job = await f.service.previewShipping(job.id, job.revision, { api: "main", web: "main" });
+  const preview = structuredClone(job.shipping), ship = f.options.ship;
+  f.options.ship = async (...args) => {
+    const during = await f.tick();
+    assert.equal(during.nodes[0]!.status, "shipping");
+    assert.equal(during.nodes[1]!.status, "verified");
+    assert.deepEqual(during.shipping, preview);
+    return ship(...args);
+  };
+  job = await f.service.shipNode(job.id, "api", job.revision, job.shipping!.id);
+  assert.equal(job.nodes[0]!.status, "shipped");
+  assert.equal(job.nodes[1]!.status, "verified");
+  assert.deepEqual(job.shipping, preview);
+});
+
 test("pins distinct repository DAGs, caps unattended authority/budgets, and preserves idempotent creation across base drift", async () => {
   const f = await fixture(); const [first, same] = await Promise.all([f.create("same-click"), f.create("same-click")]); assert.equal(first.id, same.id); assert.equal((await f.service.list()).length, 1);
   for (const node of first.nodes) { assert.equal(node.run.baseRef, node.baseCommit); assert.equal(node.run.trust, "safe"); assert.equal(node.run.allowUntrusted, false); assert.deepEqual(node.run.approvals, { tools: false, plan: false }); assert.deepEqual(node.run.loop.copy, []); assert.equal(node.run.loop.maxSteps, 50); assert.equal(node.run.loop.maxMinutes, 60); }

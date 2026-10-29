@@ -131,16 +131,17 @@ test("invalid preview inputs return client errors through the real HTTP route", 
 });
 
 test("new PR creation also expires without another render or provider mutation", { timeout: 30000 }, async () => {
+  await page.clock.install();
   await page.route("**/api/code-hosts/create-preview", async route => {
     const input = route.request().postDataJSON();
-    await route.fulfill({ json: { ...input, id: "a".repeat(40), provider: "gitlab", repo, head: git(repo, "rev-parse", "main"), target: git(repo, "rev-parse", "main"), sourceBranch: "codeflow/pr/expiry-fixture", expiresAt: Date.now() + 1500 } });
+    await route.fulfill({ json: { ...input, id: "a".repeat(40), provider: "gitlab", repo, head: git(repo, "rev-parse", "main"), target: git(repo, "rev-parse", "main"), sourceBranch: "codeflow/pr/expiry-fixture", expiresAt: Date.now() + 60_000 } });
   });
   try {
     const panel = await openPanel(); await panel.getByText("Create a new PR from a verified owned result", { exact: true }).click();
     await panel.getByLabel("New PR owned run", { exact: true }).fill("expiry-fixture"); await panel.getByLabel("New PR result branch", { exact: true }).fill("fixture-result"); await panel.getByLabel("New PR title", { exact: true }).fill("Expiry fixture");
     await panel.getByRole("button", { name: "Preview new PR and source branch", exact: true }).click();
     const create = panel.getByRole("button", { name: "Push new source branch and create PR", exact: true });
-    await create.waitFor(); assert.equal(await create.isEnabled(), true); await until(() => create.isDisabled(), Boolean);
+    await until(() => create.isEnabled(), Boolean); await page.clock.fastForward(61_000); await until(() => create.isDisabled(), Boolean);
     await page.screenshot({ path: join(root, "output/playwright/qa-code-hosts/creation-expired.png") });
   } finally { await page.unroute("**/api/code-hosts/create-preview"); }
 });

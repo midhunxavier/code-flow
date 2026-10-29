@@ -358,7 +358,7 @@ test("a check that can't run here: the result is still reviewed, and the inbox a
   await page.locator(".result-details > summary").click();
   await page.getByText("⚠ Finished — but the check couldn't run, so nothing was tested").waitFor();
   await page.locator(".result .cant-run", { hasText: ".codeflow/config.json" }).waitFor();
-  assert.equal(await page.locator(".run-head .status-pill").textContent(), "Finished");
+  assert.equal(await page.locator(".run-head .status-pill").textContent(), "Waiting for you");
 
   const run = await api(`/api/runs/${id}`);
   assert.equal(run.verdict, undefined, "unknown, not failing");
@@ -437,7 +437,7 @@ test("phone: with full control, the phone link signs a phone in to the whole app
   const phone = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
   const tab = await phone.newPage();
   await tab.goto(`${PHONE}${phonePath}`);
-  await tab.getByRole("heading", { name: "What would you like to work on?" }).waitFor();
+  await tab.getByRole("textbox", { name: "Task", exact: true }).waitFor();
   assert.equal(new URL(tab.url()).pathname, "/");
   await tab.getByRole("button", { name: "Show runs" }).click();
   await tab.locator(".rail.open").waitFor();
@@ -564,8 +564,8 @@ test("projects: onboarding made one; the sidebar lists runs under their projects
   const run = await fetch(`${BASE}/api/runs/${runId}`, { headers: bearer }).then((r) => r.json());
   assert.equal(run.project, own!.id);
 
-  // E2E side has nothing to list now: it folds into "more projects", and its menu edits it.
-  await rail.getByRole("button", { name: /^\d+ more projects?$/ }).click();
+  // Empty projects remain visible and editable directly in the sidebar.
+  assert.equal(await rail.getByRole("button", { name: /^\d+ more projects?$/ }).count(), 0);
   await group("E2E side").getByRole("button", { name: "Edit E2E side" }).click();
   await page.getByRole("heading", { name: "Edit E2E side" }).waitFor();
   await page.getByRole("button", { name: "Cancel" }).click();

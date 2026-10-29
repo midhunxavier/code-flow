@@ -119,7 +119,7 @@ test("pause transitions to idle in run, rail and History with matching prioritie
   await p.getByRole("heading", { name: "Dispatch paused", exact: true }).waitFor();
   assert.equal(await p.locator(".work-ic.running").count(), 0);
   assert.equal(await p.locator(`a[href="#/run/${run.id}"] .dot.running`).count(), 0);
-  assert.equal(await p.locator(".run-state").filter({ hasText: "Dispatch paused" }).count() > 0 || (await p.locator(".run-head").innerText()).includes("Dispatch paused"), true);
+  assert.equal(await p.locator(".run-state").filter({ hasText: "Stopped" }).count() > 0 || (await p.locator(".run-head").innerText()).includes("Stopped"), true);
   const options = await p.getByLabel("Run priority", { exact: true }).locator("option").allTextContents(); assert.deepEqual(options, ["High", "Normal", "Low"]);
   await p.getByLabel("Run priority", { exact: true }).selectOption("-10"); await shot("dispatch-paused");
   await p.goto(`${base}/#/project/${project}/repositories/${encodeURIComponent(repo)}/history`); const history = p.getByRole("button", { name: "History", exact: true }); if (await history.count()) await history.click();

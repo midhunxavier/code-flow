@@ -121,7 +121,8 @@ test("teammates keep exclusive tool ownership until their turn ends and reuse th
   try {
     const original = await tabs(first); assert.equal(original.status, 200);
     const waiting = tabs(second);
-    await new Promise(resolve => setTimeout(resolve, 30));
+    const deadline = Date.now() + 5000;
+    while (bridge.control("task:shared-team").state().waiting !== 1 && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10));
     assert.equal(bridge.control("task:shared-team").state().waiting, 1);
     controller.abort();
     const continued = await waiting; assert.equal(continued.status, 200);
