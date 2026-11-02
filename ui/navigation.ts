@@ -10,7 +10,9 @@ export const AUTOMATION_KINDS = ["once", "repeat", "backlog", "missions"] as con
 export const validAutomationKind = (kind: string) => (AUTOMATION_KINDS as readonly string[]).includes(kind);
 
 export type Route =
-  | { view: "composer"; project?: string }
+  | { view: "composer"; project?: string; legacy?: boolean }
+  | { view: "task"; id: string }
+  | { view: "chat"; id: string; project?: string }
   | { view: "projects" }
   | { view: "inbox" }
   | { view: "automations"; kind?: string }
@@ -33,6 +35,10 @@ export function parseRouteHash(hash: string): Route {
   try { parts = hash.replace(/^#\/?/, "").split("/").map(decodeURIComponent); }
   catch { return { view: "invalid", hash }; }
   const [view, id, ...rest] = parts;
+  if (view === "workflows" && !id) return { view: "composer", legacy: true };
+  if (view === "chat" && id && !rest.length) return { view: "chat", id };
+  if (view === "project" && id && rest[0] === "chat" && rest.length === 1) return { view: "chat", id: "new", project: id };
+  if (view === "task" && id && !rest.length) return { view: "task", id };
   if (view === "run" && id) return { view: "run", id };
   if (view === "review" && id && rest.length) return { view: "review", id, branch: rest.join("/") };
   if (view === "settings" && (id === "workspace" || id === "automations" || id === "insights")) return { view: id, ...(id === "insights" && rest[0] ? { group: rest[0] } : {}) };
@@ -61,6 +67,8 @@ export function parseRouteHash(hash: string): Route {
 }
 
 export function hashFor(r: Route): string {
+  if (r.view === "composer" && r.legacy) return "#/workflows";
+  if (r.view === "chat") return r.id === "new" && r.project ? `#/project/${encodeURIComponent(r.project)}/chat` : `#/chat/${encodeURIComponent(r.id)}`;
   if (r.view === "composer" && r.project !== undefined) return r.project ? `#/project/${encodeURIComponent(r.project)}/new` : "#/new/unassigned";
   if (r.view === "invalid") return r.hash;
   if (r.view === "inbox") return "#/inbox";
@@ -68,6 +76,7 @@ export function hashFor(r: Route): string {
   if (r.view === "automations") return `#/automations${r.kind ? `/${encodeURIComponent(r.kind)}` : ""}`;
   if (r.view === "workspace") return r.project ? `#/project/${encodeURIComponent(r.project)}/workspace` : "#/workspace";
   if (r.view === "insights") return `#/insights${r.group ? `/${encodeURIComponent(r.group)}` : ""}`;
+  if (r.view === "task") return `#/task/${encodeURIComponent(r.id)}`;
   if (r.view === "run") return `#/run/${encodeURIComponent(r.id)}`;
   if (r.view === "settings" && r.connection && r.section === "connections" && r.group === "join") return `#/settings/connections/join?connection=${encodeURIComponent(r.connection)}`;
   if (r.view === "settings") return r.section ? `#/settings/${r.section}${(r.section === "insights" || r.section === "connections") && r.group ? `/${encodeURIComponent(r.group)}` : ""}` : "#/settings";

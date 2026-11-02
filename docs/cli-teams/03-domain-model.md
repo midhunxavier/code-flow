@@ -2,6 +2,8 @@
 
 Status: proposed. [Index](README.md)
 
+The initial conversational implementation stores immutable run-local definitions rather than requiring saved profile/team/workflow references. Current runtime types are in `src/cli-teams/model.ts`; the older version-reference snippets below describe deferred reusable definitions. Explicit task settings resolve before project preferences, personal preferences, and provider defaults. See [16](16-implementation-status.md) for reconciliation.
+
 ## Identity and versioning
 
 IDs are opaque, stable, and never derived from a display name alone. Provider ID, participant ID, role ID, provider session ID, host connection ID, and user actor ID are distinct concepts. The server derives actor identity from its connection binding; tool arguments cannot choose another actor.

@@ -2,6 +2,8 @@
 
 Status: proposed. [Index](README.md)
 
+The initial executor uses ordered structured blocks and explicit input references for these seven node kinds. It implements the agreement-plus-fresh-final-review case as one bounded loop; a rejected gate skips the remaining pass. Arbitrary edge authoring and the detailed edge schema below remain the earlier design baseline. Current candidate contracts are in `src/cli-teams/model.ts` and the installed host skill. See [16](16-implementation-status.md).
+
 ## Graph grammar
 
 A workflow is a versioned declarative graph. Provider names belong in team bindings, not graph control logic. V1 supports `task`, `parallel`, `join`, `gate`, `loop`, `user_decision`, and `finish`. Unknown node types are rejected.

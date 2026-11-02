@@ -152,7 +152,7 @@ test("large transcripts page backwards and return to live history with bounded r
 });
 
 test("sidebar searches beyond loaded pages and loads older history without discarding visible results", async () => {
-  await page.goto(base);
+  await page.goto(`${base}/#/workflows`);
   const history = page.getByRole("region", { name: "Run history pages" });
   await history.getByText("101 tasks loaded", { exact: true }).waitFor();
   assert.equal(await page.getByRole("button", { name: /Ancient needle task/ }).count(), 0);
@@ -235,7 +235,7 @@ test("project conventions save with CAS, restore a previewed version, and explic
 });
 
 test("guided onboarding inspects required and optional dependencies through actual read-only probes", async () => {
-  await page.goto(base);
+  await page.goto(`${base}/#/workflows`);
   await page.getByRole("switch", { name: "AI team", exact: true }).waitFor();
   assert.equal(await page.locator(".provider-setup").count(), 0, "connected providers do not show setup in the composer");
   await page.goto(`${base}/#/settings/agents`);
@@ -266,7 +266,7 @@ test("review inbox controls have distinct labels, keyboard order and a bounded m
 });
 
 test("context directories preview committed sources and explicit budgets block actual provider launch while warnings retain input evidence", async () => {
-  await page.setViewportSize({ width: 1440, height: 1000 }); await page.goto(base);
+  await page.setViewportSize({ width: 1440, height: 1000 }); await page.goto(`${base}/#/workflows`);
   await selectAgentConversation(page); await page.getByLabel("Task", { exact: true }).fill("Exercise the explicit context budget before a provider launch.");
   await page.locator(".taskbox").getByRole("button", { name: "Files", exact: true }).click(); await page.getByRole("button", { name: "Add api to the task", exact: true }).click();
   await page.getByRole("button", { name: "Side panel", exact: true }).click();
@@ -284,14 +284,14 @@ test("context directories preview committed sources and explicit budgets block a
   await page.getByLabel("Workflow name", { exact: true }).fill("Budgeted team");
   await page.getByRole("button", { name: "Save current workflow", exact: true }).click();
   await page.getByRole("button", { name: "Save new revision", exact: true }).waitFor();
-  await page.evaluate(() => { location.hash = "/"; });
+  await page.evaluate(() => { location.hash = "/workflows"; });
   if (await page.locator(".composer-options").getAttribute("open") === null) await page.locator(".composer-options > summary").click(); await page.locator(".context-inspector > summary").click();
   await page.getByLabel("Maximum explicit input bytes", { exact: true }).fill("40000"); await page.getByLabel("When the explicit input exceeds this budget", { exact: true }).selectOption("warn");
   await openLibrary();
   await page.getByLabel("Saved workflow", { exact: true }).selectOption({ label: "Budgeted team · r1" });
   await page.getByRole("button", { name: "Save new revision", exact: true }).click();
   await page.getByLabel("Revision to apply", { exact: true }).selectOption("1"); await page.getByRole("button", { name: "Apply workflow", exact: true }).click();
-  await page.evaluate(() => { location.hash = "/"; });
+  await page.evaluate(() => { location.hash = "/workflows"; });
   if (await page.locator(".composer-options").getAttribute("open") === null) await page.locator(".composer-options > summary").click(); await page.locator(".context-inspector > summary").click();
   assert.equal(await page.getByLabel("Maximum explicit input bytes", { exact: true }).inputValue(), "1", "applying history restores the captured input ceiling");
   assert.equal(await page.getByLabel("When the explicit input exceeds this budget", { exact: true }).inputValue(), "block");

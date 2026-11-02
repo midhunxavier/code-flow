@@ -2,6 +2,8 @@
 
 Status: proposed. [Index](README.md)
 
+These are reference fixtures for the original saved-definition/edge-based design. The initial conversational implementation uses run-local ordered blocks; executable fixtures and the agreement-plus-final-review case are in `test/cli-teams.test.ts`. Do not install the old saved-team JSON below as current configuration. See [16](16-implementation-status.md).
+
 These examples define reproducible input fixtures for the schema/compiler tests. The model IDs are deliberately fake. Tests provide a catalog advertising them; actual installations must resolve available models and supported efforts. The JSON represents proposed configuration, not files to install into a user's project before implementation.
 
 ## Reusable profiles

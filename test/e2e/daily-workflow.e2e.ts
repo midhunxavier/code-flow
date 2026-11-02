@@ -94,7 +94,7 @@ before(async () => {
     localStorage.setItem("pattern", "solo");
     localStorage.setItem("sideOpen", "0");
   }, repo);
-  await page.goto(base + "/?token=daily-workflow-e2e");
+  await page.goto(base + "/?token=daily-workflow-e2e#/workflows");
 });
 after(async () => {
   await browser?.close();
@@ -381,7 +381,7 @@ test("readiness follows provider assignments and discards an older in-flight rep
   const draft = await isolated.newPage();
   let release!: () => void;
   try {
-    await draft.goto(base + "/?token=daily-workflow-e2e");
+    await draft.goto(base + "/?token=daily-workflow-e2e#/workflows");
     await draft.getByRole("button", { name: "Edit run options", exact: true }).click();
     await draft.locator(".readiness > summary").click();
     const readiness = draft.locator(".readiness");

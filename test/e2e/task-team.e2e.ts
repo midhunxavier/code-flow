@@ -105,7 +105,7 @@ test("team setup explains incompatible providers and lets saved selections be re
       const response = await route.fetch(), diagnostic = await response.json();
       await route.fulfill({ response, json: diagnostic.map((entry: any) => entry.id === "agy" ? { ...entry, installed: true, compatible: true, signedIn: true, managedCompatible: false } : entry) });
     });
-    await setupPage.goto(`${base}/?token=${token}`);
+    await setupPage.goto(`${base}/?token=${token}#/workflows`);
     await setupPage.getByRole("switch", { name: "AI team", exact: true }).click();
     await setupPage.getByRole("button", { name: "Advanced", exact: true }).click();
     const dialog = setupPage.getByRole("dialog", { name: "AI team setup" });

@@ -14,7 +14,7 @@ test("connect from the app, browse a remote folder, run there, reconnect and ret
     for (let i = 0; i < 150; i++) { if (await fetch(base + "/api/health", { headers: { authorization: `Bearer ${token}` } }).then((res) => res.ok, () => false)) break; await pause(200); }
     browser = await chromium.launch({ channel: "chrome", headless: true });
     page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
-    await page.goto(`${base}/?token=${token}`);
+    await page.goto(`${base}/?token=${token}#/workflows`);
     const localProject = await page.evaluate(async () => (await fetch("/api/projects", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "Remote web app", repos: [] }) })).json());
     const secondLocalProject = await page.evaluate(async () => (await fetch("/api/projects", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "Another local project", repos: [] }) })).json());
     await page.getByRole("button", { name: /^Application menu:/ }).click();
@@ -47,7 +47,7 @@ test("connect from the app, browse a remote folder, run there, reconnect and ret
     await projectDialog.getByRole("button", { name: "Remove project", exact: true }).waitFor();
     await projectDialog.getByRole("button", { name: "Create project", exact: true }).click();
     await projectDialog.waitFor({ state: "hidden" });
-    await page.locator(".page-head-actions").getByRole("button", { name: "New run", exact: true }).click();
+    await page.locator(".page-head-actions").getByRole("button", { name: "New chat", exact: true }).click();
     await page.locator(".repo-btn:not(.project-btn) .name", { hasText: "project" }).waitFor();
     await openAdvanced(page);
   await page.getByLabel("Workflow", { exact: true }).selectOption("pipeline");

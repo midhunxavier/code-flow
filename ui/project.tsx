@@ -1,3 +1,4 @@
+import { openChat } from "./chat-state.js";
 import { executionLabel } from "./run-experience.js";
 import { lazyView } from "./lazy-view.js";
 const MlWorkspace = lazyView(() => import("./ml/workspace.js").then(module => module.MlWorkspace));
@@ -46,7 +47,7 @@ export function ProjectView({ id, section, repository, tool, kind }: { id: strin
   const selectedRepository = repository ?? (p.repos.length === 1 ? p.repos[0] : undefined);
   return <div class="project-page">
     <header class="page-head"><div class="page-head-text pp-title"><h1>{p.name}</h1><p class="project-computer-label"><Icon name="terminal" />Computer: {computerLabel()}</p></div>
-      <div class="page-head-actions"><ProjectShare key={id} project={p} /><button class="btn primary" disabled={!draftsReady.value || composerLoading.value} onClick={() => void openComposer(id)}><Icon name="plus" />New run</button>
+      <div class="page-head-actions"><ProjectShare key={id} project={p} /><button class="btn primary" disabled={!draftsReady.value || composerLoading.value} onClick={() => openChat(id)}><Icon name="plus" />New chat</button><button class="btn ghost" disabled={!draftsReady.value || composerLoading.value} onClick={() => void openComposer(id)}>Existing workflows</button>
         <Menu label="Project actions" icon="more">{close => <>
           <MenuItem onClick={() => { close(); editProject(id); }}>Edit project</MenuItem>
           <MenuItem onClick={() => { close(); route.value = { view: "project", id, section: "settings" }; }}>Project settings</MenuItem>
@@ -57,7 +58,7 @@ export function ProjectView({ id, section, repository, tool, kind }: { id: strin
     {!section ? <>
       <section class="project-start pp-card" aria-label="Start work"><h2>{draftTask.trim() ? "Continue your draft" : "What would you like to work on?"}</h2><p>{p.repos.length ? "Describe the outcome, choose your agents, and review the result here." : "Add a repository to start a run in this project."}</p>
         {draftTask.trim() ? <p class="draft-preview">{draftTask.slice(0, 240)}</p> : null}
-        <button class="btn primary" disabled={!draftsReady.value || composerLoading.value} onClick={() => p.repos.length ? void openComposer(id) : addRepositoryToProject(id)}>{p.repos.length ? draftTask.trim() ? "Continue draft" : "Describe a task" : "Add repository"}</button>
+        <button class="btn primary" disabled={!draftsReady.value || composerLoading.value} onClick={() => p.repos.length ? draftTask.trim() ? void openComposer(id) : openChat(id) : addRepositoryToProject(id)}>{p.repos.length ? draftTask.trim() ? "Continue draft" : "Describe a task" : "Add repository"}</button>
       </section>
       <ProjectTeamsInbox projectId={id} />
       <ProjectOverview key={id} id={id} />

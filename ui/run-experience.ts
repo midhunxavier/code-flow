@@ -54,6 +54,10 @@ export function declinedUnasked(text: string): boolean {
  * `approvalPending`: a tool approval or question of this run waits in the inbox.
  */
 export function executionLabel(run: RunSummary, approvalPending = false): string {
+  if (run.cliTeam?.outcome && run.status !== "running") {
+    const label = ({ plan_ready: "Plan ready", agreed_plan: "Plan agreed", verified_changes: "Changes verified", review_complete: "Review completed", stopped_limit: "Stopped with partial work", blocked: "Needs attention" } as Record<string, string>)[run.cliTeam.outcome];
+    if (label) return label;
+  }
   if (run.status === "running" && (run.awaiting || teamAwaitingAnswer(run) || approvalPending)) return "Waiting for you";
   if (planRejected(run) || dispatchLabel(run, "steps" in run ? (run as Run).steps : undefined) === "Dispatch paused") return "Stopped";
   const turn = run.teamTurns?.at(-1);

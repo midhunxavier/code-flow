@@ -1,6 +1,6 @@
 # Requirements and V1 scope
 
-Status: proposed. [Index](README.md)
+Status: revised for the conversational implementation. [Index](README.md). Contract reconciliation and evidence: [16](16-implementation-status.md).
 
 ## Product promise
 
@@ -14,13 +14,13 @@ Both provider backends must be installed and authenticated when required by the 
 
 1. User asks for a mixed-provider task.
 2. Host skill supplies explicit task context and project identity.
-3. Code Flow discovers eligible profiles and generates a bounded proposal, preferably by selecting and parameterizing a known workflow.
+3. The host discovers eligible providers/models and supplies a task-generated bounded candidate; Code Flow validates and resolves the proposal without preset selection.
 4. User sees role assignments, exact settings or clearly labeled inherited settings, workflow graph, workspace, checks, and limits.
 5. User accepts, edits, or cancels. No implementation is dispatched while acceptance is pending.
 6. Code Flow executes, reports meaningful transitions, and exposes real outputs.
-7. User may save the team and workflow before or after execution.
+7. Results and accepted configuration remain in run history. Initial V1 has no saved-team management.
 
-V1 uses the host's existing reasoning plus deterministic template selection/validation to produce the proposal. It does not start a separate managed inference call during team selection. A future optional proposal-generation call must have an explicit, bounded preflight allowance.
+V1 uses the host's existing reasoning plus deterministic candidate validation to produce the proposal. It does not start a separate managed inference call during team selection. A future optional proposal-generation call must have an explicit, bounded preflight allowance.
 
 ### Planning scenarios
 
@@ -45,9 +45,9 @@ V1 uses the host's existing reasoning plus deterministic template selection/vali
 | R01 | One conversation | Either host starts a workflow and receives its full result without a dashboard |
 | R02 | Automatic proposal | A task produces an editable, validated configuration before dispatch |
 | R03 | Explicit acceptance | Only the accepted proposal revision can start; edits invalidate prior acceptance |
-| R04 | Saved teams | Team/workflow versions can be saved, reused, and overridden per run without changing the saved version |
+| R04 | Generated teams and preferences | Task-specific participants/processes need no saved definitions; explicit task settings override preferences; accepted runs are immutable |
 | R05 | Flexible assignments | A role supports multiple distinct participants, providers, models, and supported effort values |
-| R06 | Generic graphs | The three V1 workflows run through the same graph executor |
+| R06 | Generic composition | Task-generated planning, implementation, and review processes use the same executor without named preset selection |
 | R07 | Exact agreement | Reviews attach to an immutable target; stale or missing votes never approve |
 | R08 | Host participation | A compatible current session can claim and submit a role assignment |
 | R09 | Provider compatibility | Unsupported settings or mandatory controls stop admission with a clear explanation |
@@ -61,15 +61,15 @@ V1 uses the host's existing reasoning plus deterministic template selection/vali
 | R17 | Isolation of authority | Workers cannot start nested workflows, change permissions, or approve human requests |
 | R18 | Existing compatibility | Legacy runs, existing HTTP clients, and provider integrations continue to work |
 
-## Initial workflows
+## Initial composition coverage
 
-| Workflow ID | Behavior |
+| Requested outcome | Behavior |
 | --- | --- |
-| `plan-agreement` | One or more proposals, synthesis where needed, revision loop, exact-plan agreement |
-| `feature` | Plan agreement, one builder, checks, independent review, bounded repair |
-| `review-changes` | Snapshot existing changes, independent review, optional authorized repair and re-review |
+| Agreed plan | One or more proposals, synthesis where needed, revision loop, exact-plan agreement, optional fresh final review |
+| Verified implementation | User-requested planning, one builder, checks, independent review, bounded repair |
+| Review of existing changes | Snapshot existing changes, independent review, optional authorized repair and re-review |
 
-`review-changes` defaults to review-only. The `allowFixes` input is included in the accepted proposal; a reviewer cannot activate it.
+Review requests default to review-only scope. Adding implementation/repair operations requires accepted write scope; a reviewer cannot activate it.
 
 ## V1 exclusions
 
@@ -86,4 +86,4 @@ The domain model may accommodate later extensions, but V1 validation rejects uns
 
 ## Default usability rules
 
-Propose the smallest adequate team. Show model/effort settings without asking users to configure irrelevant roles. Ask product questions only when the answer affects the plan. Preserve dissent as actionable findings rather than pressuring agents to agree. Display the final plan or actual result, not only an orchestration summary. A reusable workflow and a saved team may be selected together as one preset in the CLI.
+Propose the smallest adequate team. Show model/effort settings without asking users to configure irrelevant roles. Ask product questions only when the answer affects the plan. Preserve dissent as actionable findings rather than pressuring agents to agree. Display the final plan or actual result, not only an orchestration summary. Defer built-in presets and saved-team APIs in the initial CLI release.

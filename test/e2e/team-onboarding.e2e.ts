@@ -56,7 +56,7 @@ before(async () => {
     const context = await browser.newContext({ viewport: size, ignoreHTTPSErrors: true }); const page = await context.newPage(); page.setDefaultTimeout(15000); page.on("pageerror", error => errors.push(`${name}: ${error.message}`));
     if (name === "owner") owner = page; else if (name === "member") member = page; else runner = page;
   }
-  await owner.goto(`${base}/?token=${token}`); await owner.getByRole("button", { name: "New run", exact: true }).waitFor();
+  await owner.goto(`${base}/?token=${token}`); await owner.getByRole("button", { name: "New chat", exact: true }).waitFor();
 });
 after(async () => { await browser?.close(); for (const child of servers) child.kill("SIGTERM"); await Promise.all(servers.map(child => new Promise<void>(resolve => { if (child.exitCode !== null) return resolve(); child.once("exit", () => resolve()); setTimeout(resolve, 5000).unref(); }))); await rm(directory, { recursive: true, force: true }); });
 

@@ -42,6 +42,8 @@ export interface AgentQuestion {
 }
 
 export interface RunOptions {
+  /** Managed CLI-team children must not reload the owner-level project connector. */
+  excludeCodeflowMcp?: boolean;
   prompt: string;
   /** Attended Agent conversation: interactive input and provider-native integrations. */
   conversation?: boolean;

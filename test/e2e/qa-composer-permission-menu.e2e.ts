@@ -30,7 +30,7 @@ async function composer(project: string, storage: Record<string, string> = {}): 
   const page = await context.newPage(), errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   page.on("response", (response) => { if (response.url().includes("/api/") && response.status() >= 500) errors.push(`${response.status()} ${response.url()}`); });
-  await page.goto(`${base}/?token=${token}`);
+  await page.goto(`${base}/?token=${token}#/workflows`);
   await page.evaluate((values) => { for (const [key, value] of Object.entries(values)) localStorage.setItem(key, value); }, storage);
   await page.goto(`${base}/#/project/${encodeURIComponent(project)}/new`);
   await page.getByRole("textbox", { name: "Task", exact: true }).waitFor();

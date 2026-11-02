@@ -32,7 +32,7 @@ async function fresh(seed: Record<string, string> = {}, fallback = false) { cons
     Object.defineProperty(window, 'indexedDB', { value: undefined }); if (sessionStorage.getItem('seeded'))
     return; sessionStorage.setItem('seeded', '1'); localStorage.setItem('sideOpen', '0'); localStorage.setItem('pattern', 'solo'); for (const [k, v] of Object.entries(seed))
     localStorage.setItem(k, v); }, { seed, fallback }); const page = await context.newPage(); page.setDefaultTimeout(15000); page.on('pageerror', e => errors.push(e.message)); page.on('response', response => { if (response.status() >= 500) errors.push(`${response.status()} ${response.url()}`); }); page.on('console', m => { if (m.type() === 'error' && !/Failed to load resource: the server responded with a status of (400|403|404|409|500)/.test(m.text()))
-    errors.push(m.text()); }); await page.goto(`${base}/?token=${token}`); return { context, page }; }
+    errors.push(m.text()); }); await page.goto(`${base}/?token=${token}#/workflows`); return { context, page }; }
 async function shot(page: Page, name: string) { if (evidence)
     await page.screenshot({ path: join(evidence, name + '.png'), fullPage: true }); }
 async function composer(page: Page, id: string) { await page.goto(`${base}/#/project/${id}/new`); await page.getByLabel('Task', { exact: true }).waitFor(); }
@@ -150,9 +150,9 @@ test('a missing project route returns to Projects with a clean destination', asy
     await page.goto(`${base}/#/project/missing-project/new`);
     await page.getByRole('heading', { name: 'Projects', exact: true }).waitFor();
     assert.equal(await page.getByText(/project is unavailable/).count(), 0);
-    await page.getByRole('article').filter({ has: page.getByRole('heading', { name: 'Project Beta', exact: true }) }).getByRole('button', { name: 'Describe a task', exact: true }).click();
-    await page.getByLabel('Task', { exact: true }).waitFor();
-    assert.equal(await page.getByLabel('Task', { exact: true }).inputValue(), '');
+    await page.getByRole('article').filter({ has: page.getByRole('heading', { name: 'Project Beta', exact: true }) }).getByRole('button', { name: 'New chat', exact: true }).click();
+    await page.getByLabel('Message', { exact: true }).waitFor();
+    assert.equal(await page.getByLabel('Message', { exact: true }).inputValue(), '');
     await shot(page, '06-missing-project-destination');
 }
 finally {

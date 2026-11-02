@@ -53,7 +53,7 @@ before(async () => {
   page.setDefaultTimeout(15000);
   page.on("pageerror", error => errors.push(error.message));
   await page.addInitScript(() => { if (localStorage.getItem("sideOpen") === null) localStorage.setItem("sideOpen", "0"); });
-  await page.goto(`${base}/?token=${token}`);
+  await page.goto(`${base}/?token=${token}#/workflows`);
 });
 after(async () => { await browser?.close(); server?.kill("SIGTERM"); rmSync(home, { recursive: true, force: true }); });
 
@@ -89,7 +89,8 @@ test("unrestricted Antigravity applies only to the run it was ticked for and is 
   assert.equal(await page.locator(".run-head .run-unrestricted").innerText(), "Unrestricted Antigravity");
   assert.equal(await permission(page.locator(".convo")), "Unrestricted");
 
-  await page.getByRole("button", { name: "New run", exact: true }).click();
+  await page.getByRole("button", { name: "New chat", exact: true }).click();
+  await page.getByRole("button", { name: "Existing workflows", exact: true }).click();
   await task.waitFor();
   assert.doesNotMatch(await summary.innerText(), /Unrestricted/);
   assert.equal(await permission(composer), "Approve for me");
@@ -106,7 +107,8 @@ test("unrestricted Antigravity applies only to the run it was ticked for and is 
   assert.equal(await page.locator(".run-unrestricted").count(), 0);
 
   await page.reload();
-  await page.getByRole("button", { name: "New run", exact: true }).click();
+  await page.getByRole("button", { name: "New chat", exact: true }).click();
+  await page.getByRole("button", { name: "Existing workflows", exact: true }).click();
   await task.waitFor();
   await showOptIn();
   assert.equal(await optIn().isChecked(), false, "the saved project draft isn't unrestricted either");

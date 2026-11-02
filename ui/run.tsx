@@ -282,6 +282,7 @@ export function RunView({ id }: { id: string }) {
           <div class="run-title">
             {/* OntoLab's page head: a status line above the heading, the actions beside it */}
             <div class="run-name">
+              {run.cliTeam?.taskConversation ? <p class="task-run-link"><a href={`#/task/${enc(run.cliTeam.taskConversation.id)}`}>Return to task conversation</a> · {run.cliTeam.taskConversation.phase === "preparation" ? "Approach preparation" : "Managed execution"}</p> : null}
               <div class="run-kicker">
                 <span class={`status-pill ${awaitingInput ? "awaiting" : dispatchLabel(run, steps) === "Dispatch paused" ? "stopped" : state}`}>
                   {executionLabel(run, approvalPending)}

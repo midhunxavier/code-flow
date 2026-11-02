@@ -12,6 +12,9 @@ import { HostControl, executionHost } from "./ssh-projects.js";
 import { useLayoutEffect, useEffect, useRef, useState } from "preact/hooks";
 import { ApprovalInbox } from "./approval-inbox.js";
 import { Composer } from "./composer.js";
+import { TaskConversationPage } from "./task-conversation.js";
+import { openChat } from "./chat-state.js";
+const ChatPage = lazyView(() => import("./chat.js").then(module => module.ChatPage));
 import { CommandPalette } from "./command-palette.js";
 import { SidePanel } from "./side.js";
 import { RunView } from "./run.js";
@@ -29,7 +32,7 @@ const TeamTaskView = lazyView(() => import("./collab-task.js").then((module) => 
 import { board as teamBoard, openTask, watchTeam } from "./collab-state.js";
 import { Rail } from "./rail.js";
 import { Icon } from "./icons.js";
-import { api, dismissToast, showToast, store, toast } from "./lib.js";
+import { api, onPhone, dismissToast, showToast, store, toast } from "./lib.js";
 import { theme, toggleTheme } from "./theme.js";
 import {
   composerProject,
@@ -157,6 +160,10 @@ function MainApp() {
             {route.value.view === "composer" && deletedRunNotice.value ? <DeletedRunRecovery {...deletedRunNotice.value} /> : null}
             {(route.value.view === "run" || route.value.view === "review") && isRunDeleted(route.value.id) ? <DeletedRunRecovery id={route.value.id} /> : route.value.view === "run" ? (
               <RunView key={route.value.id} id={route.value.id} />
+            ) : route.value.view === "task" ? (
+              <TaskConversationPage key={route.value.id} id={route.value.id} />
+            ) : route.value.view === "chat" ? (
+              <ChatPage key={`${route.value.id}:${route.value.project ?? ""}`} id={route.value.id} project={route.value.project} />
             ) : route.value.view === "review" ? (
               <Review key={`${route.value.id}:${route.value.branch}`} id={route.value.id} branch={route.value.branch} />
             ) : route.value.view === "projects" ? (
@@ -182,7 +189,7 @@ function MainApp() {
                 <button class="btn primary" onClick={() => (route.value = { view: "composer" })}>Open new run</button>
               </div>
             ) : (
-              !draftsReady.value || composerLoading.value || route.value.view === "composer" && route.value.project !== undefined && route.value.project !== composerProject.value ? <div class="composer" role="status">{draftError.value || "Restoring your project draft…"}</div> : <Composer key={composerProject.value} />
+              !draftsReady.value || composerLoading.value || route.value.view === "composer" && route.value.project !== undefined && route.value.project !== composerProject.value ? <div class="composer" role="status">{draftError.value || "Restoring your project draft…"}</div> : route.value.view === "composer" && !route.value.legacy && route.value.project === undefined && !onPhone && executionHost.value.kind === "local" ? <ChatPage id="new" /> : <Composer key={composerProject.value} />
             )}
           </main>
         </div>
@@ -427,7 +434,7 @@ function onShortcut(e: KeyboardEvent) {
       return;
     }
     case "n":
-      e.preventDefault(); void openComposer(); return;
+      e.preventDefault(); openChat(); return;
     case "p":
       e.preventDefault();
       projectPickerPurpose.value = route.value.view === "composer" ? "composer" : "filter";

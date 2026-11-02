@@ -42,7 +42,7 @@ async function claimRunning(id: string, runnerName: string): Promise<string> { c
 async function owner(clock?: number): Promise<Page> {
   const context = await browser.newContext({ viewport: { width: 1400, height: 1000 } }); contexts.push(context); const page = await context.newPage(); watch(page);
   if (clock !== undefined) await page.clock.install({ time: clock });
-  await page.goto(`${base}/?token=${token}`); await page.getByRole("button", { name: "New run", exact: true }).waitFor(); return page;
+  await page.goto(`${base}/?token=${token}`); await page.getByRole("button", { name: "New chat", exact: true }).waitFor(); return page;
 }
 const evidence = async (page: Page, name: string) => { if (process.env.QA_ARTIFACT_DIR) { mkdirSync(process.env.QA_ARTIFACT_DIR, { recursive: true }); await page.screenshot({ path: join(process.env.QA_ARTIFACT_DIR, `${name}.png`), fullPage: true }); } };
 const openTask = async (page: Page, id: string, title: string) => { await page.goto(`${base}/#/team/task/${id}`); await page.getByRole("heading", { level: 1, name: new RegExp(`^${title}`) }).waitFor(); return page.locator("section.team-section", { has: page.locator("#tt-exec") }); };

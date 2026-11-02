@@ -57,7 +57,7 @@ before(async () => {
   page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
   page.setDefaultTimeout(15_000);
   watch(page);
-  await page.goto(`${base}/?token=${token}`);
+  await page.goto(`${base}/?token=${token}#/workflows`);
 });
 after(async () => { await browser?.close(); if (server?.exitCode === null) { server.kill("SIGTERM"); await new Promise<void>(resolve => { const timer = setTimeout(() => { server.kill("SIGKILL"); resolve(); }, 5000); server.once("exit", () => { clearTimeout(timer); resolve(); }); }); } if (process.env.QA_ARTIFACT_DIR) { await mkdir(process.env.QA_ARTIFACT_DIR, { recursive: true }); await writeFile(join(process.env.QA_ARTIFACT_DIR, "draft-config-server.log"), serverLog); } assert.doesNotMatch(serverLog, /uncaughtException|unhandledRejection|ReferenceError|TypeError:/); assert.deepEqual(errors, []); if (directory) await rm(directory, { recursive: true, force: true }); });
 
@@ -213,7 +213,7 @@ test("context added to an otherwise untouched retry draft is protected before an
 test("project defaults refresh saved drafts for both an inactive and the current project", { timeout: 60_000 }, async () => {
   const previous = page, context = await browser.newContext({ viewport: { width: 1440, height: 1000 } }); page = await context.newPage(); watch(page);
   try {
-    await page.goto(`${base}/?token=${token}`);
+    await page.goto(`${base}/?token=${token}#/workflows`);
     await newRun("echo C");
     await page.getByLabel("Task", { exact: true }).fill("Keep this unsent text while defaults change");
     const otherRepo = join(directory, "other-repo"); execFileSync("git", ["clone", "-q", repo, otherRepo], { cwd: directory });

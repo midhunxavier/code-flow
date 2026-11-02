@@ -1,3 +1,4 @@
+import { activeChatContext } from "./chat-context.js";
 import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import { api, baseName, enc, fmtSize, post, showToast } from "./lib.js";
 import { Icon } from "./icons.js";
@@ -95,7 +96,7 @@ export function CodeBrowser({ folder, initialPath, onClose, compact = false, ref
     {compact ? <div key="explorer" class="files-explorer" hidden={!!selectedPath || panelMode !== "files"}><FileTree key={`${refreshKey}:${treeRevision}`} root={folder} onOpen={path => {if(!busy) void loadFile(path);}} /></div> : <details open={!selectedPath}><summary>Browse files</summary><FileTree key={`${refreshKey}:${treeRevision}`} root={folder} onOpen={path => {if(!busy) void loadFile(path);}} /></details>}
     {selectedPath ? <div key="actions" class="files-actions settings-actions">
       {!compact ? <button class="btn small" disabled={busy} onClick={back}>Back to the files</button> : null}
-      {route.value.view === "composer" && folder === repo.value ? <button class="btn small" onClick={() => addContext({path:selectedPath,type:"file"})}>+ Task</button> : null}
+      {route.value.view === "composer" && !activeChatContext.value && folder === repo.value ? <button class="btn small" onClick={() => addContext({path:selectedPath,type:"file"})}>+ Task</button> : null}
       <button class="btn small ghost" onClick={() => {sideDraft.value=`About ${selectedPath}: `;setSideChat(null);openSide("chat");}}><Icon name="chat" />Ask about this file</button>
     </div> : null}
     {readOnly ? <section aria-label="Read-only file preview"><h3 class="file-title" title={readOnly.path}>{readOnly.path}</h3><p class="help">Read-only · {fmtSize(readOnly.size)}</p><details><summary>Preview details</summary><p class="help">{readOnly.reason}</p></details>{readOnly.binary ? <p>This is a binary file.</p> : <pre class="file-view" tabIndex={0}>{readOnly.text?.split("\n").slice(0,5000).join("\n")}</pre>}{readOnly.truncated || (readOnly.text?.split("\n").length ?? 0) > 5000 ? <p class="help">Showing a bounded preview; the rest of the file is omitted.</p> : null}</section> : null}

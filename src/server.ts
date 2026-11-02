@@ -139,6 +139,12 @@ import { AcpConnections, validateAcpConnection } from "./acp-connections.js";
 import { teamToolBridge } from "./team-tools.js";
 import { teamEvaluationStore, buildTeamEvaluation, assessTeamRollout } from "./team-evaluation.js";
 import type { Run, RunEvent, RunSummary, SideTurn, StartRunInput } from "./engine.js";
+import { CliTeamsService } from "./cli-teams/service.js";
+import { startCliTeamsTransport } from "./cli-teams/transport.js";
+import { TaskConversations } from "./conversational/service.js";
+import { handleTaskConversations } from "./conversational/api.js";
+import { Conversations } from "./conversational/chats.js";
+import { handleConversations } from "./conversational/chat-api.js";
 
 // One server per CODEFLOW_HOME (waits for one that is still shutting down).
 const releaseLock = await acquireLock().catch((err: Error) => {
@@ -919,6 +925,7 @@ async function buildStartInput(body: Record<string, any>): Promise<StartRunInput
 }
 
 async function validatedStartInput(body: Record<string, any>): Promise<StartRunInput> {
+  if (body.cliTeam !== undefined || body.cliTeamExecutionId !== undefined || ["cli-team", "task-prepare"].includes(body.pattern)) throw new HttpError(400, "Conversational teams start through an accepted proposal");
   if (body.taskExecution !== undefined || body.teamTurns !== undefined || body.deferred !== undefined || body.teamRerun !== undefined || body.coordination !== undefined || body.projectTeam !== undefined || body.beforeDispatch !== undefined || body.requireProjectRepo !== undefined) throw new HttpError(400, "Launch identities and selective rerun seeds are assigned by the server");
   if (body.projectSelection !== undefined && body.projectSelection !== "explicit") throw new HttpError(400, "Unknown project selection mode");
   if (body.projectSelection === "explicit" && (!projects.available || typeof body.project !== "string" || !projects.get(body.project))) throw new HttpError(409, "Choose an available project before starting");
@@ -1730,6 +1737,19 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     await attempt(async () => assertImproveEnvironment());
   }
   await attempt(() => fileAccess.ownerGate(req, url, parts));
+  if (parts[1] === "chats") {
+    if (via !== "local") throw new HttpError(403, "Use the owner app on this computer for chats");
+    if (!taskConversationsReady) throw new HttpError(503, "Chat storage is unavailable; existing workflows remain available");
+    if (req.method !== "GET") { auth.claimable = false; manager.noteActivity(); }
+    return trackPolicyPreparation(() => handleConversations(req, res, url, parts, conversations));
+  }
+  if (parts[1] === "task-conversations") {
+    if (via !== "local") throw new HttpError(403, "Use the owner app on this computer for conversational tasks");
+    if (!taskConversationsReady) throw new HttpError(503, "Task conversation storage is unavailable; existing workflows remain available");
+    if (req.method !== "GET") { auth.claimable = false; manager.noteActivity(); }
+    const handle = () => handleTaskConversations(req, res, url, parts, taskConversations);
+    return req.method !== "GET" || ["source", "models"].includes(parts[2] ?? "") || parts[3] === "source" ? trackPolicyPreparation(handle) : handle();
+  }
   if (parts[1] === "ml") {
     if (via !== "local") throw new HttpError(403, "Use the owner app on the project computer for model training");
     if (!mlReady) throw new HttpError(503, "ML storage is unavailable; repair its private records before continuing");
@@ -2973,6 +2993,19 @@ function listener(via: Via) {
   };
 }
 
+const cliTeams = new CliTeamsService(manager);
+const taskConversations = new TaskConversations(manager, cliTeams, async (project, selected) => {
+  const canonical = await repoRoot(selected);
+  if (canonical !== selected || !projects.get(project)?.repos.includes(canonical)) throw new HttpError(409, "Choose an available project and one of its repositories");
+  assertPolicyExecution(await fileAccess.execution(canonical), "Conversational tasks");
+  if (!projects.get(project)?.repos.includes(canonical)) throw new HttpError(409, "Project membership changed");
+}, trackPolicyPreparation);
+const conversations = new Conversations(manager, taskConversations, taskConversations.authorize, trackPolicyPreparation);
+let taskConversationsReady = false;
+const cliTransport = await cliTeams.load().then(() => startCliTeamsTransport(cliTeams)).catch(error => { logError("CLI teams unavailable; repair private control storage and restart", error); return undefined; });
+await taskConversations.load().then(() => { taskConversationsReady = !!cliTransport; }).catch(error => logError("Task conversations unavailable; repair private storage and restart", error));
+await conversations.load().catch(error => { taskConversationsReady = false; logError("Chat storage unavailable; repair private storage and restart", error); });
+const stopChatWatch = conversations.watch();
 const server = createServer({ maxHeaderSize: MAX_HEADER_SIZE }, listener("local")).listen(PORT, HOST, async () => {
   const agents = fileAccess.hasRestrictions() ? [] : await trackPolicyPreparation(() => agentAvailability());
   const runs = manager.list();
@@ -3137,7 +3170,9 @@ async function stop(reason: string, code = 0) {
   for (const controller of improvingControllers) controller.abort();
   await filteredTasks.close().catch((err) => logError("Filtered task shutdown failed; inspect its durable unknown receipt before retrying", err));
   await ml.close().catch((err) => logError("Training controller shutdown failed; admitted jobs remain on their workers", err));
+  await stopChatWatch();
   await manager.shutdown().catch((err) => logError("Shutdown failed", err));
+  await cliTransport?.close().catch((err) => logError("CLI bridge shutdown failed", err));
   await teamToolBridge.close().catch(() => undefined);
   await automationsSaved;
   await notifications.stop();

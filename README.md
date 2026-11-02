@@ -21,22 +21,22 @@
 Run Code Flow locally and open it in your browser with one command:
 
 ```bash
-npx --yes --package=https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.8/midhunxavier-code-flow-0.1.0-preview.8.tgz codeflow
+npx --yes --package=https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.9/midhunxavier-code-flow-0.1.0-preview.9.tgz codeflow
 ```
 
 Requires **Node.js 22.13+**, **Git 2.38+**, and at least one supported CLI: `claude`, `codex` or `agy`, installed and signed in. Works on macOS, Linux and Windows through **WSL2**. Keep the terminal open while you work; press **Ctrl+C** to stop.
 
-Prefer a macOS app? Download **0.1.0-preview.8** for your Mac:
+Prefer a macOS app? Download **0.1.0-preview.9** for your Mac:
 
 | Apple Silicon (M1 or later) | Intel |
 | --- | --- |
-| [Download Apple Silicon DMG](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.8/code-flow-0.1.0-preview.8-macos-arm64-unnotarized.dmg) | [Download Intel DMG](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.8/code-flow-0.1.0-preview.8-macos-x64-unnotarized.dmg) |
+| [Download Apple Silicon DMG](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.9/code-flow-0.1.0-preview.9-macos-arm64-unnotarized.dmg) | [Download Intel DMG](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.9/code-flow-0.1.0-preview.9-macos-x64-unnotarized.dmg) |
 
 Requires **macOS 13+**. Open the DMG, drag **Code Flow** to **Applications**, then open it in its own desktop window. Closing the window keeps agents running; use **Code Flow → Quit** to stop the app. Node is bundled; Git, a signed-in agent CLI and Chrome or Edge for the shared browser are still required. These DMGs are **unnotarized preview builds** and macOS may block them; use npm if blocked.
 
-[Preview release notes and checksums](https://github.com/midhunxavier/code-flow/releases/tag/v0.1.0-preview.8) · [Installation and first-run guide](docs/getting-started.md)
+[Preview release notes and checksums](https://github.com/midhunxavier/code-flow/releases/tag/v0.1.0-preview.9) · [Installation and first-run guide](docs/getting-started.md)
 
-Download the **Windows desktop preview using WSL2**: [x64 ZIP](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.8/code-flow-0.1.0-preview.8-windows-x64-unsigned.zip) · [ARM64 ZIP](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.8/code-flow-0.1.0-preview.8-windows-arm64-unsigned.zip). Extract the entire ZIP and open **Code Flow.exe**.
+Download the **Windows desktop preview using WSL2**: [x64 ZIP](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.9/code-flow-0.1.0-preview.9-windows-x64-unsigned.zip) · [ARM64 ZIP](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.9/code-flow-0.1.0-preview.9-windows-arm64-unsigned.zip). Extract the entire ZIP and open **Code Flow.exe**.
 It bundles Node.js and runs the backend in your Linux distribution, reusing the Git and
 agent CLI installations and logins there. Docker Desktop is not required. See the
 [Windows desktop guide](docs/windows-desktop.md) for setup and validation status. The portable ZIP is unsigned.
@@ -54,14 +54,18 @@ npm start
 
 Open [localhost:4317](http://localhost:4317), or use the owner link printed in the terminal if sign-in is required.
 
-1. Choose a repository and describe the outcome you want.
-2. Pick a workflow and its agents. Set a check command such as `npm test`.
-3. Select **Start run**. Review any plan or question that needs your input.
-4. Inspect the result and its evidence, then review, merge or open a pull request.
+1. Choose **New chat**, then select or create a project and its Git repository.
+2. Keep **Agent** selected for a normal agent conversation, or choose **Team** to discuss an approach with a lead.
+3. Describe your goal. In Team mode, review the task-specific participants, models, efforts, source, checks and limits, then select **Start task**.
+4. Continue in the same chat. Inspect the result and its evidence before applying changes or opening a pull request.
 
-Results live on branches such as `codeflow/<run>/build` in separate Git worktrees. The [first-run guide](docs/getting-started.md) explains context, permissions and model settings.
+Each chat can contain multiple independently approved tasks. Agent/Team and model changes apply to future messages; accepted executions retain their reviewed settings. **Task details** shows participation receipts, allowances, preserved worktrees and history. No preset or saved agent team is needed.
 
-**Inbox** and **Scheduling** are in the sidebar. **New run → Template library** groups task starters and saved configurations. Open **Repository tools** from a project; use **Settings → Connections** for remote work and sharing.
+Changes live in separate Git worktrees. The [chat guide](docs/conversational-tasks.md) explains guidance, queued messages, source handoffs and recovery. **Existing workflows** retains the workflow composer and its saved drafts, including remote, template and automation workflows.
+
+Prefer working in your Claude Code or Codex CLI conversation? The experimental [conversational teams integration](docs/cli-conversational-teams.md) creates a task-specific team and process through a project MCP connection. Run `codeflow init` in your target repository using an installed launcher; no preset or saved-team setup is required. Existing web workflows remain available.
+
+**Inbox** and **Scheduling** are in the sidebar. **Existing workflows → Template library** groups task starters and saved configurations. Open **Repository tools** from a project; use **Settings → Connections** for remote work and sharing.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/run-dark.png">
@@ -84,7 +88,7 @@ Results live on branches such as `codeflow/<run>/build` in separate Git worktree
 
 Code Flow shows checks, independent review and fail-to-pass evidence separately. Finished work can still be unverified; the [verification guide](docs/verification.md) explains the distinction. Publishing remains an explicit workflow action.
 
-## Choose how the agents work
+## Existing workflow choices
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/composer-dark.png">

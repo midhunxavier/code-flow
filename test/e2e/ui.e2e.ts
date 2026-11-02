@@ -118,7 +118,7 @@ after(async () => {
 });
 
 test("pick a repo, run a team, review, send a comment, and merge — all in the UI", async () => {
-  await page.goto(BASE);
+  await page.goto(`${BASE}/#/workflows`);
 
   // Choose the repository through the folder picker. The picker's opening listing (your home
   // folder) is held back until the path has been typed, then lands before Enter: it must not
@@ -233,7 +233,7 @@ test("archived runs still offer worktrees explicitly retained without cleanup", 
 });
 
 test("approve the plan from the UI: ask for changes, then approve", async () => {
-  await page.goto(BASE);
+  await page.goto(`${BASE}/#/workflows`);
   await openAdvanced(page);
   await page.getByLabel("Workflow", { exact: true }).selectOption("pipeline");
   await page.getByText("Let me approve the plan").click();
@@ -251,7 +251,7 @@ test("approve the plan from the UI: ask for changes, then approve", async () => 
 });
 
 test("a message sent while Codex is working reaches its running turn", async () => {
-  await page.goto(BASE);
+  await page.goto(`${BASE}/#/workflows`);
   await openAdvanced(page);
   await page.getByLabel("Workflow", { exact: true }).selectOption("pipeline");
   if (await page.locator(".composer-options").getAttribute("open") === null) await page.locator(".composer-options > summary").click();
@@ -280,7 +280,7 @@ test("a message sent while Codex is working reaches its running turn", async () 
 });
 
 test("start from a PR with a template: the council's findings are ranked, and posting takes your click", async () => {
-  await page.goto(BASE);
+  await page.goto(`${BASE}/#/workflows`);
   await openAdvanced(page); await page.getByRole("button", { name: "Browser task library", exact: true }).click();
   await page.getByRole("button", { name: /Review a PR as a council/ }).click();
   await page.locator(".gh-item", { hasText: "Add feature loop" }).click();
@@ -472,9 +472,9 @@ test("sign-in: the first browser claims code-flow; once agents have run, others 
   const other = await stranger.newPage();
   await other.goto(BASE);
   await other.getByText("Open code-flow from its link").waitFor();
-  await other.goto(`${BASE}/?token=${TOKEN}`);
+  await other.goto(`${BASE}/?token=${TOKEN}#/workflows`);
   await other.waitForURL(`${BASE}/`);
-  await other.getByRole("button", { name: "New run", exact: true }).waitFor();
+  await other.getByRole("button", { name: "New chat", exact: true }).waitFor();
   await stranger.close();
 });
 
@@ -493,7 +493,7 @@ test("insights and run search", async () => {
 });
 
 test("supervisor: the reviewer defaults to a different vendor than the supervisor", async () => {
-  await page.goto(BASE);
+  await page.goto(`${BASE}/#/workflows`);
   await openAdvanced(page);
   await page.getByLabel("Workflow", { exact: true }).selectOption("supervisor");
   if (await page.locator(".composer-options").getAttribute("open") === null) await page.locator(".composer-options > summary").click();
@@ -516,7 +516,7 @@ test("projects: onboarding made one; the sidebar lists runs under their projects
   const [own, ...others] = await projects();
   assert.deepEqual([own!.name, own!.repos, others.length], [root.split("/").pop(), [root], 0], "one project, named after the repo and holding it");
 
-  await page.goto(BASE);
+  await page.goto(`${BASE}/#/workflows`);
   const rail = page.locator(".rail");
   const group = (name: string) => rail.getByRole("group", { name, exact: true });
   await group(own!.name).locator(".run-item").first().waitFor(); // earlier runs, under the repo's project
@@ -528,7 +528,7 @@ test("projects: onboarding made one; the sidebar lists runs under their projects
   await page.getByRole("button", { name: "Create project" }).click();
   await page.getByRole("dialog", { name: "New project", exact: true }).waitFor({ state: "hidden" });
   assert.deepEqual((await projects()).find((project) => project.name === "E2E side")!.repos, [], "creating an empty project does not save the previous repository");
-  await page.locator(".page-head-actions").getByRole("button", { name: "New run", exact: true }).click();
+  await page.locator(".page-head-actions").getByRole("button", { name: "Existing workflows", exact: true }).click();
   await page.locator(".where .project-btn", { hasText: "E2E side" }).waitFor(); // explicitly open its draft
   await page.getByRole("button", { name: "Choose repository", exact: true }).first().click();
   await page.getByLabel("Folder path").fill(root);
@@ -572,7 +572,7 @@ test("projects: onboarding made one; the sidebar lists runs under their projects
   await page.locator("dialog[open]").waitFor({ state: "detached" });
 
   // Restore the original project draft for the tests that follow.
-  await page.goto(BASE);
+  await page.goto(`${BASE}/#/workflows`);
   await page.locator(".where .project-btn").click();
   await page.locator(".project-row").filter({ has: page.locator(".pr-main .pr-name", { hasText: own!.name }) }).locator(".pr-main").click();
   await page.waitForURL(url => url.hash === `#/project/${own!.id}/new`);
@@ -580,7 +580,7 @@ test("projects: onboarding made one; the sidebar lists runs under their projects
 });
 
 test("side panel: chat with one agent, read a file, run a command, keep a note", async () => {
-  await page.goto(BASE);
+  await page.goto(`${BASE}/#/workflows`);
   await page.locator(".repo-btn:not(.project-btn) .name", { hasText: repo.split("/").pop()! }).waitFor(); // the remembered repo is loaded after the page
   const toggle = page.getByRole("button", { name: "Side panel", exact: true });
   if ((await toggle.getAttribute("aria-pressed")) !== "true") await toggle.click();
@@ -652,7 +652,7 @@ test("side panel: follows the run you open, side chats in its worktree, its chan
   assert.ok(result, "the run has a result");
 
   // No repository picked in the composer: the panel works in the run's anyway.
-  await page.goto(`${BASE}/?token=${TOKEN}`); // signed in even when this test runs on its own
+  await page.goto(`${BASE}/?token=${TOKEN}#/workflows`); // signed in even when this test runs on its own
   const remembered = await page.evaluate(() => localStorage.getItem("repo"));
   await page.evaluate(() => localStorage.removeItem("repo"));
   // A new page, not a hash change: a hash-only goto can return on the old page's own history push,
@@ -930,7 +930,7 @@ test("simple composer supports reusable teams, parameterized tasks, readiness an
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
   const fresh = await context.newPage();
   try {
-    await fresh.goto(`${BASE}/?token=${TOKEN}`);
+    await fresh.goto(`${BASE}/?token=${TOKEN}#/workflows`);
     await fresh.getByRole("switch", { name: "AI team", exact: true }).waitFor();
     assert.equal(await fresh.locator(".advanced-controls").getAttribute("open"), null, "advanced controls start collapsed");
     assert.equal(await fresh.getByRole("button", { name: "Side panel", exact: true }).getAttribute("aria-pressed"), "false", "first run leaves room for the task");
@@ -1165,7 +1165,7 @@ test("Agent setup is inline and completed replies keep automatic workflow contro
       localStorage.setItem("roleSel", JSON.stringify({ solo: { agent: ["claude"] } }));
       localStorage.setItem("roleModels", JSON.stringify({ solo: { agent: { claude: { model: "opus", effort: "low" } } } }));
     }, { repository: repo, project: destination.id });
-    await fresh.goto(`${BASE}/?token=${TOKEN}`);
+    await fresh.goto(`${BASE}/?token=${TOKEN}#/workflows`);
     const box = fresh.locator(".taskbox");
     await box.getByRole("button", { name: /^Model:/ }).waitFor();
     assert.equal(await fresh.locator(".composer-options").getAttribute("open"), null);
@@ -1274,7 +1274,7 @@ test("chatbox saves templates to the chosen library and makes them immediately r
   const project = await fetch(`${BASE}/api/projects`, { method: "POST", headers: { ...bearer, "content-type": "application/json" }, body: JSON.stringify({ name: "Quick templates", repos: [repo] }) }).then((response) => response.json());
   try {
     await fresh.addInitScript(({ repository, id }) => { localStorage.setItem("repo", repository); localStorage.setItem("project", id); localStorage.setItem("composerProject", id); localStorage.setItem("pattern", "solo"); localStorage.setItem("sideOpen", "0"); }, { repository: repo, id: project.id });
-    await fresh.goto(`${BASE}/?token=${TOKEN}`);
+    await fresh.goto(`${BASE}/?token=${TOKEN}#/workflows`);
     const menu = fresh.locator(".taskbox").getByRole("button", { name: "Run actions", exact: true });
     await menu.click();
     assert.equal(await fresh.getByRole("menuitem", { name: "Save as template…", exact: true }).isDisabled(), true);
@@ -1344,7 +1344,7 @@ test("template picker edits and deletes within its library without changing the 
   const fresh = await browser.newPage({ viewport: { width: 390, height: 844 } });
   const project = await fetch(`${BASE}/api/projects`, { method: "POST", headers: { ...bearer, "content-type": "application/json" }, body: JSON.stringify({ name: "Manage templates", repos: [repo] }) }).then((response) => response.json());
   try {
-    await fresh.goto(`${BASE}/?token=${TOKEN}`);
+    await fresh.goto(`${BASE}/?token=${TOKEN}#/workflows`);
     await fresh.evaluate(({ repository, id }) => {
       localStorage.setItem("repo", repository); localStorage.setItem("project", id); localStorage.setItem("composerProject", id); localStorage.setItem("pattern", "solo"); localStorage.setItem("sideOpen", "0");
       const library = { schemaVersion: 1, presets: [], templates: [{ id: "template-one", name: "Review", pattern: "solo", task: "Review {{component}}", criteria: ["Test {{component}}"] }] };
@@ -1472,7 +1472,7 @@ test("bulk run selection archives and deletes with partial failure recovery", as
   }
   const fresh = await browser.newPage({ viewport: { width: 1267, height: 1042 } });
   try {
-    await fresh.goto(`${BASE}/?token=${TOKEN}`);
+    await fresh.goto(`${BASE}/?token=${TOKEN}#/workflows`);
     const rail = fresh.getByRole("navigation", { name: "Runs", exact: true });
     await rail.getByRole("searchbox").fill("Bulk history fixture");
     await rail.locator(".rail-run-row").filter({ hasText: "Bulk history fixture two" }).waitFor();
@@ -1523,7 +1523,7 @@ test("searchable model picker filters names and IDs, supports keyboard, resets a
       ];
       await route.fulfill({ response, json: catalogs });
     });
-    await fresh.goto(`${BASE}/?token=${TOKEN}`);
+    await fresh.goto(`${BASE}/?token=${TOKEN}#/workflows`);
     const trigger = fresh.locator(".taskbox").getByRole("button", { name: /^Model:/ });
     await trigger.click();
     const search = fresh.getByRole("combobox", { name: "Search Model", exact: true });
@@ -1592,7 +1592,7 @@ test("free model ordering, multiple provider models and dark team selectors", as
       catalogs.claude.models = [{ id: "paid", label: "Paid model" }, { id: "first-free", label: "First (free)" }, { id: "second-free", label: "Second (free)" }];
       await route.fulfill({ response, json: catalogs });
     });
-    await fresh.goto(`${BASE}/?token=${TOKEN}`);
+    await fresh.goto(`${BASE}/?token=${TOKEN}#/workflows`);
     await fresh.locator(".composer-options > summary").click();
     await fresh.locator(".advanced-controls > summary").click();
     const role = fresh.locator(".role").filter({ has: fresh.locator(".rl", { hasText: /^Reviewers/ }) });
@@ -1640,7 +1640,7 @@ test("Auto team selects all free models into a persistent bounded model pool", a
       catalog.models = [{ id: "paid", label: "Paid model" }, { id: "first-free", label: "First (free)" }, { id: "second-free", label: "Second (free)" }].map(model => ({ ...catalog.models[0], ...model }));
       await route.fulfill({ response, json: catalogs });
     });
-    await fresh.goto(`${BASE}/?token=${TOKEN}`);
+    await fresh.goto(`${BASE}/?token=${TOKEN}#/workflows`);
     await fresh.locator(".composer-options > summary").click();
     await fresh.locator(".advanced-controls > summary").click();
     const role = fresh.locator(".role").filter({ has: fresh.locator(".rl", { hasText: /^Available providers/ }) });

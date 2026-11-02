@@ -1,3 +1,5 @@
+import { activeChatContext } from "./chat-context.js";
+import { OpenTaskSetup } from "./task-conversation.js";
 import { EXECUTION_BUDGET_PRESETS, budgetDuration } from "../src/execution-budget.js";
 import { teamApprovalProblem } from "./task-team-choices.js";
 import { composerCheckMode, checkExplanation, type CheckMode } from "./composer-checks.js";
@@ -335,6 +337,7 @@ export function Composer() {
       {p?.id === "auto-team" ? <TeamRolloutNotice /> : null}
       <PolicyPauseNotice what="Agent runs are paused" />
       {journeyDraft.value?.repo === repo.value ? <p class="help">Recorded scenario: {journeyDraft.value.title} <button class="btn ghost small" onClick={() => { journeyDraft.value = undefined; }}>Detach scenario</button></p> : null}
+      <div class="task-setup-entry"><OpenTaskSetup /></div>
       <TaskBox onStart={start} improve={improve} controls={<>
         {single ? <TaskTeamControl config={taskTeam} lead={soloAgent && soloAgent !== "auto" ? soloAgent : "claude"} project={composerProject.value || undefined} toolApprovals={approvals.tools} disabledReason={remoteWorker || containerEnabled ? "Teams in this conversation require This computer without Docker isolation. Standalone workflows remain available in Advanced." : undefined} onChange={next => { setTaskTeam(next); if (next.enabled) { setRoles(p!.id, "agent", [next.coordinator]); setRoleModel(p!.id, "agent", next.coordinator, next.settings[next.coordinator] ?? {}); } }} /> : <button class="btn ghost" onClick={() => setPattern("solo")}>Back to Agent conversation</button>}
         {single ? taskTeam?.enabled && !remoteWorker && !containerEnabled ? null : <>
@@ -1390,7 +1393,7 @@ export function FileTree({ root, onOpen }: { root: string; onOpen: (path: string
     return () => clearTimeout(timer);
   }, [query, root]);
 
-  const inComposer = route.value.view === "composer" && root === repo.value;
+  const inComposer = route.value.view === "composer" && !activeChatContext.value && root === repo.value;
   return (
     <>
       <input type="search" class="field files-search" placeholder="Search files…" aria-label="Search files" autocomplete="off" spellcheck={false} value={query} onInput={(e) => setQuery(e.currentTarget.value)} />

@@ -11,10 +11,17 @@ import { soloPattern } from "./solo.js";
 import { autoTeamPattern } from "./auto-team.js";
 import { taskReviewPattern } from "./task-review.js";
 import { taskDraftPattern } from "./task-draft.js";
+import { cliTeamPattern } from "../cli-teams/pattern.js";
+
+import { preparationPattern } from "../conversational/preparation.js";
+import { chatLeadPattern } from "../conversational/chat-lead.js";
 
 export const patterns: Pattern[] = [autoTeamPattern, fixReviewPattern, pipelinePattern, loopPattern, racePattern, debatePattern, supervisorPattern, tddPattern, councilPattern, soloPattern];
 
 export function findPattern(id: string): Pattern | undefined {
+  if (id === chatLeadPattern.id) return chatLeadPattern;
+  if (id === preparationPattern.id) return preparationPattern;
+  if (id === cliTeamPattern.id) return cliTeamPattern;
   if (id === taskReviewPattern.id) return taskReviewPattern;
   if (id === taskDraftPattern.id) return taskDraftPattern;
   return patterns.find((p) => p.id === id);

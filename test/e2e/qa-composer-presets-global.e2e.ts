@@ -67,7 +67,7 @@ async function freshPage(seed: Record<string, string> = {}): Promise<{ context: 
   }, { models: SAVED_MODELS, seed });
   const page = await context.newPage();
   watch(page);
-  await page.goto(`${base}/?token=${TOKEN}`);
+  await page.goto(`${base}/?token=${TOKEN}#/workflows`);
   return { context, page };
 }
 async function newRun(page: Page, project: string) {

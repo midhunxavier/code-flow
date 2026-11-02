@@ -4,7 +4,9 @@ Status: proposed implementation specification. Created 2026-10-29.
 
 Code Flow coordinates agents from multiple providers inside the CLI conversation a user already uses. Providers perform the reasoning and work; Code Flow owns workflow transitions, durable assignments, revision tracking, verification, and recovery.
 
-This pack describes work to implement. New commands, MCP tools, graph schemas, and source modules below are proposed interfaces, not features already shipped. Source links identify existing foundations inspected while preparing this design. No application implementation is included in this folder.
+This pack records the original proposed design and its conversational UX revision. The initial implementation now lives in `src/cli-teams/`; the [current usage guide](../cli-conversational-teams.md) describes the available experimental commands. Older interfaces below are design history where they conflict with the redesign or current contracts. Native live compatibility and release evidence remain separate from fixture tests.
+
+The [conversational UX redesign](15-conversational-ux-redesign.md), proposed 2026-11-02, defines task-generated teams and workflows, no initial preset selection or saved-team management, and ten public MCP tools. Read it first for the intended user experience. The [implementation status](16-implementation-status.md) records contract differences and validation evidence. Documents 01–14 retain the earlier baseline where explicitly identified; unchanged execution and integrity requirements still apply.
 
 ## Read and build in this order
 
@@ -24,6 +26,8 @@ This pack describes work to implement. New commands, MCP tools, graph schemas, a
 | [12 — Test and release plan](12-test-and-release-plan.md) | Fault matrix, end-to-end scenarios, compatibility evidence, and release checklist |
 | [13 — Worked examples](13-worked-examples.md) | Complete proposed definitions and user/MCP interaction scenarios |
 | [14 — Decisions and risks](14-decisions-and-risks.md) | Architectural decisions, unresolved integration probes, and deferred scope |
+| [15 — Conversational UX redesign](15-conversational-ux-redesign.md) | Revised task-first experience, generated teams, ten-tool MCP surface, implementation phases, and UX acceptance scenarios |
+| [16 — Implementation status](16-implementation-status.md) | Implemented contracts, reconciliation of earlier specifications, test evidence, and remaining release gates |
 
 ## Core decisions
 
@@ -36,7 +40,7 @@ This pack describes work to implement. New commands, MCP tools, graph schemas, a
 7. Graph cycles exist only through bounded loop nodes. Agent-generated workflow definitions use the same validator as manually authored definitions.
 8. Artifacts and approvals refer to exact revisions and code snapshots.
 9. Reuse the existing provider adapters and persistence primitives. Do not create a second scheduler or store that competes with RunManager for the same run.
-10. Ship three workflows first: plan agreement, agreed-plan implementation, and review/fix of existing work. Multiple planners/reviewers are V1; concurrent builders in one run are not.
+10. Generate task-specific processes from registered operations. Plan agreement, implementation, and review remain acceptance coverage, without named user presets or saved-team setup. Multiple planners/reviewers are supported; concurrent builders in one run are not.
 
 ## Completion bar
 

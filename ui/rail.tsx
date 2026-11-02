@@ -5,6 +5,7 @@ import { dispatchLabel } from "../src/run-outcome.js";
 import { chatTaskId, chatUpdatedAt, groupChatTasks } from "../src/chat-family.js";
 import { peopleEnabled } from "./preferences.js";
 import { DesktopUpdateNotice } from "./desktop-updates.js";
+import { chats, watchChats, openChat } from "./chat-state.js";
 import { ComputerProjects, useComputerProjects } from "./connected-projects.js";
 import { useCallback, useEffect, useRef, useState } from "preact/hooks";
 import { inbox } from "./automations.js";
@@ -125,6 +126,7 @@ export function Rail() {
   const railRef = useCallback((element: HTMLElement | null) => drawer(element instanceof HTMLDialogElement ? element : null), [drawer]);
   const RailElement = phone ? "dialog" : "nav";
   useEffect(watchProjectCounts, []);
+  useEffect(watchChats, []);
   const computerProjects = useComputerProjects();
   const computers = computerProjects.directory;
   const currentComputer = computers && computers.computers.length > 1 ? computers.computers.find((computer) => computer.id === computers.currentComputerId) : undefined;
@@ -144,7 +146,8 @@ export function Rail() {
   const current = r.view === "run" || r.view === "review" ? r.id : undefined;
   /** The project whose page is open. */
   const page = r.view === "project" ? r.id : undefined;
-  const tasks = groupChatTasks([...runs.value.values()]);
+  const ownedRunIds = new Set(chats.value.flatMap(chat => chat.runIds));
+  const tasks = groupChatTasks([...runs.value.values()].filter(run => !ownedRunIds.has(run.id) && run.cliTeam?.taskConversation?.phase !== "preparation"));
   const families = new Map(tasks.map(task => [task.root.id, task]));
   const members = (run: RunSummary) => families.get(run.id)?.chats ?? [run];
   const approvalRunIds = new Set(pendingApprovals.value.filter(record => record.status === "pending").map(record => record.runId));
@@ -216,7 +219,7 @@ export function Rail() {
     railOpen.value = false;
   };
   const newRunIn = (p: Project) => {
-    void openComposer(p.id);
+    openChat(p.id);
   };
   const toggle = (key: string) =>
     setRailView({ collapsed: view.collapsed.includes(key) ? view.collapsed.filter((k) => k !== key) : [...view.collapsed, key] });
@@ -227,6 +230,7 @@ export function Rail() {
     const state = activity(r), archived = taskArchived(r), working = taskRunning(r);
     const active = currentTask === chatTaskId(r);
     const openTask = () => {
+      if (r.cliTeam?.taskConversation) { go({ view: "task", id: r.cliTeam.taskConversation.id }); return; }
       const chats = members(r).filter(chat => !chat.archived);
       const main = chats.filter(chat => chat.chatLink?.kind !== "side");
       const opened = main.filter(chat => !agentTabClosed(chat));
@@ -297,7 +301,7 @@ export function Rail() {
 
   const actions = (p: Project) => (
     <span class="proj-actions">
-      <button type="button" class="icon-btn" disabled={!draftsReady.value || composerLoading.value} aria-label={`New run in ${p.name}`} title={`New run in ${p.name}`} onClick={() => newRunIn(p)}>
+      <button type="button" class="icon-btn" disabled={!draftsReady.value || composerLoading.value} aria-label={`New chat in ${p.name}`} title={`New chat in ${p.name}`} onClick={() => newRunIn(p)}>
         <Icon name="plus" />
       </button>
       <button type="button" class="icon-btn" aria-label={`Edit ${p.name}`} title="Rename, repositories, delete" onClick={() => editProject(p.id)}>
@@ -306,8 +310,18 @@ export function Rail() {
     </span>
   );
 
+  const visibleChats = chats.value.filter(chat => {
+    if (f.q && !chat.title.toLowerCase().includes(f.q.toLowerCase())) return false;
+    if (f.pattern || f.agent || f.repo) return chat.runIds.some(id => { const run = runs.value.get(id); return !!run && matchesFilter(run); });
+    return f.status === "all" || f.status === "running" && ["Working", "Responding", "Paused"].includes(chat.status) || f.status === "attention" && ["Needs attention", "Approach ready"].includes(chat.status) || f.status === "passed" && chat.status === "Changes verified" || f.status === "failing" && ["Needs attention", "Stopped with partial work"].includes(chat.status);
+  });
+  const chatRow = (chat: typeof chats.value[number]) => <div class="rail-run-row" role="group" aria-label={chat.title} key={chat.id}><button type="button" data-chat={chat.id} class={`run-item ${r.view === "chat" && r.id === chat.id ? "active" : ""}`} aria-current={r.view === "chat" && r.id === chat.id ? "page" : undefined} title={`${chat.title}\n${chat.status}`} onClick={() => go({ view: "chat", id: chat.id })}><span class={`dot ${chat.status === "Working" || chat.status === "Responding" ? "running" : "done"}`} aria-hidden="true"/><span class="t">{chat.title}</span><span class="m">{short(chat.updatedAt)}</span><span class="chat-sidebar-status">{chat.status}</span></button></div>;
+
   /** One project: its header folds it; its runs, newest first, a few at a time. */
   const projectGroup = (g: Group) => {
+    const conversations = visibleChats.filter(chat => chat.project === g.project?.id);
+    const chatKey = `chats:${g.key}`, shownChats = long.has(chatKey) || filtering ? conversations : conversations.slice(0, PER_PROJECT);
+    const chatRows = <>{shownChats.map(chatRow)}{conversations.length > shownChats.length ? <button class="rail-more" onClick={() => setLong(new Set([...long, chatKey]))}>Show {conversations.length - shownChats.length} more chats</button> : null}</>;
     // A project with nothing to list is just its name: there's nothing to fold.
     if (!g.runs.length)
       return (
@@ -325,6 +339,7 @@ export function Rail() {
             )}
             {g.project ? actions(g.project) : null}
           </div>
+          {chatRows}
         </div>
       );
     const folded = view.collapsed.includes(g.key);
@@ -350,6 +365,7 @@ export function Rail() {
           </button>
           {g.project ? actions(g.project) : null}
         </div>
+        {!folded ? chatRows : null}
         {shown.map((r) => row(r, short(activityAt(r))))}
         {hidden > 0 ? (
           <button type="button" class="rail-more" onClick={() => setLong(new Set([...long, g.key]))}>
@@ -369,17 +385,19 @@ export function Rail() {
       ["Archived", list.filter(taskArchived)],
     ];
     const where = (r: RunSummary) => projectFor(r)?.name ?? baseName(r.repo);
-    body = sections.map(([title, items]) =>
-      items.length ? (
+    body = sections.map(([title, items]) => {
+      const matchingChats = visibleChats.filter(chat => title === "Running" ? ["Working", "Responding", "Paused"].includes(chat.status) : title === "Needs you" ? ["Needs attention", "Approach ready"].includes(chat.status) : title === "Recent" ? !["Working", "Responding", "Paused", "Needs attention", "Approach ready"].includes(chat.status) : false);
+      return items.length || matchingChats.length ? (
         <section key={title} aria-label={title}>
           <div class="rail-title rail-section">
             {title}
             {title === "Needs you" ? <span class="count">{items.length}</span> : null}
           </div>
+          {matchingChats.map(chatRow)}
           {items.map((r) => row(r, where(r)))}
         </section>
-      ) : null,
-    );
+      ) : null;
+    });
   } else {
     // Every project, the ones with the newest runs first; runs that need you are listed above them instead.
     const byKey = new Map<string, Group>(projects.value.map((p) => [p.id, { key: p.id, project: p, name: p.name, runs: [], last: 0, archived: 0 }]));
@@ -394,6 +412,7 @@ export function Rail() {
       if (taskArchived(r)) g.archived++;
     }
     for (const r of list) if (!taskNeedsYou(r) && !taskArchived(r)) groupOf(r).runs.push(r);
+    for (const chat of visibleChats) { const group = byKey.get(chat.project); if (group) group.last = Math.max(group.last, chat.updatedAt); }
     const groups = [...byKey.values()].sort((a, b) => b.last - a.last || a.name.localeCompare(b.name));
     body = (
       <>
@@ -422,7 +441,7 @@ export function Rail() {
             </button>
           </div>
           <ComputerProjects directory={computers} error={computerProjects.error} query={f.q}>
-            {groups.filter(g => g.runs.length || !filtering && g.project).map(projectGroup)}
+            {groups.filter(g => g.runs.length || visibleChats.some(chat => chat.project === g.project?.id) || !filtering && g.project).map(projectGroup)}
           </ComputerProjects>
         </section>
         {view.archived && list.some(taskArchived) ? <section aria-label="Archived runs"><div class="rail-title rail-section">Archived runs</div>{list.filter(taskArchived).map(run => row(run, projectFor(run)?.name ?? baseName(run.repo)))}</section> : null}
@@ -431,7 +450,7 @@ export function Rail() {
   }
   const hiddenSelected = selectedRuns.filter(run => !renderedRuns.has(run.id)).length;
   const filterRepos = [...new Set([...projects.value.flatMap(project => project.repos), ...all.map(run => run.repo), ...(f.repo ? [f.repo] : [])])].sort();
-  const empty = !list.length;
+  const empty = !list.length && !chats.value.length;
   const shownTasks = filtering ? list.length : all.length;
   return (
     <RailElement ref={railRef} inert={phone && !railOpen.value} aria-hidden={phone && !railOpen.value ? true : undefined} class={`rail ${railOpen.value ? "open" : ""}`} aria-label="Runs" onClick={event => {
@@ -455,8 +474,8 @@ export function Rail() {
           <Icon name="close" />
         </button>
       </div>
-      <button class="btn primary new-run" disabled={!draftsReady.value || composerLoading.value} aria-label="New run" title="New run (n)" onClick={() => void openComposer()}>
-        <Icon name="plus" /> <span>New run</span>
+      <button class="btn primary new-run" disabled={!draftsReady.value || composerLoading.value} aria-label="New chat" title="New chat (n)" onClick={() => openChat()}>
+        <Icon name="plus" /> <span>New chat</span>
       </button>
       <div class="rail-destinations" role="group" aria-label="Work navigation">
         <a class="nav-item" href="#/projects" title="Projects" aria-current={r.view === "projects" ? "page" : undefined}><Icon name="project" /><span class="nav-label">Projects</span></a>
@@ -470,7 +489,7 @@ export function Rail() {
           id="run-search"
           class="field"
           type="search"
-          placeholder="Search runs"
+          placeholder="Search chats and runs"
           aria-label="Search runs (press / to focus)"
           value={f.q}
           onInput={(e) => setRunFilter({ q: e.currentTarget.value })}
@@ -555,11 +574,11 @@ export function Rail() {
       ) : null}
       <div class="rail-list" id="run-navigation">
         {view.group === "status" ? <ComputerProjects directory={computers} error={computerProjects.error} query={f.q}>{body}</ComputerProjects> : body}
-        {empty ? <div class="rail-empty">{filtering ? "No runs match. Clear your search or filters to see more." : "Choose a project above, then select New run to start a task."}</div> : null}
+        {empty ? <div class="rail-empty">{filtering ? "No runs match. Clear your search or filters to see more." : "Choose a project, then select New chat to begin."}</div> : null}
       </div>
       <div class="rail-history" role="region" aria-label="Run history pages">
         {projectCountsError.value ? <span class="help" role="status">Complete history totals are unavailable. Counts show loaded items. <button class="btn small" onClick={() => void refreshProjectCounts().catch(() => {})}>Retry totals</button></span> : null}
-        <span class="help" role="status">{historyLoading.value ? "Searching history…" : historyTotal.value === null ? "Loading history…" : `${shownTasks} ${filtering ? "matching " : ""}task${shownTasks === 1 ? "" : "s"} loaded`}</span>
+        <span class="help" role="status">{historyLoading.value ? "Searching history…" : historyTotal.value === null ? "Loading history…" : `${chats.value.length ? `${chats.value.length} chat${chats.value.length === 1 ? "" : "s"} · ` : ""}${shownTasks} ${filtering ? "matching " : ""}task${shownTasks === 1 ? "" : "s"} loaded`}</span>
         {historyNextCursor.value ? <button type="button" class="btn small" disabled={historyLoading.value || historyLoadingMore.value} onClick={() => void loadOlderRuns()}>{historyLoadingMore.value ? "Loading…" : "Load older runs"}</button> : null}
         {attentionTruncated.value && historyNextCursor.value ? <span class="help" role="status">{attentionTotal.value} running or attention items at last refresh. Older attention is paged; use Load older runs to include more.</span> : null}
         {historyError.value ? <div class="help" role="alert">{historyError.value}<button class="btn small" disabled={historyLoading.value || historyLoadingMore.value} onClick={() => void retryHistory()}>Retry history</button></div> : null}

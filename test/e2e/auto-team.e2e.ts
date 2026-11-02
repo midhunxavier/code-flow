@@ -62,7 +62,7 @@ test("Agent is the fresh default and Advanced team workflows survive reload and 
   const context = await browser.newContext();
   const fresh = await context.newPage();
   try {
-    await fresh.goto(`${base}/?token=${token}`);
+    await fresh.goto(`${base}/?token=${token}#/workflows`);
     const team = fresh.getByRole("switch", { name: "AI team", exact: true });
     await team.waitFor();
     assert.equal(await team.getAttribute("aria-checked"), "false");
@@ -141,7 +141,7 @@ test("Resume budget can be extended before continuing saved work", { timeout: 60
 });
 
 test("Auto team approval, addressed question, distinct members, and verified coverage work in the UI", { timeout: 120_000 }, async () => {
-  await page.goto(`${base}/?token=${token}`);
+  await page.goto(`${base}/?token=${token}#/workflows`);
   await selectLegacyTeam(page);
   const approval = page.getByRole("checkbox", { name: /Let me approve the team and plan/ });
   assert.equal(await approval.isChecked(), true, "Auto plans start with approval enabled");
@@ -274,7 +274,7 @@ test("Auto team approval, addressed question, distinct members, and verified cov
   assert.equal(followup.baseRef, run.team!.verification!.head);
   await fetch(`${base}/api/runs/${followupId}/cancel`, { method: "POST", headers });
 
-  await page.goto(`${base}/?token=${token}`);
+  await page.goto(`${base}/?token=${token}#/workflows`);
   await selectLegacyTeam(page);
   await page.getByRole("checkbox", { name: /Let me approve the team and plan/ }).uncheck();
   await page.reload();

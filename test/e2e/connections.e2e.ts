@@ -199,8 +199,8 @@ test("owner stream sharing stays private across shared-account sign-in and uses 
   const created = await api("/api/accounts", { revision: state.revision, username: "stream-viewer", displayName: "Stream viewer", password: "a long stream boundary password", roles: { [projects[0].id]: "viewer" } });
   assert.ok(created.users?.some((user: { username: string }) => user.username === "stream-viewer"), created.error);
   const ownerPage = await context.newPage();
-  await ownerPage.goto(`${BASE}/?token=${TOKEN}`); await ownerPage.getByRole("button", { name: "New run", exact: true }).waitFor();
-  await streamsAre({ streams: 1, subscriptions: 3 }, "the owner watches its one private stream");
+  await ownerPage.goto(`${BASE}/?token=${TOKEN}`); await ownerPage.getByRole("button", { name: "New chat", exact: true }).waitFor();
+  await streamsAre({ streams: 1, subscriptions: 4 }, "the owner watches its one private stream");
   const before = await ownerPage.evaluate(async () => (await fetch("/api/auth/self")).json());
   assert.match(before.streamSharing.channelKey, /^[a-f0-9]{64}$/); assert.match(before.streamSharing.lockId, /^[a-f0-9]{32}$/);
   const locks = await ownerPage.evaluate(async () => (await navigator.locks.query()).held?.map((lock) => lock.name ?? "") ?? []);
@@ -225,14 +225,14 @@ test("owner stream sharing stays private across shared-account sign-in and uses 
   }, before.streamSharing.lockId);
 
   // Owner recovery creates a different private group. Public forged subscriptions cannot join it.
-  const recovered = await context.newPage(); await recovered.goto(`${BASE}/?token=${TOKEN}`); await recovered.getByRole("button", { name: "New run", exact: true }).waitFor();
+  const recovered = await context.newPage(); await recovered.goto(`${BASE}/?token=${TOKEN}`); await recovered.getByRole("button", { name: "New chat", exact: true }).waitFor();
   const after = await recovered.evaluate(async () => (await fetch("/api/auth/self")).json()); assert.notEqual(after.streamSharing.channelKey, before.streamSharing.channelKey); assert.notEqual(after.streamSharing.lockId, before.streamSharing.lockId);
-  await streamsAre({ streams: 1, subscriptions: 3 }, "a recovered owner group has no forged subscriber");
+  await streamsAre({ streams: 1, subscriptions: 4 }, "a recovered owner group has no forged subscriber");
   await sharedPage.evaluate(() => { for (const channel of (window as unknown as { publicChannels: BroadcastChannel[] }).publicChannels) channel.postMessage({ kind: "subs", window: "unprivileged", subs: [[71, "runs", undefined]] }); });
   // This round trip follows the forged messages and creates a real owner-feed update.
   const list = await api("/api/runs"); const run = Array.isArray(list) ? list[0] : list.runs[0]; assert.ok(run?.id);
   await api(`/api/runs/${run.id}/archive`, { archived: false });
-  await streamsAre({ streams: 1, subscriptions: 3 }, "public/lock-derived broker names cannot add subscriptions");
+  await streamsAre({ streams: 1, subscriptions: 4 }, "public/lock-derived broker names cannot add subscriptions");
   assert.deepEqual(await sharedPage.evaluate(() => (window as unknown as { received: unknown[] }).received), [], "a shared document receives no owner stream messages");
   await recovered.close(); await ownerPage.close(); await sharedPage.close(); await streamsAre({ streams: 0, subscriptions: 0 }, "every owner broker was released");
 });

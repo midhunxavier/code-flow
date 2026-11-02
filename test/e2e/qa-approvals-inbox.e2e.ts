@@ -195,7 +195,7 @@ test("the card leaves the New run composer's Send usable, and Hide folds it out 
   const run = await start(task, deep);
   const [record] = await until(() => pending(run.id), (records) => records.length === 1);
   assert.ok(record!.cwd!.length > 200, record!.cwd);
-  await openApp(page);
+  await openApp(page, "workflows");
   const card = page.getByRole("alert", { name: "Tool approval required" });
   const send = page.locator("button.task-start");
   await card.getByText(task, { exact: true }).waitFor();

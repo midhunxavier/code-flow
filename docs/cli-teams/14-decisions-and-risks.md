@@ -16,7 +16,7 @@ Status: proposed. [Index](README.md)
 | D08 | Human acceptance is distinct from agent verdicts | Preserve user intent and avoid approval spoofing through tool arguments |
 | D09 | One implementation writer per run in V1 | Keep workspace ownership and recovery understandable |
 | D10 | Unanimous required-reviewer agreement initially | Provide a clear, testable completion rule; preserve disagreement |
-| D11 | Saved definitions never carry execution authority | Sharing a team must not share credentials, permissions, or user acceptance |
+| D11 | Preferences and recorded definitions never carry execution authority | Initial CLI teams are generated per task; saved-team management is deferred; settings do not share credentials, permissions, or acceptance |
 | D12 | No automatic publishing/merging | Keep local collaboration scope separate from delivery actions |
 
 ## Integration risks and required resolution

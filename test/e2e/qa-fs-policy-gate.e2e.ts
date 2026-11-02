@@ -81,7 +81,7 @@ before(async () => {
   // Waiting for browser body-consumption events can retain cached/streaming reads indefinitely.
   page.on("response", response => finished(response.request()));
   page.on("pageerror", (error) => errors.push(error.message));
-  await page.goto(`${base}/?token=${token}`);
+  await page.goto(`${base}/?token=${token}#/workflows`);
 });
 after(async () => {
   await browser?.close();
