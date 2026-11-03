@@ -20,10 +20,11 @@ let lineMode = false, sleepMs = "20";
 const expectedNetwork: string[] = [];
 const consoleErrors: string[] = [], pageErrors: string[] = [], serverLog: string[] = [];
 type Restart = { started: number; ready?: number; pid: number | undefined };
-type NetworkRequest = { page: number; url: string; method: string; started: number; responseAt?: number; failedAt?: number; status?: number; body?: unknown; failure?: string; deliberateOffline?: boolean };
+type NetworkRequest = { page: number; url: string; method: string; started: number; responseAt?: number; failedAt?: number; status?: number; body?: unknown; failure?: string; deliberateOffline?: boolean; navigationAt?: number };
 type ConsoleError = { page: number; url: string; at: number; text: string };
 const restarts: Restart[] = [], requests: NetworkRequest[] = [], observedConsole: ConsoleError[] = [], exceptions: string[] = [];
 const requestRecords = new WeakMap<Request, NetworkRequest>(), responseReads = new Set<Promise<void>>();
+const pageIds = new WeakMap<Page, number>();
 let nextPage = 0;
 const now = () => performance.now();
 const transportError = /^net::ERR_(FAILED|INCOMPLETE_CHUNKED_ENCODING|CONNECTION_REFUSED|CONNECTION_RESET|EMPTY_RESPONSE|INTERNET_DISCONNECTED|SOCKET_NOT_CONNECTED)$/;
@@ -31,6 +32,9 @@ function expectedFailure(request: NetworkRequest, windows: Restart[]) {
   const url = new URL(request.url);
   if (url.origin !== base || !url.pathname.startsWith("/api/")) return false;
   if (request.status === undefined && request.deliberateOffline && request.method === "POST" && url.pathname === "/api/notes" && request.failure === "net::ERR_INTERNET_DISCONNECTED") return true;
+  // Only a stream open before a test-initiated document navigation/close can
+  // report this cancellation. Unexplained stream errors and other API aborts still fail.
+  if (request.status === undefined && request.method === "GET" && url.pathname === "/api/stream" && request.failure === "net::ERR_ABORTED" && request.navigationAt !== undefined && request.started <= request.navigationAt && request.failedAt !== undefined && request.failedAt >= request.navigationAt && request.failedAt - request.navigationAt <= 5000) return true;
   const ended = request.responseAt ?? request.failedAt;
   if (!Number.isFinite(request.started) || ended === undefined || !Number.isFinite(ended) || ended < request.started || !windows.some(window => request.started < (window.ready ?? Infinity) && ended >= window.started)) return false;
   if (request.status !== undefined) {
@@ -99,13 +103,20 @@ async function stop() {
   const exited = new Promise<void>(resolve => server.once("exit", () => resolve()));
   const timer = setTimeout(() => server.kill("SIGKILL"), 5000); server.kill("SIGTERM"); await exited; clearTimeout(timer);
 }
-async function open(hash: string) { await page.goto(`${base}/?token=${token}${hash}`); }
+function navigating(p: Page) {
+  const id = pageIds.get(p), at = now();
+  for (const request of requests) if (request.page === id && request.method === "GET" && new URL(request.url).pathname === "/api/stream" && !request.failure) request.navigationAt = at;
+}
+async function navigate(url: string) { navigating(page); await page.goto(url); }
+async function reload() { navigating(page); await page.reload(); }
+async function open(hash: string) { await navigate(`${base}/?token=${token}${hash}`); }
 async function settled(id: string) {
   for (let i = 0; i < 300; i++) { const result = (await api(`/api/runs/${id}`)).body; if (result.status !== "running") return result; await new Promise(resolve => setTimeout(resolve, 100)); }
   throw new Error(`Run did not finish: ${id}`);
 }
 function watch(p: Page) {
   const pageId = ++nextPage;
+  pageIds.set(p, pageId);
   p.on("request", request => {
     if (!request.url().startsWith(base + "/api/")) return;
     const record = { page: pageId, url: request.url(), method: request.method(), started: now() };
@@ -160,7 +171,7 @@ before(async () => {
   const context = await browser.newContext({ viewport: { width: 1440, height: 1100 }, colorScheme: "light" }); page = await context.newPage(); watch(page);
 });
 after(async () => {
-  try { await browser?.close(); } finally {
+  try { for (const context of browser?.contexts() ?? []) for (const p of context.pages()) navigating(p); await browser?.close(); } finally {
     await stop(); await finishNetworkAudit(); writeFileSync(join(evidence, "server.log"), serverLog.join(""));
     writeFileSync(join(evidence, "browser.json"), JSON.stringify({ pageErrors, consoleErrors, expectedNetwork, restarts, requests, observedConsole }, null, 2));
     rmSync(home, { recursive: true, force: true });
@@ -178,7 +189,7 @@ test("offline notes recover against their original revision and both conflict ch
   });
   await field.fill("offline laptop draft"); await page.getByText(/Couldn't save:/).waitFor();
   assert.match(await page.locator(".notes-foot").innerText(), /running\? Your draft/); assert.doesNotMatch(await page.locator(".notes-foot").innerText(), /\?\./);
-  await page.close(); await context.unroute("**/api/notes");
+  navigating(page); await page.close(); await context.unroute("**/api/notes");
   assert.equal((await api("/api/notes", { key: alpha.repos[0], text: "PHONE EDIT", expectedRevision: original.revision })).status, 200);
   page = await context.newPage(); watch(page); await panel();
   await page.getByRole("alert").filter({ hasText: "This note changed" }).waitFor();
@@ -240,7 +251,7 @@ test("interactive terminal follows theme and survives restart visibly until expl
       const matches = !!terminal && getComputedStyle(terminal).color === getComputedStyle(probe).color; probe.remove(); return matches;
     }), "terminal theme matches stylesheet");
   }
-  await page.evaluate(() => localStorage.removeItem("theme")); await page.reload(); await pane.locator(".xterm-rows").waitFor();
+  await page.evaluate(() => localStorage.removeItem("theme")); await reload(); await pane.locator(".xterm-rows").waitFor();
   for (const colorScheme of ["dark", "light"] as const) {
     await page.emulateMedia({ colorScheme });
     await until(() => page.evaluate(() => {
@@ -263,11 +274,11 @@ test("interactive terminal follows theme and survives restart visibly until expl
   await stop(); await start(); await until(async () => /This terminal is gone/.test(await pane.innerText()), "gone without reload"); await pause(8000);
   assert.equal(navigations, 0); assert.match(await pane.innerText(), /BEFORE_NO_RELOAD/); assert.equal((await api("/api/shell")).body.length, 0);
   page.off("framenavigated", navigated); await page.unroute("**/api/auth/self");
-  await page.reload(); await pane.getByRole("button", { name: "Restart", exact: true }).waitFor(); await pause(500);
+  await reload(); await pane.getByRole("button", { name: "Restart", exact: true }).waitFor(); await pause(500);
 });
 
 test("line terminals isolate project history and split panes keep each other's commands", async () => {
-  await page.goto("about:blank"); await stop(); lineMode = true; await start();
+  await navigate("about:blank"); await stop(); lineMode = true; await start();
   await panel(alpha, "Terminal"); const pane = page.locator("#side-pane-terminal");
   const old = (await api("/api/shell")).body; assert.equal(old.length, 0);
   await pane.getByRole("button", { name: "Restart", exact: true }).click(); await pane.getByRole("textbox", { name: "Command", exact: true }).waitFor();
@@ -281,12 +292,12 @@ test("line terminals isolate project history and split panes keep each other's c
   await pane.getByRole("button", { name: "Split", exact: true }).click(); const commands = pane.getByRole("textbox", { name: "Command", exact: true }); await commands.nth(1).waitFor();
   await commands.nth(0).fill("echo TOP_COMMAND"); await commands.nth(0).press("Enter"); await commands.nth(1).press("ArrowUp"); assert.equal(await commands.nth(1).inputValue(), "echo TOP_COMMAND");
   await commands.nth(1).fill("echo BOTTOM_COMMAND"); await commands.nth(1).press("Enter"); await commands.nth(0).press("ArrowUp"); assert.equal(await commands.nth(0).inputValue(), "echo BOTTOM_COMMAND");
-  await page.reload(); await commands.nth(0).waitFor(); await commands.nth(0).press("ArrowUp"); assert.equal(await commands.nth(0).inputValue(), "echo BOTTOM_COMMAND");
+  await reload(); await commands.nth(0).waitFor(); await commands.nth(0).press("ArrowUp"); assert.equal(await commands.nth(0).inputValue(), "echo BOTTOM_COMMAND");
   await page.screenshot({ path: join(evidence, "split-history.png"), fullPage: true });
 });
 
 test("side chat has an immediate Stop and Resume, and Ask names retained changes in the conversation", async () => {
-  await page.goto("about:blank"); await stop(); sleepMs = "3000"; await start(); await panel(alpha, "Chat");
+  await navigate("about:blank"); await stop(); sleepMs = "3000"; await start(); await panel(alpha, "Chat");
   const pane = page.locator("#side-pane-chat"); await pane.getByRole("textbox", { name: "Message", exact: true }).fill("Say hello from this scratch project"); await pane.getByRole("textbox", { name: "Message", exact: true }).press("Enter");
   await pane.getByRole("button", { name: "Stop", exact: true }).click(); await pane.getByRole("button", { name: /Resume/ }).waitFor(); assert.equal(await page.getByRole("dialog").count(), 0);
   await pane.getByRole("button", { name: /Resume/ }).click(); await pane.getByRole("button", { name: "Stop", exact: true }).waitFor(); await until(async () => await pane.getByRole("button", { name: "Stop", exact: true }).count() === 0, "resumed chat completes", 30000);
@@ -297,7 +308,7 @@ test("side chat has an immediate Stop and Resume, and Ask names retained changes
   const done = await settled(run.id); const turn = done.followUps.at(-1); assert.match(turn.warning, /sneaky\.txt/); assert.equal(done.verdict, run.verdict); assert.ok(readFileSync(join(wt.path, "sneaky.txt"), "utf8"));
   await open(`#/side/chat/run:${run.id}`); await page.getByRole("button", { name: /Ask test/ }).first().click(); await page.getByRole("alert").filter({ hasText: /sneaky\.txt/ }).waitFor();
   await page.screenshot({ path: join(evidence, "ask-warning.png"), fullPage: true });
-  await page.reload(); await page.getByRole("alert").filter({ hasText: /sneaky\.txt/ }).waitFor();
+  await reload(); await page.getByRole("alert").filter({ hasText: /sneaky\.txt/ }).waitFor();
   await finishNetworkAudit();
   assert.deepEqual(pageErrors, []); assert.deepEqual(consoleErrors, []);
 });
@@ -341,4 +352,9 @@ test("restart audit rejects normal-operation errors and keeps exact shutdown bou
   }
   assert.equal(expectedFailure({ ...late, url: base + "/api/notes", method: "POST", failure: "net::ERR_INTERNET_DISCONNECTED", deliberateOffline: true }, []), true);
   assert.equal(expectedFailure({ ...late, url: base + "/api/notes", method: "POST", failure: "net::ERR_INTERNET_DISCONNECTED" }, []), false);
+  const navigated: NetworkRequest = { page: 1, url: base + "/api/stream?subs=[]", method: "GET", started: 1, navigationAt: 10, failedAt: 11, failure: "net::ERR_ABORTED" };
+  assert.deepEqual(networkAudit([navigated], [], []).consoleErrors, []);
+  for (const request of [{ ...navigated, navigationAt: undefined }, { ...navigated, navigationAt: 0 }, { ...navigated, failedAt: 9 }, { ...navigated, failedAt: 5011 }, { ...navigated, url: base + "/api/notes" }, { ...navigated, method: "POST" }, { ...navigated, failure: "net::ERR_CONNECTION_RESET" }]) {
+    assert.throws(() => assert.deepEqual(networkAudit([request], [], []).consoleErrors, []), "only a stream cancelled by its document navigation is expected");
+  }
 });

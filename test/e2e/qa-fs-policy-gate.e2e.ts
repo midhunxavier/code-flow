@@ -49,7 +49,12 @@ async function closeTerminal(close: import("playwright-core").Locator) {
   const confirm = page.locator("dialog.confirmation-dialog").getByRole("button", { name: "Stop and close", exact: true });
   if (await confirm.waitFor({ timeout: 1_000 }).then(() => true, () => false)) await confirm.click();
 }
-async function newRun(id: string) { await waitForApplicationReads(); await page.goto(`${base}/#/project/${id}/new`); await page.getByLabel("Task", { exact: true }).waitFor({ timeout: 15_000 }); await waitForApplicationReads(); }
+async function newRun(id: string, reload = true) {
+  await waitForApplicationReads();
+  if (reload) await page.goto(`${base}/#/project/${id}/new`);
+  else await page.evaluate(hash => { location.hash = hash; }, `/project/${id}/new`);
+  await page.getByLabel("Task", { exact: true }).waitFor({ timeout: 15_000 }); await waitForApplicationReads();
+}
 async function policyPanel(id: string) {
   await waitForApplicationReads(); await page.goto(`${base}/#/settings/projects`); await page.getByLabel("Project", { exact: true }).selectOption(id);
   const panel = page.getByRole("region", { name: "Project filesystem policy", exact: true });
@@ -261,7 +266,9 @@ test("closing terminals through the policy panel keeps them closed after restric
   await panel.getByRole("button", { name: "Remove restrictions", exact: true }).click();
   await page.getByRole("dialog", { name: "Remove restrictions?", exact: true }).getByRole("button", { name: "Remove restrictions", exact: true }).click();
   await panel.getByText(/Filesystem policy revision .* applied\./).waitFor();
-  await newRun(projectA);
+  // The app already observed this in-app change. Navigate normally before the
+  // deliberate persistence reload, rather than cancelling boot reads with two reloads.
+  await newRun(projectA, false);
   await page.reload();
   await sidePanel("terminal");
   await page.waitForTimeout(3500);
