@@ -28,6 +28,11 @@ export async function captureSource(repo: GitCwd, source: SourceSnapshot["source
     const index = await checked(repo, ["rev-parse", "--path-format=absolute", "--git-path", "index"]);
     try { await copyFile(index, env.GIT_INDEX_FILE); }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; await checked(repo, ["read-tree", base], env); }
+    // Rebuild the scratch index from its staged tree so copied stat-cache
+    // entries cannot hide a same-size edit made in the same timestamp interval.
+    const stagedTree = await checked(repo, ["write-tree"], env);
+    await rm(env.GIT_INDEX_FILE, { force: true });
+    await checked(repo, ["read-tree", stagedTree], env);
     await checked(repo, ["add", "-u", "--", "."], env);
     if (untracked.length) await checked(repo, ["--literal-pathspecs", "add", "--", ...untracked], env);
     const tree = await checked(repo, ["write-tree"], env);

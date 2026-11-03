@@ -89,7 +89,7 @@ The composer remains visible while you read. Enter sends; Shift + Enter adds a l
 
 Initial Team preparation supports local Git repositories with Claude/Codex managed participants. Other providers remain available in Agent mode; remote and container execution use **Existing workflows**.
 
-## Using existing workflows
+## Your first run
 
 Open **Existing workflows** from a chat or project to use the workflow composer, saved drafts and templates:
 
