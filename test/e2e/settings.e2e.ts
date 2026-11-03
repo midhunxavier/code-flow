@@ -299,7 +299,7 @@ test("operational tools are direct destinations and old Settings links still wor
   await page.setViewportSize({ width: 1440, height: 1000 });
   for (const [path, name] of [["workspace", "Repository tools"], ["automations", "Scheduling"], ["inbox", "Inbox"], ["insights", "Insights"]] as const) {
     await page.goto(`${base}/#/${path}`);
-    await page.getByRole("heading", { name, exact: true }).first().waitFor();
+    await page.getByRole("heading", { name: path === "automations" ? "What would you like to automate?" : name, exact: true }).first().waitFor();
     assert.ok(page.url().endsWith(`#/${path}`));
     assert.equal(await page.getByRole("navigation", { name: "Settings categories" }).count(), 0);
     await page.getByRole("button", { name: /^Open command palette/ }).click();

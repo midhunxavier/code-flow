@@ -915,12 +915,12 @@ test("projects: the Automations page and its inbox follow the project you're in;
   await api("/api/remote", { enabled: false });
 
   // Schedules are a separate destination but keep the same project scope.
-  await page.goto(`${BASE}/#/automations`);
+  await page.goto(`${BASE}/#/settings/automations`);
   await page.locator(".auto-row b", { hasText: "E2E side hook" }).waitFor();
   assert.deepEqual(await page.locator(".auto-row b").allInnerTexts(), ["E2E side hook"]);
   // Scheduling exposes its scope in the shared project picker. Legacy records
   // without a project have their own notice and do not imply another project.
-  await page.locator(".scheduling-hub .project-btn").click();
+  await page.locator(".automation-management .project-btn").click();
   await page.locator(".project-row", { hasText: "All projects" }).locator(".pr-main").click();
   await page.locator(".project-btn", { hasText: "All projects" }).waitFor();
   assert.equal(await page.locator(".auto-row").count(), total);
@@ -944,7 +944,7 @@ test("simple composer supports reusable teams, parameterized tasks, readiness an
 
     await fresh.goto(`${BASE}/#/run/%`);
     await fresh.getByRole("heading", { name: "This link is invalid" }).waitFor();
-    await fresh.getByRole("button", { name: "Open new run", exact: true }).click();
+    await fresh.getByRole("alert").getByRole("button", { name: "New chat", exact: true }).click();
     await fresh.keyboard.press("Meta+k");
     const commands = fresh.getByRole("combobox", { name: "Find a command, project or run" });
     await commands.fill("choose repository");

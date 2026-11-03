@@ -166,9 +166,9 @@ test("browser recording excludes passwords, saves a regression scenario and surv
   assert.match(await page.locator(".taskbox textarea").inputValue(), /Greeting scenario/);
   await page.getByText(/Recorded scenario: Greeting scenario/).waitFor();
   await page.goto(base + `/#/project/${result.project}/settings`);
-  await page.locator(".scenario-library > summary").click();
+  await page.locator(".project-advanced > summary").click(); await page.locator(".scenario-library > summary").click();
   await page.getByRole("heading", { name: "Greeting scenario", exact: true }).waitFor();
-  await page.reload(); await page.locator(".scenario-library > summary").click();
+  await page.reload(); await page.locator(".project-advanced > summary").click(); await page.locator(".scenario-library > summary").click();
   await page.getByRole("heading", { name: "Greeting scenario", exact: true }).waitFor();
 });
 test("scenario replay binds to a finished result preview and rejects invalid targets", { timeout: 45_000 }, async () => {
@@ -216,6 +216,7 @@ test("alternative runs keep a pinned base and distinct instructions; comparison 
   }
   await page.screenshot({ path: join(root, "output/playwright/experience-alternatives-mobile.png"), fullPage: true });
   await page.goto(base + `/#/project/${result.project}/settings`);
+  await page.locator(".project-advanced > summary").click();
   await page.getByRole("region", { name: "Useful outcomes", exact: true }).waitFor();
   await page.getByRole("link", { name: "Manage project missions", exact: true }).click();
   await page.getByRole("region", { name: "Project briefing", exact: true }).waitFor();

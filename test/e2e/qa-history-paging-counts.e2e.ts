@@ -96,7 +96,10 @@ test("archived totals cover unloaded pages and Retry history repeats its failed 
   await until(() => rail.getByRole("button", { name: /^Show archived runs(?: \d+)?$/ }).innerText(), text => /12$/.test(text));
   const cursors: string[] = []; let fail = true;
   await page.route("**/api/runs?**", async route => { const cursor = new URL(route.request().url()).searchParams.get("cursor"); if (cursor) { cursors.push(cursor); if (fail) { fail = false; injectingFailure = true; await route.fulfill({ status: 500, json: { error: "Fixture older page failure" } }); return; } } await route.continue(); });
-  await rail.getByRole("button", { name: "Load older runs", exact: true }).click(); await rail.getByText("Fixture older page failure", { exact: false }).waitFor();
+  // Initial stream hydration can start a refresh between actionability and click.
+  // Wait for an actual older-page request before asserting its injected failure.
+  await until(async () => { if (!cursors.length) { const load = rail.getByRole("button", { name: "Load older runs", exact: true }); if (await load.isEnabled()) await load.click(); } return cursors.length; }, count => count > 0);
+  await rail.getByText("Fixture older page failure", { exact: false }).waitFor();
   const retried = page.waitForResponse(response => new URL(response.url()).pathname === "/api/runs" && new URL(response.url()).searchParams.get("cursor") === cursors[0], { timeout: 15000 });
   await rail.getByRole("button", { name: "Retry history", exact: true }).click();
   const response = await retried; assert.equal(response.status(), 200); assert.equal((await response.json()).nextCursor ?? null, null, "the retry reaches the end of this fixture's history");
