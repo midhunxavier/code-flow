@@ -1381,7 +1381,13 @@ function WatchPanel({ run, branch, steps, worktree }: { run: RunSummary; branch:
 function useTargetBranches(run: RunSummary): { branches: string[]; initial: string } {
   const [info, setInfo] = useState<RepoInfo | null>(null);
   useEffect(() => {
-    api<RepoInfo>(`/api/branches?repo=${encodeURIComponent(run.repo)}`).then(setInfo, () => setInfo(null));
+    let current = true;
+    setInfo(null);
+    if (run.repo) api<RepoInfo>(`/api/branches?repo=${encodeURIComponent(run.repo)}`).then(
+      value => { if (current) setInfo(value); },
+      () => { if (current) setInfo(null); },
+    );
+    return () => { current = false; };
   }, [run.repo]);
   const branches = (info?.branches ?? []).filter((b) => b.kind === "local" && !run.worktrees.some((tree) => tree.branch === b.name)).map((b) => b.name);
   const initial = run.baseLabel !== "HEAD" && branches.includes(run.baseLabel) ? run.baseLabel : info?.current ?? branches[0] ?? "";
