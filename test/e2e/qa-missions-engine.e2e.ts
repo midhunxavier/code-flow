@@ -141,8 +141,8 @@ test("a blocked owner task shows its actual no-change cause and links to the evi
 
 test("project deletion warns about its mission, archives it and lets the repository start a new mission", async () => {
   const old = await team();
-  await page.getByRole("button", { name: "Project actions", exact: true }).click();
-  await page.getByRole("menuitem", { name: "Edit project", exact: true }).click();
+  await page.getByRole("navigation", { name: "Project navigation" }).getByRole("link", { name: "Project settings", exact: true }).click();
+  await page.getByRole("button", { name: "Edit project", exact: true }).click();
   await page.getByRole("button", { name: "Delete project", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Delete this project?", exact: true });
   await dialog.getByText(/Engine QA mission.*will be archived/).waitFor();

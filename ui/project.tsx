@@ -27,12 +27,19 @@ import { hashFor, type ProjectSection, type RepositoryTool } from "./navigation.
 import { computerLabel, executionHost } from "./ssh-projects.js";
 import { addRepositoryToProject } from "./projects.js";
 import { WorkbenchView } from "./workbench.js";
-import { Menu, MenuItem } from "./panel-bits.js";
 import type { RunSummary } from "./types.js";
 
 export function ProjectView({ id, section, repository, tool, kind }: { id: string; section?: ProjectSection; repository?: string; tool?: RepositoryTool; kind?: string }) {
   const [contextOpen, setContextOpen] = useState(false);
   const features = useProjectFeatures(id);
+  const navigation = useRef<HTMLElement>(null);
+  useEffect(() => {
+    const nav = navigation.current, active = nav?.querySelector<HTMLElement>('[aria-current="page"]');
+    if (!nav || !active) return;
+    const bounds = nav.getBoundingClientRect(), tab = active.getBoundingClientRect();
+    if (tab.left < bounds.left) nav.scrollLeft += tab.left - bounds.left;
+    else if (tab.right > bounds.right) nav.scrollLeft += tab.right - bounds.right;
+  }, [id, section, projects.value, features.ml]);
   const [savedTask, setSavedTask] = useState("");
   useEffect(() => { let live = true; setSavedTask(""); if (draftsReady.value) void savedDraftTask(id).then(value => { if (live) setSavedTask(value); }, () => {}); return () => { live = false; }; }, [id, draftsReady.value, composerProject.value]);
   const draftTask = composerProject.value === id ? task.value : savedTask;
@@ -53,13 +60,13 @@ export function ProjectView({ id, section, repository, tool, kind }: { id: strin
   return <div class="project-page">
     <header class="page-head"><div class="page-head-text pp-title"><h1>{p.name}</h1><p class="project-computer-label"><Icon name="terminal" />Computer: {computerLabel()}</p></div>
       <div class="page-head-actions"><ProjectShare key={id} project={p} /><button class="btn primary" disabled={!draftsReady.value || composerLoading.value} onClick={() => openChat(id)}><Icon name="compose" />New chat</button>
-        <Menu label="Project actions" icon="more">{close => <>
-          <MenuItem onClick={() => { close(); editProject(id); }}>Edit project</MenuItem>
-          <MenuItem onClick={() => { close(); route.value = { view: "project", id, section: "settings" }; }}>Project settings</MenuItem>
-        </>}</Menu>
       </div>
     </header>
-    <nav class="project-tabs" aria-label="Project navigation">{([[undefined, "Overview"], ["runs", "History"], ["repositories", "Repositories"], ["connections", "Connections"]] as const).map(([value, label]) => <a class={`btn ${section === value ? "primary" : ""}`} href={destination(value)} aria-current={section === value ? "page" : undefined}>{label}</a>)}{features.board || section === "board" ? <a class="btn" href={destination("board")} aria-current={section === "board" ? "page" : undefined}>Board</a> : null}{features.automation || section === "automation" ? <a class="btn" href={destination("automation")} aria-current={section === "automation" ? "page" : undefined}>Automation</a> : null}{features.ml || section === "ml" ? <a class="btn" href={destination("ml")} aria-current={section === "ml" ? "page" : undefined}>ML</a> : null}<a class="btn" href={destination("settings")} aria-current={section === "settings" ? "page" : undefined}>Project settings</a><Menu label="More project tools" icon="more" trigger={<span>More</span>} class="project-more">{close => <>{(["board", "people", "automation", "ml"] as const).filter(value => value !== "ml" || features.ml || section === "ml").map(value => <MenuItem onClick={() => { close(); if (value === "board" || value === "people") location.assign(destination(value)); else route.value = { view: "project", id, section: value }; }}>{({ board: "Board", people: "People", automation: "Automation", ml: "ML" })[value]}</MenuItem>)}</>}</Menu></nav>
+    <nav ref={navigation} class="project-tabs" aria-label="Project navigation">
+      {([[undefined, "Overview"], ["runs", "History"], ["repositories", "Repositories"], ["connections", "Connections"], ["board", "Board"], ["people", "People"], ["automation", "Automation"], ["ml", "ML"], ["settings", "Project settings"]] as const)
+        .filter(([value]) => value !== "ml" || features.ml || section === "ml")
+        .map(([value, label]) => <a key={value ?? "overview"} class={`btn ${section === value ? "primary" : ""}`} href={destination(value)} aria-current={section === value ? "page" : undefined}>{label}</a>)}
+    </nav>
     {!section ? <>
       <section class="project-start pp-card" aria-label="Start work"><h2>{draftTask.trim() ? "Continue your draft" : "What would you like to work on?"}</h2><p>{p.repos.length ? "Describe the outcome, choose your agents, and review the result here." : "Add a repository to start a run in this project."}</p>
         {draftTask.trim() ? <p class="draft-preview">{draftTask.slice(0, 240)}</p> : null}

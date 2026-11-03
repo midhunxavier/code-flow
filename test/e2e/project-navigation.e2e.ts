@@ -239,8 +239,7 @@ test("project Board and People use the owning server despite colliding linked pr
     await page.goto(base + `/?team=${remote}#/team/project/${projectA}`);
     await page.getByRole("button", { name: /Remote colliding task/ }).waitFor();
     await page.goto(base + `/?team=${remote}#/project/${projectA}`);
-    await page.getByRole("button", { name: /^More project tools:/ }).click();
-    await page.getByRole("menuitem", { name: "Board", exact: true }).click();
+    await page.getByRole("navigation", { name: "Project navigation" }).getByRole("link", { name: "Board", exact: true }).click();
     await page.getByRole("button", { name: /Local board task/ }).waitFor();
     assert.equal(new URL(page.url()).searchParams.get("team"), "local");
     assert.equal(await page.getByRole("button", { name: /Remote colliding task/ }).count(), 0);
@@ -307,11 +306,13 @@ test("new project destinations support narrow screens, themes and keyboard navig
       assert.equal(await page.locator(".project-page").evaluate(element => element.scrollWidth <= element.clientWidth + 1), true, section);
       await page.screenshot({ path: join(root, `output/playwright/project-${section.replace("/", "-")}-${colorScheme}.png`), fullPage: true });
     }
-    const more = page.getByRole("button", { name: /^More project tools:/ }); await more.focus(); await page.keyboard.press("Enter");
-    await page.getByRole("menuitem", { name: "People", exact: true }).waitFor({ timeout: 10_000 });
-    await page.waitForFunction(() => document.activeElement?.getAttribute("role") === "menuitem", undefined, { timeout: 10_000 }); await page.keyboard.press("Escape");
-    await page.getByRole("menu", { name: "More project tools", exact: true }).waitFor({ state: "hidden", timeout: 10_000 });
-    assert.equal(await more.evaluate(element => document.activeElement === element), true);
+    const navigation = page.getByRole("navigation", { name: "Project navigation" });
+    const settings = navigation.getByRole("link", { name: "Project settings", exact: true });
+    await settings.focus(); await page.keyboard.press("Enter");
+    await page.getByRole("button", { name: "Edit project", exact: true }).waitFor();
+    assert.equal(await settings.getAttribute("aria-current"), "page");
+    const navBounds = (await navigation.boundingBox())!, tabBounds = (await settings.boundingBox())!;
+    assert.ok(tabBounds.x >= navBounds.x - 1 && tabBounds.x + tabBounds.width <= navBounds.x + navBounds.width + 1, "the selected tab remains visible on narrow screens");
   }
   assert.deepEqual(errors, []);
 });

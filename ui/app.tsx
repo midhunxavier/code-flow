@@ -343,6 +343,7 @@ function Crumbs() {
     );
   } else {
     const page = r.view === "chat" ? r.id === "new" ? "New chat" : "Chat" : r.view === "composer" ? !r.legacy && r.project === undefined && !onPhone && ownerOnLocalListener.value && executionHost.value.kind === "local" ? "New chat" : "Saved workflows" : r.view === "projects" ? "Projects" : "";
+    if (page === "New chat" || page === "Chat") return <span class="spacer" aria-hidden="true" />;
     trail = page ? (
       <span class="crumb here" aria-current="page">
         {page}

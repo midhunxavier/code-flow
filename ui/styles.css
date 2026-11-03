@@ -3851,7 +3851,8 @@ dialog.picker.team-build-dialog { max-height: min(780px, calc(100dvh - 32px)); }
 
 /* Project navigation keeps location and the current work visible together. */
 .project-tabs, .project-history-controls, .project-repository-head, .project-welcome-actions, .project-destinations { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 16px 0 24px; }
-.project-tabs { border-bottom: 1px solid var(--border); padding-bottom: 16px; }
+.project-tabs { flex-wrap: nowrap; overflow-x: auto; max-width: 100%; border-bottom: 1px solid var(--border); padding: 2px 2px 16px; scrollbar-width: thin; }
+.project-tabs .btn { flex: 0 0 auto; white-space: nowrap; }
 .project-tabs a[aria-current="page"] { box-shadow: inset 0 -2px var(--accent-ink); }
 .project-computer-label { display: flex; align-items: center; gap: 7px; color: var(--muted); }
 .project-page > .pp-card, .project-page > section { margin-bottom: 18px; }
@@ -3875,12 +3876,10 @@ dialog.picker.team-build-dialog { max-height: min(780px, calc(100dvh - 32px)); }
 @media (max-width: 600px) {
   .project-start { padding: 18px; }
   .project-tabs { gap: 8px; }
-  .project-tabs .btn { flex: 1 1 auto; }
   .project-history-controls { align-items: stretch; }
   .project-welcome-actions { align-items: stretch; flex-direction: column; }
 }
 
-.project-more > .icon-btn { width: auto; padding-inline: .65rem; font-size: 13px; }
 .project-page > .team-page { padding-inline: 0; }
 @media (max-width: 600px) {
   /* Leave room for connection failures as well as the computer and navigation controls. */
