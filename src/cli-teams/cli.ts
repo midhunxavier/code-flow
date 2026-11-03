@@ -1,3 +1,5 @@
+import { formatStatus } from "./presentation.js";
+import { catalog } from "./providers.js";
 import { readFile, mkdir, writeFile, rename, lstat } from "node:fs/promises";
 import { createInterface } from "node:readline/promises";
 import { resolve, join, dirname } from "node:path";
@@ -12,12 +14,12 @@ import { fail, validatePreferences, type Provider } from "./model.js";
 const usage = `Code Flow conversational teams
 
   codeflow init [--providers claude,codex] [--dry-run]
-  codeflow doctor
+  codeflow doctor [--catalog] [--json]
   codeflow mcp [--project-root PATH]
   codeflow approve PROPOSAL_ID --revision NUMBER
   codeflow open PROPOSAL_OR_RUN_ID
-  codeflow status RUN_ID
-  codeflow result RUN_ID
+  codeflow status [RUN_ID] [--json]
+  codeflow result RUN_ID [--json]
   codeflow pause|resume|cancel RUN_ID
   codeflow attach RUN_ID --connection CONNECTION_ID
   codeflow preferences [--provider claude|codex --model ID --effort VALUE] [--preferred-provider claude|codex] [--personal]
@@ -34,6 +36,9 @@ export async function launchCli(args = process.argv.slice(2)) {
   const command = args.shift();
   if (!command || args.includes("--help")) { console.log(usage); return; }
   const option = (key: string) => { const index = args.indexOf(key); if (index < 0) return undefined; const value = args[index + 1]; if (!value || value.startsWith("--")) throw new Error(`Choose a value for ${key}`); return value; };
+  const json = args.includes("--json");
+  const valuedOptions = new Set(["--project-root", "--providers", "--revision", "--connection", "--provider", "--model", "--effort", "--preferred-provider"]);
+  const positional = args.filter((a, i) => !a.startsWith("--") && !valuedOptions.has(args[i - 1] ?? ""));
   const root = resolve(option("--project-root") ?? process.cwd());
   const providers = async () => {
     const requested = option("--providers");
@@ -41,13 +46,26 @@ export async function launchCli(args = process.argv.slice(2)) {
     const installed = await Promise.all((["claude", "codex"] as const).map(async p => await getAdapter(p).available() ? p : undefined));
     const chosen = installed.filter((p): p is Provider => !!p); if (!chosen.length) throw new Error("Install Claude Code or Codex, or explicitly choose --providers before connecting it later"); return chosen;
   };
-  if (command === "init") { console.log(JSON.stringify(await installProject(root, await providers(), args.includes("--dry-run")), null, 2)); return; }
-  if (command === "uninstall") { if (!args.includes("--project")) throw new Error("Use uninstall --project to remove only this project's managed entries"); console.log(JSON.stringify(await uninstallProject(root), null, 2)); return; }
+  if (command === "init") {
+    const result = await installProject(root, await providers(), args.includes("--dry-run"));
+    console.log(json ? JSON.stringify(result, null, 2) : `${result.dryRun ? "Planned setup" : "Code Flow is configured"} for ${result.repo}\n${result.changes.length ? result.changes.map(c => `  ${c.path}`).join("\n") : "No configuration changes needed."}\nReconnect Claude or Codex to load the Code Flow tools and skill. No agent calls were made.`); return;
+  }
+  if (command === "uninstall") { if (!args.includes("--project")) throw new Error("Use uninstall --project to remove only this project's managed entries"); const result = await uninstallProject(root); console.log(json ? JSON.stringify(result, null, 2) : [`Removed ${result.removed.length} managed file(s); preserved ${result.preserved.length}.`, result.message].join("\n")); return; }
   if (command === "mcp") { await serveMcp(root); return; }
   if (command === "doctor") {
     const repo = await repoRoot(root);
-    const installed = await Promise.all((["claude", "codex"] as const).map(async provider => ({ provider, installed: await getAdapter(provider).available(), authentication: "not tested; use catalog discovery after signing in" })));
-    console.log(JSON.stringify({ repo, providers: installed, node: process.version, configuration: await installProject(root, installed.filter(p => p.installed).map(p => p.provider), true), notes: ["Project trust and MCP consent belong to the native CLI.", "No inference was performed. Run approval uses native MCP form elicitation when the host declares support; terminal confirmation remains a fallback.", "Current-session model/effort are unverified; pinned roles use managed workers."] }, null, 2)); return;
+    const installed = await Promise.all((["claude", "codex"] as const).map(async provider => {
+      const available = await getAdapter(provider).available();
+      let models: { state: string; count?: number; issue?: string } | undefined;
+      if (available && args.includes("--catalog")) {
+        try { const c = await catalog(provider, true); models = { state: "available", count: c.models.length }; }
+        catch (error) { models = { state: "unavailable", issue: error instanceof Error ? error.message : "Catalog unavailable" }; }
+      }
+      return { provider, installed: available, authentication: "Not verified; catalog discovery is not an execution or permission probe.", catalog: models };
+    }));
+    const configuration = await installProject(root, installed.filter(p => p.installed).map(p => p.provider), true);
+    const result = { repo, providers: installed, node: process.version, pendingFiles: configuration.changes.map(c => c.path), notes: ["No agent inference was performed.", "Project trust, authentication, and tool permissions must be verified in the native CLI."] };
+    console.log(json ? JSON.stringify(result, null, 2) : [`Project: ${repo}`, ...installed.map(p => `${p.provider}: ${p.installed ? "CLI found" : "not installed; install this provider before assigning work"}${p.catalog ? ` · catalog ${p.catalog.state}${p.catalog.count !== undefined ? ` (${p.catalog.count} models)` : ""}${p.catalog.issue ? `: ${p.catalog.issue}` : ""}` : ""}`), configuration.changes.length ? "Setup needs updating: run codeflow init, then reconnect your CLI." : "Project setup is current.", "Authentication and execution permissions are not verified. Open each provider CLI and sign in before starting work.", "No agent calls were made. Use --catalog to check model discovery."].join("\n")); return;
   }
   if (command === "preferences") {
     const file = args.includes("--personal") ? join(CODEFLOW_HOME, "cli-teams-preferences.json") : join(await repoRoot(root), ".codeflow", "cli-teams.json");
@@ -64,7 +82,7 @@ export async function launchCli(args = process.argv.slice(2)) {
       await mkdir(dirname(file), { recursive: true }); const temp = `${file}.${process.pid}.tmp`;
       await writeFile(temp, JSON.stringify({ schemaVersion: 1, preferences: prefs }, null, 2) + "\n", { mode: 0o600, flag: "wx" }); await rename(temp, file);
     }
-    console.log(JSON.stringify({ file, preferences: prefs, note: "Settings are validated against the actual catalog when a proposal is created." }, null, 2)); return;
+    console.log(json ? JSON.stringify({ file, preferences: prefs, note: "Settings are validated against the actual catalog when a proposal is created." }, null, 2) : [`Preferences: ${file}`, `Preferred provider: ${prefs.preferredProvider ?? "not set"}`, ...Object.entries(prefs.providers ?? {}).map(([provider, value]) => `${provider}: ${value.model ?? "default model"} · ${value.effort ?? "default"} effort`), "Settings are validated when preparing an approach."].join("\n")); return;
   }
   if (!CLI_COMMANDS.has(command)) throw new Error(usage);
   if ((command === "approve" || command === "attach") && (!process.stdin.isTTY || !process.stdout.isTTY)) fail("acceptance_required", "Use your own interactive terminal; unattended approval is unavailable");
@@ -98,15 +116,20 @@ export async function launchCli(args = process.argv.slice(2)) {
       } finally { prompt.close(); }
       return;
     }
-    const runId = args[0]; if (!runId) throw new Error("Choose a run ID");
-    if (["pause", "resume", "cancel"].includes(command)) { console.log(JSON.stringify(await client.call("codeflow_control_run", { operationId: `${command}-${Date.now()}`, runId, action: command }), null, 2)); return; }
+    const runId = positional[0];
+    if (command === "status" && !runId) {
+      const recent = await client.call("codeflow_list_runs", { unfinishedOnly: args.includes("--unfinished") });
+      console.log(json ? JSON.stringify(recent, null, 2) : recent.runs.length ? recent.runs.map((r: any) => `${r.task} · ${r.outcome ?? r.status}\n  codeflow status ${r.runId}`).join("\n") : "No Code Flow tasks found in this repository."); return;
+    }
+    if (!runId) throw new Error("Choose a run ID");
+    if (["pause", "resume", "cancel"].includes(command)) { const result = await client.call("codeflow_control_run", { operationId: `${command}-${Date.now()}`, runId, action: command }); console.log(json ? JSON.stringify(result, null, 2) : result.message ?? `${command}: ${result.accepted ? "requested" : "not changed"}${result.pending ? "; waiting for the active step" : ""}`); return; }
     const run = await client.call("codeflow_get_run", { runId });
-    if (command === "status") { console.log(JSON.stringify(run, null, 2)); return; }
-    const result = run.artifacts.filter((a: any) => a.kind === "result").at(-1);
-    if (!result) { console.log(JSON.stringify({ status: run.status, error: run.error, message: "No final result yet. Use status to inspect preserved partial artifacts." }, null, 2)); return; }
-    let cursor: number | undefined = 0;
-    do { const page: { body: string; nextCursor?: number } = await client.call("codeflow_get_artifact", { runId, artifactId: result.id, sha256: result.sha256, cursor }); process.stdout.write(page.body); cursor = page.nextCursor; } while (cursor !== undefined);
-    process.stdout.write("\n");
+    if (command === "status") { console.log(json ? JSON.stringify(run, null, 2) : formatStatus(run)); return; }
+    const result = run.result ?? run.artifacts.filter((a: any) => a.kind === "result").at(-1);
+    if (!result) { console.log(json ? JSON.stringify({ ...run, message: "No final result yet." }, null, 2) : `${formatStatus(run)}\nNo final result yet.`); return; }
+    let cursor: number | undefined = 0, body = "";
+    do { const page: { body: string; nextCursor?: number } = await client.call("codeflow_get_artifact", { runId, artifactId: result.id, sha256: result.sha256, cursor }); if (json) body += page.body; else process.stdout.write(page.body); cursor = page.nextCursor; } while (cursor !== undefined);
+    if (json) console.log(JSON.stringify({ ...run, body }, null, 2)); else process.stdout.write("\n");
   } finally { await client.close(); }
 }
 

@@ -22,7 +22,7 @@ async function descriptor(): Promise<RuntimeDescriptor | undefined> {
   } catch { return; }
 }
 /** Existing owner first; acquireLock in server.ts arbitrates simultaneous bootstrap. */
-export async function connectRuntime(projectRoot: string, start = true) {
+export async function connectRuntime(projectRoot: string, start = true, kind: "mcp" | "terminal" = "terminal") {
   let runtime = await descriptor();
   if (!runtime && start) {
     const probe = createServer();
@@ -38,7 +38,7 @@ export async function connectRuntime(projectRoot: string, start = true) {
     if (!runtime) throw new Error("Code Flow could not start or the running owner has no CLI bridge. Restart the owner with this version; for a source checkout run npm run build first.");
   }
   if (!runtime) throw new Error("No compatible Code Flow owner is running");
-  const connection = await runtimeRequest(runtime, "/connect", { projectRoot });
+  const connection = await runtimeRequest(runtime, "/connect", { projectRoot, kind });
   return { runtime, ...connection, call: (name: string, args: unknown) => {
     // The caller may be remote even when the shared owner has a local display.
     const remote = process.env.CODEFLOW_NO_BROWSER === "1" || !!process.env.SSH_CONNECTION || !!process.env.CODEFLOW_SSH_HOST;

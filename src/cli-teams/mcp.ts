@@ -2,9 +2,10 @@ import { CLI_TOOLS } from "./tools.js";
 import { CliTeamError } from "./model.js";
 import { connectRuntime, runtimeRequest } from "./client.js";
 import { randomBytes } from "node:crypto";
+import { CLI_MESSAGE_BYTES } from "./limits.js";
 
 export async function serveMcp(projectRoot: string) {
-  const client = await connectRuntime(projectRoot);
+  const client = await connectRuntime(projectRoot, true, "mcp");
   const heartbeat = setInterval(() => { void runtimeRequest(client.runtime, "/heartbeat", {}, client.token).catch(() => undefined); }, 10000).unref();
   const prompts = new Map<string, { parent: string | number; resolve: (value: any) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
   const cancelPrompts = (message: string, parent?: string | number) => {
@@ -73,14 +74,18 @@ export async function serveMcp(projectRoot: string) {
       send({ jsonrpc: "2.0", id: m.id, result });
     } finally { inflight--; }
   };
-  let buffered = Buffer.alloc(0), discard = false;
+  let buffered = Buffer.alloc(0);
   try {
     for await (const chunk of process.stdin) {
       buffered = Buffer.concat([buffered, Buffer.from(chunk)]);
       let end: number;
       while ((end = buffered.indexOf(10)) >= 0) {
         const line = buffered.subarray(0, end); buffered = buffered.subarray(end + 1);
-        if (discard || line.length > 64 * 1024) { rpcError(null, -32600, "Request exceeds 64 KiB"); discard = false; continue; }
+        if (line.length > CLI_MESSAGE_BYTES) {
+          // Valid complete envelopes retain their request ID even when over the wire limit.
+          let id: unknown = null; try { const m = JSON.parse(line.toString()); if (typeof m.id === "string" || typeof m.id === "number") id = m.id; } catch {}
+          rpcError(id, -32600, "Request exceeds 8 MiB; reduce attachments or proposal size"); continue;
+        }
         if (!line.toString().trim()) continue;
         let message: unknown; try { message = JSON.parse(line.toString()); } catch { rpcError(null, -32700, "Parse error"); continue; }
         const m = message as any;
@@ -96,7 +101,11 @@ export async function serveMcp(projectRoot: string) {
         if (m?.jsonrpc === "2.0" && m.method === "notifications/cancelled") { if (typeof m.params?.requestId === "string" || typeof m.params?.requestId === "number") cancelPrompts("Start request cancelled; no approval was recorded", m.params.requestId); continue; }
         void request(message).catch(e => rpcError(m?.id ?? null, -32603, e instanceof Error ? e.message : "MCP request failed"));
       }
-      if (buffered.length > 64 * 1024) { buffered = Buffer.alloc(0); discard = true; }
+      if (buffered.length > CLI_MESSAGE_BYTES) {
+        // An unbounded/incomplete frame cannot be safely parsed for an ID. Close the
+        // transport so the host rejects pending calls instead of waiting for a timeout.
+        rpcError(null, -32600, "Request exceeds 8 MiB; reconnect and send a smaller request"); stop(); return;
+      }
     }
     cancelPrompts("Host disconnected; no approval was recorded");
     while (inflight) await new Promise(resolve => setTimeout(resolve, 25));

@@ -1,3 +1,4 @@
+import { runEvidence } from "./evidence.js";
 import { captureAgentSource } from "../conversational/agent-source.js";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { readFile, realpath, mkdir, open, chmod, lstat, stat } from "node:fs/promises";
@@ -18,7 +19,7 @@ import { recoverCliAccounting } from "./accounting.js";
 
 export interface Proposal { origin?: "cli"; chatId?: string; project?: string; taskId?: string; id: string; repo: string; revision: number; hash: string; task: string; context: { chatId?: string; projectId?: string; sourceRunId?: string; attachments?: { name: string; data: string }[]; notes?: string; continueRunId?: string; untracked?: string[]; artifacts?: { runId: string; artifactId: string; sha256: string }[] }; definition: Definition; source: SourceSnapshot; accepted?: { hash: string; at: number }; runId?: string; hostConnection: string }
 export interface ConversationScope { chatId?: string; repo: string; project?: string; taskId?: string; surface?: "web"; id?: string }
-export interface Connection extends ConversationScope { id: string; expiresAt: number; active: boolean }
+export interface Connection extends ConversationScope { id: string; expiresAt: number; active: boolean; kind: "mcp" | "terminal" }
 const META = "cli-teams-control";
 const id = () => randomBytes(16).toString("hex");
 export const tokenMatches = (a: string, b: string) => { const left = Buffer.from(a), right = Buffer.from(b); return left.length === right.length && timingSafeEqual(left, right); };
@@ -102,11 +103,11 @@ export class CliTeamsService {
       set.add(finish); ctx.signal.addEventListener("abort", finish, { once: true }); if (ctx.signal.aborted) finish();
     });
   }
-  async connect(path: string): Promise<Connection> {
+  async connect(path: string, kind: Connection["kind"] = "mcp"): Promise<Connection> {
     const repo = await realpath(await repoRoot(path));
     await this.manager.assertExecutionAllowed(repo, undefined, "CLI project connection");
     for (const [key, old] of this.connections) if (!old.active || old.expiresAt < Date.now()) this.connections.delete(key);
-    const c = { id: id(), repo, expiresAt: Date.now() + 60_000, active: true }; this.connections.set(c.id, c); return c;
+    const c = { id: id(), repo, kind, expiresAt: Date.now() + 60_000, active: true }; this.connections.set(c.id, c); return c;
   }
   disconnect(connection: Connection) { connection.active = false; }
   heartbeat(connection: Connection) { this.validateConnection(connection); connection.expiresAt = Date.now() + 60_000; }
@@ -175,7 +176,7 @@ export class CliTeamsService {
   async attach(c: Connection, runId: string, connectionId: string) {
     return this.serialized(async () => {
       const run = this.run(c, runId), connection = this.connections.get(connectionId);
-      if (!connection?.active || connection.repo !== c.repo) fail("scope_denied", "Choose a live MCP connection for this project");
+      if (!connection?.active || connection.expiresAt <= Date.now() || connection.kind !== "mcp" || connection.repo !== c.repo) fail("scope_denied", "Choose a live MCP connection for this project");
       await journalEntry(run.id, "cli-host-connection", connection.id);
       run.cliTeam!.hostConnection = connection.id;
       for (const pending of Object.values(run.cliTeam!.pending)) { delete pending.claimHash; delete pending.connection; delete pending.claimExpiresAt; }
@@ -262,6 +263,7 @@ export class CliTeamsService {
     const participants = await Promise.all(candidate.participants.map(p => resolveParticipant(p, project, personal)));
     const limits = { maxInvocations: Math.min(DEFAULT_LOOP.maxInvocations ?? DEFAULT_LOOP.maxSteps, 256), maxMinutes: Math.min(DEFAULT_LOOP.maxMinutes, 720), concurrency: 2, maxAttempts: 2, ...candidate.limits, attemptTimeoutMs: STEP_TIMEOUT_MS };
     const definition: Definition = { ...candidate, participants, limits };
+    limits.attemptTimeoutMs = Math.min(limits.attemptTimeoutMs, limits.maxMinutes * 60_000);
     const context = a.context ?? {};
     if (old?.chatId && context.chatId && context.chatId !== old.chatId || old?.project && context.projectId && context.projectId !== old.project) fail("scope_denied", "Revise this proposal in its original project and chat");
     if (context.attachments) (await import("../conversational/attachments.js")).chatAttachments(context.attachments);
@@ -288,6 +290,7 @@ export class CliTeamsService {
     if (!p.accepted || p.accepted.hash !== p.hash || Date.now() - p.accepted.at > 15 * 60_000) fail("acceptance_required", p.chatId ? `Review and start this approach in Code Flow: codeflow open ${p.id}. Or approve in your CLI session.` : `Accept this proposal in an interactive terminal: codeflow approve ${p.id} --revision ${p.revision}`);
     if ((await this.source(c, p.source.source, p.context)).fingerprint !== p.source.fingerprint) fail("snapshot_stale", "Repository changed since preview; create a revised proposal");
     for (const participant of p.definition.participants) if (participant.binding !== "current_session") {
+      if (!await getAdapter(participant.provider).available()) fail("provider_unavailable", `${participant.provider} is not available. Install or reconnect that CLI before starting; no workers were launched.`);
       const current = await resolveParticipant({ id: participant.id, provider: participant.provider, model: participant.model, effort: participant.effort }, {}, {});
       if (current.model !== participant.model || current.effort !== participant.effort) fail("unsupported_settings", "Provider settings changed since preview");
     }
@@ -313,7 +316,8 @@ export class CliTeamsService {
       else if (a.action === "pause") pending = this.manager.setPaused(run.id, true).pending;
       else if (run.status === "running") this.manager.setPaused(run.id, false);
       else {
-        if (run.status === "done" || state.outcome === "stopped_limit" || state.outcome === "blocked" || run.stopReason?.startsWith("assignment attempt limit") || (run.clockUsedMs ?? 0) >= state.definition.limits.maxMinutes * 60_000) fail("budget_exhausted", "Create a new proposal for completed work, changed completion criteria, or extended execution limits");
+        if (run.status === "done") return { runId: run.id, action: a.action, accepted: false, status: run.status, message: "Already completed. Describe the next task to create a new reviewed approach.", nextAction: "propose_continuation" };
+        if (state.outcome === "stopped_limit" || state.outcome === "blocked" || run.stopReason?.startsWith("assignment attempt limit") || (run.clockUsedMs ?? 0) >= state.definition.limits.maxMinutes * 60_000) fail("budget_exhausted", "Create a new proposal for completed work, changed completion criteria, or extended execution limits");
         await this.manager.resume(run.id, undefined, true);
       }
       await flushWrites(); return { runId: run.id, action: a.action, accepted, pending, status: run.status, paused: !!run.pauseRequested };
@@ -359,9 +363,16 @@ export class CliTeamsService {
   private async read(c: ConversationScope, name: string, a: any): Promise<any> {
     if (name === "codeflow_list_providers") {
       const project = await preferences(join(c.repo, ".codeflow", "cli-teams.json"), c.repo), personal = await preferences(join(this.home, "cli-teams-preferences.json"));
-      return { preferredProvider: project.preferredProvider ?? personal.preferredProvider, providers: await Promise.all((["claude", "codex"] as const).map(async provider => ({ id: provider, installed: await getAdapter(provider).available(), authentication: "unknown until catalog discovery", preferences: { ...personal.providers?.[provider], ...project.providers?.[provider] } }))) };
+      return { preferredProvider: project.preferredProvider ?? personal.preferredProvider, providers: await Promise.all((["claude", "codex"] as const).map(async provider => ({ id: provider, installed: await getAdapter(provider).available(), authentication: "unverified; catalog discovery does not prove execution permissions", preferences: { ...personal.providers?.[provider], ...project.providers?.[provider] } }))) };
     }
     if (name === "codeflow_list_models") { const models = await catalog(a.providerId, a.refresh); const offset = a.cursor ?? 0, end = offset + (a.limit ?? 50); return { ...models, models: models.models.slice(offset, end), nextCursor: end < models.models.length ? end : undefined }; }
+    if (name === "codeflow_list_runs") {
+      const runs = this.manager.list().filter(r => r.repo === c.repo && r.pattern === "cli-team").filter(r => {
+        try { const run = this.run(c, r.id); return !a.unfinishedOnly || !["plan_ready", "agreed_plan", "verified_changes", "review_complete"].includes(run.cliTeam!.outcome ?? ""); } catch { return false; }
+      });
+      const offset = a.cursor ?? 0, end = offset + (a.limit ?? 20);
+      return { runs: runs.slice(offset, end).map(r => { const run = this.run(c, r.id); return { runId: run.id, task: run.task.slice(0, 300), status: run.status, outcome: run.cliTeam!.outcome, createdAt: run.createdAt, chatId: run.cliTeam!.taskConversation?.chatId }; }), total: runs.length, nextCursor: end < runs.length ? end : undefined };
+    }
     const run = this.run(c, a.runId), state = run.cliTeam!;
     if (name === "codeflow_get_artifact") {
       const artifact = state.artifacts[a.artifactId];
@@ -370,7 +381,16 @@ export class CliTeamsService {
       if (cursor > bytes.length || cursor < bytes.length && (bytes[cursor]! & 0xc0) === 0x80) fail("validation_failed", "Invalid UTF-8 artifact cursor");
       let end = Math.min(bytes.length, cursor + (a.maxBytes ?? 12000));
       while (end < bytes.length && (bytes[end]! & 0xc0) === 0x80) end--;
-      return { id: artifact.id, sha256: artifact.sha256, kind: artifact.kind, body: bytes.subarray(cursor, end).toString("utf8"), totalBytes: bytes.length, nextCursor: end < bytes.length ? end : undefined, ...(cursor === 0 ? { data: artifact.kind === "result" ? artifact.data : undefined } : {}) };
+      const files = artifact.data.changedFiles;
+      const fileCursor = a.fileCursor ?? 0, fileEnd = fileCursor + 100;
+      let data: Record<string, unknown> = Array.isArray(files) ? { ...artifact.data, changedFiles: files.slice(fileCursor, fileEnd), nextFileCursor: fileEnd < files.length ? fileEnd : undefined } : artifact.data;
+      if (artifact.kind === "verification") {
+        const check = artifact.data.evidence as Record<string, unknown> | undefined;
+        // Check logs already page through body; do not duplicate unbounded output in metadata.
+        data = { targetHash: data.targetHash, passed: data.passed, command: data.command,
+          evidence: check ? { ok: check.ok, exitCode: check.exitCode, timedOut: check.timedOut, durationMs: check.durationMs } : undefined };
+      }
+      return { id: artifact.id, sha256: artifact.sha256, kind: artifact.kind, body: bytes.subarray(cursor, end).toString("utf8"), totalBytes: bytes.length, nextCursor: end < bytes.length ? end : undefined, ...(cursor === 0 ? { data: ["result", "code_snapshot", "review", "verification"].includes(artifact.kind) ? data : undefined } : {}) };
     }
     const events = await this.manager.events(run.id);
     const cursor = a.afterCursor ?? 0;
@@ -378,12 +398,15 @@ export class CliTeamsService {
     if (!meaningful.length && run.status === "running" && a.waitMs) await new Promise<void>(resolve => { const finish = () => { clearTimeout(timer); off(); resolve(); }; const off = this.manager.subscribe(run.id, finish); const timer = setTimeout(finish, a.waitMs); });
     let eventBytes = 0;
     const latest = (await this.manager.events(run.id)).filter(e => e.seq > cursor && (e.type === "log" || e.type === "step")).slice(0, a.limit ?? 50).map(e => e.type === "step" ? { seq: e.seq, type: e.type, title: e.step.title.slice(0, 200), status: e.step.status, error: e.step.error?.slice(0, 500) } : e.type === "log" ? { seq: e.seq, type: e.type, text: e.text.slice(0, 500) } : { seq: e.seq }).filter(e => { eventBytes += Buffer.byteLength(JSON.stringify(e)); return eventBytes < 10000; });
-    const status = run.status === "running" && Object.keys(state.pending).length ? "waiting_host" : run.status === "running" && Object.values(state.questions).some(q => !q.answer) ? "waiting_user" : run.status;
-    return { runId: run.id, status, runtimeStatus: run.status, paused: !!run.pauseRequested, outcome: state.outcome, error: run.error?.slice(0, 1000), detail: state.detail?.slice(0, 1000), summary: run.summary?.slice(0, 4000), events: latest, afterCursor: latest.at(-1)?.seq ?? cursor,
-      artifacts: Object.values(state.artifacts).slice(-50).map(({ id, kind, sha256 }) => ({ id, kind, sha256 })), artifactCount: Object.keys(state.artifacts).length,
+    const status = run.status === "running" && Object.values(state.pending).some(p => !p.output) ? "waiting_host" : run.status === "running" && Object.values(state.questions).some(q => !q.answer) ? "waiting_user" : run.status;
+    const artifacts = Object.values(state.artifacts), artifactCursor = a.artifactCursor ?? 0, artifactEnd = artifactCursor + (a.artifactLimit ?? 50);
+    const persistent = this.connections.get(c.id ?? "")?.kind === "mcp";
+    const needsHost = state.definition.participants.some(p => p.binding === "current_session");
+    return { ...runEvidence(run), runId: run.id, status, runtimeStatus: run.status, paused: !!run.pauseRequested, outcome: state.outcome, error: run.error?.slice(0, 1000), detail: state.detail?.slice(0, 1000), summary: run.summary?.slice(0, 4000), events: latest, afterCursor: latest.at(-1)?.seq ?? cursor,
+      artifacts: artifacts.slice(artifactCursor, artifactEnd).map(({ id, kind, sha256, participant }) => ({ id, kind, sha256, participant })), artifactCount: artifacts.length, nextArtifactCursor: artifactEnd < artifacts.length ? artifactEnd : undefined,
       assignments: state.hostConnection === c.id ? Object.values(state.pending).filter(p => !p.output).map(p => ({ id: p.id, participant: p.participant, attemptId: p.attemptId, claimed: !!p.claimHash })) : [],
       questions: Object.entries(state.questions).filter(([, q]) => !q.answer).map(([id, q]) => ({ id, ...q })),
-      host: { connected: this.connections.get(state.hostConnection)?.active === true && this.connections.get(state.hostConnection)!.expiresAt > Date.now(), thisSession: state.hostConnection === c.id, attachCommand: `codeflow attach ${run.id} --connection ${c.id}` },
+      host: { connected: this.connections.get(state.hostConnection)?.active === true && this.connections.get(state.hostConnection)!.expiresAt > Date.now(), thisSession: state.hostConnection === c.id, ...(needsHost && state.hostConnection !== c.id ? persistent ? { attachCommand: `codeflow attach ${run.id} --connection ${c.id}` } : { reconnect: "Ask your Claude or Codex MCP session to inspect this run, then use the attachment command it returns. Terminal status connections are temporary." } : {}) },
       limits: state.definition.limits, usage: { managedInvocations: state.managedInvocations ?? 0, accountedExecutionMs: Math.max(run.clockUsedMs ?? 0, state.accountedExecutionMs ?? 0), recoveryTimeChargeMs: state.recoveryTimeChargeMs, providerReported: run.usage, host: "unobserved", cost: "Provider usage may be incomplete or API-equivalent; this is not a billing total" },
     };
   }

@@ -1,6 +1,6 @@
 # Public MCP interface
 
-Status: revised for the eleven-tool CLI/workspace implementation. [Index](README.md). Authoritative argument schemas: `src/cli-teams/tools.ts`. See [16](16-implementation-status.md) for contract differences from the original design.
+Status: revised for the twelve-tool CLI/workspace implementation. [Index](README.md). Authoritative argument schemas: `src/cli-teams/tools.ts`. See [16](16-implementation-status.md) for contract differences from the original design.
 
 ## Connection and authority
 
@@ -34,10 +34,11 @@ Errors use `ok: false`, a stable `error.code`, readable `message`, `retryable`, 
 | `codeflow_list_models` | `providerId`, optional `cursor`, `limit`, `refresh` | Available models, supported efforts, defaults/provenance, next cursor |
 | `codeflow_propose_run` | `task`, required structured `candidate`, optional `context`, `proposalId`, `expectedRevision` | New immutable task-specific proposal revision, resolved settings, compact preview, acceptance instructions; no presets or saved-team selection |
 | `codeflow_start_run` | `proposalId`, `expectedRevision`, `proposalHash` | Checks stored user acceptance and readiness; returns stable run ID promptly; no `approved: true` argument |
-| `codeflow_get_run` | `runId`, optional `afterCursor`, `limit`, `waitMs` | Current state/revision, incremental events, ready host assignments, questions, artifact refs, usage provenance |
+| `codeflow_list_runs` | optional `cursor`, `limit`, `unfinishedOnly` | Recent or unfinished executions in the current repository |
+| `codeflow_get_run` | `runId`, optional `afterCursor`, `limit`, `waitMs`, `artifactCursor`, `artifactLimit` | Current state/revision, incremental events, ready host assignments, questions, artifact refs, usage provenance |
 | `codeflow_claim_step` | `runId`, `stepId`, `attemptId` | Atomic claim for the bound host participant; assignment, exact input references, opaque claim token and deadline |
 | `codeflow_submit_step` | `runId`, `stepId`, `attemptId`, `claimToken`, typed `output` | Validated durable outcome receipt; rejects wrong participant, expired/revoked attempt, or invalid schema; inputs derive from the claim |
-| `codeflow_get_artifact` | `runId`, exact `artifactId`, `sha256`, optional byte `cursor`, `maxBytes` | Typed content plus readable body, integrity metadata, and continuation cursor |
+| `codeflow_get_artifact` | `runId`, exact `artifactId`, `sha256`, optional byte `cursor`, `maxBytes`, `fileCursor` | Typed content plus readable body, integrity metadata, and continuation cursor |
 | `codeflow_steer_run` | `runId`, `message`, optional `questionId`, `candidate` | Instruction/answer receipt, or a continuation proposal for material changes after active work settles; never implicitly increases authority |
 | `codeflow_control_run` | `runId`, `action: pause|resume|cancel` | Durable control receipt, effective state, active/uncertain work, and next action |
 

@@ -2,7 +2,7 @@
 
 The conversational CLI integration builds a team and process from your task. You can choose Claude Code, Codex, individual models, and supported effort values in the same instruction. Existing web workflows and saved web teams are unchanged.
 
-This integration is experimental. Automated tests exercise the project installer, public MCP protocol, worktrees, checks, agreement loops, host participation, and recovery with fixture providers. Native discovery was also checked on Claude Code 2.1.316 and Codex CLI 0.165.0: both found the skill and the then-current ten tools without inference. The new workspace tool brings the surface to eleven; its current validation uses protocol and browser fixtures. These checks do not establish that a model will follow every instruction correctly or certify other CLI versions.
+This integration is experimental. Automated tests exercise the project installer, public MCP protocol, worktrees, checks, agreement loops, host participation, and recovery with fixture providers. Native discovery was also checked on Claude Code 2.1.316 and Codex CLI 0.165.0: both found the skill and the then-current ten tools without inference. Workspace opening and task discovery bring the surface to twelve; its current validation uses protocol and browser fixtures. These checks do not establish that a model will follow every instruction correctly or certify other CLI versions.
 
 ## Install and connect
 
@@ -142,3 +142,15 @@ Only Code Flow task data is synchronized. Ordinary messages or work outside Code
 The browser is opened only on explicit request. Opening uses a short-lived, one-use local handoff; stable task links and MCP responses contain no login token. In SSH/headless environments, Code Flow returns the stable link instead. Forward the runtime's port to your computer and sign in to that owner before opening it. Full MCP Apps rendering inside hosts is not part of this integration.
 
 After upgrading, rebuild/restart the Code Flow owner once existing work has settled, rerun `codeflow init` to refresh the installed skill, and reconnect the MCP session. Existing saved workflows and historical runs remain available.
+
+## CLI usability and recovery
+
+`codeflow init` now prints a short setup summary. Use `--json` for scripts or a detailed dry-run. `codeflow doctor --catalog` checks model discovery without agent inference; it does **not** certify authentication or repository permissions.
+
+Use `codeflow status` to find recent tasks, `codeflow status --unfinished` to narrow the list, and `codeflow status RUN_ID` for readable progress and recorded participation. `--json` retains structured output. `codeflow result RUN_ID --json` includes the complete result body plus status and evidence. Completed runs return “Already completed” when resumed; further work needs a new approach.
+
+The MCP `codeflow_list_runs` tool supplies repository-scoped discovery. `get_run` provides participant dispatch records, the final result reference, the latest recorded snapshot, and continuation context. Artifact discovery pages forward from `artifactCursor: 0` with `nextArtifactCursor`; the final `result` reference does not depend on that page. `get_artifact` returns review/check/snapshot metadata; changed files page with `fileCursor` and `data.nextFileCursor`, independently of body pagination. Changed files describe the recorded commit, not later uncommitted edits.
+
+Attachment limits remain 1 MiB per file and 4 MiB total. The MCP and local HTTP envelopes now allow 8 MiB, with a 7 MiB proposal limit. Valid-sized requests that fail validation return correlated errors. A frame exceeding the hard transport cap may close MCP; reconnect and reduce the payload. No attachment is silently dropped.
+
+For current-session participation, request status from the persistent MCP session before using its attachment command. Terminal status never suggests attaching to its temporary connection. Expired and terminal connections cannot claim the host role.

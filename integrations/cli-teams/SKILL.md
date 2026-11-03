@@ -5,7 +5,7 @@ description: Use when the user asks Code Flow to coordinate an agent team on a r
 
 # Code Flow conversational teams
 
-Stay in this conversation. The user describes a task; you propose the smallest adequate team and process. There are no named presets or saved teams to select. Use the eleven `codeflow_*` MCP tools; do not invoke provider CLIs yourself to duplicate a managed assignment.
+Stay in this conversation. The user describes a task; you propose the smallest adequate team and process. There are no named presets or saved teams to select. Use the twelve `codeflow_*` MCP tools; do not invoke provider CLIs yourself to duplicate a managed assignment.
 
 ## Prepare
 
@@ -76,3 +76,11 @@ Proposal, start, status, and steering responses include `workspace.url`, `chatId
 Code Flow chats contain the shared task, approach revisions, guidance, decisions, progress, artifacts, and preserved executions. They do not import the host's entire conversation. Reconcile `conversation.latestProposal` and `conversation.taskMessages` before changing or starting work: a user may have revised, approved, paused, or answered in the browser. Never replay an already answered question or start an obsolete revision. Retry the same operation with its original `operationId` after a lost response.
 
 For follow-up work in the same initiative, pass `context.chatId` from the prior response to `codeflow_propose_run`. Use `context.continueRunId` to retain previous code, and exact artifact references to reuse a plan; a chat ID alone does not import source changes or approve new work. New scope still requires a new reviewed approach. Do not silently change a `current_session` participant to a managed worker when the host disconnects. Reconnect and follow the owner attachment flow shown in status.
+
+## Find work and report evidence
+
+When a user asks to continue previous work without an ID, call `codeflow_list_runs` in this repository; prefer unfinished tasks and clarify only when several match. Inspect the chosen task before creating a continuation. Do not automatically rerun a completed implementation.
+
+`codeflow_get_run` exposes the final `result` reference independently of the artifact list. Follow `nextArtifactCursor` with `artifactCursor` to discover all artifacts. Read result and evidence artifacts with `get_artifact`; body pagination uses `nextCursor`, while changed-file metadata uses `data.nextFileCursor` and `fileCursor` (with body cursor zero). Participant settings are recorded dispatch settings, not independent provider attestation. Current-session model and effort remain unverified.
+
+Engine-managed `capture_snapshot` and `verify` steps may omit instructions; agent steps still require them. Terminal `status` connections cannot be attached. For host participation, inspect the run from this persistent MCP session and use its returned attach command only when needed.

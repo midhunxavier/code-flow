@@ -143,9 +143,15 @@ test("packed conversational teams install, bootstrap one owner, execute through 
     execFileSync("npm", ["install", "--prefix", install, "--ignore-scripts", "--no-audit", "--no-fund", join(directory, packed.filename)], { cwd: directory, stdio: "pipe" });
     const bin = join(install, "node_modules/.bin/codeflow");
     const env = { ...process.env, CODEFLOW_HOME: home, PATH: [join(install, "node_modules/.bin"), join(root, "test/fake-bin"), process.env.PATH].join(delimiter) };
-    const initialized = JSON.parse(execFileSync(bin, ["init", "--providers", "claude,codex"], { cwd: repo, env, encoding: "utf8" }));
+    const initialized = JSON.parse(execFileSync(bin, ["init", "--providers", "claude,codex", "--json"], { cwd: repo, env, encoding: "utf8" }));
     assert.ok(initialized.changes.some(c => c.path === ".agents/skills/codeflow/SKILL.md"));
-    assert.equal(JSON.parse(execFileSync(bin, ["init", "--providers", "claude,codex"], { cwd: repo, env, encoding: "utf8" })).changes.length, 0);
+    const humanSetup = execFileSync(bin, ["init", "--providers", "claude,codex"], { cwd: repo, env, encoding: "utf8" });
+    assert.match(humanSetup, /No configuration changes needed/);
+    assert.doesNotMatch(humanSetup, /mcpServers|## Prepare/);
+    const diagnosis = JSON.parse(execFileSync(bin, ["doctor", "--catalog", "--json"], { cwd: repo, env, encoding: "utf8" }));
+    assert.ok(diagnosis.providers.every(p => p.catalog?.state === "available"));
+    assert.ok(diagnosis.providers.every(p => /Not verified/.test(p.authentication)));
+    assert.equal(JSON.parse(execFileSync(bin, ["init", "--providers", "claude,codex", "--json"], { cwd: repo, env, encoding: "utf8" })).changes.length, 0);
     assert.throws(() => execFileSync(bin, ["approve", "fixture", "--revision", "1"], { cwd: repo, env, stdio: "pipe" }), /interactive terminal/);
     child = spawn(bin, ["mcp", "--project-root", "."], { cwd: repo, env, stdio: ["pipe", "pipe", "pipe"] });
     const pending = new Map(), approvals = []; let next = 0, buffered = "", stderr = "";
@@ -175,7 +181,7 @@ test("packed conversational teams install, bootstrap one owner, execute through 
       assert.equal(result.isError, false, JSON.stringify(result)); return result.structuredContent.data;
     };
     assert.equal((await rpc("initialize", { protocolVersion: "2025-11-25", capabilities: { elicitation: { form: {} } }, clientInfo: { name: "package-test", version: "1" } })).serverInfo.name, "code-flow");
-    assert.equal((await rpc("tools/list", {})).tools.length, 11);
+    assert.equal((await rpc("tools/list", {})).tools.length, 12);
     ownerPid = JSON.parse(await readFile(join(home, "server.lock"), "utf8")).pid;
     const candidate = { scope: "plan", participants: [{ id: "author", provider: "claude" }, { id: "reviewer", provider: "codex" }], completion: ["The plan has independent review"], steps: [
       { id: "draft", type: "task", operation: "propose", participant: "author", instructions: "Draft the login plan" },
@@ -195,7 +201,11 @@ test("packed conversational teams install, bootstrap one owner, execute through 
     assert.equal(run.status, "done", JSON.stringify(run));
     const artifact = run.artifacts.find(a => a.kind === "result"); assert.ok(artifact);
     const result = await call("get_artifact", { runId, artifactId: artifact.id, sha256: artifact.sha256 }); assert.match(result.body, /Fixture login plan/);
-    const status = JSON.parse(execFileSync(bin, ["status", runId], { cwd: repo, env, encoding: "utf8" })); assert.equal(status.outcome, "agreed_plan");
+    const status = JSON.parse(execFileSync(bin, ["status", runId, "--json"], { cwd: repo, env, encoding: "utf8" })); assert.equal(status.outcome, "agreed_plan");
+    assert.match(execFileSync(bin, ["status", runId], { cwd: repo, env, encoding: "utf8" }), /Plan agreed/);
+    assert.equal(status.host.attachCommand, undefined);
+    const recent = JSON.parse(execFileSync(bin, ["status", "--json"], { cwd: repo, env, encoding: "utf8" }));
+    assert.ok(recent.runs.some(r => r.runId === runId));
     assert.equal(JSON.parse(await readFile(join(home, "server.lock"), "utf8")).pid, ownerPid, "the terminal client reuses the same owner");
     execFileSync(bin, ["uninstall", "--project"], { cwd: repo, env, stdio: "pipe" });
     assert.equal(await readFile(join(repo, "README.md"), "utf8"), "Fixture login project\n");

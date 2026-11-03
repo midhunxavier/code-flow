@@ -34,8 +34,12 @@ export const cliTeamPattern: Pattern = {
     const codeTarget = async (path: string, producer?: ProducerReceipt) => {
       const head = await resolveCommit(wt.path);
       const snap = await snapshot(ctx.run.repo, wt.path);
+      const diff = await git(["diff", "--no-renames", "--name-status", "-z", state.source.base, head, "--"], wt.path);
+      if (diff.code) fail("snapshot_failed", "Could not record the changed-file evidence");
+      const parts = diff.stdout.split("\0"), changedFiles: { status: string; path: string }[] = [];
+      for (let i = 0; i + 1 < parts.length; i += 2) changedFiles.push({ status: parts[i]!, path: parts[i + 1]! });
       // commit IDs, not provider descriptions, identify delivered code; write nodes commit first.
-      return save(path, "code_snapshot", `Code snapshot ${head}\nBranch: ${wt.branch}\nWorktree: ${wt.path}\nReview diff: git diff ${state.source.base}..${head}`, { head, snapshot: digest(snap), branch: wt.branch, base: state.source.base, ...(producer ? { producer } : {}) }, producer?.participant);
+      return save(path, "code_snapshot", `Code snapshot ${head}\nBranch: ${wt.branch}\nWorktree: ${wt.path}\nReview diff: git diff ${state.source.base}..${head}`, { head, changedFiles, changedFileCount: changedFiles.length, snapshot: digest(snap), branch: wt.branch, base: state.source.base, ...(producer ? { producer } : {}) }, producer?.participant);
     };
     const task = async (node: TaskNode, path: string): Promise<Artifact> => {
       const inputs = (node.inputs ?? []).map(read);

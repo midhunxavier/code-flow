@@ -18,6 +18,7 @@ const { RunManager } = await import("../src/engine.js");
 const { findPattern } = await import("../src/patterns/index.js");
 const { CliTeamsService } = await import("../src/cli-teams/service.js");
 const { startCliTeamsTransport } = await import("../src/cli-teams/transport.js");
+const { CLI_TOOLS } = await import("../src/cli-teams/tools.js");
 const { installProject } = await import("../src/cli-teams/install.js");
 const { acquireLock, flushWrites } = await import("../src/store.js");
 const release = await acquireLock(0);
@@ -87,7 +88,7 @@ try {
     const p = proposal.structuredContent?.data; if (!p) throw new Error("Native proposal probe failed before confirmation");
     const start = await call("start_run", { operationId: "native-probe-start", proposalId: p.proposalId, expectedRevision: p.revision, proposalHash: p.proposalHash });
     const safelyDeclined = start.structuredContent?.error?.code === "acceptance_declined" && manager.list().length === 0;
-    results.push({ host: "codex", version, tools: tools.length, runtimeStatus: server?.runtimeStatus, toolsError: server?.toolsError, skillFound, nativeFormDeclared: formDeclared, nativeConfirmations, safelyDeclined, passed: tools.length === 10 && skillFound && formDeclared && nativeConfirmations === 1 && safelyDeclined });
+    results.push({ host: "codex", version, tools: tools.length, runtimeStatus: server?.runtimeStatus, toolsError: server?.toolsError, skillFound, nativeFormDeclared: formDeclared, nativeConfirmations, safelyDeclined, passed: tools.length === CLI_TOOLS.length && skillFound && formDeclared && nativeConfirmations === 1 && safelyDeclined });
     codex.close();
   } catch (e) { results.push({ host: "codex", passed: false, error: e.message }); }
   try {

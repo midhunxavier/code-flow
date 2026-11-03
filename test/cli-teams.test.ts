@@ -102,8 +102,88 @@ function stub(fn?: typeof adapters.claude.run) {
   adapters.claude.run = worker; adapters.codex.run = worker;
 }
 
-test("UX01/02/14: strict task-generated contracts expose eleven tools and leave the web picker unchanged", () => {
-  assert.equal(CLI_TOOLS.length, 11); assert.equal(new Set(CLI_TOOLS.map(t => t.name)).size, 11);
+test("CLI UX: engine steps need no invented instructions and attempt limits fit the run", async () => {
+  const c = building() as any;
+  delete c.steps[1].instructions;
+  assert.equal((validateCandidate(c).steps[1] as any).instructions, "Run the configured checks");
+  assert.equal(c.steps[1].instructions, undefined, "validation does not mutate caller input");
+  delete c.steps[0].instructions;
+  assert.throws(() => validateCandidate(c), /agent work requires instructions/);
+  const f = await setup(); stub();
+  const candidate = planning(); candidate.limits = { maxMinutes: 5 };
+  const p = await f.call("propose_run", { task: "Plan", candidate });
+  const preview = await f.service.acceptancePreview(f.connection, p.proposalId, p.revision);
+  assert.match(preview.preview, /5 minutes per attempt/);
+});
+
+test("CLI UX: supported attachments cross both transports and validation failures retain request IDs", async () => {
+  const f = await setup(); const transport = await startCliTeamsTransport(f.service), peer = await mcpPeer(f, {});
+  try {
+    for (const size of [60 * 1024, 1024 * 1024]) {
+      const response = await peer.call("propose_run", { operationId: `attachment-${size}`, task: "Read the attached specification", candidate: planning(), context: { attachments: [{ name: "spec.txt", data: Buffer.alloc(size, 65).toString("base64") }] } }).result;
+      assert.equal(response.structuredContent.ok, true, JSON.stringify(response.structuredContent.error));
+    }
+    const response = await peer.call("propose_run", { operationId: "oversized-files", task: "Read the specification", candidate: planning(), context: { attachments: Array.from({ length: 5 }, (_, i) => ({ name: `spec-${i}.txt`, data: Buffer.alloc(1024 * 1024, 65).toString("base64") })) } }).result;
+    assert.equal(response.structuredContent.ok, false);
+    assert.match(response.structuredContent.error.message, /4 MB in total/);
+    assert.equal((await peer.call("list_providers").result).structuredContent.ok, true, "connection remains usable after a correlated rejection");
+  } finally { await peer.close(); await transport.close(); }
+});
+
+test("CLI UX: every artifact and changed-file page remains discoverable with stable result evidence", async () => {
+  const f = await setup(); stub(); const run = await start(f); await finished(run);
+  const originalResult = Object.values(run.cliTeam!.artifacts).find(a => a.kind === "result")!;
+  for (let i = 0; i < 153; i++) run.cliTeam!.artifacts[`extra-${i}`] = { id: `extra-${i}`, sha256: `hash-${i}`, kind: "plan", body: "Additional evidence", data: {} };
+  const seen: string[] = []; let cursor: number | undefined = 0;
+  do {
+    const page = await f.call("get_run", { runId: run.id, artifactCursor: cursor, artifactLimit: 17 });
+    seen.push(...page.artifacts.map((a: any) => a.id)); cursor = page.nextArtifactCursor;
+    assert.equal(page.result.id, originalResult.id);
+    assert.equal(page.evidence.participants.length, 2);
+    assert.ok(page.evidence.participants.every((p: any) => p.assignments.some((s: any) => s.invocations > 0)));
+  } while (cursor !== undefined);
+  assert.deepEqual(seen, Object.keys(run.cliTeam!.artifacts));
+  const files = Array.from({ length: 213 }, (_, i) => ({ path: `file ${i}.ts`, status: "M" }));
+  run.cliTeam!.artifacts.files = { id: "files", sha256: "files-hash", kind: "code_snapshot", body: "Snapshot", data: { changedFiles: files, changedFileCount: files.length } };
+  const paths: any[] = []; cursor = 0;
+  do { const page = await f.call("get_artifact", { runId: run.id, artifactId: "files", sha256: "files-hash", fileCursor: cursor }); paths.push(...page.data.changedFiles); cursor = page.data.nextFileCursor; } while (cursor !== undefined);
+  assert.deepEqual(paths, files);
+  const resumed = await f.call("control_run", { runId: run.id, action: "resume" });
+  assert.equal(resumed.accepted, false); assert.match(resumed.message, /Already completed/);
+  assert.ok((await f.call("list_runs")).runs.some((r: any) => r.runId === run.id));
+  assert.ok(!(await f.call("list_runs", { unfinishedOnly: true })).runs.some((r: any) => r.runId === run.id));
+  const other = await f.service.connect(repo());
+  assert.equal((await f.service.call(other, "codeflow_list_runs", {}) as any).total, 0);
+});
+
+test("CLI UX: terminal status never offers a dead attach target and expired sessions cannot attach", async () => {
+  const f = await setup(); stub(); const c = planning(); c.participants[0] = { id: "author", provider: "claude", binding: "current_session" };
+  const run = await start(f, c);
+  const terminal = await f.service.connect(f.repo, "terminal"), next = await f.service.connect(f.repo, "mcp");
+  const status = await f.service.call(terminal, "codeflow_get_run", { runId: run.id }) as any;
+  assert.equal(status.host.attachCommand, undefined); assert.match(status.host.reconnect, /temporary/);
+  await assert.rejects(f.service.attach(f.connection, run.id, terminal.id), /live MCP connection/);
+  const live = await f.service.call(next, "codeflow_get_run", { runId: run.id }) as any;
+  assert.ok(live.host.attachCommand.endsWith(next.id));
+  next.expiresAt = Date.now() - 1;
+  await assert.rejects(f.service.attach(f.connection, run.id, next.id), /live MCP connection/);
+  await f.call("control_run", { runId: run.id, action: "cancel" }); await finished(run);
+});
+
+test("CLI UX: missing provider fails preflight before any worker spends allowance", async () => {
+  const f = await setup(); stub();
+  const proposal = await f.call("propose_run", { task: "Plan", candidate: planning() });
+  await f.service.accept(f.connection, proposal.proposalId, proposal.revision, proposal.proposalHash);
+  const available = adapters.codex.available;
+  adapters.codex.available = async () => false;
+  try {
+    await assert.rejects(f.call("start_run", { proposalId: proposal.proposalId, expectedRevision: proposal.revision, proposalHash: proposal.proposalHash }), /no workers were launched/);
+    assert.equal(f.manager.list().length, 0);
+  } finally { adapters.codex.available = available; }
+});
+
+test("UX01/02/14: strict task-generated contracts expose twelve tools and leave the web picker unchanged", () => {
+  assert.equal(CLI_TOOLS.length, 12); assert.equal(new Set(CLI_TOOLS.map(t => t.name)).size, 12);
   assert.ok(!CLI_TOOLS.some(t => /team|preset/.test(t.name)));
   assert.ok(!patterns.some(p => p.id === "cli-team")); assert.ok(findPattern("cli-team"));
   assert.deepEqual(validateCandidate(planning()), planning());
@@ -273,6 +353,15 @@ test("UX09: implementation uses one owned writer, actual command evidence, and i
   const run = await start(f, c); await finished(run); assert.equal(run.status, "done", run.error); assert.equal(run.cliTeam!.outcome, "verified_changes");
   assert.match(readFileSync(join(f.repo, "app.mjs"), "utf8"), /1/); assert.match(readFileSync(join(run.worktrees[0]!.path, "app.mjs"), "utf8"), /2/);
   assert.ok(run.steps.some(s => s.kind === "check" && s.status === "done"));
+  const state = await f.call("get_run", { runId: run.id });
+  assert.deepEqual(state.evidence.snapshot.changedFiles, [{ status: "M", path: "app.mjs" }]);
+  assert.equal(state.evidence.lastDecision.approved, true);
+  const snapshot = await f.call("get_artifact", { runId: run.id, artifactId: state.evidence.snapshot.id, sha256: state.evidence.snapshot.sha256 });
+  assert.deepEqual(snapshot.data.changedFiles, state.evidence.snapshot.changedFiles);
+  const check = Object.values(run.cliTeam!.artifacts).find(a => a.kind === "verification")!;
+  const verification = await f.call("get_artifact", { runId: run.id, artifactId: check.id, sha256: check.sha256 });
+  assert.equal(verification.data.passed, true);
+  assert.equal(verification.data.evidence.output, undefined, "check output remains paginated in body");
 });
 
 test("UX11/12: host assignment fencing, disconnect/attach, and exact-target submission", async () => {
@@ -332,7 +421,7 @@ test("project-scoped loopback and stdio MCP negotiate and deny owner-tool expans
     assert.match(stdout, /2025-03-26/, stderr);
     child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" }) + "\n");
     for (let i = 0; i < 200 && !stdout.includes('"id":2'); i++) await pause();
-    const response = stdout.trim().split("\n").map(s => JSON.parse(s)).find(r => r.id === 2); assert.equal(response.result.tools.length, 11);
+    const response = stdout.trim().split("\n").map(s => JSON.parse(s)).find(r => r.id === 2); assert.equal(response.result.tools.length, 12);
     const denied = await fetch(`${bridge.descriptor.endpoint}/call`, { method: "POST", headers: { "content-type": "application/json", origin: "https://evil.invalid", authorization: `Bearer ${bridge.descriptor.bootstrap}` }, body: "{}" }); assert.equal(denied.status, 403);
   } finally { child.stdin.end(); await new Promise<void>(resolve => { child.once("exit", () => resolve()); setTimeout(() => { child.kill(); resolve(); }, 3000).unref(); }); await bridge.close(); }
 });

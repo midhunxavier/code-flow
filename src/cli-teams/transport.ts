@@ -4,6 +4,7 @@ import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { CliTeamError, fail } from "./model.js";
 import { CliTeamsService, tokenMatches } from "./service.js";
+import { CLI_MESSAGE_BYTES } from "./limits.js";
 
 export interface RuntimeDescriptor { version: 1; pid: number; endpoint: string; bootstrap: string }
 export const RUNTIME_FILE = "cli-teams-runtime.json";
@@ -20,19 +21,21 @@ export async function startCliTeamsTransport(service: CliTeamsService) {
       const privileged = tokenMatches(bearer, bootstrap), connection = capabilities.get(bearer);
       if (!privileged && !connection) fail("scope_denied", "Invalid CLI connection");
       const chunks: Buffer[] = []; let bytes = 0;
-      for await (const chunk of req) { bytes += chunk.length; if (bytes > 64 * 1024) fail("validation_failed", "Request exceeds 64 KiB"); chunks.push(chunk); }
+      for await (const chunk of req) { bytes += chunk.length; if (bytes <= CLI_MESSAGE_BYTES) chunks.push(chunk); }
+      if (bytes > CLI_MESSAGE_BYTES) fail("validation_failed", "Request exceeds 8 MiB; reduce attachments or proposal size");
       let body: any; try { body = JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch { fail("validation_failed", "Expected JSON request"); }
       let data: unknown;
       if (req.url === "/connect" && privileged) {
         if (!body || typeof body.projectRoot !== "string") fail("validation_failed", "Choose the project root");
         for (const [token, c] of capabilities) if (!c.active || c.expiresAt < Date.now()) capabilities.delete(token);
-        const c = await service.connect(body.projectRoot), token = randomBytes(32).toString("hex"); capabilities.set(token, c);
+        if (body.kind !== undefined && !["mcp", "terminal"].includes(body.kind)) fail("validation_failed", "Invalid connection kind");
+        const c = await service.connect(body.projectRoot, body.kind ?? "mcp"), token = randomBytes(32).toString("hex"); capabilities.set(token, c);
         data = { token, connectionId: c.id };
       } else if (req.url === "/call" && connection) data = await service.call(connection, body.name, body.arguments ?? {});
       else if (req.url === "/heartbeat" && connection) { service.heartbeat(connection); data = {}; }
       else if (req.url === "/disconnect" && connection) { service.disconnect(connection); capabilities.delete(bearer); data = {}; }
       else if (["/preview", "/confirm", "/attach"].includes(req.url ?? "") && privileged) {
-        const c = await service.connect(body.projectRoot);
+        const c = await service.connect(body.projectRoot, "terminal");
         try {
           data = req.url === "/preview" ? await service.acceptancePreview(c, body.proposalId, body.revision)
             : req.url === "/confirm" ? await service.accept(c, body.proposalId, body.revision, body.hash)
