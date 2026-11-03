@@ -97,6 +97,10 @@ test("Team discussion stays lightweight, then one chat plans, implements and ret
         const discussion = await sendMessage(p, "CHAT_DISCUSS What would change if we used OAuth? Discuss model and effort tradeoffs.");
         assert.equal(discussion.state.chat.taskIds.length, 0);
         await p.getByText("OAuth would change the authentication boundary. This is a discussion; no task or worker execution was created.", { exact: true }).waitFor();
+        await p.goto(`${base}/#/run/${discussion.state.chat.leadRuns.at(-1)}`);
+        await p.getByRole("link", { name: "Return to chat", exact: true }).click();
+        await p.waitForURL(new RegExp(`#/chat/${discussion.id}$`));
+        await p.getByRole("textbox", { name: "Message", exact: true }).waitFor();
         const ready = await sendMessage(p, "WEB_TASK_PLAN Plan a login form. Plan only."), taskId = ready.state.chat.taskIds[0];
         assert.equal(ready.state.tasks[0].execution, undefined);
         await p.getByRole("button", { name: "Adjust approach", exact: true }).click();
