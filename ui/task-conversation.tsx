@@ -1,3 +1,4 @@
+import { editableCandidate as editable } from "../src/cli-teams/editable.js";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { api, post, enc, baseName, store, workspaceKey, onPhone } from "./lib.js";
 import { projects, composerProject, repo, route, openComposer } from "./state.js";
@@ -21,7 +22,6 @@ type Draft = {
     coordinatorSelected?: boolean;
 };
 function draftFor(project = composerProject.value, repository = repo.value): Draft { return store.json<Draft>(`task-draft:${project}`, { project, repo: repository, request: "", source: "working_changes", untracked: [], coordinator: { id: "coordinator", provider: "claude" } }); }
-function editable(def: Definition): Candidate { const { attemptTimeoutMs: _, ...limits } = def.limits; return { ...def, limits, participants: def.participants.map(({ id, provider, model, effort, binding }) => ({ id, provider, model, effort, binding })) }; }
 const OUTCOMES: Record<string, string> = { plan_ready: "Plan ready", agreed_plan: "Plan agreed", verified_changes: "Changes verified", review_complete: "Review complete", stopped_limit: "Stopped · partial work preserved", blocked: "Needs attention · partial work preserved" };
 export function OpenTaskSetup() {
     const allowed = executionHost.value.kind === "local" && !onPhone && !!composerProject.value && !!repo.value;

@@ -66,11 +66,12 @@ export function SchedulePreview({ schedule, problem }: { schedule?: Schedule; pr
  *
  * It shows the saved schedule as it changes (from this window or the poll) until you edit it.
  */
-export function ScheduleEditor({ automation: a, save, onChange, zoneRequired = false, allowOff = true }: {
+export function ScheduleEditor({ automation: a, save, onChange, zoneRequired = false, allowOff = true, onValidityChange }: {
   automation: { name: string; schedule?: Schedule; revision?: number };
   /** Resolves once saved; rejects (409: changed elsewhere) when it wasn't. */
   save?: (patch: { schedule: Schedule | null; revision?: number }) => unknown;
   onChange?: (schedule: Schedule) => void;
+  onValidityChange?: (problem?: string) => void;
   zoneRequired?: boolean;
   allowOff?: boolean;
 }) {
@@ -85,6 +86,7 @@ export function ScheduleEditor({ automation: a, save, onChange, zoneRequired = f
   const [error, setError] = useState("");
   const schedule = draftSchedule(draft);
   const problem = draft.mode === "off" && !allowOff ? "Enable a webhook before removing the schedule." : draftProblem(draft, zoneRequired);
+  useEffect(() => { onValidityChange?.(problem); }, [problem]);
   const dirty = !sameSchedule(schedule, JSON.parse(base.json) ?? undefined);
   const reseed = () => { setDraft(scheduleDraft(a.schedule)); setBase({ json: incoming, revision: a.revision }); setConflict(false); setRefused(false); setError(""); };
   useEffect(() => {
@@ -185,7 +187,7 @@ export function AutomationsView({ mode = "all", category, projectId, showScope =
 
       {mode !== "inbox" ? <section class="section auto-card" aria-labelledby="automations-title">
         <h2 class="section-title" id="automations-title">
-          {category === "backlog" ? "Scheduled backlog work" : "Repeating tasks and webhooks"} {list.length ? <span class="n">{list.length}</span> : null}
+          {category === "backlog" ? "Scheduled backlog work" : category === "repeat" ? "Repeating tasks and webhooks" : "Saved automations"} {list.length ? <span class="n">{list.length}</span> : null}
         </h2>
         {automationLoadError.value ? <p class="msg err automation-storage-note" role="alert">Automations could not be refreshed: {automationLoadError.value} <button class="btn small" onClick={() => void loadAutomations()}>Retry</button></p> : null}
         {automationStorage.value?.state === "unavailable" ? <p class="msg err automation-storage-note" role="alert">Automation storage is unavailable: {automationStorage.value.reason}. Existing records have been preserved. Fix access to <code>{automationStorage.value.source}</code>, then restart CodeFlow.</p> : automationStorage.value?.state === "recovered" ? <p class="msg warn automation-storage-note" role="status">Automation storage was recovered: {automationStorage.value.reason}. Original records were preserved in <code>{automationStorage.value.backup}</code>; only readable records are shown.</p> : null}
@@ -194,7 +196,7 @@ export function AutomationsView({ mode = "all", category, projectId, showScope =
           list.map((a) => <AutomationRow key={a.id} a={a} scoped={scoped} />)
         ) : (
           <p class="help empty">
-            {automationStorage.value?.state === "unavailable" || automationLoadError.value ? "Saved automations are hidden until storage can be read." : <>None{here} yet. Set up a run in the composer — task, team, check — and choose <b>Schedule → Repeat</b> next to Start run.</>}
+            {automationStorage.value?.state === "unavailable" || automationLoadError.value ? "Saved automations are hidden until storage can be read." : category ? <>None{here} yet. Set up a task in Saved workflows, then choose <b>Schedule → Repeat</b>.</> : <>No automations{here} yet. Describe a task above, or choose <b>Automate this</b> on a reviewed approach in chat.</>}
           </p>
         )}
       </section> : null}
@@ -322,13 +324,13 @@ export function TriageActions({ run }: { run: RunSummary }) {
 }
 
 function AutomationRow({ a, scoped }: { a: Automation; scoped: boolean }) {
-  const startingRef = useRef(false);
+  const startingRef = useRef(false), testOperation = useRef(crypto.randomUUID());
   const [starting, setStarting] = useState(false);
   const [showHook, setShowHook] = useState(false);
-  const [inspect, setInspect] = useState(false);
+  const [inspect, setInspect] = useState(false), [editing, setEditing] = useState(false);
   const last = a.lastRunId ? runs.value.get(a.lastRunId) : undefined;
   const project = projectLabel(automationProject(a.run), a.run.repo, scoped);
-  const update = (patch: object) => post<Automation>(`/api/automations/${a.id}`, patch).then(loadAutomations, (e) => showError(e.message, 5000));
+  const update = (patch: object) => post<Automation>(`/api/automations/${a.id}`, { ...patch, revision: a.revision }).then(loadAutomations, (e) => showError(e.message, 5000));
   // The editor shows why a save failed itself; what's saved now is loaded either way.
   const saveSchedule = (patch: object) => post<Automation>(`/api/automations/${a.id}`, patch).then(loadAutomations, (err) => { void loadAutomations(); throw err; });
   const hookUrl = `${location.origin}${a.hookPath}`;
@@ -340,7 +342,7 @@ function AutomationRow({ a, scoped }: { a: Automation; scoped: boolean }) {
         <label class="switch" title={a.enabled ? "Turn off" : "Turn on"}>
           <input type="checkbox" role="switch" aria-label={`${a.name}: on`} checked={a.enabled} onChange={(e) => update({ enabled: e.currentTarget.checked })} />
         </label>
-        <b>{a.name}</b>
+        <b>{a.name}</b><span class="chat-file">{a.enabled ? "Enabled" : "Paused"}</span>
         <span class="help">
           {a.sweep ? `Sweep: up to ${a.sweep.max} new ${a.sweep.kind === "issues" ? "issues" : a.sweep.kind === "dependabot" ? "Dependabot PRs" : "alerts"} · ` : ""}
           {a.scheduleText}
@@ -348,7 +350,12 @@ function AutomationRow({ a, scoped }: { a: Automation; scoped: boolean }) {
           {a.isolate ? ` · checks in ${a.image || "node:22"}` : ""}
         </span>
         <span class="spacer" />
-        <button class="btn small" aria-expanded={inspect} onClick={() => setInspect(!inspect)}>Preview and events</button>
+        <button class="btn small" onClick={() => update({ enabled: !a.enabled })}>{a.enabled ? a.sweep && last?.status === "running" ? "Pause after this item" : "Pause" : "Enable"}</button><button class="btn small" aria-expanded={editing} onClick={() => setEditing(!editing)}>Edit</button><button class="btn small" aria-expanded={inspect} onClick={() => setInspect(!inspect)}>Preview and events</button>
+        {a.run.chatRecipe ? <button class="btn small" disabled={starting} onClick={async () => {
+          if (startingRef.current) return; startingRef.current = true; setStarting(true);
+          try { await post(`/api/automations/${a.id}/test`, { operationId: testOperation.current, revision: a.revision }); testOperation.current = crypto.randomUUID(); await loadAutomations(); showToast("Test started. The schedule's enabled state is unchanged."); }
+          catch (e) { showError((e as Error).message); } finally { startingRef.current = false; setStarting(false); }
+        }}>Test now</button> : null}
         <button
           class="btn small"
           disabled={starting}
@@ -382,7 +389,7 @@ function AutomationRow({ a, scoped }: { a: Automation; scoped: boolean }) {
       <div class="ar-meta help">
         {patterns.value.find((p) => p.id === a.run.pattern)?.name ?? a.run.pattern} in {baseName(a.run.repo)}
         {project ? <> · <Icon name="project" class="inline-icon" /> {project.name}</> : null}: “{a.run.task.split("\n")[0]}”
-        {a.sweep && a.handled?.length ? ` · ${a.handled.length} handled so far` : ""}
+        {a.sweep && a.handled?.length ? ` · ${a.handled.length} items started` : ""}
         {Object.values(a.run.roles)
           .flat()
           .filter((x, i, all) => all.indexOf(x) === i)
@@ -399,8 +406,9 @@ function AutomationRow({ a, scoped }: { a: Automation; scoped: boolean }) {
         {a.queued?.length ? ` · ${a.queued.length} webhook event${a.queued.length === 1 ? "" : "s"} waiting for the run to end` : null}
         {a.lastError ? <span class="msg err inline"> · {a.lastError.startsWith("Turned off:") ? a.lastError : `Couldn’t start: ${a.lastError}`}</span> : null}
       </div>
-      <ScheduleEditor automation={a} save={saveSchedule} allowOff={a.webhook} />
-      <AutomationExecutionEditor automation={a} />
+      {a.progress ? <p class="help" role="status">{a.progress.items.filter(i => i.state === "completed" || runs.value.get(i.runId)?.status === "done" && !["blocked", "stopped_limit"].includes(runs.value.get(i.runId)?.cliTeam?.outcome ?? "")).length} of {a.progress.total} items completed{last?.status === "running" ? ` · Current: ${a.progress.items.find(i => i.runId === last.id)?.key ?? "working"}` : ""}{a.progress.items.some(i => i.state === "attention") ? " · Some items need attention" : ""}</p> : null}
+      {a.lastTest ? <p class="help">Test: {a.lastTest.runId ? <a href={`#/run/${a.lastTest.runId}`}>Inspect participation, result and allowance</a> : a.lastTest.error || a.lastTest.state}{a.lastTest.revision !== a.revision ? " · Settings have changed since this test" : ""}</p> : null}
+      {editing ? <><label>Name<input class="field" defaultValue={a.name} onBlur={e => { if (e.currentTarget.value.trim() && e.currentTarget.value !== a.name) void update({ name: e.currentTarget.value }); }}/></label>{a.onceAt ? <OneTimeEditor key={`${a.id}:${a.revision}`} automation={a}/> : <ScheduleEditor automation={a} save={saveSchedule} allowOff={a.webhook} />}{a.run.chatRecipe ? <p class="help">Workers and checks are pinned to the reviewed approach. <a href={`#/chat/${a.run.chatRecipe.chatId}`}>Adjust the approach in chat</a> to prepare a new setup.</p> : <AutomationExecutionEditor automation={a}/>}<p class="help">Missed schedules: {a.missedPolicy === "run_once" ? "run once when this computer returns" : "skip occurrences more than an hour late"}. Current work finishes when paused.</p></> : null}
       {inspect ? <AutomationInspector automation={a} /> : null}
       {showHook ? (
         <div class="hook">
@@ -424,6 +432,19 @@ function AutomationRow({ a, scoped }: { a: Automation; scoped: boolean }) {
       ) : null}
     </div>
   );
+}
+
+function OneTimeEditor({ automation: a }: { automation: Automation }) {
+  const date = new Date(a.onceAt!);
+  const [value, setValue] = useState(new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 16));
+  const [saving, setSaving] = useState(false), [error, setError] = useState("");
+  const at = new Date(value).getTime();
+  return <form onSubmit={async e => {
+    e.preventDefault(); if (saving || !Number.isFinite(at) || at <= Date.now()) return;
+    setSaving(true); setError("");
+    try { await post(`/api/automations/${a.id}`, { onceAt: at, revision: a.revision }); await loadAutomations(); }
+    catch (e) { setError((e as Error).message); } finally { setSaving(false); }
+  }}><label>Run at · {localTimezone()}<input class="field" type="datetime-local" value={value} onInput={e => setValue(e.currentTarget.value)}/></label><button class="btn small" disabled={saving || !Number.isFinite(at) || at <= Date.now()}>Save time</button>{error ? <p role="alert" class="msg err">{error}</p> : null}<p class="help">Saving the time keeps this automation {a.enabled ? "enabled" : "paused"}.</p></form>;
 }
 
 function AutomationInspector({ automation: a }: { automation: Automation }) {

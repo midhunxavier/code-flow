@@ -1,3 +1,4 @@
+import { chatAutomationAttention } from "../src/conversational/attention.js";
 import { quotaReason } from "../src/quota-status.js";
 import { RunNavigation } from "./keyboard-navigation.js";
 import { runTitle } from "../src/run-title.js";
@@ -341,7 +342,7 @@ function Crumbs() {
       </span>
     );
   } else {
-    const page = r.view === "chat" ? r.id === "new" ? "New chat" : "Chat" : r.view === "composer" ? !r.legacy && r.project === undefined && !onPhone && ownerOnLocalListener.value && executionHost.value.kind === "local" ? "New chat" : "New run" : r.view === "projects" ? "Projects" : "";
+    const page = r.view === "chat" ? r.id === "new" ? "New chat" : "Chat" : r.view === "composer" ? !r.legacy && r.project === undefined && !onPhone && ownerOnLocalListener.value && executionHost.value.kind === "local" ? "New chat" : "Saved workflows" : r.view === "projects" ? "Projects" : "";
     trail = page ? (
       <span class="crumb here" aria-current="page">
         {page}
@@ -357,6 +358,7 @@ function Crumbs() {
 
 // ---------------------------------------------------------------- notifications
 export function notifyFinished(run: RunSummary) {
+  if (chatAutomationAttention(run) === "quiet") return;
   if (route.value.view === "side") return; // a popped-out panel: the main window says it
   const viewing = (route.value.view === "run" || route.value.view === "review") && route.value.id === run.id;
   const verbs: Record<string, string> = {
@@ -366,7 +368,7 @@ export function notifyFinished(run: RunSummary) {
     interrupted: "was interrupted",
   };
   const watch = run.status !== "running" && !run.awaiting ? watchNeedingYou(run) : undefined;
-  const leadTurn = run.pattern === "chat-lead";
+  const leadTurn = run.pattern === "chat-lead" || run.pattern === "chat-discussion";
   const leadChat = leadTurn ? run.conversationId ?? run.cliTeam?.taskConversation?.chatId ?? run.cliTeam?.taskConversation?.id : undefined;
   const title = leadTurn ? `code-flow: ${run.status === "done" ? chatLeadReplyLabel(run.patternSummary ?? run.summary ?? "").toLowerCase() : `conversation lead ${verbs[run.status] ?? run.status}`}` : run.awaiting
     ? `code-flow: ${run.awaiting.title.toLowerCase()}`
@@ -397,11 +399,11 @@ const SHORTCUTS: [string, string][] = [
   ["/", "Search runs"],
   ["j / k", "Next / previous run in the list"],
   ["[ / ]", "Previous / next step or agent turn"],
-  ["n", "New run"],
+  ["n", "New chat"],
   ["p", "Pick the project for new runs, Insights and Scheduling"],
   ["i", "Insights"],
   ["a", "Scheduling"],
-  ["⌘↵", "Start the run, or send what you typed"],
+  ["⌘↵", "Start reviewed work, or send your message"],
   ["Esc", "Close a dialog, or leave the search box"],
   ["\\", "Show or hide the side panel"],
   ["?", "This list"],

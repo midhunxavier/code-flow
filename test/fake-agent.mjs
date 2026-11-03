@@ -266,6 +266,8 @@ Options:
   --json-schema <schema>                            JSON Schema for structured output validation
   --permission-mode <mode>                          Permission mode to use for the session
   --allowedTools, --allowed-tools <tools...>        Tools to allow
+  --tools <tools>                                 Available builtin tools (empty disables all)
+  --setting-sources <sources>                      Sources of CLI settings
   --settings <file-or-json>                        Per-turn settings
   --disallowedTools, --disallowed-tools <tools...>  Tools to deny
   --mcp-config <configs...>                        Per-turn MCP configuration

@@ -92,9 +92,9 @@ export const claudeAdapter: AgentAdapter = {
   async run(opts: RunOptions, onEvent: (e: AgentEvent) => void): Promise<RunResult> {
     const permissionProblem = await managedPermissionProblem("claude", opts);
     if (permissionProblem) return permissionProblem;
-    const supportsTools = !opts.agentContainer && opts.teamTools && (await adapterTeamCapabilities("claude")).scopedTools === "tested";
+    const supportsTools = !opts.disableTools && !opts.agentContainer && opts.teamTools && (await adapterTeamCapabilities("claude")).scopedTools === "tested";
     const teamTools = supportsTools ? await prepareTeamTools(opts.teamTools!) : undefined;
-    const agentTools = opts.agentTools && !opts.agentContainer && opts.permissions?.externalTools !== "disabled" ? await prepareAgentTools(opts.agentTools) : undefined;
+    const agentTools = !opts.disableTools && opts.agentTools && !opts.agentContainer && opts.permissions?.externalTools !== "disabled" ? await prepareAgentTools(opts.agentTools) : undefined;
     if (opts.agentContainer) onEvent({ kind: "status", text: `Claude runs in Docker image ${opts.agentContainer.image}. Live team tools are unavailable in containers; use structured outcomes and next-turn replies.` });
     else if (opts.teamTools && !teamTools) onEvent({ kind: "status", text: "This Claude CLI has no verified per-turn team tools; use structured outcomes and next-turn replies." });
     try {
@@ -102,20 +102,21 @@ export const claudeAdapter: AgentAdapter = {
     const interactive = !!(opts.conversation || opts.interactiveApprovals || opts.onQuestion);
     const args = ["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages"];
     if (interactive) args.push("--input-format", "stream-json", "--permission-prompt-tool", "stdio");
-    if (opts.permissions && !opts.conversation) args.push("--settings", '{"ultracode":false,"disableWorkflows":true,"disableAllHooks":true}');
+    if (opts.disableTools || opts.permissions && !opts.conversation) args.push("--settings", '{"ultracode":false,"disableWorkflows":true,"disableAllHooks":true}');
+    if (opts.disableTools) args.push("--tools", "", "--setting-sources", "");
     if (opts.resumeSessionId) args.push("--resume", opts.resumeSessionId);
     else if (opts.forkSessionId) args.push("--resume", opts.forkSessionId, "--fork-session");
     if (opts.model) args.push("--model", opts.model);
     if (opts.effort) args.push("--effort", opts.effort);
     if (opts.jsonSchema) args.push("--json-schema", JSON.stringify(opts.jsonSchema));
     if (teamTools) args.push("--mcp-config", teamTools.claudeConfig, "--strict-mcp-config");
-    else if (opts.permissions?.externalTools === "disabled" || opts.excludeCodeflowMcp) args.push("--mcp-config", '{"mcpServers":{}}', "--strict-mcp-config");
+    else if (opts.disableTools || opts.permissions?.externalTools === "disabled" || opts.excludeCodeflowMcp) args.push("--mcp-config", '{"mcpServers":{}}', "--strict-mcp-config");
     if (agentTools) args.push("--mcp-config", agentTools.claudeConfig);
-    if (opts.permissions?.externalTools === "disabled") args.push("--no-chrome");
+    if (opts.disableTools || opts.permissions?.externalTools === "disabled") args.push("--no-chrome");
     const collaborationTools = [...(teamTools ? TEAM_TOOL_ALLOWLIST : []), ...(agentTools ? AGENT_TOOL_ALLOWLIST : [])];
     // Full access: every tool, without permission checks.
-    const full = opts.mode === "write" && opts.trust === "full";
-    const allowedTools = full ? [] : [...(opts.mode === "write" ? writeTools(opts.trust) : READ_TOOLS), ...collaborationTools];
+    const full = !opts.disableTools && opts.mode === "write" && opts.trust === "full";
+    const allowedTools = opts.disableTools ? [] : full ? [] : [...(opts.mode === "write" ? writeTools(opts.trust) : READ_TOOLS), ...collaborationTools];
     // Where the shell is limited to an allow-list, the git read commands mustn't write (or read) outside it.
     // With "Bash" allowed outright (Trusted) any command runs anyway.
     const limitedShell = !full && !allowedTools.includes("Bash");

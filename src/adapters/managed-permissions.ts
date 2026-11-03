@@ -1,3 +1,4 @@
+import { supportsToolFreeDiscussion } from "./tool-free.js";
 import type { AgentId, ErrorKind, RunOptions, RunResult } from "./types.js";
 import { captureOutput, describeFailure, DOCKER_UNREACHABLE, processErrorKind, runJsonlProcess } from "./process.js";
 
@@ -10,8 +11,9 @@ class ContainerProbeFailure extends Error {
 /** Availability probes do not prove OS isolation, but unknown CLI controls must never be ignored. */
 export async function managedPermissionProblem(provider: AgentId, opts: RunOptions): Promise<RunResult | undefined> {
   const p = opts.permissions;
-  if (!p) return;
   const fail = (error: string, errorKind: ErrorKind = "cli_incompatible"): RunResult => ({ ok: false, finalText: "", error, errorKind });
+  if (!p) return opts.disableTools ? fail("Tool-free discussion requires an explicit permission policy") : undefined;
+  if (opts.disableTools && (opts.mode !== "read" || p.externalTools !== "disabled" || p.nativeDelegation || p.toolApprovals || opts.conversation || opts.resumeSessionId || opts.forkSessionId)) return fail("Tool-free discussion requires a fresh read-only session without delegation or approvals");
   if ((p.nativeDelegation !== false && !opts.conversation) || p.provider !== provider || p.trust !== (opts.trust ?? "standard") || p.mode !== opts.mode || p.toolApprovals !== !!opts.interactiveApprovals) return fail("Adapter options do not match the resolved run permission policy");
   if (p.toolApprovals && (!["codex", "claude"].includes(provider) || !opts.onApproval)) return fail("The required interactive approval handler is unavailable");
   try {
@@ -31,6 +33,7 @@ export async function managedPermissionProblem(provider: AgentId, opts: RunOptio
       return text;
     };
     const help = await probe(["--help"]);
+    if (opts.disableTools && (opts.agentContainer || !supportsToolFreeDiscussion(provider, help))) return fail("This CLI cannot verify tool-free discussion controls");
     let nested = p.nativeDelegation || provider === "claude" && ["--disallowedTools", "--settings"].every(flag => help.includes(flag));
     if (provider === "codex" && !p.nativeDelegation) {
       const version = (await probe(["--version"])).match(/codex-cli (\d+)\.(\d+)\.(\d+)/);

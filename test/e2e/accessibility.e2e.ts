@@ -41,7 +41,7 @@ test("main screens, workspace tools and dialogs pass automatic accessibility che
     const tabs = ["Code", "Context", "History", "Services", "Coordinated changes", "Filtered tasks"];
     for (const tab of tabs) { await page.getByRole("navigation", { name: "Repository tools" }).getByRole("button", { name: tab, exact: true }).click(); await audit(`${colorScheme} workspace ${tab}`); }
     await page.goto(`${base}/#/settings`);
-    for (const category of ["General", "Agents & models", "Run defaults", "Notifications", "Connections", "Integrations", "Projects", "Extensions", "Data & storage", "Advanced"]) {
+    for (const category of ["General", "Providers", "Run defaults", "Notifications", "Connections", "Integrations", "Projects", "Extensions", "Data & storage", "Advanced"]) {
       await page.getByRole("navigation", { name: "Settings categories" }).getByRole("link", { name: category, exact: true }).click();
       await audit(`${colorScheme} settings ${category}`);
     }

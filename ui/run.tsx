@@ -229,7 +229,7 @@ export function RunView({ id }: { id: string }) {
   };
   const p = patterns.value.find((x) => x.id === run.pattern);
   const owningChat = run.conversationId ?? run.cliTeam?.taskConversation?.chatId ?? (run.pattern === "chat-lead" ? run.cliTeam?.taskConversation?.id : undefined);
-  const leadTurn = run.pattern === "chat-lead";
+  const leadTurn = run.pattern === "chat-lead" || run.pattern === "chat-discussion";
   const state = runState(run);
   /** A tool approval or a question of this run waits in the approval inbox. */
   const approvalPending = run.status === "running" && pendingApprovals.value.some((record) => record.runId === run.id);

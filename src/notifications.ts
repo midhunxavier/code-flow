@@ -1,3 +1,4 @@
+import { chatAutomationAttention } from "./conversational/attention.js";
 import { checksLabel } from "./run-status.js";
 import type { ProjectTeam } from "./project-team-model.js";
 import { createHash, randomBytes } from "node:crypto";
@@ -48,6 +49,9 @@ const text = (value: unknown, max: number) => typeof value === "string" ? value.
 /** Only actionable changes produce candidates; polling timestamps do not change their identity. */
 export function notificationEvents(run: RunSummary): { event: NotificationEvent; key: string }[] {
   if (run.archived || run.projectTeam) return [];
+  const automationAttention = chatAutomationAttention(run);
+  if (automationAttention === "quiet") return [];
+  if (automationAttention) return [{ event: automationAttention === "failure" ? "failure" : automationAttention === "changes" ? "done" : "needs-attention", key: `chat-automation:${run.id}:${automationAttention}:${run.endedAt ?? "active"}` }];
   const candidates: { event: NotificationEvent; key: string }[] = [];
   if (run.endedAt && ["done", "failed", "stopped"].includes(run.status)) {
     const failed = run.status !== "done" || ["Failed", "Blocked"].includes(checksLabel(run));

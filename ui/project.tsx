@@ -1,3 +1,7 @@
+import { onPhone, ownerOnLocalListener } from "./lib.js";
+import type { ChatSummary } from "../src/conversational/chats.js";
+import { ProjectContextEditor } from "./chat-context-editor.js";
+import { ProjectRunSettings } from "./project-run-settings.js";
 import { openChat } from "./chat-state.js";
 import { executionLabel } from "./run-experience.js";
 import { lazyView } from "./lazy-view.js";
@@ -20,19 +24,20 @@ import { Icon } from "./icons.js";
 import { api, enc, usePoll, fmtCost, ago, baseName, STATUS_TEXT, collaborationHref, selectedTeamConnection } from "./lib.js";
 import { editProject, patterns, projectFor, projects, projectsLoaded, route, runs, isRunDeleted, runState, openComposer, composerProject, composerLoading, draftsReady, task, savedDraftTask } from "./state.js";
 import { hashFor, type ProjectSection, type RepositoryTool } from "./navigation.js";
-import { computerLabel } from "./ssh-projects.js";
+import { computerLabel, executionHost } from "./ssh-projects.js";
 import { addRepositoryToProject } from "./projects.js";
 import { WorkbenchView } from "./workbench.js";
 import { Menu, MenuItem } from "./panel-bits.js";
 import type { RunSummary } from "./types.js";
 
 export function ProjectView({ id, section, repository, tool, kind }: { id: string; section?: ProjectSection; repository?: string; tool?: RepositoryTool; kind?: string }) {
+  const [contextOpen, setContextOpen] = useState(false);
   const features = useProjectFeatures(id);
   const [savedTask, setSavedTask] = useState("");
   useEffect(() => { let live = true; setSavedTask(""); if (draftsReady.value) void savedDraftTask(id).then(value => { if (live) setSavedTask(value); }, () => {}); return () => { live = false; }; }, [id, draftsReady.value, composerProject.value]);
   const draftTask = composerProject.value === id ? task.value : savedTask;
   const p = projects.value.find(item => item.id === id);
-  if (!p) return <div class="project-page"><p role="status">{projectsLoaded.value ? "This project is unavailable. Its existing runs and saved draft are retained." : "Loading project…"}</p><a class="btn" href="#/">Open new run</a></div>;
+  if (!p) return <div class="project-page"><p role="status">{projectsLoaded.value ? "This project is unavailable. Its existing runs and saved draft are retained." : "Loading project…"}</p><a class="btn" href="#/">New chat</a></div>;
   const destination = (section?: ProjectSection) => {
     const hash = hashFor({ view: "project", id, ...(section ? { section } : {}) });
     return section === "board" || section === "people" ? collaborationHref(hash, "local") : hash;
@@ -47,14 +52,14 @@ export function ProjectView({ id, section, repository, tool, kind }: { id: strin
   const selectedRepository = repository ?? (p.repos.length === 1 ? p.repos[0] : undefined);
   return <div class="project-page">
     <header class="page-head"><div class="page-head-text pp-title"><h1>{p.name}</h1><p class="project-computer-label"><Icon name="terminal" />Computer: {computerLabel()}</p></div>
-      <div class="page-head-actions"><ProjectShare key={id} project={p} /><button class="btn primary" disabled={!draftsReady.value || composerLoading.value} onClick={() => openChat(id)}><Icon name="plus" />New chat</button><button class="btn ghost" disabled={!draftsReady.value || composerLoading.value} onClick={() => void openComposer(id)}>Existing workflows</button>
+      <div class="page-head-actions"><ProjectShare key={id} project={p} /><button class="btn primary" disabled={!draftsReady.value || composerLoading.value} onClick={() => openChat(id)}><Icon name="plus" />New chat</button>
         <Menu label="Project actions" icon="more">{close => <>
           <MenuItem onClick={() => { close(); editProject(id); }}>Edit project</MenuItem>
           <MenuItem onClick={() => { close(); route.value = { view: "project", id, section: "settings" }; }}>Project settings</MenuItem>
         </>}</Menu>
       </div>
     </header>
-    <nav class="project-tabs" aria-label="Project navigation">{([[undefined, "Overview"], ["runs", "Runs"], ["repositories", "Repositories"], ["connections", "Connections"]] as const).map(([value, label]) => <a class={`btn ${section === value ? "primary" : ""}`} href={destination(value)} aria-current={section === value ? "page" : undefined}>{label}</a>)}{features.board || section === "board" ? <a class="btn" href={destination("board")} aria-current={section === "board" ? "page" : undefined}>Board</a> : null}{features.automation || section === "automation" ? <a class="btn" href={destination("automation")} aria-current={section === "automation" ? "page" : undefined}>Automation</a> : null}{features.ml || section === "ml" ? <a class="btn" href={destination("ml")} aria-current={section === "ml" ? "page" : undefined}>ML</a> : null}<a class="btn" href={destination("settings")} aria-current={section === "settings" ? "page" : undefined}>Project settings</a><Menu label="More project tools" icon="more" trigger={<span>More</span>} class="project-more">{close => <>{(["board", "people", "automation", "ml"] as const).filter(value => value !== "ml" || features.ml || section === "ml").map(value => <MenuItem onClick={() => { close(); if (value === "board" || value === "people") location.assign(destination(value)); else route.value = { view: "project", id, section: value }; }}>{({ board: "Board", people: "People", automation: "Automation", ml: "ML" })[value]}</MenuItem>)}</>}</Menu></nav>
+    <nav class="project-tabs" aria-label="Project navigation">{([[undefined, "Overview"], ["runs", "History"], ["repositories", "Repositories"], ["connections", "Connections"]] as const).map(([value, label]) => <a class={`btn ${section === value ? "primary" : ""}`} href={destination(value)} aria-current={section === value ? "page" : undefined}>{label}</a>)}{features.board || section === "board" ? <a class="btn" href={destination("board")} aria-current={section === "board" ? "page" : undefined}>Board</a> : null}{features.automation || section === "automation" ? <a class="btn" href={destination("automation")} aria-current={section === "automation" ? "page" : undefined}>Automation</a> : null}{features.ml || section === "ml" ? <a class="btn" href={destination("ml")} aria-current={section === "ml" ? "page" : undefined}>ML</a> : null}<a class="btn" href={destination("settings")} aria-current={section === "settings" ? "page" : undefined}>Project settings</a><Menu label="More project tools" icon="more" trigger={<span>More</span>} class="project-more">{close => <>{(["board", "people", "automation", "ml"] as const).filter(value => value !== "ml" || features.ml || section === "ml").map(value => <MenuItem onClick={() => { close(); if (value === "board" || value === "people") location.assign(destination(value)); else route.value = { view: "project", id, section: value }; }}>{({ board: "Board", people: "People", automation: "Automation", ml: "ML" })[value]}</MenuItem>)}</>}</Menu></nav>
     {!section ? <>
       <section class="project-start pp-card" aria-label="Start work"><h2>{draftTask.trim() ? "Continue your draft" : "What would you like to work on?"}</h2><p>{p.repos.length ? "Describe the outcome, choose your agents, and review the result here." : "Add a repository to start a run in this project."}</p>
         {draftTask.trim() ? <p class="draft-preview">{draftTask.slice(0, 240)}</p> : null}
@@ -62,16 +67,16 @@ export function ProjectView({ id, section, repository, tool, kind }: { id: strin
       </section>
       <ProjectTeamsInbox projectId={id} />
       <ProjectOverview key={id} id={id} />
-      <a class="btn" href={destination("runs")}>View run history</a>
-    </> : section === "ml" ? <MlWorkspace key={id} project={p} /> : section === "board" ? <TeamBoardView project={id} embedded navigate={navigateTeam} /> : section === "people" ? <TeamPeopleView project={id} embedded navigate={navigateTeam} /> : section === "connections" ? <IntegrationsScreen key={id} projectId={id} /> : section === "automation" ? <SchedulingView key={id} projectId={id} kind={kind} /> : section === "runs" ? <ProjectRuns key={id} projectId={id} /> : section === "repositories" ? <>
+      <a class="btn" href={destination("runs")}>View history</a>
+    </> : section === "ml" ? <MlWorkspace key={id} project={p} /> : section === "board" ? <TeamBoardView project={id} embedded navigate={navigateTeam} /> : section === "people" ? <TeamPeopleView project={id} embedded navigate={navigateTeam} /> : section === "connections" ? <IntegrationsScreen key={id} projectId={id} /> : section === "automation" ? <SchedulingView key={id} projectId={id} kind={kind} /> : section === "runs" ? <><ProjectChatHistory key={`chats:${id}`} projectId={id}/><ProjectRuns key={id} projectId={id} /></> : section === "repositories" ? <>
       <div class="project-repository-head"><h2>Repositories</h2><button class="btn" onClick={() => addRepositoryToProject(id)}><Icon name="plus" />Add repository</button></div>
       {!p.repos.length ? <p class="help">No repositories yet. Add a repository from {computerLabel()} to use its files and tools.</p> : <div class="project-repository-list">{p.repos.map(folder => <a class={`pp-card project-repository ${selectedRepository === folder ? "selected" : ""}`} href={hashFor({ view: "project", id, section: "repositories", repository: folder, tool: "code" })}><strong>{baseName(folder)}</strong><code>{folder}</code><span>Open repository tools →</span></a>)}</div>}
       {selectedRepository ? <WorkbenchView key={`${id}:${selectedRepository}`} projectId={id} initialFolder={selectedRepository} initialTool={tool} onNavigate={(folder, nextTool) => { route.value = { view: "project", id, section: "repositories", repository: folder, tool: nextTool }; }} /> : p.repos.length ? <p class="help">Choose a repository to inspect its files, checks, services and history.</p> : null}
     </> : <>
       <section class="pp-card project-start"><h2>Project settings</h2><p>Manage the project's name and repository membership.</p><button class="btn" onClick={() => editProject(id)}>Edit project</button></section>
-      <OutcomeMetrics project={id} />
-      {p.repos.map(folder => <ScenarioLibrary key={folder} repository={folder} />)}
-      <a class="btn" href={hashFor({ view: "project", id, section: "automation", kind: "missions" })}>Manage project missions</a>
+      <section class="pp-card"><h2>Defaults</h2><p>Optional instructions, files, check commands, permissions and limits for future work. Each approach shows the settings it will use.</p><button class="btn" disabled={!p.repos.length} onClick={() => setContextOpen(true)}>Edit project defaults</button><p class="help">Provider connections and authentication live in <a href="#/settings/providers">App settings → Providers</a>.</p></section>
+      <ProjectContextEditor project={id} repo={p.repos[0] ?? ""} open={contextOpen} onClose={() => setContextOpen(false)}/>
+      <details class="pp-card"><summary>Advanced · saved workflows and repository configuration</summary><button class="btn" disabled={!draftsReady.value || composerLoading.value} onClick={() => void openComposer(id)}>Saved workflows</button><ProjectRunSettings projectId={id} repositories={p.repos}/>{p.repos.map(folder => <ScenarioLibrary key={folder} repository={folder} />)}<OutcomeMetrics project={id}/></details>
     </>}
   </div>;
 }
@@ -232,4 +237,18 @@ function RunRow({ run }: { run: RunSummary }) {
       </span>
     </a>
   );
+}
+
+
+function ProjectChatHistory({ projectId }: { projectId: string }) {
+  const [items, setItems] = useState<ChatSummary[]>([]), [error, setError] = useState(""), [query, setQuery] = useState(""), [archived, setArchived] = useState(false), [limit, setLimit] = useState(20);
+  const allowed = !onPhone && ownerOnLocalListener.value && executionHost.value.kind === "local";
+  useEffect(() => {
+    if (!allowed) return;
+    const controller = new AbortController();
+    const timer = setTimeout(() => { void api<{ items: ChatSummary[] }>(`/api/chats?${new URLSearchParams({ project: projectId, q: query, archived: String(archived) })}`, { signal: controller.signal }).then(value => { setItems(value.items); setError(""); setLimit(20); }).catch(e => { if (!controller.signal.aborted) setError(e.message); }); }, 150);
+    return () => { clearTimeout(timer); controller.abort(); };
+  }, [projectId, query, archived, allowed]);
+  if (!allowed) return null;
+  return <section class="pp-card" aria-label="Project chat history"><h2>Chats</h2><label>Search chats<input class="field" type="search" value={query} onInput={e => setQuery(e.currentTarget.value)}/></label><label class="check"><input type="checkbox" checked={archived} onChange={e => setArchived(e.currentTarget.checked)}/>Archived chats</label>{error ? <p role="alert">{error}</p> : items.length ? <div class="pp-list">{items.slice(0,limit).map(chat => <a class="pp-row" href={`#/chat/${encodeURIComponent(chat.id)}`} key={chat.id}><span class="t">{chat.title}</span><span>{chat.status}</span><span class="m">{ago(chat.updatedAt)}</span></a>)}</div> : <p class="help">No chats match this view.</p>}{items.length > limit ? <button class="btn" onClick={() => setLimit(limit+20)}>Show more chats</button> : null}</section>;
 }

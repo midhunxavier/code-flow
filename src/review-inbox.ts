@@ -1,8 +1,10 @@
+import { chatAutomationAttention } from "./conversational/attention.js";
 import { checksLabel } from "./run-status.js";
 import type { RunSummary } from "./engine.js";
 
 export type ReviewReason = "answer" | "blocked" | "failed" | "review";
 export function reviewReason(run: RunSummary): ReviewReason | undefined {
+  if (!run.archived) { const attention = chatAutomationAttention(run); if (attention === "quiet") return; if (attention === "decision") return "answer"; if (!run.seen && attention) return attention === "failure" ? "failed" : "review"; }
   const question = run.status === "running" && !!run.team?.awaitingRequestId;
   if (run.archived || run.projectTeam && !run.awaiting && !question) return;
   if (run.awaiting || question) return "answer";

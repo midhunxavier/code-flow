@@ -90,7 +90,7 @@ test("unrestricted Antigravity applies only to the run it was ticked for and is 
   assert.equal(await permission(page.locator(".convo")), "Unrestricted");
 
   await page.getByRole("button", { name: "New chat", exact: true }).click();
-  await page.getByRole("button", { name: "Existing workflows", exact: true }).click();
+  await page.evaluate(id => { location.hash = `#/project/${id}/new`; }, project);
   await task.waitFor();
   assert.doesNotMatch(await summary.innerText(), /Unrestricted/);
   assert.equal(await permission(composer), "Approve for me");
@@ -108,7 +108,7 @@ test("unrestricted Antigravity applies only to the run it was ticked for and is 
 
   await page.reload();
   await page.getByRole("button", { name: "New chat", exact: true }).click();
-  await page.getByRole("button", { name: "Existing workflows", exact: true }).click();
+  await page.evaluate(id => { location.hash = `#/project/${id}/new`; }, project);
   await task.waitFor();
   await showOptIn();
   assert.equal(await optIn().isChecked(), false, "the saved project draft isn't unrestricted either");

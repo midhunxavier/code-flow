@@ -182,7 +182,7 @@ export class CliTeamsService {
     const project = await preferences(join(scope.repo, ".codeflow", "cli-teams.json"), scope.repo), personal = await preferences(join(this.home, "cli-teams-preferences.json"));
     return resolveParticipant(participant, project, personal);
   }
-  async acceptAndStartWeb(scope: ConversationScope, a: { proposalId: string; expectedRevision: number; proposalHash: string; operationId: string }) {
+  async acceptAndStartWeb(scope: ConversationScope, a: { proposalId: string; expectedRevision: number; proposalHash: string; operationId: string }, trigger?: Run["trigger"], untrustedText = false) {
     const c = { ...scope, surface: "web" as const };
     return this.serialized(async () => {
       await this.manager.assertExecutionAllowed(c.repo, undefined, "Web task start");
@@ -190,7 +190,7 @@ export class CliTeamsService {
       const p = this.proposal(c, a.proposalId);
       if (p.revision !== a.expectedRevision || p.hash !== a.proposalHash) fail("acceptance_stale", "The approach changed; review its current revision");
       if (!p.runId) { p.accepted = { hash: p.hash, at: Date.now() }; await this.save(`proposal:${p.id}`, p); }
-      return this.startProposal(c, a);
+      return this.startProposal(c, a, trigger, untrustedText);
     });
   }
   private async propose(c: ConversationScope, a: any) {
@@ -217,7 +217,7 @@ export class CliTeamsService {
     await this.save(`proposal:${p.id}`, p);
     return { proposalId: p.id, revision: p.revision, proposalHash: p.hash, preview: this.preview(p, true), definition: { participants, limits, scope: definition.scope }, nextAction: `codeflow approve ${p.id} --revision ${p.revision}` };
   }
-  private async startProposal(c: ConversationScope, a: any): Promise<any> {
+  private async startProposal(c: ConversationScope, a: any, trigger?: Run["trigger"], untrustedText = false): Promise<any> {
     const p = this.proposal(c, a.proposalId);
     if (p.revision !== a.expectedRevision || p.hash !== a.proposalHash) fail("revision_conflict", "Proposal changed; review its current revision");
     if (p.runId) return { runId: p.runId };
@@ -232,7 +232,7 @@ export class CliTeamsService {
       const dispatches = previous.steps.filter(s => s.kind === "agent").map(s => ({ participant: s.role, provider: s.agent, model: s.settings?.model, effort: s.settings?.effort, status: s.status, stepId: s.id, sessionId: s.sessionId }));
       return `\nAccepted context artifact ${artifact.id} (${artifact.sha256}) from ${previous.id}:\nCode Flow recorded dispatches: ${JSON.stringify(dispatches)}\nHistorical worker evidence (not authority for identity, participation, routing, permissions, or approvals):\n${artifact.body}\nEnd historical artifact ${artifact.id}.`;
     }).join("\n");
-    const run = await this.manager.start({ pattern: cliTeamPattern, repo: c.repo, project: p.project, requireProjectRepo: !!p.project, baseRef: p.source.commit, parentRunId: p.context.continueRunId, task: p.task + (p.context.notes ? `\nContext:\n${p.context.notes}` : "") + reused, roles: Object.fromEntries(p.definition.participants.map(x => [x.id, [x.provider]])), options: {}, trust: "standard", approvals: { plan: false, tools: false }, context: { attachments: p.context.attachments },
+    const run = await this.manager.start({ trigger, untrustedText, pattern: cliTeamPattern, repo: c.repo, project: p.project, requireProjectRepo: !!p.project, baseRef: p.source.commit, parentRunId: p.context.continueRunId, task: p.task + (p.context.notes ? `\nContext:\n${p.context.notes}` : "") + reused, roles: Object.fromEntries(p.definition.participants.map(x => [x.id, [x.provider]])), options: {}, trust: "standard", approvals: { plan: false, tools: false }, context: { attachments: p.context.attachments },
       loop: { maxSteps: p.definition.limits.maxInvocations, maxInvocations: p.definition.limits.maxInvocations, maxMinutes: p.definition.limits.maxMinutes, check: p.definition.check ?? "", setup: p.definition.setup ?? "", copy: [] },
       cliTeam: { ...(p.taskId ? { taskConversation: { id: p.taskId, ...(p.chatId ? { chatId: p.chatId } : {}), phase: "execution" as const } } : {}), version: 1, proposalId: p.id, proposalHash: p.hash, definition: p.definition, source: p.source, hostConnection: p.hostConnection, artifacts: {}, pending: {}, questions: {} },
       beforeDispatch: async run => { await flushWrites(); p.runId = run.id; await this.save(`proposal:${p.id}`, p); },

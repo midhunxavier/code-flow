@@ -5,6 +5,9 @@ export type ChatMode = "agent" | "team";
 export interface ChatDefaults { mode: ChatMode; provider: AgentId; model?: string; effort?: string; trust: "safe" | "standard" | "trusted" | "full"; tools: boolean; maxCalls?: number; maxMinutes?: number }
 export interface ChatAttachment { name: string; data: string }
 export interface ChatFile { name: string; sha256: string; bytes: number }
+export interface ProjectExecutionDefaults { check?: string; setup?: string; maxCalls?: number; maxMinutes?: number; trust?: "safe" | "standard" | "trusted" | "full" }
+export interface ProjectChatContext { defaults?: ProjectExecutionDefaults; project: string; revision: number; instructions: string; files: ChatFile[]; receipts: Record<string, string> }
+export interface PinnedProjectContext { defaults?: ProjectExecutionDefaults; revision: number; instructions: string; files: ChatFile[] }
 export interface ChatEvent {
   id: string; sequence: number; at: number;
   kind: "user" | "answer" | "receipt" | "task" | "result" | "error";
@@ -12,16 +15,19 @@ export interface ChatEvent {
   attachments?: ChatFile[];
   artifact?: { id: string; sha256: string; kind: "result"; data: Record<string, unknown> };
   evidence?: { id: string; sha256: string; kind: import("../cli-teams/model.js").Artifact["kind"]; data?: Record<string, unknown> }[];
+  projectContext?: { revision: number; files: ChatFile[] };
   errorKind?: string;
 }
 export interface ChatRecord {
+  purpose?: "automation";
   id: string; version: number; project: string; repo: string; title: string; createdAt: number; updatedAt: number;
   defaults: ChatDefaults; events: ChatEvent[]; taskIds: string[]; agentRuns: string[]; leadRuns: string[];
   leadAllowance: { maxCalls: number; maxMinutes: number };
   source: "head" | "working_changes"; untracked: string[];
   files?: ChatFile[];
+  pinned?: boolean; archived?: boolean;
   activeTask?: string;
-  pending?: { operationId: string; eventId: string; mode: ChatMode; defaults: ChatDefaults; files?: ChatFile[]; sourceRunId?: string; continueRunId?: string; runId?: string; targetTask?: string; followUp?: boolean; error?: string };
+  pending?: { operationId: string; eventId: string; mode: ChatMode; defaults: ChatDefaults; files?: ChatFile[]; projectContext?: PinnedProjectContext; sourceRunId?: string; continueRunId?: string; runId?: string; targetTask?: string; followUp?: boolean; error?: string; errorCode?: string };
   queue?: NonNullable<ChatRecord["pending"]>[];
   receipts: Record<string, { hash: string; complete?: boolean }>;
   createHash: string;

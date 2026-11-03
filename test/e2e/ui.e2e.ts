@@ -528,7 +528,9 @@ test("projects: onboarding made one; the sidebar lists runs under their projects
   await page.getByRole("button", { name: "Create project" }).click();
   await page.getByRole("dialog", { name: "New project", exact: true }).waitFor({ state: "hidden" });
   assert.deepEqual((await projects()).find((project) => project.name === "E2E side")!.repos, [], "creating an empty project does not save the previous repository");
-  await page.locator(".page-head-actions").getByRole("button", { name: "Existing workflows", exact: true }).click();
+  await page.locator(".project-page").getByRole("link", { name: "Project settings", exact: true }).click();
+  await page.getByText("Advanced · saved workflows and repository configuration", { exact: true }).click();
+  await page.getByRole("button", { name: "Saved workflows", exact: true }).click();
   await page.locator(".where .project-btn", { hasText: "E2E side" }).waitFor(); // explicitly open its draft
   await page.getByRole("button", { name: "Choose repository", exact: true }).first().click();
   await page.getByLabel("Folder path").fill(root);
@@ -566,7 +568,8 @@ test("projects: onboarding made one; the sidebar lists runs under their projects
 
   // Empty projects remain visible and editable directly in the sidebar.
   assert.equal(await rail.getByRole("button", { name: /^\d+ more projects?$/ }).count(), 0);
-  await group("E2E side").getByRole("button", { name: "Edit E2E side" }).click();
+  await group("E2E side").getByRole("button", { name: "Project actions for E2E side", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Rename or edit project", exact: true }).click();
   await page.getByRole("heading", { name: "Edit E2E side" }).waitFor();
   await page.getByRole("button", { name: "Cancel" }).click();
   await page.locator("dialog[open]").waitFor({ state: "detached" });
@@ -1047,7 +1050,7 @@ test("simple composer supports reusable teams, parameterized tasks, readiness an
     await fresh.keyboard.press("Meta+k");
     await commands.fill("new chat");
     await commands.press("Enter");
-    await fresh.getByRole("button", { name: "Existing workflows", exact: true }).click();
+    await fresh.evaluate(() => { location.hash = "#/workflows"; });
     await fresh.getByLabel("Task", { exact: true }).waitFor();
     await fresh.setViewportSize({ width: 390, height: 844 });
     const start = await fresh.getByRole("button", { name: /^Start run/ }).boundingBox();

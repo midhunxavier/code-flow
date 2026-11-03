@@ -154,7 +154,7 @@ function RunSettings() {
       <NumberSetting label="Reported token ceiling" value={savedLimits.maxTokens} optional save={(value) => setLimits({ maxTokens: value })} />
       <NumberSetting label="API-equivalent cost ceiling ($)" value={savedLimits.maxCostUsd} optional min={0.01} step={0.01} save={(value) => setLimits({ maxCostUsd: value })} />
     </div><p class="help">Usage ceilings depend on provider reports and are checked between operations. API-equivalent cost is not your subscription bill.</p></SettingsCard>
-    <p class="help">Repository setup, checks, branch names, team roles and per-run isolation are available in <a href="#/">New run → Advanced agent settings</a>.</p>
+    <p class="help">Repository setup, checks, branch names, team roles and per-run isolation are available in <a href="#/workflows">Saved workflows → Advanced agent settings</a>.</p>
   </>;
 }
 function ProjectSettings() {

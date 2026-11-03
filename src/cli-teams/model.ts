@@ -43,6 +43,7 @@ export interface PendingAssignment {
   attemptId: string; claimHash?: string; claimExpiresAt?: number; connection?: string; output?: { body: string; verdict?: "approve" | "changes_requested"; findings?: string[] };
 }
 export interface RuntimeState {
+  leadReplyKind?: "answer" | "clarify" | "guidance" | "proposal";
   taskConversation?: { id: string; phase: "preparation" | "execution"; chatId?: string };
   waitingForSlot?: boolean;
   activity?: { path: string; nodeId: string; title: string; participant?: string; type: Node["type"]; status: "working" | "completed" | "changes_requested" | "failed"; startedAt: number; endedAt?: number }[];

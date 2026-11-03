@@ -49,7 +49,9 @@ async function chooseFolder(repository: string) {
 }
 async function projectNewRun(id: string) {
   await page.goto(base + `/#/project/${id}`);
-  await page.locator(".page-head-actions").getByRole("button", { name: "Existing workflows", exact: true }).click();
+  await page.locator(".project-page").getByRole("link", { name: "Project settings", exact: true }).click();
+  await page.getByText("Advanced · saved workflows and repository configuration", { exact: true }).click();
+  await page.getByRole("button", { name: "Saved workflows", exact: true }).click();
   await page.getByLabel("Task", { exact: true }).waitFor({ timeout: 15000 }).catch(async error => { console.error(await page.locator("body").innerText(), errors); throw error; });
 }
 

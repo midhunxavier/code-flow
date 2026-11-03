@@ -45,7 +45,7 @@ async function open(context: BrowserContext, hash: string): Promise<{ page: Page
 /** The automation's row with its schedule editor open. */
 async function editor(page: Page, name: string) {
   const row = page.locator(".auto-row", { hasText: name });
-  await row.getByText("Schedule and next times", { exact: true }).click();
+  if (!await row.getByText("Schedule and next times", { exact: true }).isVisible()) await row.getByRole("button", { name: "Edit", exact: true }).click(); await row.getByText("Schedule and next times", { exact: true }).click();
   return row;
 }
 /** Load what's saved now, as the 15-second poll would. */

@@ -2,6 +2,7 @@ import type { RunSummary } from "./engine.js";
 
 /** Human-facing labels only: external source titles never become agent task instructions. */
 export function runTitle(run: Pick<RunSummary, "id" | "task" | "source"> & { pattern?: string }): string {
+  if (run.pattern === "chat-discussion") return "Discussion";
   if (run.pattern === "chat-lead") return "Conversation lead";
   const source = run.source;
   if (source?.title?.trim()) {

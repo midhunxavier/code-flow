@@ -110,7 +110,9 @@ test("saved repository filters load immediately after hello and do not follow co
   await rail.getByRole("button", { name: /^Application menu:/ }).click(); await page.getByRole("menuitem", { name: /View and filter runs/ }).click();
   assert.equal(await rail.getByLabel("Repository", { exact: true }).inputValue(), repo);
   await page.evaluate(() => { location.hash = "#/project/p-old"; });
-  await page.locator(".project-page").getByRole("button", { name: "Existing workflows", exact: true }).click();
+  await page.locator(".project-page").getByRole("link", { name: "Project settings", exact: true }).click();
+  await page.getByText("Advanced · saved workflows and repository configuration", { exact: true }).click();
+  await page.getByRole("button", { name: "Saved workflows", exact: true }).click();
   assert.equal(await rail.getByLabel("Repository", { exact: true }).inputValue(), repo);
   await rail.getByLabel("Repository", { exact: true }).selectOption(other); await until(() => rail.getByRole("region", { name: "Run history pages", exact: true }).innerText(), text => /6 matching tasks loaded/.test(text)); await shot("independent-filter");
 });

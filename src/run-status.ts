@@ -1,3 +1,4 @@
+import { chatAutomationAttention } from "./conversational/attention.js";
 import { planRejected } from "./run-outcome.js";
 import type { RunSummary } from "./engine.js";
 import type { IntegrityIssue } from "./integrity.js";
@@ -55,6 +56,7 @@ export function runState(run: Evidence): string {
 }
 
 export function needsYou(run: RunSummary): boolean {
+  if (chatAutomationAttention(run) === "quiet") return false;
   if (run.cliTeam?.taskConversation?.phase === "preparation") return false;
   if (run.cliTeam?.taskConversation && run.status === "running" && Object.values(run.cliTeam.questions).some(q => !q.answer)) return true;
   if (run.archived) return false;

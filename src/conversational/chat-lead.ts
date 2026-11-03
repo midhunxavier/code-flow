@@ -35,7 +35,8 @@ export const chatLeadPattern: Pattern = {
     const artifact = { ...record, id: `a-${digest(record).slice(0, 32)}`, sha256: digest(record) };
     await ctx.remember("cli-artifact", "lead-reply", async () => artifact);
     state.artifacts[artifact.id] = artifact;
-    state.outcome = "plan_ready";
+    state.leadReplyKind = reply.kind;
+    state.outcome = reply.kind === "proposal" ? "plan_ready" : undefined;
     await ctx.recordCliClock(); ctx.publish();
     return artifact.body;
   },

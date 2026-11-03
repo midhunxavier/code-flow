@@ -55,8 +55,9 @@ export function declinedUnasked(text: string): boolean {
  * `approvalPending`: a tool approval or question of this run waits in the inbox.
  */
 export function executionLabel(run: RunSummary, approvalPending = false, steps?: Step[]): string {
+  if (run.pattern === "chat-discussion" && run.status === "done") return "Reply ready";
   if (run.pattern === "chat-lead" && run.status === "done") {
-    return chatLeadReplyLabel(run.patternSummary ?? run.summary ?? "");
+    return run.cliTeam?.leadReplyKind ? ({ answer: "Reply ready", clarify: "Needs your answer", guidance: "Guidance recorded", proposal: "Approach ready" })[run.cliTeam.leadReplyKind] : chatLeadReplyLabel(run.patternSummary ?? run.summary ?? "");
   }
   if (run.cliTeam?.outcome && run.status !== "running") {
     const label = ({ plan_ready: "Plan ready", agreed_plan: "Plan agreed", verified_changes: "Changes verified", review_complete: "Review completed", stopped_limit: "Stopped with partial work", blocked: "Needs attention" } as Record<string, string>)[run.cliTeam.outcome];
