@@ -244,7 +244,7 @@ test("deleting a project removes its history and draft across tabs, but failed d
   assert.equal((await api("/api/projects/counts"))["p-big"], undefined);
   assert.equal((await api("/api/runs/one")).id, "one");
   await page.getByRole("heading", { name: "Projects", exact: true }).waitFor();
-  assert.equal(await editor.count(), 0);
+  await editor.waitFor({ state: "detached" });
   for (const tab of [page, mirror, runTab]) {
     await tab.getByRole("heading", { name: "Projects", exact: true }).waitFor();
     await tab.goto(`${base}/#/new/unassigned`);
