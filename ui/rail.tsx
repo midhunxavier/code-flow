@@ -303,10 +303,10 @@ export function Rail() {
 
   const actions = (p: Project) => (
     <span class="proj-actions">
+      <Menu label={`Project actions for ${p.name}`} icon="more" class="proj-more">{close => <><MenuItem onClick={() => { close(); route.value = { view: "project", id: p.id, section: "settings" }; }}>Project settings</MenuItem><MenuItem onClick={() => { close(); route.value = { view: "project", id: p.id, section: "runs" }; }}>History</MenuItem><MenuItem onClick={() => { close(); editProject(p.id); }}>Rename or edit project</MenuItem></>}</Menu>
       <button type="button" class="icon-btn" disabled={!draftsReady.value || composerLoading.value} aria-label={`New chat in ${p.name}`} title={`New chat in ${p.name}`} onClick={() => newRunIn(p)}>
         <Icon name="plus" />
       </button>
-      <Menu label={`Project actions for ${p.name}`} icon="more" class="proj-more">{close => <><MenuItem onClick={() => { close(); route.value = { view: "project", id: p.id, section: "settings" }; }}>Project settings</MenuItem><MenuItem onClick={() => { close(); route.value = { view: "project", id: p.id, section: "runs" }; }}>History</MenuItem><MenuItem onClick={() => { close(); editProject(p.id); }}>Rename or edit project</MenuItem></>}</Menu>
     </span>
   );
 
@@ -425,7 +425,7 @@ export function Rail() {
           </section>
         ) : null}
         <section aria-label="Projects">
-          <div class="rail-title rail-section">
+          <div class="rail-title rail-section rail-projects-title">
             Projects
             <button
               type="button"
