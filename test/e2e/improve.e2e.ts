@@ -319,7 +319,7 @@ test("Prompt improvement settings persist, select the configured provider and de
     await panel.screenshot({ path: join(root, "output/playwright/improve-settings-mobile.png") });
     await page.setViewportSize({ width: 1440, height: 1000 });
     await panel.screenshot({ path: join(root, "output/playwright/improve-settings.png") });
-    await page.goto(`${base}/#/new`);
+    await page.goto(`${base}/#/workflows`);
     const area = page.getByRole("textbox", { name: "Task", exact: true });
     await area.fill("Clarify the login task");
     assert.match(await page.getByRole("button", { name: /^Improve ·/ }).innerText(), /Codex/);

@@ -137,7 +137,7 @@ export class Conversations {
       if (!run) fail("recovery_required", "The submitted turn is unavailable. Your message is preserved; cancel this turn before sending it again.");
       if (run && pending.followUp && !run.followUps.some(turn => turn.operationId === `${chat.id}:${pending.operationId}`) && run.status === "done") {
         const source = chat.events.find(e => e.id === pending.eventId)!, defaults = pending.defaults;
-        await this.manager.followUp(run.id, { operationId: `${chat.id}:${pending.operationId}`, kind: "reply", worktree: "solo", budget: { maxSteps: defaults.maxCalls ?? 12, maxInvocations: defaults.maxCalls ?? 12, maxMinutes: defaults.maxMinutes ?? 30 }, agent: defaults.provider, message: source.body, settings: { model: defaults.model, effort: defaults.effort }, trust: defaults.trust, tools: defaults.tools, attachments: await loadChatFiles(source.attachments) });
+        await this.manager.followUp(run.id, { operationId: `${chat.id}:${pending.operationId}`, kind: "reply", worktree: "solo", budget: { maxSteps: defaults.maxCalls ?? 12, maxInvocations: defaults.maxCalls ?? 12, maxMinutes: defaults.maxMinutes ?? 30 }, agent: defaults.provider, message: source.body, settings: { model: defaults.model, effort: defaults.effort }, trust: defaults.trust, tools: defaults.tools, attachments: await loadChatFiles(pending.files ?? source.attachments) });
         await flushWrites(); return;
       }
       if (run && !["running", "interrupted"].includes(run.status)) {
@@ -215,7 +215,7 @@ export class Conversations {
       const latestTaskRun = writer?.execution ? this.manager.get(writer.execution.id) : undefined;
       if (run && (!latestTaskRun || latestTaskRun.createdAt < run.createdAt) && run.roles.agent?.[0] === defaults.provider && run.worktrees.some(w => w.name === "solo")) {
         pending.runId = run.id; pending.followUp = true; await this.save(chat);
-        await this.manager.followUp(run.id, { operationId: `${chat.id}:${pending.operationId}`, kind: "reply", worktree: "solo", budget: { maxSteps: defaults.maxCalls ?? 12, maxInvocations: defaults.maxCalls ?? 12, maxMinutes: defaults.maxMinutes ?? 30 }, agent: defaults.provider, message: event.body, settings: { model: defaults.model, effort: defaults.effort }, trust: defaults.trust, tools: defaults.tools, attachments: await loadChatFiles(event.attachments) });
+        await this.manager.followUp(run.id, { operationId: `${chat.id}:${pending.operationId}`, kind: "reply", worktree: "solo", budget: { maxSteps: defaults.maxCalls ?? 12, maxInvocations: defaults.maxCalls ?? 12, maxMinutes: defaults.maxMinutes ?? 30 }, agent: defaults.provider, message: event.body, settings: { model: defaults.model, effort: defaults.effort }, trust: defaults.trust, tools: defaults.tools, attachments: await loadChatFiles(pending.files ?? event.attachments) });
         await flushWrites(); return;
       }
       const transcript = chat.events.filter(e => e.body && ["user", "answer"].includes(e.kind) && (e.kind !== "user" || e.sequence <= event.sequence)).slice(-16).map(e => `${e.kind}: ${e.body}`).join("\n\n").slice(-18000);

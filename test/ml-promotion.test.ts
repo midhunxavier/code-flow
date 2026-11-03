@@ -15,7 +15,7 @@ before(async () => { directory = await mkdtemp(join(tmpdir(), "codeflow-promotio
 after(async () => { await rm(directory, { recursive: true, force: true }); });
 const health = { windowSeconds: 60, minRequests: 10, minSamples: 20, consecutiveWindows: 2, maxErrorRate: .2, maxLatencyMs: 1000, driftThreshold: 1, cooldownSeconds: 60, maxActions: 1 };
 const limits = { minImprovement: .01, maxAttempts: 2, cooldownSeconds: 60, approvalSeconds: 3600, observationSeconds: 180 };
-async function fixture(llm = false) {
+async function fixture(llm = false, advancingClock = false) {
   const home = join(directory, randomUUID()); await mkdir(home);
   let now = Date.now(), enabled = true, permitted = true, score = llm ? 1.5 : .7, data = "original", failLoad = false, loads = 0;
   let prepareHook: (() => Promise<void>) | undefined;
@@ -37,7 +37,7 @@ async function fixture(llm = false) {
     if (r.action === "serve-predict") return (llm ? { text: "answer", inputTokens: 3, outputTokens: 2 } : { predictions: r.input.rows.map((v: any) => v.x) }) as T;
     throw new Error(`Unexpected worker request ${r.action}`);
   } };
-  const create = async () => { const service = new MlService({ home, transport, enabled: () => enabled, promotionClock: () => now, monitorClock: () => now, authorize: async (p, repo) => { if (!permitted || p !== "p" || repo !== home) throw new Error("Membership revoked"); return { repo, commit: "a".repeat(40) }; } }); await service.load(); return service; };
+  const create = async () => { const service = new MlService({ home, transport, enabled: () => enabled, promotionClock: () => advancingClock ? now++ : now, monitorClock: () => now, authorize: async (p, repo) => { if (!permitted || p !== "p" || repo !== home) throw new Error("Membership revoked"); return { repo, commit: "a".repeat(40) }; } }); await service.load(); return service; };
   const service = await create();
   const snapshot = await service.snapshot({ project: "p", repo: home, target: "local", path: llm ? "/data.jsonl" : "/data.csv", location: "target" });
   const base = llm ? await service.startJob({ project: "p", repo: home, target: "local", path: "/base", operationId: randomUUID() }, "model") : undefined;
@@ -295,5 +295,23 @@ test("common LoRA holdout uses a fixed token population and lower loss before au
   try {
     const holdout = await f.common(); await f.candidate(1, true); await f.service.promotions.create(f.policy({ holdout, mode: "automatic" })); await finishHoldout(f.service);
     const p = f.service.store.read().promotions[0]!; assert.equal(p.decisions[0]!.state, "observing"); assert.equal(p.decisions[0]!.direction, "lower"); assert.equal(p.decisions[0]!.gain, .5);
+  } finally { await f.service.close(); }
+});
+
+
+test("promotion approvals remain valid when the clock advances between timestamp reads", async () => {
+  const f = await fixture(false, true);
+  try {
+    await f.candidate();
+    await f.service.promotions.create(f.policy());
+    await f.service.promotions.tick();
+    let policy = f.service.store.read().promotions[0]!;
+    assert.equal(policy.decisions[0]!.state, "awaiting_approval");
+    policy = await f.service.promotions.update(policy.id, "approve", { revision: policy.revision, decisionId: policy.decisions[0]!.id, reason: "Reviewed the candidate" });
+    assert.equal(policy.decisions[0]!.state, "observing");
+    await f.service.close();
+    const restored = await f.create();
+    try { assert.equal(restored.store.read().promotions[0]!.decisions[0]!.state, "observing"); }
+    finally { await restored.close(); }
   } finally { await f.service.close(); }
 });

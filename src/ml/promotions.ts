@@ -95,8 +95,8 @@ export class MlPromotions {
       if (p.holdout && evaluated?.state !== "completed") continue;
       const commonJob = evaluated ? s.experiments.find(e => e.id === evaluated.jobId) : undefined;
       const margin = Math.max(p.limits.minImprovement, s.cycles.find(c => c.id === job.intent.search?.cycleId)?.limits.minImprovement ?? 0), evidence = promotionEvidence(job, incumbent, margin, commonJob?.status.holdout);
-      const ready = !evidence.concerns.length;
-      const a: PromotionDecision = { ...(commonJob ? { holdoutJobId: commonJob.id } : {}), id: randomUUID(), jobId: job.id, receiptHash: modelReceipt(job), incumbentJobId: incumbent.id, incumbentReceipt: modelReceipt(incumbent), incumbentVersionId: incumbentVersion.id, ...(job.registry?.modelId === model.id ? { versionId: job.registry.versionId } : {}), at: this.now(), expiresAt: this.now() + p.limits.approvalSeconds * 1000, deploymentRevision: d.revision, releaseId: d.current, selectionId: p.selectionId, state: ready ? p.mode === "automatic" ? "ready" : "awaiting_approval" : "blocked", ...evidence, registerOperation: randomUUID(), selectOperation: randomUUID(), rollbackOperation: randomUUID(), rollbackSelection: randomUUID(), monitorId: randomUUID(), ...(ready && p.mode === "automatic" ? { approvedAt: this.now(), approval: "policy" as const, approvalReason: "Pre-authorized automatic promotion policy" } : {}) };
+      const ready = !evidence.concerns.length, at = this.now();
+      const a: PromotionDecision = { ...(commonJob ? { holdoutJobId: commonJob.id } : {}), id: randomUUID(), jobId: job.id, receiptHash: modelReceipt(job), incumbentJobId: incumbent.id, incumbentReceipt: modelReceipt(incumbent), incumbentVersionId: incumbentVersion.id, ...(job.registry?.modelId === model.id ? { versionId: job.registry.versionId } : {}), at, expiresAt: at + p.limits.approvalSeconds * 1000, deploymentRevision: d.revision, releaseId: d.current, selectionId: p.selectionId, state: ready ? p.mode === "automatic" ? "ready" : "awaiting_approval" : "blocked", ...evidence, registerOperation: randomUUID(), selectOperation: randomUUID(), rollbackOperation: randomUUID(), rollbackSelection: randomUUID(), monitorId: randomUUID(), ...(ready && p.mode === "automatic" ? { approvedAt: at, approval: "policy" as const, approvalReason: "Pre-authorized automatic promotion policy" } : {}) };
       p.decisions.push(a); p.revision++;
       if (ready) return;
     }
@@ -153,7 +153,7 @@ export class MlPromotions {
       const latest = this.get(p.id, s), decision = latest.decisions.find(x => x.id === a.id)!;
       this.service.registry.commitSelection(s, p.modelId, versionId, "promote", a.selectOperation, "Promotion policy: verified candidate deployed after evaluation and approval");
       this.service.monitors.installHealthGuard(s, d, a.incumbentVersionId, a.monitorId, `${p.name} release health`, p.health, this.now());
-      decision.state = "observing"; decision.deployedRevision = d.revision; decision.deployedAt = this.now(); decision.observeUntil = this.now() + p.limits.observationSeconds * 1000; decision.outcome = "Deployed; collecting operational health evidence before accepting this rollout";
+      decision.state = "observing"; decision.deployedRevision = d.revision; decision.deployedAt = this.now(); decision.observeUntil = decision.deployedAt + p.limits.observationSeconds * 1000; decision.outcome = "Deployed; collecting operational health evidence before accepting this rollout";
       latest.releaseId = d.current; latest.deploymentRevision = d.revision; latest.selectionId = this.model(p, s).history.at(-1)!.id; latest.revision++;
     }, p.holdout ? s => { this.guard(p, a, s); return []; } : undefined);
   }

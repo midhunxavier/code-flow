@@ -241,10 +241,10 @@ test("the shared browser keeps binary and oversized files in bounded read-only p
 
 test("revised hubs and template picker fit phones and have no serious accessibility errors", { timeout: 45_000 }, async () => {
   await page.setViewportSize({ width: 390, height: 844 });
-  for (const route of ["#/automations/once", "#/automations/repeat", "#/automations/backlog", "#/settings/connections/workspace", "#/settings/connections/sharing", "#/"]) {
+  for (const route of ["#/automations/once", "#/automations/repeat", "#/automations/backlog", "#/settings/connections/workspace", "#/settings/connections/sharing", "#/workflows"]) {
     await page.goto(`${base}/${route}`);
     await page.locator("#main-content").waitFor();
-    if (route === "#/") {
+    if (route === "#/workflows") {
       await openAdvanced(page); await page.getByRole("button", { name: "Browser task library", exact: true }).click();
       const picker = page.getByRole("dialog", { name: "Template library", exact: true });
       await picker.waitFor();

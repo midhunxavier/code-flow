@@ -1578,7 +1578,7 @@ type Via = "local" | "lan";
 const performanceMetrics = new PerformanceMetrics();
 async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
   performanceMetrics.observe(req, res);
-  if (stopping) throw new HttpError(503, "The backend is stopping");
+  if (stopping) return send(res, 503, { error: "The backend is stopping" });
   const url = new URL(req.url ?? "/", "http://localhost");
   let parts = url.pathname.split("/").filter(Boolean);
   if (parts[0] === "api") parts = await attempt(async () => canonicalSharedPath(req.url ?? "/").parts);
@@ -3133,6 +3133,7 @@ let stopping = false;
 async function stop(reason: string, code = 0) {
   if (stopping) process.exit(1); // second Ctrl-C: don't wait
   stopping = true;
+  const chatsStopped = stopChatWatch();
   performanceMetrics.close();
   await closeCodeIntelligence();
   console.log(`\nStopping code-flow (${reason}): interrupting running runs so they can be resumed…`);
@@ -3170,7 +3171,7 @@ async function stop(reason: string, code = 0) {
   for (const controller of improvingControllers) controller.abort();
   await filteredTasks.close().catch((err) => logError("Filtered task shutdown failed; inspect its durable unknown receipt before retrying", err));
   await ml.close().catch((err) => logError("Training controller shutdown failed; admitted jobs remain on their workers", err));
-  await stopChatWatch();
+  await chatsStopped;
   await manager.shutdown().catch((err) => logError("Shutdown failed", err));
   await cliTransport?.close().catch((err) => logError("CLI bridge shutdown failed", err));
   await teamToolBridge.close().catch(() => undefined);

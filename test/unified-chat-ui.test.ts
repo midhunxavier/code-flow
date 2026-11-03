@@ -86,6 +86,7 @@ test("New chat defaults to Agent, preserves drafts and continues one normal prov
         assert.equal(next.state.chat.agentRuns.length, 1);
         assert.equal(next.state.leadUsage.calls, 0);
         assert.equal(next.state.chat.events.filter((e: any) => e.kind === "answer").length, 2);
+        await until(() => api(`/api/runs/${next.state.chat.agentRuns[0]}`), run => run.seen === true, "the latest native follow-up is marked read while its chat is visible");
         await p.screenshot({ path: join(root, "output/playwright/unified-chat-agent.png"), fullPage: true });
     } finally { await context.close(); }
 });

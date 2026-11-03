@@ -151,8 +151,8 @@ test('a missing project route returns to Projects with a clean destination', asy
     await page.getByRole('heading', { name: 'Projects', exact: true }).waitFor();
     assert.equal(await page.getByText(/project is unavailable/).count(), 0);
     await page.getByRole('article').filter({ has: page.getByRole('heading', { name: 'Project Beta', exact: true }) }).getByRole('button', { name: 'New chat', exact: true }).click();
-    await page.getByLabel('Message', { exact: true }).waitFor();
-    assert.equal(await page.getByLabel('Message', { exact: true }).inputValue(), '');
+    await page.locator('.unified-chat').getByLabel('Message', { exact: true }).waitFor();
+    assert.equal(await page.locator('.unified-chat').getByLabel('Message', { exact: true }).inputValue(), '');
     await shot(page, '06-missing-project-destination');
 }
 finally {

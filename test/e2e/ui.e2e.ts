@@ -473,7 +473,7 @@ test("sign-in: the first browser claims code-flow; once agents have run, others 
   await other.goto(BASE);
   await other.getByText("Open code-flow from its link").waitFor();
   await other.goto(`${BASE}/?token=${TOKEN}#/workflows`);
-  await other.waitForURL(`${BASE}/`);
+  await other.waitForURL(url => url.hash === "#/workflows" && !url.searchParams.has("token"));
   await other.getByRole("button", { name: "New chat", exact: true }).waitFor();
   await stranger.close();
 });
@@ -1045,8 +1045,9 @@ test("simple composer supports reusable teams, parameterized tasks, readiness an
     assert.match(created.task, /Acceptance criteria:\n1\. login form has automated tests\.\n2\. Existing behavior is preserved\./);
 
     await fresh.keyboard.press("Meta+k");
-    await commands.fill("new run");
+    await commands.fill("new chat");
     await commands.press("Enter");
+    await fresh.getByRole("button", { name: "Existing workflows", exact: true }).click();
     await fresh.getByLabel("Task", { exact: true }).waitFor();
     await fresh.setViewportSize({ width: 390, height: 844 });
     const start = await fresh.getByRole("button", { name: /^Start run/ }).boundingBox();

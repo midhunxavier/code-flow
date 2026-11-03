@@ -32,7 +32,7 @@ const TeamTaskView = lazyView(() => import("./collab-task.js").then((module) => 
 import { board as teamBoard, openTask, watchTeam } from "./collab-state.js";
 import { Rail } from "./rail.js";
 import { Icon } from "./icons.js";
-import { api, onPhone, dismissToast, showToast, store, toast } from "./lib.js";
+import { api, onPhone, ownerOnLocalListener, dismissToast, showToast, store, toast } from "./lib.js";
 import { theme, toggleTheme } from "./theme.js";
 import {
   composerProject,
@@ -189,7 +189,7 @@ function MainApp() {
                 <button class="btn primary" onClick={() => (route.value = { view: "composer" })}>Open new run</button>
               </div>
             ) : (
-              !draftsReady.value || composerLoading.value || route.value.view === "composer" && route.value.project !== undefined && route.value.project !== composerProject.value ? <div class="composer" role="status">{draftError.value || "Restoring your project draft…"}</div> : route.value.view === "composer" && !route.value.legacy && route.value.project === undefined && !onPhone && executionHost.value.kind === "local" ? <ChatPage id="new" /> : <Composer key={composerProject.value} />
+              !draftsReady.value || composerLoading.value || route.value.view === "composer" && route.value.project !== undefined && route.value.project !== composerProject.value ? <div class="composer" role="status">{draftError.value || "Restoring your project draft…"}</div> : route.value.view === "composer" && !route.value.legacy && route.value.project === undefined && !onPhone && ownerOnLocalListener.value && executionHost.value.kind === "local" ? <ChatPage id="new" /> : <Composer key={composerProject.value} />
             )}
           </main>
         </div>
