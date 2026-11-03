@@ -209,7 +209,8 @@ test("attachment bytes and explicit task targets survive draft reloads", { timeo
         const sent = await sendMessage(p, "CHAT_AGENT Use the attached context");
         assert.equal(sent.state.chat.files[0].bytes, bytes.length);
         await p.goto(`${base}/#/chat/${completedTask}`);
-        await p.getByRole("button", { name: "Ask about this task", exact: true }).last().click();
+        await p.getByRole("button", { name: "Task details", exact: true }).click();
+        await p.getByRole("dialog", { name: "Task details", exact: true }).getByRole("button", { name: "Ask about this task", exact: true }).click();
         await p.getByRole("textbox", { name: "Message", exact: true }).fill("A question about this task");
         await p.reload();
         await p.getByText(/^Replying to:/).waitFor();
@@ -270,7 +271,8 @@ test("chat menus rename, pin, archive and restore; search finds message contents
     await p.getByText("Viewing earlier messages", { exact: false }).waitFor(); await search.fill("");
     await row().hover(); await options().click(); await p.getByRole("menuitem", { name: "Archive chat", exact: true }).click();
     await until(() => p.locator(`button[data-chat="${sent.id}"]`).count(), n => n === 0, "chat hidden from active history");
-    await p.getByRole("button", { name: "Archived chats", exact: true }).click(); await row().waitFor();
+    await p.getByRole("button", { name: /^Application menu:/ }).click();
+    await p.getByRole("menuitem", { name: "Archived chats", exact: true }).click(); await row().waitFor();
     await row().hover(); await options().click(); await p.getByRole("menuitem", { name: "Restore chat", exact: true }).click();
     await until(() => api(`/api/chats/${sent.id}`), s => !s.chat.archived, "chat restored");
     await p.getByRole("button", { name: "Back to active chats", exact: true }).click(); await row().waitFor();
@@ -323,7 +325,8 @@ test("task-first automation reviews, tests and enables the exact team without ap
         await p.waitForURL(/#\/chat\/[a-f0-9]+$/);
         const id = p.url().split("#/chat/")[1]!;
         const ready = await until(() => api(`/api/chats/${id}`), s => !s.turn && s.tasks.length > 0, "automation approach prepared");
-        await p.getByRole("button", { name: "Automate this", exact: true }).click();
+        await p.getByRole("button", { name: "Task details", exact: true }).click();
+        await p.getByRole("dialog", { name: "Task details", exact: true }).getByRole("button", { name: "Automate this", exact: true }).click();
         const setup = p.getByRole("dialog", { name: "Do this again", exact: true });
         await setup.getByText("Fresh committed HEAD for each occurrence", { exact: true }).waitFor();
         await setup.getByRole("button", { name: "Test now", exact: true }).click();
@@ -399,5 +402,51 @@ test("chat webhook setup stays disabled during testing and authenticated events 
         const changed = await until(()=>api("/api/automations"),list=>list.find((a:any)=>a.id===once.id)?.revision>once.revision,"one-time edit saved");
         const current = changed.find((a:any)=>a.id===once.id);
         assert.equal(current.onceAt,new Date(local).getTime()); assert.equal(current.enabled,false);
+    } finally { await context.close(); }
+});
+
+
+test("chat composer previews and undoes prompt rewrites without submitting work; context and navigation stay compact", { timeout: 60000 }, async () => {
+    const { context, page: p } = await page();
+    const original = "Create a login form. Use Claude Haiku and Codex Luna at high effort. Do not deploy.";
+    const improved = "Goal: Create a login form.\nTeam: Claude Haiku and Codex Luna, both at high effort.\nConstraint: Do not deploy.";
+    const mutations: string[] = []; let reject = false;
+    p.on("request", request => { if(request.method()==="POST" && /\/api\/(chats|runs)(\/|$)/.test(new URL(request.url()).pathname)) mutations.push(request.url()); });
+    await p.route("**/api/improve-prompt", route => {
+        const body = route.request().postDataJSON(); assert.equal(body.text,original); assert.equal(body.mode,"quick");
+        return route.fulfill({ status:reject ? 503 : 200, contentType:"application/json",body:JSON.stringify(reject ? {error:"Rewrite provider is unavailable"} : {prompt:improved,summary:"Organized the goal, team and constraints.",agent:"claude"}) });
+    });
+    try {
+        const message=p.getByRole("textbox",{name:"Message",exact:true});
+        const row=p.getByLabel("Chat project and repository",{exact:true});
+        assert.ok((await row.boundingBox())!.y < (await message.boundingBox())!.y);
+        assert.equal(await p.getByRole("button",{name:/^SSH connections:/}).count(),1);
+        assert.equal(await p.locator(".connection-status.connected").count(),0);
+        assert.doesNotMatch(await p.locator(".rail-history").innerText(),/tasks? loaded/);
+        assert.equal(await p.getByRole("button",{name:"Archived chats",exact:true}).count(),0);
+        const toggle=p.getByRole("button",{name:"Projects",exact:true});
+        await toggle.click(); assert.equal(await toggle.getAttribute("aria-expanded"),"false");
+        await p.reload(); await toggle.waitFor(); assert.equal(await toggle.getAttribute("aria-expanded"),"false");
+        assert.equal(await p.locator("#rail-project-groups").isVisible(),false);
+        await toggle.click(); assert.equal(await p.locator("#rail-project-groups").isVisible(),true);
+        await message.fill(original);
+        await p.getByRole("button",{name:"Improve prompt",exact:true}).click();
+        const dialog=p.getByRole("dialog",{name:"Improve your prompt",exact:true});
+        await dialog.getByLabel("Suggested prompt",{exact:true}).waitFor();
+        assert.equal(await message.inputValue(),original,"preview preserves the draft");
+        await p.screenshot({path:join(root,"output/playwright/chat-improve-preview.png")});
+        await dialog.getByRole("button",{name:"Use this prompt",exact:true}).click();
+        assert.equal(await message.inputValue(),improved);
+        await p.getByRole("button",{name:"Undo rewrite",exact:true}).click(); assert.equal(await message.inputValue(),original);
+        reject=true;
+        await p.getByRole("button",{name:"Improve prompt",exact:true}).click();
+        await dialog.getByRole("alert").waitFor();
+        await dialog.getByRole("button",{name:"Keep original",exact:true}).click();
+        assert.equal(await message.inputValue(),original); assert.deepEqual(mutations,[]);
+        await p.screenshot({path:join(root,"output/playwright/chat-composer-refined.png")});
+        await p.setViewportSize({width:390,height:844});
+        assert.equal(await p.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
+        assert.ok((await row.boundingBox())!.y < (await message.boundingBox())!.y);
+        await p.screenshot({path:join(root,"output/playwright/chat-composer-refined-mobile.png")});
     } finally { await context.close(); }
 });

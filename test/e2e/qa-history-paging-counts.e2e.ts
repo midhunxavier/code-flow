@@ -106,7 +106,7 @@ test("archived totals cover unloaded pages and Retry history repeats its failed 
 
 test("saved repository filters load immediately after hello and do not follow composer changes", async () => {
   await fresh("project/p-big", { thisRepo: true }); const rail = page.getByRole("navigation", { name: "Runs", exact: true });
-  await until(() => rail.getByRole("region", { name: "Run history pages", exact: true }).innerText(), text => /matching tasks? loaded/.test(text));
+  await until(async () => historyReads.filter(read => new URL(read.url).searchParams.get("repo") === repo && read.status === 200 && read.total !== undefined), reads => reads.length > 0);
   await rail.getByRole("button", { name: /^Application menu:/ }).click(); await page.getByRole("menuitem", { name: /View and filter runs/ }).click();
   assert.equal(await rail.getByLabel("Repository", { exact: true }).inputValue(), repo);
   await page.evaluate(() => { location.hash = "#/project/p-old"; });
@@ -114,7 +114,8 @@ test("saved repository filters load immediately after hello and do not follow co
   await page.getByText("Advanced · saved workflows and repository configuration", { exact: true }).click();
   await page.getByRole("button", { name: "Saved workflows", exact: true }).click();
   assert.equal(await rail.getByLabel("Repository", { exact: true }).inputValue(), repo);
-  await rail.getByLabel("Repository", { exact: true }).selectOption(other); await until(() => rail.getByRole("region", { name: "Run history pages", exact: true }).innerText(), text => /6 matching tasks loaded/.test(text)); await shot("independent-filter");
+  const filtered = page.waitForResponse(response => new URL(response.url()).pathname === "/api/runs" && new URL(response.url()).searchParams.get("repo") === other);
+  await rail.getByLabel("Repository", { exact: true }).selectOption(other); assert.equal((await (await filtered).json()).total, 6); await until(() => rail.locator(".rail-run-row").count(), count => count === 6); await shot("independent-filter");
 });
 
 test("old non-solo deep links restore breadcrumbs and side scope, and destination labels match pages", async () => {

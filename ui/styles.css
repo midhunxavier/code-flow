@@ -4361,7 +4361,7 @@ dialog.rail::backdrop { background: rgb(0 0 0 / .28); }
 .unified-chat .chat-send > .icon { width: 19px; height: 19px; }
 .unified-chat .chat-composer-note { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 16px; margin: 10px 8px 0; color: var(--faint); font-size: 10px; line-height: 1.5; }
 .unified-chat .chat-composer-note > span:only-child, .unified-chat .chat-composer-note > span:last-child { margin-left: auto; }
-.unified-chat .chat-project-context { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 6px; margin: 16px 0 0; }
+.unified-chat .chat-project-context { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-start; gap: 8px; margin: 0 0 12px; }
 .unified-chat .chat-project-context label { display: flex; align-items: center; gap: 5px; min-width: 0; max-width: 46%; color: var(--muted); }
 .unified-chat .chat-project-context label > .icon { width: 14px; height: 14px; flex: none; }
 .unified-chat .chat-project-context select { min-width: 0; max-width: 260px; border: 0; border-radius: 6px; background: transparent; padding: 6px 4px; color: var(--text-2); font: 400 12px var(--sans); text-overflow: ellipsis; cursor: pointer; }
@@ -4508,7 +4508,6 @@ dialog.rail::backdrop { background: rgb(0 0 0 / .28); }
 .automation-summary dd, .automation-summary dd p { margin: 0; }
 .automation-summary dd p + p { margin-top: 8px; }
 .automation-test-result { padding: 18px; margin: 16px 0; border: 1px solid var(--border); border-radius: 14px; }
-.chat-task-shortcuts { display: flex; justify-content: center; gap: 10px; padding: 6px 16px; }
 .task-inspector > h3 { font-size: 16px; line-height: 1.5; overflow-wrap: anywhere; }
 .task-inspector details { margin: 20px 0; }
 @media (max-width: 600px) { .automation-home { padding: 16px; } .automation-start { margin: 12px auto 24px; } .automation-setup-dialog { width: 100vw; max-height: 100dvh; height: 100dvh; margin: 0; border-radius: 0; padding: 20px; } .automation-summary { grid-template-columns: 80px minmax(0,1fr); gap: 12px; } }
@@ -4516,3 +4515,39 @@ dialog.rail::backdrop { background: rgb(0 0 0 / .28); }
 @media (max-width: 600px) { .automation-setup-dialog { max-width: 100vw; box-sizing: border-box; } }
 .automation-context { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 220px; overflow-y: auto; font-size: 12px; }
 .automation-setup-dialog > footer { position: sticky; bottom: -26px; padding: 16px 0; margin-bottom: -10px; background: var(--raised); border-top: 1px solid var(--border); z-index: 1; }
+
+/* Chat stays conversational; execution controls and evidence live in Task details. */
+.chat-task-progress .task-turn-body { padding: 0; background: transparent; border: 0; }
+.chat-progress-row { display: flex; align-items: center; gap: 8px; }
+.chat-progress-summary { display: flex; align-items: center; gap: 12px; flex: 1; min-width: 0; padding: 12px 0; border: 0; background: transparent; color: var(--text); text-align: left; border-radius: 8px; }
+.chat-progress-summary:hover { background: var(--hover); }
+.chat-progress-summary > span:nth-child(2) { display: grid; gap: 4px; min-width: 0; flex: 1; }
+.chat-progress-summary strong { font-size: 14px; font-weight: 500; }
+.chat-progress-summary > span > span { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.chat-progress-summary > .icon { width: 14px; height: 14px; color: var(--muted); transform: rotate(-90deg); }
+.chat-progress-row > .icon-btn { width: 30px; height: 30px; border: 1px solid var(--border); border-radius: 50%; }
+.app:has(.chat-is-new) > .main-col > .topbar > .host-switcher { display: none; }
+.unified-chat .chat-project-context .host-switcher > button { height: 30px; padding: 4px 8px; background: transparent; border: 0; font-size: 12px; }
+.unified-chat .chat-project-context .host-switcher .pop-menu { max-width: min(300px, calc(100vw - 40px)); }
+.unified-chat .chat-project-context label { max-width: min(260px, 100%); border-radius: 8px; }
+.unified-chat .chat-project-context select { max-width: 100%; }
+.chat-improve { gap: 5px; }
+.chat-improve .icon { width: 14px; height: 14px; }
+.chat-improve-dialog { width: min(680px, calc(100vw - 32px)); max-width: calc(100vw - 24px); max-height: calc(100dvh - 32px); overflow: auto; padding: 24px; border: 1px solid var(--border); border-radius: 18px; background: var(--raised); color: var(--text); }
+.chat-improve-dialog header { display: flex; align-items: flex-start; gap: 16px; }
+.chat-improve-dialog header > div { flex: 1; }
+.chat-improve-dialog h2 { margin: 0; font-size: 20px; }
+.chat-improve-dialog label { display: grid; gap: 8px; font-size: 13px; }
+.chat-improve-dialog textarea { width: 100%; min-height: 220px; resize: vertical; line-height: 1.6; }
+.chat-improve-dialog pre { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; font-size: 13px; }
+.chat-improve-options { display: flex; align-items: flex-end; flex-wrap: wrap; gap: 12px; margin-top: 16px; }
+.chat-improve-dialog details { margin-block: 16px; }
+.chat-improve-dialog footer { display: flex; gap: 8px; justify-content: flex-end; position: sticky; bottom: -24px; padding: 16px 0; background: var(--raised); }
+@media (max-width: 600px) { .chat-improve-dialog { padding: 18px; } .chat-improve-dialog footer { bottom: -18px; } }
+
+.rail-projects-title .rail-projects-toggle { flex: 1; display: inline-flex; align-items: center; gap: 6px; min-height: 28px; padding: 0; text-align: left; }
+.rail-projects-toggle .caret { width: 12px; height: 12px; }
+.rail #rail-project-groups[hidden] { display: none; }
+.rail-archive-view { margin-top: 8px; padding: 6px 10px; border-radius: 8px; background: var(--selected); font-size: 12px; }
+.rail-archive-view .rail-archive-toggle { padding: 2px 0; }
+.rail-history:empty { display: none; }

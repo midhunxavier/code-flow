@@ -54,6 +54,8 @@ This small demo uses Node's built-in test runner, with no framework or dependenc
 
 ## Agent mode
 
+For a new chat, choose the computer, project and repository above the message box. After typing, **Improve** previews an editable, structured rewrite using your saved rewrite settings. **Use this prompt** replaces the draft; **Undo rewrite** restores it. Rewriting does not send the message or approve work. It currently requires a repository; Quick uses only the draft text, while Repo uses a committed snapshot.
+
 Agent uses the existing provider adapter, tools and permission choices. Send authorizes that turn within its displayed allowance; there is no Team approach approval for an ordinary Agent turn. The default allowance is 12 managed calls and 30 execution minutes. **Task details → Agent allowance for new work** changes future turns.
 
 Follow-up messages continue the provider session when possible. Changing providers starts a new provider session with recent conversation context and a snapshot of the preceding Agent workspace. Switching to Team similarly retains completed Agent work when preparing the next task. An active Team writer must settle before an Agent writer starts. Changes remain in isolated worktrees.
@@ -90,6 +92,8 @@ Reloading restores messages, approaches, executions and results. Closing the win
 
 Results appear in order beside their tasks: **Plan ready**, **Plan agreed**, **Changes verified**, **Review completed**, or **Stopped with partial work**. The main result is the final deliverable; evidence opens separately. Agreement applies to a specific artifact, and checks apply to a recorded code snapshot.
 
+Started tasks appear as compact progress rows in chat. Open a progress row or **Task details** for pause/resume, results and recovery controls; a running task also keeps a direct Stop control. Questions and approach approvals remain explicit.
+
 **Task details** contains actual participant assignment statuses and CLI session receipts, worktrees and earlier executions. Inspecting a lead turn shows its readable response, proposed participants and workflow, with protocol JSON collapsed under **Technical response (JSON)**. A proposed participant has not run yet. A worker saying that another agent reviewed something is not participation evidence. Code Flow starts managed participants itself, and workers perform their own assignments without nesting another team.
 
 **Inspect execution and changes** opens the existing run workspace. Applying changes, opening a PR, merging, pushing and deploying remain explicit actions.
@@ -112,7 +116,7 @@ Use **View approach**, **View plan**, **View review** or **View changes** to ope
 
 With **Discussion only · no repository**, Claude can answer without inspecting code or starting workers. The installed CLI must advertise the required controls; builtin tools, MCP, browser integration, hooks and native delegation are disabled on every invocation. This is a CLI tool restriction, not operating-system isolation. Text attachments are included directly in the prompt, bounded to 64 KB of UTF-8 text. Other providers require an attached repository until their adapters can verify the same contract. Choose **+ → Project and source**, select a project repository and **Attach repository** to continue the same conversation with code work. The private empty discussion workspace is never used as project source.
 
-Chat row menus support **Rename**, **Pin**, **Archive chat** and **Restore chat**. Archiving organizes history; it does not cancel active work or delete worktrees. **Archived chats** opens archived history. Search includes message content and opens the matching history page. Older messages load in pages of 50 (API maximum 100); the browser retains at most 150 visible messages and offers **Back to latest**. The journal currently bounds each chat to 100,000 events; paging does not make server memory unbounded.
+Chat row menus support **Rename**, **Pin**, **Archive chat** and **Restore chat**. Archiving organizes history; it does not cancel active work or delete worktrees. **Code Flow menu → Archived chats** opens archived history; **Back to active chats** returns to the normal list. The sidebar **Projects** heading collapses its list and remembers the choice across reloads. Search includes message content and opens the matching history page. Older messages load in pages of 50 (API maximum 100); the browser retains at most 150 visible messages and offers **Back to latest**. The journal currently bounds each chat to 100,000 events; paging does not make server memory unbounded.
 
 A backend controller advances submitted turns and records completed task results even with no browser open. History GETs return state only. The existing shared event stream carries bounded cursor-based invalidations, with reset after restart or a missed replay window; a 15-second poll recovers state if updates are missed. Stable command IDs and durable receipts prevent duplicate submissions from starting another execution. An uncertain write requires inspection of its preserved execution rather than automatic replay.
 

@@ -14,7 +14,7 @@ import { pendingApprovals } from "./approval-inbox.js";
 import { Icon } from "./icons.js";
 import { Menu, MenuItem } from "./panel-bits.js";
 import { ArchiveDialog, DeleteRunsDialog } from "./run-actions.js";
-import { ownerOnLocalListener, collaborationConfigured, api, ago, baseName, fmtCost, fmtTokens, post, showToast, showError, STATUS_TEXT } from "./lib.js";
+import { store, ownerOnLocalListener, collaborationConfigured, api, ago, baseName, fmtCost, fmtTokens, post, showToast, showError, STATUS_TEXT } from "./lib.js";
 import {
   NONE,
   lastAgentTabs,
@@ -28,7 +28,6 @@ import {
   filterActive,
   health,
   healthOpen,
-  historyTotal,
   attentionTotal,
   attentionTruncated,
   ALL,
@@ -121,6 +120,8 @@ interface Group {
  * every project with its runs. Nothing in it depends on a project you picked somewhere else.
  */
 export function Rail() {
+  const [projectsCollapsed, setProjectsCollapsed] = useState(() => store.get("railProjectsCollapsed") === "1");
+  const collapseProjects = (value: boolean) => { setProjectsCollapsed(value); store.set("railProjectsCollapsed", value ? "1" : "0"); };
   const [phone, setPhone] = useState(() => window.matchMedia?.("(max-width: 760px)").matches ?? false);
   useEffect(() => { const media = window.matchMedia("(max-width: 760px)"), change = () => setPhone(media.matches); media.addEventListener("change", change); return () => media.removeEventListener("change", change); }, []);
   const drawer = useDialog(phone && railOpen.value, () => { railOpen.value = false; });
@@ -426,7 +427,7 @@ export function Rail() {
         ) : null}
         <section aria-label="Projects">
           <div class="rail-title rail-section rail-projects-title">
-            Projects
+            <button type="button" class="rail-projects-toggle" aria-expanded={!projectsCollapsed} aria-controls="rail-project-groups" onClick={() => collapseProjects(!projectsCollapsed)}>Projects<Icon name="chevron" class="caret"/></button>
             <button
               type="button"
               class="icon-btn"
@@ -440,9 +441,9 @@ export function Rail() {
               <Icon name="plus" />
             </button>
           </div>
-          <ComputerProjects directory={computers} error={computerProjects.error} query={f.q}>
+          <div id="rail-project-groups" hidden={projectsCollapsed}><ComputerProjects directory={computers} error={computerProjects.error} query={f.q}>
             {groups.filter(g => g.runs.length || visibleChats.some(chat => chat.project === (g.project?.id ?? "")) || !filtering && g.project).map(projectGroup)}
-          </ComputerProjects>
+          </ComputerProjects></div>
         </section>
         {view.archived && list.some(taskArchived) ? <section aria-label="Archived runs"><div class="rail-title rail-section">Archived runs</div>{list.filter(taskArchived).map(run => row(run, projectFor(run)?.name ?? baseName(run.repo)))}</section> : null}
       </>
@@ -451,7 +452,6 @@ export function Rail() {
   const hiddenSelected = selectedRuns.filter(run => !renderedRuns.has(run.id)).length;
   const filterRepos = [...new Set([...projects.value.flatMap(project => project.repos), ...all.map(run => run.repo), ...(f.repo ? [f.repo] : [])])].sort();
   const empty = !list.length && !chats.value.length;
-  const shownTasks = filtering ? list.length : all.length;
   return (
     <RailElement ref={railRef} inert={phone && !railOpen.value} aria-hidden={phone && !railOpen.value ? true : undefined} class={`rail ${railOpen.value ? "open" : ""}`} aria-label="Runs" onClick={event => {
       if (!phone || event.target !== event.currentTarget) return;
@@ -505,7 +505,7 @@ export function Rail() {
           }}
         />
       </div>
-      {!collapsed && ownerOnLocalListener.value ? <button type="button" class="rail-archive-toggle" aria-pressed={archivedChats.value} onClick={() => { archivedChats.value = !archivedChats.value; }}>{archivedChats.value ? "Back to active chats" : "Archived chats"}</button> : null}
+      {!collapsed && ownerOnLocalListener.value && archivedChats.value ? <div class="rail-archive-view"><span>Archived chats</span><button type="button" class="rail-archive-toggle" onClick={() => { archivedChats.value = false; }}>Back to active chats</button></div> : null}
       {!collapsed && (all.length > 0 || selecting) ? <div class="rail-selection">
         <div class="rail-selection-head"><button type="button" class="btn small ghost" disabled={bulkBusy || !!bulkDeleting} aria-pressed={selecting} onClick={() => { setSelecting(!selecting); setSelected(new Set()); setBulkError(""); }}>{selecting ? "Done selecting" : "Select runs"}</button>{selecting ? <span role="status">{selectedRuns.length} selected{hiddenSelected ? ` · ${hiddenSelected} not shown` : ""}</span> : null}</div>
         {selecting ? <>
@@ -579,7 +579,7 @@ export function Rail() {
       </div>
       <div class="rail-history" role="region" aria-label="Run history pages">
         {projectCountsError.value ? <span class="help" role="status">Complete history totals are unavailable. Counts show loaded items. <button class="btn small" onClick={() => void refreshProjectCounts().catch(() => {})}>Retry totals</button></span> : null}
-        <span class="help" role="status">{historyLoading.value ? "Searching history…" : historyTotal.value === null ? "Loading history…" : `${chats.value.length ? `${chats.value.length} chat${chats.value.length === 1 ? "" : "s"} · ` : ""}${shownTasks} ${filtering ? "matching " : ""}task${shownTasks === 1 ? "" : "s"} loaded`}</span>
+        {historyLoading.value ? <span class="help" role="status">Searching history…</span> : null}
         {historyNextCursor.value ? <button type="button" class="btn small" disabled={historyLoading.value || historyLoadingMore.value} onClick={() => void loadOlderRuns()}>{historyLoadingMore.value ? "Loading…" : "Load older runs"}</button> : null}
         {attentionTruncated.value && historyNextCursor.value ? <span class="help" role="status">{attentionTotal.value} running or attention items at last refresh. Older attention is paged; use Load older runs to include more.</span> : null}
         {historyError.value ? <div class="help" role="alert">{historyError.value}<button class="btn small" disabled={historyLoading.value || historyLoadingMore.value} onClick={() => void retryHistory()}>Retry history</button></div> : null}
@@ -595,6 +595,7 @@ export function Rail() {
         </>}>
           {(close) => <>
             {peopleEnabled.value || collaborationConfigured.value || unread ? <MenuItem on={r.view === "team" || r.view === "team-task" || r.view === "team-people"} onClick={() => { close(); go({ view: "team" }); }}><Icon name="people" /><span>Board</span>{unread ? <span class="rail-menu-meta" aria-label={`${unread} unread`}>{unread}</span> : null}</MenuItem> : null}
+            {ownerOnLocalListener.value ? <MenuItem on={archivedChats.value} onClick={() => { close(); archivedChats.value = !archivedChats.value; collapseProjects(false); peekRail(); }}><Icon name="archive"/><span>{archivedChats.value ? "Active chats" : "Archived chats"}</span></MenuItem> : null}
             <MenuItem on={r.view === "settings"} onClick={() => { close(); go({ view: "settings" }); }}><Icon name="sliders" /><span>Settings</span><kbd class="rail-menu-meta">⌘,</kbd></MenuItem>
             <MenuItem sub={`${agents.value.length} providers${agentsPaused ? " · paused by filesystem policy" : agentProblems ? ` · ${agentProblems} need setup` : ""}`} onClick={() => { close(); railOpen.value = false; healthOpen.value = true; }}><Icon name="sparkle" /><span>Agents & usage</span></MenuItem>
             <MenuItem onClick={() => { close(); go({ view: "workspace" }); }}><Icon name="files" /><span>Repository tools</span></MenuItem>

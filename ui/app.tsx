@@ -227,10 +227,10 @@ function TopBar() {
       </button>
       <HostControl />
       <Crumbs />
-      <span class={`connection-status ${connection.value.state}`} role="status" title={connection.value.state === "connected" ? "Live updates are connected" : connection.value.detail ?? "Live updates are unavailable; displayed run information may be out of date"}>
+      {connection.value.state !== "connected" ? <span class={`connection-status ${connection.value.state}`} role="status" title={connection.value.detail ?? "Live updates are unavailable; displayed run information may be out of date"}>
         <span class="cs-dot" aria-hidden="true" />
-        <span class="cs-label">{connection.value.state === "connected" ? "Connected" : connection.value.state === "offline" ? "Offline" : connection.value.state === "reconnecting" ? "Reconnecting…" : "Connecting…"}</span>
-      </span>
+        <span class="cs-label">{connection.value.state === "offline" ? "Offline" : connection.value.state === "reconnecting" ? "Reconnecting…" : "Connecting…"}</span>
+      </span> : null}
       {/* a search glass and the shortcut as a key; a phone shows only the glass */}
       <button class="btn ghost command-btn" aria-label={`Open command palette · ${MOD_KEY}K`} aria-keyshortcuts="Meta+K Control+K" title={`Commands and navigation (${MOD_KEY}K)`} onClick={() => (commandPaletteOpen.value = true)}>
         <Icon name="search" />

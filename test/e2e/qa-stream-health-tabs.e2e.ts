@@ -47,7 +47,7 @@ async function page(hash = "") { context ??= await browser.newContext({ viewport
     const body = await response.json().catch(() => null);
     if (body?.error === "The backend is stopping") shutdownReads.add(response.url());
   }
-}); p.setDefaultTimeout(12_000); await p.addInitScript(() => { if (["http:", "https:"].includes(location.protocol)) localStorage.setItem("sideOpen", "0"); }); p.on("pageerror", e => errors.push(e.message)); p.on("console", m => { if (m.type() !== "error") return; const expected = disruptingStream && m.location().url.startsWith(base + "/api/") && /^Failed to load resource: net::ERR_(?:INCOMPLETE_CHUNKED_ENCODING|CONNECTION_REFUSED)$/.test(m.text()); (expected ? expectedNetworkErrors : consoleErrors).push(`${m.text()} [${m.location().url}]`); }); await p.goto(`${base}/?token=${token}#/${hash}`); await until(() => p.locator(".connection-status").innerText(), v => v === "Connected"); return p; }
+}); p.setDefaultTimeout(12_000); await p.addInitScript(() => { if (["http:", "https:"].includes(location.protocol)) localStorage.setItem("sideOpen", "0"); }); p.on("pageerror", e => errors.push(e.message)); p.on("console", m => { if (m.type() !== "error") return; const expected = disruptingStream && m.location().url.startsWith(base + "/api/") && /^Failed to load resource: net::ERR_(?:INCOMPLETE_CHUNKED_ENCODING|CONNECTION_REFUSED)$/.test(m.text()); (expected ? expectedNetworkErrors : consoleErrors).push(`${m.text()} [${m.location().url}]`); }); await p.goto(`${base}/?token=${token}#/${hash}`); await p.locator(".topbar").waitFor(); await p.locator(".connection-status").waitFor({ state: "hidden" }); return p; }
 async function shot(p: Page, name: string) { if (evidence) { mkdirSync(evidence, { recursive: true }); await p.screenshot({ path: join(evidence, name + ".png"), animations: "disabled" }); } }
 let tasks = 0;
 const completed = async () => { const run = await api("/api/runs", { repo, project, pattern: "solo", roles: { agent: ["claude"] }, task: `Stream QA small change ${++tasks}` }); return until(() => api(`/api/runs/${run.id}`), r => r.status !== "running" && !!r.endedAt); };
@@ -66,7 +66,7 @@ test("two tabs retain unsaved dialogs and one broker across repeated server rest
   for (let round = 0; round < 2; round++) {
     await stop(); await launch();
     await until(() => api("/api/health"), v => v.streams.streams === 1 && v.streams.subscriptions >= 6);
-    for (const [p, name] of [[a, "Half typed A"], [b, "Half typed B"]] as const) { assert.equal(await p.evaluate(() => (window as any).__qaMarker), name); assert.equal(await p.locator("#project-name").inputValue(), name); await until(() => p.locator(".connection-status").innerText(), v => v === "Connected"); }
+    for (const [p, name] of [[a, "Half typed A"], [b, "Half typed B"]] as const) { assert.equal(await p.evaluate(() => (window as any).__qaMarker), name); assert.equal(await p.locator("#project-name").inputValue(), name); await p.locator(".topbar").waitFor(); await p.locator(".connection-status").waitFor({ state: "hidden" }); }
   }
   await shot(a, "restart-dialog-retained"); await a.close(); await until(() => api("/api/health"), v => v.streams.streams === 1 && v.streams.subscriptions >= 3); assert.equal(await b.locator("#project-name").inputValue(), "Half typed B");
 });
@@ -76,7 +76,7 @@ test("failed and hanging diagnostics do not prevent live updates reconnecting", 
   for (const mode of ["error", "hang"]) {
     await p.route("**/api/health", async route => { if (mode === "error") { injectedHealthErrors++; await route.fulfill({ status: 500, json: { error: "Injected diagnostics failure" } }); } /* hang deliberately leaves the intercepted request pending */ });
     await stop(); await launch(); await until(() => api("/api/health"), v => v.streams.streams === 1);
-    await until(() => p.locator(".connection-status").innerText(), v => v === "Connected"); const run = await completed(); await p.locator(".run-item", { hasText: run.task }).first().waitFor();
+    await p.locator(".topbar").waitFor(); await p.locator(".connection-status").waitFor({ state: "hidden" }); const run = await completed(); await p.locator(".run-item", { hasText: run.task }).first().waitFor();
     await shot(p, `diagnostics-${mode}`); await p.unroute("**/api/health");
   }
 });
