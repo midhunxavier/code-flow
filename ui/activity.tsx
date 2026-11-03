@@ -10,7 +10,7 @@ import { projects, repo, type Route } from "./state.js";
 export function ActivityView({ current }: { current: Route }) {
   if (current.view !== "inbox" && current.view !== "automations" && current.view !== "workspace" && current.view !== "insights") return null;
   return <div class="activity-page">
-    <header class="page-head"><div class="page-head-text"><h1>{{ inbox: "Inbox", automations: "Scheduling", workspace: "Repository tools", insights: "Insights" }[current.view]}</h1></div></header>
+    {current.view !== "automations" || current.kind ? <header class="page-head"><div class="page-head-text"><h1>{{ inbox: "Inbox", automations: "Scheduling", workspace: "Repository tools", insights: "Insights" }[current.view]}</h1></div></header> : null}
     {current.view === "inbox" ? <AutomationsView mode="inbox" /> : null}
     {current.view === "automations" ? <SchedulingView kind={current.kind} /> : null}
     {current.view === "workspace" && !repo.value ? <section><p>Choose a project or open a repository on {computerLabel()}.</p><div class="project-destinations">{projects.value.map(project => <a class="btn" href={`#/project/${encodeURIComponent(project.id)}/repositories`}>{project.name}</a>)}<button class="btn" onClick={() => openRepository()}>Open repository</button></div></section> : null}

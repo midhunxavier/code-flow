@@ -49,7 +49,9 @@ async function chooseFolder(repository: string) {
 }
 async function projectNewRun(id: string) {
   await page.goto(base + `/#/project/${id}`);
-  await page.locator(".page-head-actions").getByRole("button", { name: "Existing workflows", exact: true }).click();
+  await page.locator(".project-page").getByRole("link", { name: "Project settings", exact: true }).click();
+  await page.getByText("Advanced · saved workflows and repository configuration", { exact: true }).click();
+  await page.getByRole("button", { name: "Saved workflows", exact: true }).click();
   await page.getByLabel("Task", { exact: true }).waitFor({ timeout: 15000 }).catch(async error => { console.error(await page.locator("body").innerText(), errors); throw error; });
 }
 
@@ -209,7 +211,7 @@ test("project pages fit narrow screens, expose accessible navigation and have no
   const audit = await page.evaluate(async () => (window as any).axe.run(".project-page", { runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21a"] } }));
   assert.deepEqual(audit.violations.map((violation: any) => violation.id), []);
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.getByRole("navigation", { name: "Runs", exact: true }).waitFor({ state: "hidden" });
+  await page.getByRole("navigation", { name: "Workspace navigation", exact: true }).waitFor({ state: "hidden" });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
   assert.equal(await page.locator(".project-page").evaluate(element => element.getBoundingClientRect().right <= innerWidth), true, "project page fits the viewport");
   assert.equal(await page.locator(".project-start").evaluate(element => element.scrollWidth <= element.clientWidth), true, "task entry content is not clipped");
@@ -237,8 +239,7 @@ test("project Board and People use the owning server despite colliding linked pr
     await page.goto(base + `/?team=${remote}#/team/project/${projectA}`);
     await page.getByRole("button", { name: /Remote colliding task/ }).waitFor();
     await page.goto(base + `/?team=${remote}#/project/${projectA}`);
-    await page.getByRole("button", { name: /^More project tools:/ }).click();
-    await page.getByRole("menuitem", { name: "Board", exact: true }).click();
+    await page.getByRole("navigation", { name: "Project navigation" }).getByRole("link", { name: "Board", exact: true }).click();
     await page.getByRole("button", { name: /Local board task/ }).waitFor();
     assert.equal(new URL(page.url()).searchParams.get("team"), "local");
     assert.equal(await page.getByRole("button", { name: /Remote colliding task/ }).count(), 0);
@@ -305,11 +306,13 @@ test("new project destinations support narrow screens, themes and keyboard navig
       assert.equal(await page.locator(".project-page").evaluate(element => element.scrollWidth <= element.clientWidth + 1), true, section);
       await page.screenshot({ path: join(root, `output/playwright/project-${section.replace("/", "-")}-${colorScheme}.png`), fullPage: true });
     }
-    const more = page.getByRole("button", { name: /^More project tools:/ }); await more.focus(); await page.keyboard.press("Enter");
-    await page.getByRole("menuitem", { name: "People", exact: true }).waitFor({ timeout: 10_000 });
-    await page.waitForFunction(() => document.activeElement?.getAttribute("role") === "menuitem", undefined, { timeout: 10_000 }); await page.keyboard.press("Escape");
-    await page.getByRole("menu", { name: "More project tools", exact: true }).waitFor({ state: "hidden", timeout: 10_000 });
-    assert.equal(await more.evaluate(element => document.activeElement === element), true);
+    const navigation = page.getByRole("navigation", { name: "Project navigation" });
+    const settings = navigation.getByRole("link", { name: "Project settings", exact: true });
+    await settings.focus(); await page.keyboard.press("Enter");
+    await page.getByRole("button", { name: "Edit project", exact: true }).waitFor();
+    assert.equal(await settings.getAttribute("aria-current"), "page");
+    const navBounds = (await navigation.boundingBox())!, tabBounds = (await settings.boundingBox())!;
+    assert.ok(tabBounds.x >= navBounds.x - 1 && tabBounds.x + tabBounds.width <= navBounds.x + navBounds.width + 1, "the selected tab remains visible on narrow screens");
   }
   assert.deepEqual(errors, []);
 });

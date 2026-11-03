@@ -10,7 +10,8 @@ const { createAgyAdapter } = await import("../src/adapters/agy.js");
 const { createRunPermissions, resolveRunPermissions } = await import("../src/run-permissions.js");
 type AgentEvent = import("../src/adapters/types.js").AgentEvent;
 type RunOptions = import("../src/adapters/types.js").RunOptions;
-after(async () => { await rm(root, { recursive: true, force: true }); });
+// A delayed process-group cleanup may persist its receipt during recursive removal.
+after(async () => { await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
 
 // Inject a synthetic process at the construction boundary: no real login, secrets or network.
 function fixture(stdout: unknown[], stderr = "", mode: "read" | "write" = "write", holdOpen = false, nativeLog = "") {

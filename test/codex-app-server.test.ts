@@ -95,6 +95,7 @@ test("a turn streams the same events as codex exec, and usage is per turn on a r
   const first = await turn("Look around");
   assert.ok(first.result.ok, first.result.error);
   assert.equal(first.result.finalText, "codex handled the request.");
+  assert.ok(!first.events.some((e) => e.kind === "status" && e.text.includes("doesn't know")), "remote-control bookkeeping is not output format drift");
   const kinds = first.events.map((e) => e.kind);
   assert.deepEqual(kinds.slice(0, 3), ["session", "tool_call", "tool_result"]);
   assert.ok(first.events.some((e) => e.kind === "status" && e.text === "✓ Look around\n○ Answer"), "the plan shows as a todo list");

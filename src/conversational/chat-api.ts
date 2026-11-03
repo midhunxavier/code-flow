@@ -6,13 +6,15 @@ import type { Conversations } from "./chats.js";
 
 export async function handleConversations(req: IncomingMessage, res: ServerResponse, url: URL, parts: string[], service: Conversations) {
   try {
+    if (parts.length === 3 && parts[2] === "context" && req.method === "GET") return send(res, 200, await service.projectContext(url.searchParams.get("project") ?? "", url.searchParams.get("repo") ?? ""));
+    if (parts.length === 3 && parts[2] === "context" && req.method === "POST") return send(res, 200, await service.setProjectContext(await readJson(req, 7 * 1024 * 1024)));
     if (parts.length === 2 && req.method === "GET") {
-      const items = await service.list(url.searchParams.get("project") ?? ""), cursor = digest(items);
+      const items = await service.list(url.searchParams.get("project") ?? "", { q: url.searchParams.get("q") ?? undefined, archived: url.searchParams.get("archived") === "true" }), cursor = digest(items);
       return send(res, 200, { cursor, ...(url.searchParams.get("after") === cursor ? {} : { items }) });
     }
     if (parts.length === 2 && req.method === "POST") return send(res, 201, await service.create(await readJson(req, 7 * 1024 * 1024)));
     if (parts.length === 3 && req.method === "GET") {
-      const snapshot = await service.get(parts[2]!);
+      const snapshot = await service.get(parts[2]!, { before: url.searchParams.has("before") ? Number(url.searchParams.get("before")) : undefined, limit: url.searchParams.has("limit") ? Number(url.searchParams.get("limit")) : undefined });
       return send(res, 200, url.searchParams.get("after") === snapshot.cursor ? { cursor: snapshot.cursor, unchanged: true } : snapshot);
     }
     if (parts.length === 4 && parts[3] === "actions" && req.method === "POST") return send(res, 200, await service.action(parts[2]!, await readJson(req, 7 * 1024 * 1024)));

@@ -29,9 +29,12 @@ export async function startResultPreview(run: RunSummary, tree: Tree, command?: 
 export const previewStoppedMessage = (server: DevServer | null) => `The preview stopped${server?.exitCode == null ? "" : ` (exit ${server.exitCode})`}. Check its app command and logs.${server?.logs.length ? ` Last output: ${server.logs.slice(-4).join("\n")}` : ""}`;
 export async function stopResultPreview(base: string, server: Pick<DevServer, "startedAt">) { await api(`${base}?startedAt=${server.startedAt}`, { method: "DELETE" }); }
 /** A bound port is only the first startup signal: require sustained readiness, then check identity again. */
-export async function waitForResultPreview(base: string, server: DevServer, timing = { attempts: 120, interval: 250, stable: 1500 }): Promise<DevServer> {
+export async function waitForResultPreview(base: string, server: DevServer, timing: { attempts: number; interval: number; stable: number; timeout?: number } = { attempts: 120, interval: 250, stable: 1500 }): Promise<DevServer> {
   let readySince: number | undefined;
-  for (let attempt = 0; attempt < timing.attempts; attempt++) {
+  // Failed socket probes take time too; counting only polling intervals can
+  // turn the 30-second startup allowance into a much longer wait.
+  const deadline = performance.now() + (timing.timeout ?? 30_000);
+  for (let attempt = 0; attempt < timing.attempts && performance.now() < deadline; attempt++) {
     const state = await api<{ ready: boolean; status: string }>(base + "/ready");
     if (state.status !== "running") throw new Error(previewStoppedMessage(await api<DevServer | null>(base)));
     if (state.ready) {

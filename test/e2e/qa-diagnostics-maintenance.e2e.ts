@@ -14,7 +14,7 @@ const errors: string[] = [], expectedErrors: string[] = [], evidence = join(root
 const fake = "FAKE_QA_DIAGNOSTICS_SECRET", contextToken = "sk-ant-api03-QAFAKEabcdefghijklmnop";
 async function api<T = any>(path: string, body?: unknown): Promise<T> { const response = await fetch(base + path, { headers, ...(body === undefined ? {} : { method: "POST", body: JSON.stringify(body) }) }); assert.ok(response.ok, `${response.status}: ${await response.clone().text()}`); return response.json() as Promise<T>; }
 async function until<T>(read: () => Promise<T>, ready: (value: T) => boolean) { const deadline = Date.now() + 15000; for (;;) { const value = await read(); if (ready(value)) return value; if (Date.now() > deadline) throw new Error(`Diagnostics fixture timed out: ${JSON.stringify(value)}`); await new Promise(resolve => setTimeout(resolve, 50)); } }
-async function open(hash: string) { await page.goto(`${base}/?token=${token}#/${hash}`); await page.getByRole("navigation", { name: "Runs", exact: true }).waitFor(); }
+async function open(hash: string) { await page.goto(`${base}/?token=${token}#/${hash}`); await page.getByRole("navigation", { name: "Workspace navigation", exact: true }).waitFor(); }
 const shot = (name: string) => page.screenshot({ path: join(evidence, name + ".png"), animations: "disabled" });
 function cli(...args: string[]) { try { return { code: 0, out: execFileSync(process.execPath, ["--import", "tsx", "scripts/maintenance.ts", ...args, "--home", home], { cwd: root, env: { ...process.env, CODEFLOW_HOME: home, CODEFLOW_BACKUP_PASSWORD: "scratch backup password" }, encoding: "utf8", stdio: "pipe" }), err: "" }; } catch (error) { const failure = error as { status: number; stdout: Buffer; stderr: Buffer }; return { code: failure.status, out: String(failure.stdout), err: String(failure.stderr) }; } }
 async function stop() { if (!server || server.exitCode !== null || server.signalCode !== null) return; server.kill("SIGTERM"); await new Promise<void>(resolve => { const timer = setTimeout(() => { server.kill("SIGKILL"); resolve(); }, 5000); server.once("exit", () => { clearTimeout(timer); resolve(); }); }); }
@@ -38,7 +38,9 @@ before(async () => {
 after(async () => { await browser?.close(); await stop(); await writeFile(join(evidence, "server.log"), output); await writeFile(join(evidence, "browser-errors.json"), JSON.stringify({ errors, expectedErrors }, null, 2)); await rm(directory, { recursive: true, force: true }); });
 
 test("context inspector renders one intact redaction for token-shaped and quoted secrets", async () => {
-  await open(`project/${project}`); await page.locator(".project-page").getByRole("button", { name: "Existing workflows", exact: true }).click();
+  await open(`project/${project}`); await page.locator(".project-page").getByRole("link", { name: "Project settings", exact: true }).click();
+  await page.getByText("Advanced · saved workflows and repository configuration", { exact: true }).click();
+  await page.getByRole("button", { name: "Saved workflows", exact: true }).click();
   await page.locator(".taskbox").getByRole("button", { name: "Files", exact: true }).click(); await page.getByRole("button", { name: "Add qa-secret.txt to the task", exact: true }).click();
   if (await page.locator(".composer-options").getAttribute("open") === null) await page.locator(".composer-options > summary").click(); await page.locator(".context-inspector > summary").click(); await page.getByRole("button", { name: "Preview selected context", exact: true }).click();
   const result = page.locator(".context-inspection-results"); await result.getByText(/qa-secret.txt ·/).click(); const text = await result.innerText(); assert.ok(text.includes('api_key = "[REDACTED]"')); assert.ok(!text.includes(contextToken)); assert.ok(!text.includes(fake)); assert.ok(!text.includes("[REDACTED] TOKEN]")); await shot("context-redaction");

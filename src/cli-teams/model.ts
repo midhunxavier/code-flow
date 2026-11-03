@@ -43,6 +43,7 @@ export interface PendingAssignment {
   attemptId: string; claimHash?: string; claimExpiresAt?: number; connection?: string; output?: { body: string; verdict?: "approve" | "changes_requested"; findings?: string[] };
 }
 export interface RuntimeState {
+  leadReplyKind?: "answer" | "clarify" | "guidance" | "proposal";
   taskConversation?: { id: string; phase: "preparation" | "execution"; chatId?: string };
   waitingForSlot?: boolean;
   activity?: { path: string; nodeId: string; title: string; participant?: string; type: Node["type"]; status: "working" | "completed" | "changes_requested" | "failed"; startedAt: number; endedAt?: number }[];
@@ -94,7 +95,7 @@ const id = { type: "string", pattern: "^(?!constructor$|prototype$)[a-z][a-z0-9-
 const refs = { type: "array", items: id, maxItems: 32 };
 const settings = { type: "object", additionalProperties: false, properties: { model: { ...text, maxLength: 160 }, effort: { ...text, maxLength: 20 } } };
 const taskProperties = { id, type: { const: "task" }, operation: { enum: ["propose", "revise_proposal", "synthesize", "review_plan", "implement", "repair", "review_code", "verify", "capture_snapshot"] }, participant: id, instructions: text, inputs: refs };
-export const TASK_SCHEMA = { type: "object", additionalProperties: false, required: ["id", "type", "operation", "instructions"], properties: taskProperties };
+export const TASK_SCHEMA = { type: "object", additionalProperties: false, required: ["id", "type", "operation"], properties: taskProperties };
 // Recursive node validation is explicit below so the same contracts work with the
 // repository's small schema validator and MCP hosts that don't support recursive refs.
 export const CANDIDATE_SCHEMA = {
@@ -114,7 +115,7 @@ export function validatePreferences(value: unknown): Preferences {
 export function validateCandidate(value: unknown): Candidate {
   const problem = shapeProblem(CANDIDATE_SCHEMA, value);
   if (problem) fail("validation_failed", problem);
-  const c = value as Candidate;
+  const c = structuredClone(value) as Candidate;
   const ids = new Set<string>(), participants = new Map(c.participants.map(p => [p.id, p]));
   if (participants.size !== c.participants.length) fail("validation_failed", "Participant IDs must be unique");
   if (c.participants.filter(p => p.binding === "current_session").length > 1) fail("validation_failed", "One current conversation can represent only one participant; use managed workers for independent reviewers");
@@ -134,6 +135,10 @@ export function validateCandidate(value: unknown): Candidate {
         const issue = shapeProblem(TASK_SCHEMA, n); if (issue) fail("validation_failed", `${n.id}: ${issue}`);
         allowed = Object.keys(taskProperties); requireRefs(n.inputs);
         const engine = ["verify", "capture_snapshot"].includes(n.operation);
+        if (!n.instructions) {
+          if (!engine) fail("validation_failed", `${n.id}: agent work requires instructions`);
+          n.instructions = n.operation === "verify" ? "Run the configured checks" : "Capture the current code snapshot";
+        }
         if (engine ? n.participant !== undefined : !participants.has(n.participant!)) fail("validation_failed", `${n.id}: choose a participant for agent work only`);
         if (["review_plan", "review_code"].includes(n.operation) && n.inputs?.length !== 1) fail("validation_failed", `${n.id}: reviews require exactly one target input`);
         if (n.operation.startsWith("review") && contracts.get(n.inputs![0]!)?.kind !== (n.operation === "review_plan" ? "plan" : "code_snapshot")) fail("validation_failed", `${n.id}: review input has the wrong artifact kind`);

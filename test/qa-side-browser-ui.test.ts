@@ -89,6 +89,23 @@ test("Pick and Box follow reload, navigation, Escape and sending without clickin
  const bounds=await surface.boundingBox(),from=await point(20,60),to=await point(130,105);await page.mouse.move(bounds!.x+from.x,bounds!.y+from.y);await page.mouse.down();const dragView=(await api(endpoint(),{action:"state"})).view;await side.getByLabel("Browser viewport").selectOption("tablet");await page.waitForTimeout(300);assert.equal((await api(endpoint(),{action:"state"})).view,dragView,"viewport changes wait for the active annotation gesture");for(let step=1;step<=5;step++){await page.mouse.move(bounds!.x+from.x+(to.x-from.x)*step/5,bounds!.y+from.y+(to.y-from.y)*step/5);await page.waitForTimeout(100);}await page.mouse.up();await until(async()=>await side.locator(".pin-row").count()===1);assert.equal(hits,beforeHits+1);await side.getByLabel("Browser viewport").selectOption("full");await ready();await shot("03-box-after-reload");await off();await clearPins();
 });
 
+test("Escape cancels annotation while a resize is queued without sending a stale key", { timeout: 45000 }, async () => {
+ await go("/escape-resize"); await side.getByRole("button", { name: "Pick", exact: true }).click(); await click(60,80);
+ await until(async()=>await side.locator(".pin-row").count()===1); await ready();
+ const marker=apiFailures.length, inputs=requests.length;
+ let release!:()=>void, entered!:()=>void, first=true;
+ const held=new Promise<void>(resolve=>release=resolve), captured=new Promise<void>(resolve=>entered=resolve);
+ await page.route("**/api/browser?**",async route=>{if(route.request().postDataJSON()?.action==="resize"&&first){first=false;entered();await held;}await route.continue();});
+ try {
+  await side.getByLabel("Browser viewport").selectOption("tablet"); await captured;
+  await side.getByLabel("Type in browser page", {exact:true}).press("Escape");
+  await until(async()=>await side.getByRole("button",{name:"Pick",exact:true}).getAttribute("aria-pressed")==="false");
+  release(); await ready(); const before=hits; await click(60,80); await until(async()=>hits===before+1);
+  assert.equal(requests.slice(inputs).some(request=>request.action==="key"&&request.key==="Escape"),false);
+  assert.deepEqual(apiFailures.slice(marker),[]);
+ } finally {release();await page.unrouteAll({behavior:"wait"});await side.getByLabel("Browser viewport").selectOption("full");await ready();await off();await clearPins();}
+});
+
 test("switching tabs resets old interception without stale-tab cleanup errors",{timeout:45000},async()=>{
  await go("/tab-a");await side.getByRole("button",{name:"Pick",exact:true}).click();const marker=apiFailures.length;const original=(await api(endpoint(),{action:"state"})).selected;
  await side.getByRole("button",{name:"New browser tab",exact:true}).click();await go("/tab-b");await side.getByRole("button",{name:"QA browser /tab-a",exact:true}).click();await until(async()=>await side.getByLabel("Address",{exact:true}).inputValue()===site+"/tab-a");await ready();assert.equal(await side.getByRole("button",{name:"Pick",exact:true}).getAttribute("aria-pressed"),"false");const beforeHits=hits;await click(60,80);await until(async()=>hits===beforeHits+1);assert.equal(await side.locator(".pin-row").count(),0);assert.equal(apiFailures.slice(marker).length,0,apiFailures.slice(marker).join("\n"));

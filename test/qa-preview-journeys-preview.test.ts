@@ -20,6 +20,22 @@ test("a wrong-port startup stops only that instance and explains PORT with its a
   const deleted: string[] = []; respond((url, method) => { if (method === "DELETE") { deleted.push(url); return { stopped: true }; } return url.endsWith("/ready") ? { ready: false, status: "running" } : app; });
   await assert.rejects(waitForResultPreview(base, app, { attempts: 2, interval: 1, stable: 10 }), /port 54321.*stopped.*\$PORT/); assert.deepEqual(deleted, [`${base}?startedAt=100`]);
 });
+test("slow readiness probes count toward the startup deadline", async () => {
+  let probes = 0; const deleted: string[] = [];
+  respond((url, method) => {
+    if (method === "DELETE") { deleted.push(url); return { stopped: true }; }
+    if (url.endsWith("/ready")) { probes++; return { ready: false, status: "running" }; }
+    return app;
+  });
+  const fetch = globalThis.fetch;
+  globalThis.fetch = (async (...args: Parameters<typeof fetch>) => {
+    if (String(args[0]).endsWith("/ready")) await new Promise(resolve => setTimeout(resolve, 35));
+    return fetch(...args);
+  }) as typeof fetch;
+  await assert.rejects(waitForResultPreview(base, app, { attempts: 120, interval: 1, stable: 10, timeout: 50 }), /stopped.*\$PORT/);
+  assert.ok(probes <= 2, `unexpected probe count: ${probes}`);
+  assert.deepEqual(deleted, [`${base}?startedAt=100`]);
+});
 test("a competing preview replacement is never stopped by the older startup timeout", async () => {
   let deleted = false; respond((url, method) => { if (method === "DELETE") deleted = true; return url.endsWith("/ready") ? { ready: false, status: "running" } : { ...app, startedAt: 200 }; });
   await assert.rejects(waitForResultPreview(base, app, { attempts: 1, interval: 1, stable: 10 }), /changed while starting/); assert.equal(deleted, false);

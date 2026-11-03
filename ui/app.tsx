@@ -1,6 +1,8 @@
+import { chatAutomationAttention } from "../src/conversational/attention.js";
 import { quotaReason } from "../src/quota-status.js";
 import { RunNavigation } from "./keyboard-navigation.js";
 import { runTitle } from "../src/run-title.js";
+import { chatLeadReplyLabel } from "./chat-lead-reply.js";
 import { checksLabel } from "../src/run-status.js";
 const ActivityView = lazyView(() => import("./activity.js").then(module => module.ActivityView));
 import { ConfirmationHost } from "./confirm-dialog.js";
@@ -186,7 +188,7 @@ function MainApp() {
               <div class="composer" role="alert">
                 <h1>This link is invalid</h1>
                 <p class="lede">The address contains an invalid or unsupported destination. Your saved work is available from the project and run lists.</p>
-                <button class="btn primary" onClick={() => (route.value = { view: "composer" })}>Open new run</button>
+                <button class="btn primary" onClick={() => (route.value = { view: "composer" })}>New chat</button>
               </div>
             ) : (
               !draftsReady.value || composerLoading.value || route.value.view === "composer" && route.value.project !== undefined && route.value.project !== composerProject.value ? <div class="composer" role="status">{draftError.value || "Restoring your project draft…"}</div> : route.value.view === "composer" && !route.value.legacy && route.value.project === undefined && !onPhone && ownerOnLocalListener.value && executionHost.value.kind === "local" ? <ChatPage id="new" /> : <Composer key={composerProject.value} />
@@ -218,17 +220,20 @@ const MOD_KEY = typeof navigator !== "undefined" && /Mac|iPhone|iPad|iPod/.test(
 /** Above the page, beside the sidebar: where you are, live updates, commands, then the theme and the side panel. */
 function TopBar() {
   const dark = theme.value === "dark";
+  const current = route.value;
+  const hostInComposer = !onPhone && ownerOnLocalListener.value && executionHost.value.kind === "local" &&
+    (current.view === "chat" && current.id === "new" || current.view === "composer" && !current.legacy && current.project === undefined);
   return (
     <header class="topbar">
-      <button class="icon-btn menu-btn" aria-label="Show runs" aria-expanded={railOpen.value} onClick={() => (railOpen.value = !railOpen.value)}>
+      <button class="icon-btn menu-btn" aria-label="Show sidebar" aria-expanded={railOpen.value} onClick={() => (railOpen.value = !railOpen.value)}>
         <Icon name="menu" />
       </button>
-      <HostControl />
+      {!hostInComposer ? <HostControl /> : null}
       <Crumbs />
-      <span class={`connection-status ${connection.value.state}`} role="status" title={connection.value.state === "connected" ? "Live updates are connected" : connection.value.detail ?? "Live updates are unavailable; displayed run information may be out of date"}>
+      {connection.value.state !== "connected" ? <span class={`connection-status ${connection.value.state}`} role="status" title={connection.value.detail ?? "Live updates are unavailable; displayed run information may be out of date"}>
         <span class="cs-dot" aria-hidden="true" />
-        <span class="cs-label">{connection.value.state === "connected" ? "Connected" : connection.value.state === "offline" ? "Offline" : connection.value.state === "reconnecting" ? "Reconnecting…" : "Connecting…"}</span>
-      </span>
+        <span class="cs-label">{connection.value.state === "offline" ? "Offline" : connection.value.state === "reconnecting" ? "Reconnecting…" : "Connecting…"}</span>
+      </span> : null}
       {/* a search glass and the shortcut as a key; a phone shows only the glass */}
       <button class="btn ghost command-btn" aria-label={`Open command palette · ${MOD_KEY}K`} aria-keyshortcuts="Meta+K Control+K" title={`Commands and navigation (${MOD_KEY}K)`} onClick={() => (commandPaletteOpen.value = true)}>
         <Icon name="search" />
@@ -289,7 +294,7 @@ function Crumbs() {
     );
   } else if (r.view === "project") {
     trail = (
-      <><a class="crumb" href={`#/project/${encodeURIComponent(r.id)}`} aria-current={!r.section ? "page" : undefined}>{projects.value.find((p) => p.id === r.id)?.name ?? "Project"}</a>{r.section ? <>{sep}<span class="crumb here" aria-current="page">{{ runs: "Runs", repositories: "Repositories", settings: "Project settings", board: "Board", people: "People", automation: "Automation", connections: "Connections", ml: "ML" }[r.section]}</span></> : null}</>
+      <><a class="crumb" href={`#/project/${encodeURIComponent(r.id)}`} aria-current={!r.section ? "page" : undefined}>{projects.value.find((p) => p.id === r.id)?.name ?? "Project"}</a>{r.section ? <>{sep}<span class="crumb here" aria-current="page">{{ runs: "History", repositories: "Repositories", settings: "Project settings", board: "Board", people: "People", automation: "Automation", connections: "Connections", ml: "ML" }[r.section]}</span></> : null}</>
     );
   } else if (r.view === "team" || r.view === "team-task" || r.view === "team-people") {
     // The board, or a task under it: its title comes from the open task, else from the board's card.
@@ -340,7 +345,8 @@ function Crumbs() {
       </span>
     );
   } else {
-    const page = r.view === "composer" ? "New run" : r.view === "projects" ? "Projects" : "";
+    const page = r.view === "chat" ? r.id === "new" ? "New chat" : "Chat" : r.view === "composer" ? !r.legacy && r.project === undefined && !onPhone && ownerOnLocalListener.value && executionHost.value.kind === "local" ? "New chat" : "Saved workflows" : r.view === "projects" ? "Projects" : "";
+    if (page === "New chat" || page === "Chat") return <span class="spacer" aria-hidden="true" />;
     trail = page ? (
       <span class="crumb here" aria-current="page">
         {page}
@@ -356,6 +362,7 @@ function Crumbs() {
 
 // ---------------------------------------------------------------- notifications
 export function notifyFinished(run: RunSummary) {
+  if (chatAutomationAttention(run) === "quiet") return;
   if (route.value.view === "side") return; // a popped-out panel: the main window says it
   const viewing = (route.value.view === "run" || route.value.view === "review") && route.value.id === run.id;
   const verbs: Record<string, string> = {
@@ -365,23 +372,26 @@ export function notifyFinished(run: RunSummary) {
     interrupted: "was interrupted",
   };
   const watch = run.status !== "running" && !run.awaiting ? watchNeedingYou(run) : undefined;
-  const title = run.awaiting
+  const leadTurn = run.pattern === "chat-lead" || run.pattern === "chat-discussion";
+  const leadChat = leadTurn ? run.conversationId ?? run.cliTeam?.taskConversation?.chatId ?? run.cliTeam?.taskConversation?.id : undefined;
+  const title = leadTurn ? `code-flow: ${run.status === "done" ? chatLeadReplyLabel(run.patternSummary ?? run.summary ?? "").toLowerCase() : `conversation lead ${verbs[run.status] ?? run.status}`}` : run.awaiting
     ? `code-flow: ${run.awaiting.title.toLowerCase()}`
     : teamAwaitingAnswer(run) ? "code-flow: your team needs an answer" : watch
       ? `code-flow: PR needs you — ${watch.detail}`
       : `code-flow: run ${verbs[run.status] ?? run.status}`;
-  announcement.value = `${title.replace(/^code-flow: /, "")}: ${run.task.split("\n")[0]!.slice(0, 120)}`;
+  const body = leadTurn ? "Continue in chat to review the reply." : run.task.split("\n")[0]!;
+  announcement.value = `${title.replace(/^code-flow: /, "")}: ${body.slice(0, 120)}`;
   if (!canNotify() || (viewing && !document.hidden)) return;
   let n: Notification;
   try {
-    n = new Notification(title, { body: run.task.split("\n")[0], tag: run.id });
+    n = new Notification(title, { body, tag: run.id });
   } catch {
     // Android Chrome (the phone link) only shows notifications from a service worker: a toast instead.
     return showToast(title.replace(/^code-flow: /, ""), 5000);
   }
   n.onclick = () => {
     window.focus();
-    navigate({ view: "run", id: run.id });
+    navigate(leadChat ? { view: "chat", id: leadChat } : { view: "run", id: run.id });
     n.close();
   };
 }
@@ -389,15 +399,15 @@ export function notifyFinished(run: RunSummary) {
 // ---------------------------------------------------------------- keyboard
 const SHORTCUTS: [string, string][] = [
   ["⌘, / Ctrl+,", "Settings"],
-  ["⌘K / Ctrl+K", "Commands, projects and runs"],
-  ["/", "Search runs"],
+  ["⌘K / Ctrl+K", "Commands, projects and chats"],
+  ["/", "Search chats and runs"],
   ["j / k", "Next / previous run in the list"],
   ["[ / ]", "Previous / next step or agent turn"],
-  ["n", "New run"],
+  ["n", "New chat"],
   ["p", "Pick the project for new runs, Insights and Scheduling"],
   ["i", "Insights"],
   ["a", "Scheduling"],
-  ["⌘↵", "Start the run, or send what you typed"],
+  ["⌘↵", "Start reviewed work, or send your message"],
   ["Esc", "Close a dialog, or leave the search box"],
   ["\\", "Show or hide the side panel"],
   ["?", "This list"],

@@ -27,7 +27,7 @@ async function fresh(hash: string, filter?: unknown) {
   page.on("response", response => { if (response.status() >= 500) { const url = new URL(response.url()); const fixture = injectingFailure && (url.pathname === "/api/runs" && !!url.searchParams.get("cursor") || url.pathname === "/api/runs/bulk-6/archive"); if (!fixture) errors.push(`Unexpected ${response.status()}: ${url.pathname}${url.search}`); } });
   page.on("console", message => { if (message.type() === "error") { if (injectingFailure && /500 \(Internal Server Error\)/.test(message.text()) || injectingDeleteConflict && /409/.test(message.text())) expected.push(message.text()); else errors.push(message.text()); } });
   await page.addInitScript(({ repo, filter }) => { localStorage.setItem("repo", repo); localStorage.setItem("sideOpen", "0"); if (filter) localStorage.setItem("runFilter", JSON.stringify(filter)); }, { repo, filter });
-  await page.goto(`${base}/?token=${token}#/${hash}`); await page.getByRole("navigation", { name: "Runs", exact: true }).waitFor();
+  await page.goto(`${base}/?token=${token}#/${hash}`); await page.getByRole("navigation", { name: "Workspace navigation", exact: true }).waitFor();
 }
 const shot = (name: string) => page.screenshot({ path: join(evidence, name + ".png"), animations: "disabled" });
 before(async () => {
@@ -92,11 +92,14 @@ test("project history uses server archive scope and totals, including archived-o
 });
 
 test("archived totals cover unloaded pages and Retry history repeats its failed cursor", async () => {
-  await fresh("project/p-big"); const rail = page.getByRole("navigation", { name: "Runs", exact: true });
+  await fresh("project/p-big"); const rail = page.getByRole("navigation", { name: "Workspace navigation", exact: true });
   await until(() => rail.getByRole("button", { name: /^Show archived runs(?: \d+)?$/ }).innerText(), text => /12$/.test(text));
   const cursors: string[] = []; let fail = true;
   await page.route("**/api/runs?**", async route => { const cursor = new URL(route.request().url()).searchParams.get("cursor"); if (cursor) { cursors.push(cursor); if (fail) { fail = false; injectingFailure = true; await route.fulfill({ status: 500, json: { error: "Fixture older page failure" } }); return; } } await route.continue(); });
-  await rail.getByRole("button", { name: "Load older runs", exact: true }).click(); await rail.getByText("Fixture older page failure", { exact: false }).waitFor();
+  // Initial stream hydration can start a refresh between actionability and click.
+  // Wait for an actual older-page request before asserting its injected failure.
+  await until(async () => { if (!cursors.length) { const load = rail.getByRole("button", { name: "Load older runs", exact: true }); if (await load.isEnabled()) await load.click(); } return cursors.length; }, count => count > 0);
+  await rail.getByText("Fixture older page failure", { exact: false }).waitFor();
   const retried = page.waitForResponse(response => new URL(response.url()).pathname === "/api/runs" && new URL(response.url()).searchParams.get("cursor") === cursors[0], { timeout: 15000 });
   await rail.getByRole("button", { name: "Retry history", exact: true }).click();
   const response = await retried; assert.equal(response.status(), 200); assert.equal((await response.json()).nextCursor ?? null, null, "the retry reaches the end of this fixture's history");
@@ -105,14 +108,17 @@ test("archived totals cover unloaded pages and Retry history repeats its failed 
 });
 
 test("saved repository filters load immediately after hello and do not follow composer changes", async () => {
-  await fresh("project/p-big", { thisRepo: true }); const rail = page.getByRole("navigation", { name: "Runs", exact: true });
-  await until(() => rail.getByRole("region", { name: "Run history pages", exact: true }).innerText(), text => /matching tasks? loaded/.test(text));
+  await fresh("project/p-big", { thisRepo: true }); const rail = page.getByRole("navigation", { name: "Workspace navigation", exact: true });
+  await until(async () => historyReads.filter(read => new URL(read.url).searchParams.get("repo") === repo && read.status === 200 && read.total !== undefined), reads => reads.length > 0);
   await rail.getByRole("button", { name: /^Application menu:/ }).click(); await page.getByRole("menuitem", { name: /View and filter runs/ }).click();
   assert.equal(await rail.getByLabel("Repository", { exact: true }).inputValue(), repo);
   await page.evaluate(() => { location.hash = "#/project/p-old"; });
-  await page.locator(".project-page").getByRole("button", { name: "Existing workflows", exact: true }).click();
+  await page.locator(".project-page").getByRole("link", { name: "Project settings", exact: true }).click();
+  await page.getByText("Advanced · saved workflows and repository configuration", { exact: true }).click();
+  await page.getByRole("button", { name: "Saved workflows", exact: true }).click();
   assert.equal(await rail.getByLabel("Repository", { exact: true }).inputValue(), repo);
-  await rail.getByLabel("Repository", { exact: true }).selectOption(other); await until(() => rail.getByRole("region", { name: "Run history pages", exact: true }).innerText(), text => /6 matching tasks loaded/.test(text)); await shot("independent-filter");
+  const filtered = page.waitForResponse(response => new URL(response.url()).pathname === "/api/runs" && new URL(response.url()).searchParams.get("repo") === other);
+  await rail.getByLabel("Repository", { exact: true }).selectOption(other); assert.equal((await (await filtered).json()).total, 6); await until(() => rail.locator(".rail-run-row").count(), count => count === 6); await shot("independent-filter");
 });
 
 test("old non-solo deep links restore breadcrumbs and side scope, and destination labels match pages", async () => {
@@ -123,7 +129,7 @@ test("old non-solo deep links restore breadcrumbs and side scope, and destinatio
 });
 
 test("bulk selection discloses hidden rows and clears obsolete action errors", async () => {
-  await fresh("project/p-bulk"); const rail = page.getByRole("navigation", { name: "Runs", exact: true }), group = rail.getByRole("group", { name: "Bulk history", exact: true });
+  await fresh("project/p-bulk"); const rail = page.getByRole("navigation", { name: "Workspace navigation", exact: true }), group = rail.getByRole("group", { name: "Bulk history", exact: true });
   await group.getByRole("button", { name: "Show 2 more", exact: true }).waitFor();
   await rail.getByRole("button", { name: "Select runs", exact: true }).click(); await rail.getByRole("button", { name: "Select loaded", exact: true }).click();
   assert.match(await rail.locator(".rail-selection-head [role=status]").innerText(), /selected · \d+ not shown/); await group.getByRole("button", { name: "Show 2 more (2 selected)", exact: true }).waitFor();
@@ -156,7 +162,7 @@ test("live archive and delete reconcile project rows and totals without discardi
 test("project selection chooses its repository, remembers the draft, and shows every sidebar project", async () => {
   await fresh("project/p-big/new");
   await until(() => page.locator(".composer-summary").innerText(), text => text.includes("Big history") && text.includes("Repository repo"));
-  const rail = page.getByRole("navigation", { name: "Runs", exact: true });
+  const rail = page.getByRole("navigation", { name: "Workspace navigation", exact: true });
   await rail.getByRole("button", { name: "Empty history", exact: true }).waitFor();
   const group = rail.getByRole("group", { name: "Big history", exact: true });
   await group.getByRole("button", { name: "Hide the runs in Big history", exact: true }).click();
@@ -238,7 +244,7 @@ test("deleting a project removes its history and draft across tabs, but failed d
   assert.equal((await api("/api/projects/counts"))["p-big"], undefined);
   assert.equal((await api("/api/runs/one")).id, "one");
   await page.getByRole("heading", { name: "Projects", exact: true }).waitFor();
-  assert.equal(await editor.count(), 0);
+  await editor.waitFor({ state: "detached" });
   for (const tab of [page, mirror, runTab]) {
     await tab.getByRole("heading", { name: "Projects", exact: true }).waitFor();
     await tab.goto(`${base}/#/new/unassigned`);

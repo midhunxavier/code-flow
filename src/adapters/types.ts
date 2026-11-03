@@ -42,6 +42,8 @@ export interface AgentQuestion {
 }
 
 export interface RunOptions {
+  /** Disable every builtin and external tool for repository-free discussion. */
+  disableTools?: boolean;
   /** Managed CLI-team children must not reload the owner-level project connector. */
   excludeCodeflowMcp?: boolean;
   prompt: string;

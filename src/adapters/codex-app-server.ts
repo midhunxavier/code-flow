@@ -81,6 +81,7 @@ const IGNORED = new Set([
   "thread/started",
   "thread/closed",
   "thread/status/changed",
+  "remoteControl/status/changed",
   "thread/name/updated",
   "thread/archived",
   "thread/unarchived",

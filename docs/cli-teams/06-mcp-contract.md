@@ -1,6 +1,6 @@
 # Public MCP interface
 
-Status: revised for the initial ten-tool implementation. [Index](README.md). Authoritative argument schemas: `src/cli-teams/tools.ts`. See [16](16-implementation-status.md) for contract differences from the original design.
+Status: revised for the twelve-tool CLI/workspace implementation. [Index](README.md). Authoritative argument schemas: `src/cli-teams/tools.ts`. See [16](16-implementation-status.md) for contract differences from the original design.
 
 ## Connection and authority
 
@@ -12,7 +12,7 @@ MCP version/capability negotiation follows the installed host's supported protoc
 
 All tools return versioned structured content plus a concise text rendering. Use `protocolVersion: 1` for the Code Flow application contract, separate from the negotiated MCP protocol version.
 
-Mutating tools require `operationId`. Proposal edits/start require the expected proposal revision; start also names its hash. Controls are serialized and idempotent. Host claims use exact step/attempt/token fencing rather than an unrelated global event revision. The server stores the operation's scope, canonical argument digest, and receipt durably. Same ID/same payload returns the original receipt; same ID/different payload returns `idempotency_conflict`. Host claim/submit receipts are additionally scoped to the bound connection. There is no implicit second run on retry.
+Execution-mutating tools require `operationId`. The explicit `codeflow_open_task` browser action is transient and has no execution effect. Proposal edits/start require the expected proposal revision; start also names its hash. Controls are serialized and idempotent. Host claims use exact step/attempt/token fencing rather than an unrelated global event revision. The server stores the operation's scope, canonical argument digest, and receipt durably. Same ID/same payload returns the original receipt; same ID/different payload returns `idempotency_conflict`. Host claim/submit receipts are additionally scoped to the bound connection. There is no implicit second run on retry.
 
 ```json
 {
@@ -29,14 +29,16 @@ Errors use `ok: false`, a stable `error.code`, readable `message`, `retryable`, 
 
 | Tool | Arguments beyond common fields | Result and behavior |
 | --- | --- | --- |
+| `codeflow_open_task` | `id` (proposal or run), optional `open` (default true) | Stable workspace link and current context; explicitly opens the UI without starting work |
 | `codeflow_list_providers` | optional `refresh` | Bounded readiness/capability records; no paid inference |
 | `codeflow_list_models` | `providerId`, optional `cursor`, `limit`, `refresh` | Available models, supported efforts, defaults/provenance, next cursor |
 | `codeflow_propose_run` | `task`, required structured `candidate`, optional `context`, `proposalId`, `expectedRevision` | New immutable task-specific proposal revision, resolved settings, compact preview, acceptance instructions; no presets or saved-team selection |
 | `codeflow_start_run` | `proposalId`, `expectedRevision`, `proposalHash` | Checks stored user acceptance and readiness; returns stable run ID promptly; no `approved: true` argument |
-| `codeflow_get_run` | `runId`, optional `afterCursor`, `limit`, `waitMs` | Current state/revision, incremental events, ready host assignments, questions, artifact refs, usage provenance |
+| `codeflow_list_runs` | optional `cursor`, `limit`, `unfinishedOnly` | Recent or unfinished executions in the current repository |
+| `codeflow_get_run` | `runId`, optional `afterCursor`, `limit`, `waitMs`, `artifactCursor`, `artifactLimit` | Current state/revision, incremental events, ready host assignments, questions, artifact refs, usage provenance |
 | `codeflow_claim_step` | `runId`, `stepId`, `attemptId` | Atomic claim for the bound host participant; assignment, exact input references, opaque claim token and deadline |
 | `codeflow_submit_step` | `runId`, `stepId`, `attemptId`, `claimToken`, typed `output` | Validated durable outcome receipt; rejects wrong participant, expired/revoked attempt, or invalid schema; inputs derive from the claim |
-| `codeflow_get_artifact` | `runId`, exact `artifactId`, `sha256`, optional byte `cursor`, `maxBytes` | Typed content plus readable body, integrity metadata, and continuation cursor |
+| `codeflow_get_artifact` | `runId`, exact `artifactId`, `sha256`, optional byte `cursor`, `maxBytes`, `fileCursor` | Typed content plus readable body, integrity metadata, and continuation cursor |
 | `codeflow_steer_run` | `runId`, `message`, optional `questionId`, `candidate` | Instruction/answer receipt, or a continuation proposal for material changes after active work settles; never implicitly increases authority |
 | `codeflow_control_run` | `runId`, `action: pause|resume|cancel` | Durable control receipt, effective state, active/uncertain work, and next action |
 
@@ -93,3 +95,13 @@ A waiter holds no worker slot. The bridge never waits for the entire workflow in
 8. Host retrieves the final artifact and displays its substantive content.
 
 Every tool can be called repeatedly without changing meaning when its idempotency and revision rules are respected. Implement the contract with schema-driven tests; do not rely solely on the skill telling the model to behave correctly.
+
+## Visual workspace (stages 1–3)
+
+`codeflow_open_task` accepts `id` (proposal or run ID) and optional `open` (default true; false inspects without opening). Returns `workspace.url`, `chatId`, `taskId`, `opened`, and current conversation context when available. Proposal/start/status/steering responses also include the workspace and bounded recent conversation messages. No authentication or handoff credentials are exposed through MCP.
+
+`propose_run.context.chatId` associates a new task with an existing repository-scoped chat. `context.projectId` optionally disambiguates projects containing the same repository. Omit both to reuse the repository's project or create one. `continueRunId` inherits its original chat; conflicting chat IDs are rejected. Source/artifact continuation and approval rules remain unchanged.
+
+The authoritative proposal, approval, question and execution stores are shared. Chat projections are durable and reconciled on restart. CLI guidance is recorded with its idempotency receipt and replayed into the chat after a projection interruption. Web edits preserve an existing CLI host binding but cannot invent one. A disconnected host assignment remains visibly waiting; managed workers are not substituted.
+
+The mutation receipt is stable; supplemental `conversation` and `workspace` describe current state and can change between retries. Consumers reconcile the latest proposal revision/hash before approving. CLI and web answers use first-answer-wins semantics.

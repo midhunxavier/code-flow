@@ -14,6 +14,7 @@ export async function handleTaskConversations(req: IncomingMessage, res: ServerR
             return send(res, 200, await service.list(url.searchParams.get("project") ?? ""));
         if (id === "source" && parts.length === 3 && req.method === "GET")
             return send(res, 200, await service.sourceFiles(url.searchParams.get("project") ?? "", url.searchParams.get("repo") ?? ""));
+        if (id && parts[3] === "execution" && parts.length === 4 && req.method === "GET") return send(res, 200, await service.readExecution(id, url.searchParams.get("runId") ?? ""));
         if (id && parts[3] === "source" && parts.length === 4 && req.method === "GET")
             return send(res, 200, await service.retainedSourceFiles(id));
         if (id && parts[3] === "approach" && parts.length === 4 && req.method === "GET")
@@ -22,7 +23,7 @@ export async function handleTaskConversations(req: IncomingMessage, res: ServerR
             const controller = new AbortController(), stop = () => controller.abort();
             res.once("close", stop);
             try {
-                const snapshot = await service.get(id, url.searchParams.get("after") ?? undefined, Math.min(25000, Math.max(0, Number(url.searchParams.get("wait")) || 0)), controller.signal);
+                const snapshot = await service.read(id, url.searchParams.get("after") ?? undefined, Math.min(25000, Math.max(0, Number(url.searchParams.get("wait")) || 0)), controller.signal);
                 if (!res.destroyed)
                     send(res, 200, snapshot);
             }

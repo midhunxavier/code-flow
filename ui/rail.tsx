@@ -1,3 +1,4 @@
+import { ChatRowMenu } from "./chat-row-menu.js";
 import { useDialog } from "./app.js";
 import { runTitle } from "../src/run-title.js";
 import { sidebarStatusLabel as statusText } from "./run-experience.js";
@@ -5,7 +6,7 @@ import { dispatchLabel } from "../src/run-outcome.js";
 import { chatTaskId, chatUpdatedAt, groupChatTasks } from "../src/chat-family.js";
 import { peopleEnabled } from "./preferences.js";
 import { DesktopUpdateNotice } from "./desktop-updates.js";
-import { chats, watchChats, openChat } from "./chat-state.js";
+import { chats, watchChats, openChat, chatQuery, archivedChats, chatSearchTarget } from "./chat-state.js";
 import { ComputerProjects, useComputerProjects } from "./connected-projects.js";
 import { useCallback, useEffect, useRef, useState } from "preact/hooks";
 import { inbox } from "./automations.js";
@@ -13,7 +14,7 @@ import { pendingApprovals } from "./approval-inbox.js";
 import { Icon } from "./icons.js";
 import { Menu, MenuItem } from "./panel-bits.js";
 import { ArchiveDialog, DeleteRunsDialog } from "./run-actions.js";
-import { collaborationConfigured, api, ago, baseName, fmtCost, fmtTokens, post, showToast, showError, STATUS_TEXT } from "./lib.js";
+import { store, ownerOnLocalListener, collaborationConfigured, api, ago, baseName, fmtCost, fmtTokens, post, showToast, showError, STATUS_TEXT } from "./lib.js";
 import {
   NONE,
   lastAgentTabs,
@@ -27,7 +28,6 @@ import {
   filterActive,
   health,
   healthOpen,
-  historyTotal,
   attentionTotal,
   attentionTruncated,
   ALL,
@@ -120,6 +120,8 @@ interface Group {
  * every project with its runs. Nothing in it depends on a project you picked somewhere else.
  */
 export function Rail() {
+  const [projectsCollapsed, setProjectsCollapsed] = useState(() => store.get("railProjectsCollapsed") === "1");
+  const collapseProjects = (value: boolean) => { setProjectsCollapsed(value); store.set("railProjectsCollapsed", value ? "1" : "0"); };
   const [phone, setPhone] = useState(() => window.matchMedia?.("(max-width: 760px)").matches ?? false);
   useEffect(() => { const media = window.matchMedia("(max-width: 760px)"), change = () => setPhone(media.matches); media.addEventListener("change", change); return () => media.removeEventListener("change", change); }, []);
   const drawer = useDialog(phone && railOpen.value, () => { railOpen.value = false; });
@@ -141,6 +143,7 @@ export function Rail() {
   const long = new Set(view.expanded ?? []);
   const setLong = (keys: Set<string>) => setRailView({ expanded: [...keys] });
   const f = runFilter.value;
+  useEffect(() => { const timer = setTimeout(() => { chatQuery.value = f.q; }, 200); return () => clearTimeout(timer); }, [f.q]);
   const filtering = filterActive.value;
   const r = route.value;
   const current = r.view === "run" || r.view === "review" ? r.id : undefined;
@@ -301,25 +304,23 @@ export function Rail() {
 
   const actions = (p: Project) => (
     <span class="proj-actions">
+      <Menu label={`Project actions for ${p.name}`} icon="more" class="proj-more">{close => <><MenuItem onClick={() => { close(); route.value = { view: "project", id: p.id, section: "settings" }; }}>Project settings</MenuItem><MenuItem onClick={() => { close(); route.value = { view: "project", id: p.id, section: "runs" }; }}>History</MenuItem><MenuItem onClick={() => { close(); editProject(p.id); }}>Rename or edit project</MenuItem></>}</Menu>
       <button type="button" class="icon-btn" disabled={!draftsReady.value || composerLoading.value} aria-label={`New chat in ${p.name}`} title={`New chat in ${p.name}`} onClick={() => newRunIn(p)}>
-        <Icon name="plus" />
-      </button>
-      <button type="button" class="icon-btn" aria-label={`Edit ${p.name}`} title="Rename, repositories, delete" onClick={() => editProject(p.id)}>
-        <Icon name="more" />
+        <Icon name="compose" />
       </button>
     </span>
   );
 
   const visibleChats = chats.value.filter(chat => {
-    if (f.q && !chat.title.toLowerCase().includes(f.q.toLowerCase())) return false;
+    if (f.q && !chat.title.toLowerCase().includes(f.q.toLowerCase()) && !chat.match) return false;
     if (f.pattern || f.agent || f.repo) return chat.runIds.some(id => { const run = runs.value.get(id); return !!run && matchesFilter(run); });
-    return f.status === "all" || f.status === "running" && ["Working", "Responding", "Paused"].includes(chat.status) || f.status === "attention" && ["Needs attention", "Approach ready"].includes(chat.status) || f.status === "passed" && chat.status === "Changes verified" || f.status === "failing" && ["Needs attention", "Stopped with partial work"].includes(chat.status);
+    return f.status === "all" || f.status === "running" && ["Working", "Responding", "Paused"].includes(chat.status) || f.status === "attention" && ["Needs attention", "Approach ready", "Waiting for your decision", "Inspect preserved work", "Allowance reached"].includes(chat.status) || f.status === "passed" && chat.status === "Changes verified" || f.status === "failing" && ["Needs attention", "Stopped with partial work", "Allowance reached", "Inspect preserved work"].includes(chat.status);
   });
-  const chatRow = (chat: typeof chats.value[number]) => <div class="rail-run-row" role="group" aria-label={chat.title} key={chat.id}><button type="button" data-chat={chat.id} class={`run-item ${r.view === "chat" && r.id === chat.id ? "active" : ""}`} aria-current={r.view === "chat" && r.id === chat.id ? "page" : undefined} title={`${chat.title}\n${chat.status}`} onClick={() => go({ view: "chat", id: chat.id })}><span class={`dot ${chat.status === "Working" || chat.status === "Responding" ? "running" : "done"}`} aria-hidden="true"/><span class="t">{chat.title}</span><span class="m">{short(chat.updatedAt)}</span><span class="chat-sidebar-status">{chat.status}</span></button></div>;
+  const chatRow = (chat: typeof chats.value[number]) => <div class="rail-run-row" role="group" aria-label={chat.title} key={chat.id}><button type="button" data-chat={chat.id} class={`run-item ${r.view === "chat" && r.id === chat.id ? "active" : ""}`} aria-current={r.view === "chat" && r.id === chat.id ? "page" : undefined} title={`${chat.title}\n${chat.status}`} onClick={() => { if (chat.match) chatSearchTarget.value = { id: chat.id, sequence: chat.match.sequence }; go({ view: "chat", id: chat.id }); }}><span class={`dot ${chat.status === "Working" || chat.status === "Responding" ? "running" : "done"}`} aria-hidden="true"/><span class="t">{chat.pinned ? "⌁ " : ""}{chat.title}</span><span class="m">{short(chat.updatedAt)}</span><span class="chat-sidebar-status">{chat.status}</span>{chat.match ? <span class="chat-search-snippet">{chat.match.snippet}</span> : null}</button><ChatRowMenu chat={chat}/></div>;
 
   /** One project: its header folds it; its runs, newest first, a few at a time. */
   const projectGroup = (g: Group) => {
-    const conversations = visibleChats.filter(chat => chat.project === g.project?.id);
+    const conversations = visibleChats.filter(chat => chat.project === (g.project?.id ?? ""));
     const chatKey = `chats:${g.key}`, shownChats = long.has(chatKey) || filtering ? conversations : conversations.slice(0, PER_PROJECT);
     const chatRows = <>{shownChats.map(chatRow)}{conversations.length > shownChats.length ? <button class="rail-more" onClick={() => setLong(new Set([...long, chatKey]))}>Show {conversations.length - shownChats.length} more chats</button> : null}</>;
     // A project with nothing to list is just its name: there's nothing to fold.
@@ -329,7 +330,7 @@ export function Rail() {
           <div class={`proj-head ${page && page === g.project?.id ? "here" : ""}`}>
             {g.project ? (
               <button type="button" class="proj-name" title={`Open ${g.name}: ${g.project.repos.join(", ")}`} aria-current={page === g.project.id ? "page" : undefined} onClick={() => go({ view: "project", id: g.project!.id })}>
-                <span class="pn">{g.name}</span>
+                <Icon name="folder" /><span class="pn">{g.name}</span>
                 {g.archived ? <span class="pc">{g.archived} loaded archived</span> : null}
               </button>
             ) : (
@@ -386,7 +387,7 @@ export function Rail() {
     ];
     const where = (r: RunSummary) => projectFor(r)?.name ?? baseName(r.repo);
     body = sections.map(([title, items]) => {
-      const matchingChats = visibleChats.filter(chat => title === "Running" ? ["Working", "Responding", "Paused"].includes(chat.status) : title === "Needs you" ? ["Needs attention", "Approach ready"].includes(chat.status) : title === "Recent" ? !["Working", "Responding", "Paused", "Needs attention", "Approach ready"].includes(chat.status) : false);
+      const matchingChats = visibleChats.filter(chat => title === "Running" ? ["Working", "Responding", "Paused"].includes(chat.status) : title === "Needs you" ? ["Needs attention", "Approach ready", "Waiting for your decision", "Inspect preserved work", "Allowance reached"].includes(chat.status) : title === "Recent" ? !["Working", "Responding", "Paused", "Needs attention", "Approach ready", "Waiting for your decision", "Inspect preserved work", "Allowance reached"].includes(chat.status) : false);
       return items.length || matchingChats.length ? (
         <section key={title} aria-label={title}>
           <div class="rail-title rail-section">
@@ -412,7 +413,7 @@ export function Rail() {
       if (taskArchived(r)) g.archived++;
     }
     for (const r of list) if (!taskNeedsYou(r) && !taskArchived(r)) groupOf(r).runs.push(r);
-    for (const chat of visibleChats) { const group = byKey.get(chat.project); if (group) group.last = Math.max(group.last, chat.updatedAt); }
+    for (const chat of visibleChats) { const key = chat.project || NONE; if (!byKey.has(key) && !chat.project) byKey.set(key, { key, name: "No project", runs: [], last: 0, archived: 0 }); const group = byKey.get(key); if (group) group.last = Math.max(group.last, chat.updatedAt); }
     const groups = [...byKey.values()].sort((a, b) => b.last - a.last || a.name.localeCompare(b.name));
     body = (
       <>
@@ -425,8 +426,8 @@ export function Rail() {
           </section>
         ) : null}
         <section aria-label="Projects">
-          <div class="rail-title rail-section">
-            Projects
+          <div class="rail-title rail-section rail-projects-title">
+            <button type="button" class="rail-projects-toggle" aria-expanded={!projectsCollapsed} aria-controls="rail-project-groups" onClick={() => collapseProjects(!projectsCollapsed)}>Projects<Icon name="chevron" class="caret"/></button>
             <button
               type="button"
               class="icon-btn"
@@ -440,9 +441,9 @@ export function Rail() {
               <Icon name="plus" />
             </button>
           </div>
-          <ComputerProjects directory={computers} error={computerProjects.error} query={f.q}>
-            {groups.filter(g => g.runs.length || visibleChats.some(chat => chat.project === g.project?.id) || !filtering && g.project).map(projectGroup)}
-          </ComputerProjects>
+          <div id="rail-project-groups" hidden={projectsCollapsed}><ComputerProjects directory={computers} error={computerProjects.error} query={f.q}>
+            {groups.filter(g => g.runs.length || visibleChats.some(chat => chat.project === (g.project?.id ?? "")) || !filtering && g.project).map(projectGroup)}
+          </ComputerProjects></div>
         </section>
         {view.archived && list.some(taskArchived) ? <section aria-label="Archived runs"><div class="rail-title rail-section">Archived runs</div>{list.filter(taskArchived).map(run => row(run, projectFor(run)?.name ?? baseName(run.repo)))}</section> : null}
       </>
@@ -451,9 +452,8 @@ export function Rail() {
   const hiddenSelected = selectedRuns.filter(run => !renderedRuns.has(run.id)).length;
   const filterRepos = [...new Set([...projects.value.flatMap(project => project.repos), ...all.map(run => run.repo), ...(f.repo ? [f.repo] : [])])].sort();
   const empty = !list.length && !chats.value.length;
-  const shownTasks = filtering ? list.length : all.length;
   return (
-    <RailElement ref={railRef} inert={phone && !railOpen.value} aria-hidden={phone && !railOpen.value ? true : undefined} class={`rail ${railOpen.value ? "open" : ""}`} aria-label="Runs" onClick={event => {
+    <RailElement ref={railRef} inert={phone && !railOpen.value} aria-hidden={phone && !railOpen.value ? true : undefined} class={`rail ${railOpen.value ? "open" : ""}`} aria-label="Workspace navigation" onClick={event => {
       if (!phone || event.target !== event.currentTarget) return;
       const bounds = event.currentTarget.getBoundingClientRect();
       if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) railOpen.value = false;
@@ -464,7 +464,7 @@ export function Rail() {
     }}>
       {!phone && !collapsed ? <RailResizeHandle /> : null}
       <div class="rail-head">
-        <a class="brand" href="#/" aria-label="code-flow: new run" onClick={() => (railOpen.value = false)}>
+        <a class="brand" href="#/" aria-label="Code Flow: new chat" onClick={() => (railOpen.value = false)}>
           <span class="brand-name">
             code<span>-flow</span>
           </span>
@@ -475,14 +475,14 @@ export function Rail() {
         </button>
       </div>
       <button class="btn primary new-run" disabled={!draftsReady.value || composerLoading.value} aria-label="New chat" title="New chat (n)" onClick={() => openChat()}>
-        <Icon name="plus" /> <span>New chat</span>
+        <Icon name="compose" /> <span>New chat</span>
       </button>
       <div class="rail-destinations" role="group" aria-label="Work navigation">
         <a class="nav-item" href="#/projects" title="Projects" aria-current={r.view === "projects" ? "page" : undefined}><Icon name="project" /><span class="nav-label">Projects</span></a>
         <a class="nav-item" href="#/inbox" aria-label={`Inbox${pending ? ` ${collapsed && pending > 99 ? "99+ · " : ""}${pending} need attention` : ""}`} title="Inbox" aria-current={r.view === "inbox" ? "page" : undefined}><Icon name="bell" /><span class="nav-label">Inbox</span> {pending ? <span class="count">{collapsed && pending > 99 ? "99+" : pending}</span> : null}</a>
         <a class="nav-item" href="#/automations" title="Scheduling" aria-label="Scheduling" aria-current={r.view === "automations" ? "page" : undefined}><Icon name="clock" /><span class="nav-label">Scheduling</span></a>
       </div>
-      {collapsed ? <button type="button" class="icon-btn rail-search-button" aria-label="Search runs" title="Search runs (/)" onClick={() => { peekRail(); requestAnimationFrame(() => document.getElementById("run-search")?.focus()); }}><Icon name="search" /></button> : null}
+      {collapsed ? <button type="button" class="icon-btn rail-search-button" aria-label="Search chats and runs" title="Search chats and runs (/)" onClick={() => { peekRail(); requestAnimationFrame(() => document.getElementById("run-search")?.focus()); }}><Icon name="search" /></button> : null}
       <div class="rail-search">
         <Icon name="search" />
         <input
@@ -490,7 +490,7 @@ export function Rail() {
           class="field"
           type="search"
           placeholder="Search chats and runs"
-          aria-label="Search runs (press / to focus)"
+          aria-label="Search chats and runs (press / to focus)"
           value={f.q}
           onInput={(e) => setRunFilter({ q: e.currentTarget.value })}
           onKeyDown={(e) => {
@@ -505,6 +505,7 @@ export function Rail() {
           }}
         />
       </div>
+      {!collapsed && ownerOnLocalListener.value && archivedChats.value ? <div class="rail-archive-view"><span>Archived chats</span><button type="button" class="rail-archive-toggle" onClick={() => { archivedChats.value = false; }}>Back to active chats</button></div> : null}
       {!collapsed && (all.length > 0 || selecting) ? <div class="rail-selection">
         <div class="rail-selection-head"><button type="button" class="btn small ghost" disabled={bulkBusy || !!bulkDeleting} aria-pressed={selecting} onClick={() => { setSelecting(!selecting); setSelected(new Set()); setBulkError(""); }}>{selecting ? "Done selecting" : "Select runs"}</button>{selecting ? <span role="status">{selectedRuns.length} selected{hiddenSelected ? ` · ${hiddenSelected} not shown` : ""}</span> : null}</div>
         {selecting ? <>
@@ -578,7 +579,7 @@ export function Rail() {
       </div>
       <div class="rail-history" role="region" aria-label="Run history pages">
         {projectCountsError.value ? <span class="help" role="status">Complete history totals are unavailable. Counts show loaded items. <button class="btn small" onClick={() => void refreshProjectCounts().catch(() => {})}>Retry totals</button></span> : null}
-        <span class="help" role="status">{historyLoading.value ? "Searching history…" : historyTotal.value === null ? "Loading history…" : `${chats.value.length ? `${chats.value.length} chat${chats.value.length === 1 ? "" : "s"} · ` : ""}${shownTasks} ${filtering ? "matching " : ""}task${shownTasks === 1 ? "" : "s"} loaded`}</span>
+        {historyLoading.value ? <span class="help" role="status">Searching history…</span> : null}
         {historyNextCursor.value ? <button type="button" class="btn small" disabled={historyLoading.value || historyLoadingMore.value} onClick={() => void loadOlderRuns()}>{historyLoadingMore.value ? "Loading…" : "Load older runs"}</button> : null}
         {attentionTruncated.value && historyNextCursor.value ? <span class="help" role="status">{attentionTotal.value} running or attention items at last refresh. Older attention is paged; use Load older runs to include more.</span> : null}
         {historyError.value ? <div class="help" role="alert">{historyError.value}<button class="btn small" disabled={historyLoading.value || historyLoadingMore.value} onClick={() => void retryHistory()}>Retry history</button></div> : null}
@@ -594,6 +595,7 @@ export function Rail() {
         </>}>
           {(close) => <>
             {peopleEnabled.value || collaborationConfigured.value || unread ? <MenuItem on={r.view === "team" || r.view === "team-task" || r.view === "team-people"} onClick={() => { close(); go({ view: "team" }); }}><Icon name="people" /><span>Board</span>{unread ? <span class="rail-menu-meta" aria-label={`${unread} unread`}>{unread}</span> : null}</MenuItem> : null}
+            {ownerOnLocalListener.value ? <MenuItem on={archivedChats.value} onClick={() => { close(); archivedChats.value = !archivedChats.value; collapseProjects(false); peekRail(); }}><Icon name="archive"/><span>{archivedChats.value ? "Active chats" : "Archived chats"}</span></MenuItem> : null}
             <MenuItem on={r.view === "settings"} onClick={() => { close(); go({ view: "settings" }); }}><Icon name="sliders" /><span>Settings</span><kbd class="rail-menu-meta">⌘,</kbd></MenuItem>
             <MenuItem sub={`${agents.value.length} providers${agentsPaused ? " · paused by filesystem policy" : agentProblems ? ` · ${agentProblems} need setup` : ""}`} onClick={() => { close(); railOpen.value = false; healthOpen.value = true; }}><Icon name="sparkle" /><span>Agents & usage</span></MenuItem>
             <MenuItem onClick={() => { close(); go({ view: "workspace" }); }}><Icon name="files" /><span>Repository tools</span></MenuItem>

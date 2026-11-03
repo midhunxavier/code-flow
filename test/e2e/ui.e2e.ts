@@ -439,7 +439,7 @@ test("phone: with full control, the phone link signs a phone in to the whole app
   await tab.goto(`${PHONE}${phonePath}`);
   await tab.getByRole("textbox", { name: "Task", exact: true }).waitFor();
   assert.equal(new URL(tab.url()).pathname, "/");
-  await tab.getByRole("button", { name: "Show runs" }).click();
+  await tab.getByRole("button", { name: "Show sidebar" }).click();
   await tab.locator(".rail.open").waitFor();
 
   // A QR scanner hands the link over from another app, which the browser counts as cross-site:
@@ -528,7 +528,9 @@ test("projects: onboarding made one; the sidebar lists runs under their projects
   await page.getByRole("button", { name: "Create project" }).click();
   await page.getByRole("dialog", { name: "New project", exact: true }).waitFor({ state: "hidden" });
   assert.deepEqual((await projects()).find((project) => project.name === "E2E side")!.repos, [], "creating an empty project does not save the previous repository");
-  await page.locator(".page-head-actions").getByRole("button", { name: "Existing workflows", exact: true }).click();
+  await page.locator(".project-page").getByRole("link", { name: "Project settings", exact: true }).click();
+  await page.getByText("Advanced · saved workflows and repository configuration", { exact: true }).click();
+  await page.getByRole("button", { name: "Saved workflows", exact: true }).click();
   await page.locator(".where .project-btn", { hasText: "E2E side" }).waitFor(); // explicitly open its draft
   await page.getByRole("button", { name: "Choose repository", exact: true }).first().click();
   await page.getByLabel("Folder path").fill(root);
@@ -566,7 +568,8 @@ test("projects: onboarding made one; the sidebar lists runs under their projects
 
   // Empty projects remain visible and editable directly in the sidebar.
   assert.equal(await rail.getByRole("button", { name: /^\d+ more projects?$/ }).count(), 0);
-  await group("E2E side").getByRole("button", { name: "Edit E2E side" }).click();
+  await group("E2E side").getByRole("button", { name: "Project actions for E2E side", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Rename or edit project", exact: true }).click();
   await page.getByRole("heading", { name: "Edit E2E side" }).waitFor();
   await page.getByRole("button", { name: "Cancel" }).click();
   await page.locator("dialog[open]").waitFor({ state: "detached" });
@@ -682,7 +685,7 @@ test("side panel: follows the run you open, side chats in its worktree, its chan
 
   // A side chat asks in the run's worktree; nothing is committed and the run's thread stays the team's.
   await side.getByRole("tab", { name: "Chat" }).click();
-  await side.getByText("Chat about this run").waitFor();
+  await side.getByLabel("Message", { exact: true }).waitFor();
   await side.getByLabel("Message").fill("E2E: what did this run change?");
   await side.getByLabel("Message").press("Enter");
   await side.locator("#side-pane-chat .fu-answer.done").first().waitFor({ timeout: 30_000 });
@@ -912,12 +915,12 @@ test("projects: the Automations page and its inbox follow the project you're in;
   await api("/api/remote", { enabled: false });
 
   // Schedules are a separate destination but keep the same project scope.
-  await page.goto(`${BASE}/#/automations`);
+  await page.goto(`${BASE}/#/settings/automations`);
   await page.locator(".auto-row b", { hasText: "E2E side hook" }).waitFor();
   assert.deepEqual(await page.locator(".auto-row b").allInnerTexts(), ["E2E side hook"]);
   // Scheduling exposes its scope in the shared project picker. Legacy records
   // without a project have their own notice and do not imply another project.
-  await page.locator(".scheduling-hub .project-btn").click();
+  await page.locator(".automation-management .project-btn").click();
   await page.locator(".project-row", { hasText: "All projects" }).locator(".pr-main").click();
   await page.locator(".project-btn", { hasText: "All projects" }).waitFor();
   assert.equal(await page.locator(".auto-row").count(), total);
@@ -941,7 +944,7 @@ test("simple composer supports reusable teams, parameterized tasks, readiness an
 
     await fresh.goto(`${BASE}/#/run/%`);
     await fresh.getByRole("heading", { name: "This link is invalid" }).waitFor();
-    await fresh.getByRole("button", { name: "Open new run", exact: true }).click();
+    await fresh.getByRole("alert").getByRole("button", { name: "New chat", exact: true }).click();
     await fresh.keyboard.press("Meta+k");
     const commands = fresh.getByRole("combobox", { name: "Find a command, project or run" });
     await commands.fill("choose repository");
@@ -1047,7 +1050,7 @@ test("simple composer supports reusable teams, parameterized tasks, readiness an
     await fresh.keyboard.press("Meta+k");
     await commands.fill("new chat");
     await commands.press("Enter");
-    await fresh.getByRole("button", { name: "Existing workflows", exact: true }).click();
+    await fresh.evaluate(() => { location.hash = "#/workflows"; });
     await fresh.getByLabel("Task", { exact: true }).waitFor();
     await fresh.setViewportSize({ width: 390, height: 844 });
     const start = await fresh.getByRole("button", { name: /^Start run/ }).boundingBox();
@@ -1418,7 +1421,7 @@ test("sidebar archives, hides and deletes runs with confirmation across tabs", a
   try {
     await fresh.goto(`${BASE}/?token=${TOKEN}#/run/${created.id}`);
     await other.goto(`${BASE}/?token=${TOKEN}#/run/${created.id}`);
-    const rail = fresh.getByRole("navigation", { name: "Runs", exact: true });
+    const rail = fresh.getByRole("navigation", { name: "Workspace navigation", exact: true });
     const row = rail.locator(".rail-run-row").filter({ has: fresh.locator(".run-item", { hasText: task }) }).first();
     await row.hover();
     await row.getByRole("button", { name: "Run actions", exact: true }).click();
@@ -1474,7 +1477,7 @@ test("bulk run selection archives and deletes with partial failure recovery", as
   const fresh = await browser.newPage({ viewport: { width: 1267, height: 1042 } });
   try {
     await fresh.goto(`${BASE}/?token=${TOKEN}#/workflows`);
-    const rail = fresh.getByRole("navigation", { name: "Runs", exact: true });
+    const rail = fresh.getByRole("navigation", { name: "Workspace navigation", exact: true });
     await rail.getByRole("searchbox").fill("Bulk history fixture");
     await rail.locator(".rail-run-row").filter({ hasText: "Bulk history fixture two" }).waitFor();
     await rail.getByRole("button", { name: "Select runs", exact: true }).click();

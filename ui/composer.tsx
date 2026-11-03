@@ -301,7 +301,7 @@ export function Composer() {
   </div>;
   return (
     <div class={`composer ${single ? "composer-single" : ""}`}>
-      <div class="eyebrow">New run</div>
+      <div class="eyebrow">Saved workflows</div>
       <h1>{single ? "What would you like to work on?" : "What should the agents build?"}</h1>
       <p class="lede">{single ? "Choose a provider, describe your task, and start the conversation." : "Describe the task, add the files that matter, and pick how your agents work together."}</p>
       <div class="where" role="group" aria-label="Where the run works">
@@ -362,7 +362,7 @@ export function Composer() {
         </>}</Menu>
       </>} />
       {error ? <div ref={startError} class="msg err composer-start-error" role="alert" tabIndex={-1}>{error}</div> : null}
-      <div class="task-setup-entry"><OpenTaskSetup /></div>
+      <div class="task-setup-entry"></div>
       <div class="composer-summary" aria-label="Run configuration summary">
         <span><b>Computer</b> {computerLabel()}{remoteWorker ? ` · Agent worker: ${remoteWorker.workerId}` : ""}</span>
         <span><b>Project</b> {target.value.project?.name ?? "Choose project"}</span>
@@ -617,7 +617,7 @@ export function startProblem(p: PatternInfo | undefined, roles: Record<string, R
   const unsupported = (p.id === "auto-team" ? roles.coordinator ?? [] : Object.values(roles).flat()).find(id => id !== "auto" && !supportsRunPermissions(id));
   if (unsupported) return runProviderProblem(unsupported, (inventory ?? agents.value).find(agent => agent.id === unsupported)?.displayName)!;
   for (const role of p.roles) if (!role.optional && !roles[role.id]?.length) return p.roles.length === 1 ? "Choose a provider" : `Choose a provider for ${role.label}`;
-  const unavailableHint = !inventory && health.value?.some(item => item.installed && item.signedIn === false) ? " Some providers are signed out; open Settings → Agents & models." : "";
+  const unavailableHint = !inventory && health.value?.some(item => item.installed && item.signedIn === false) ? " Some providers are signed out; open Settings → Providers." : "";
   if (p.id === "race" && participantCount(p.id, "contestants", roles.contestants ?? []) < 2) return "A race needs at least two contestants." + unavailableHint;
   if (p.id === "debate" && participantCount(p.id, "debaters", roles.debaters ?? []) < 2) return "A debate needs at least two debaters." + unavailableHint;
   if (p.id === "auto-team" && !roles.pool?.some(supportsRunPermissions)) return "Keep at least one compatible provider in the pool (Claude Code, Codex or Antigravity)";
@@ -633,13 +633,13 @@ export function startProblem(p: PatternInfo | undefined, roles: Record<string, R
     return "";
   }
   const signedOut = health.value?.find((h) => used.has(h.id) && h.installed && h.signedIn === false);
-  if (signedOut) return `${signedOut.name} isn't signed in — open Settings → Agents & models`;
+  if (signedOut) return `${signedOut.name} isn't signed in — open Settings → Providers`;
   const unready = agents.value.find(entry => used.has(entry.id) && providerProblem(entry, health.value));
   if (unready) return `${unready.displayName}: ${providerProblem(unready, health.value)}`;
   // Runs use isolated Antigravity unless the run opts out; the doctor knows whether this computer can.
   const needsIsolation = used.has("agy") && antigravityExecution !== "native";
   const agyHealth = health.value?.find((h) => h.id === "agy");
-  if (needsIsolation && !agyHealth) return healthError.value ? "Antigravity compatibility could not be checked. Refresh providers in Settings → Agents & models." : "Checking whether Antigravity can run isolated…";
+  if (needsIsolation && !agyHealth) return healthError.value ? "Antigravity compatibility could not be checked. Refresh providers in Settings → Providers." : "Checking whether Antigravity can run isolated…";
   const isolatedAgy = needsIsolation && agyHealth?.installed && agyHealth.managedCompatible === false ? agyHealth : undefined;
   if (isolatedAgy) return `Antigravity${isolatedAgy.version ? ` ${isolatedAgy.version}` : ""} can't run isolated on this computer (it needs macOS, a verified CLI version and an existing Keychain login). Update Antigravity, or turn on Run options → Advanced → Use unrestricted Antigravity.`;
   return "";
@@ -903,7 +903,7 @@ function TaskBox({ onStart, improve, controls }: { onStart: () => void; improve:
             class="btn ghost small"
             disabled={!improve.busy && !canImprove}
             aria-label={improve.busy ? "Stop" : `Improve · ${improve.agentName}`}
-            aria-description={`Prompt improvement agent: ${improve.agentName}. Mode: ${improve.mode}. Configure in Settings, Agents & models.`}
+            aria-description={`Prompt improvement agent: ${improve.agentName}. Mode: ${improve.mode}. Configure in Settings, Providers.`}
             aria-describedby={improve.disabledReason ? "improve-execution-note" : undefined}
             title={improve.busy ? "Stop rewriting" : improve.disabledReason || (!repo.value ? "Choose a repository first" : improve.mode === "repo" ? "Rewrite the task using a committed repository snapshot" : "Rewrite the task so agents can act on it")}
             onClick={() => void improve.run()}
@@ -1291,7 +1291,7 @@ function Settings({ p, roles, open, onToggle, budgetRevision }: { p: PatternInfo
 
 export function ModelRow({ agent, used, settings, onChange }: { agent: AgentInfo; used: boolean; settings?: { model?: string; effort?: string }; onChange?: (patch: { model?: string; effort?: string }) => void }) {
   const cat = catalogs.value[agent.id];
-  // Without its own settings, the row edits the saved provider defaults (Settings > Agents & models).
+  // Without its own settings, the row edits the saved provider defaults (Settings > Providers).
   const s = settings ?? providerDefaults.value[agent.id] ?? {};
   const changeSetting = (patch: { model?: string; effort?: string }) => onChange ? onChange(patch) : setProviderDefault(agent.id, patch);
   // Hooks before any early return; null = "derive from the saved model".

@@ -154,16 +154,18 @@ test("large transcripts page backwards and return to live history with bounded r
 test("sidebar searches beyond loaded pages and loads older history without discarding visible results", async () => {
   await page.goto(`${base}/#/workflows`);
   const history = page.getByRole("region", { name: "Run history pages" });
-  await history.getByText("101 tasks loaded", { exact: true }).waitFor();
+  await history.getByRole("button", { name: "Load older runs", exact: true }).waitFor();
   assert.equal(await page.getByRole("button", { name: /Ancient needle task/ }).count(), 0);
-  const search = page.getByRole("searchbox", { name: "Search runs (press / to focus)" });
+  const search = page.getByRole("searchbox", { name: "Search chats and runs (press / to focus)" });
   const remoteSearch = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/runs" && new URL(response.url()).searchParams.get("q") === "Ancient needle");
   await search.fill("Ancient needle"); assert.equal((await remoteSearch).status(), 200);
   await page.getByRole("button", { name: /Ancient needle task/ }).waitFor();
-  await history.getByText("1 matching task loaded", { exact: true }).waitFor();
+  assert.equal(await page.locator(".rail-run-row").count(), 1);
   await search.fill("");
+  const older = page.waitForResponse(response => new URL(response.url()).pathname === "/api/runs" && !!new URL(response.url()).searchParams.get("cursor"));
   await page.getByRole("button", { name: "Load older runs", exact: true }).click();
-  await history.getByText("127 tasks loaded", { exact: true }).waitFor();
+  assert.equal((await (await older).json()).nextCursor ?? null, null);
+  await history.getByRole("button", { name: "Load older runs", exact: true }).waitFor({ state: "hidden" });
   assert.equal(await page.getByRole("button", { name: "Load older runs", exact: true }).count(), 0);
 });
 
@@ -255,6 +257,7 @@ test("guided onboarding inspects required and optional dependencies through actu
 test("review inbox controls have distinct labels, keyboard order and a bounded mobile layout", async () => {
   await page.setViewportSize({ width: 390, height: 844 }); await page.goto(`${base}/#/inbox`);
   await page.getByRole("heading", { name: "Review inbox", exact: true }).waitFor();
+  await page.locator(".inbox-tools > summary").click();
   const group = page.getByRole("combobox", { name: "Group review inbox", exact: true }); const filter = page.getByRole("combobox", { name: "Filter review inbox", exact: true }); const search = page.getByRole("textbox", { name: "Search review inbox", exact: true });
   assert.equal(await group.count(), 1); assert.equal(await filter.count(), 1); assert.equal(await search.count(), 1);
   await group.focus(); await page.keyboard.press("Tab"); assert.equal(await filter.evaluate((element) => element === document.activeElement), true);

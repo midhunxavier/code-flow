@@ -25,11 +25,12 @@ export function ReviewCoveragePanel({ runId, branch, refreshKey, onOpen }: { run
     catch (err) { if (currentView.current === expectedView) setError((err as Error).message); return false; }
     finally { if (currentView.current === expectedView) setBusy(false); }
   };
-  return <details class="review-coverage"><summary>Human review coverage{data ? ` · ${data.coverage.reviewed}/${data.coverage.changed} files · ${data.risk.level} change risk` : ""}</summary>
-    <p class="help">Mark files after reviewing them. Coverage records your review of this commit; it resets when the branch moves. Passing checks do not imply human review.</p>
+  return <details class="review-coverage"><summary>File review<span class="review-summary-meta">{error ? "Needs attention" : data ? data.coverage.changed ? `${data.coverage.reviewed} of ${data.coverage.changed} reviewed` : "No changed files" : "Loading…"}</span></summary>
+    <p class="help">Mark each file after reviewing it. Review marks reset when the code changes.</p>
     {data?.workingChanges ? <p class="help">The diff includes working changes. Commit them before recording review coverage.</p> : null}
     {error ? <p class="msg err" role="alert">{error}</p> : null}
-    {data ? <><p class="help">Commit {data.head.slice(0, 12)}{data.stale ? " · previous review refers to older code" : ""}</p>{data.risk.reasons.map((reason) => <p class="help" key={reason}>{reason}</p>)}
+    {data ? <><details class="review-metadata"><summary>Review details{data.coverage.changed ? ` · ${data.risk.level} change risk` : ""}</summary><p class="help">Passing checks do not replace your review.</p><p class="help">Commit {data.head.slice(0, 12)}{data.stale ? " · previous review refers to older code" : ""}</p>{data.risk.reasons.map((reason) => <p class="help" key={reason}>{reason}</p>)}
+      </details>
       {/* A checkbox and the file's path (opening its diff), like the file list under it; the box's label names the file. */}
       {data.merged ? <p class="help">Files marked “merged in” came from {data.merged.from} when it was merged to resolve conflicts. They count here: merging into a branch without {data.merged.from}'s changes ships them too.</p> : null}
       <div class="rc-files">{data.files.map((path) => <div class="rc-file" key={path}><label class="check"><input type="checkbox" aria-label={`Mark ${path} reviewed`} disabled={busy || data.workingChanges} checked={data.reviewed.includes(path)} onChange={(event) => mutate(endpoint, { branch, expectedHead: data.head, path, reviewed: event.currentTarget.checked })} /><span class="sr-only">Reviewed</span></label><button type="button" class="rc-path" title={`Open ${path}`} onClick={() => onOpen(path)}><bdi>{path}</bdi></button>{data.merged?.files.includes(path) ? <span class="merged-from" title={`From ${data.merged.from}, merged in to resolve conflicts`}>merged in</span> : null}</div>)}</div>

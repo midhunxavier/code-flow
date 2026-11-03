@@ -1,3 +1,5 @@
+import { editableCandidate } from "../cli-teams/editable.js";
+import { taskView } from "./view.js";
 import { captureAgentSource } from "./agent-source.js";
 import { randomBytes } from "node:crypto";
 import { mkdir, open, chmod } from "node:fs/promises";
@@ -20,10 +22,7 @@ function text(value: unknown, label: string, max = 8000) { if (typeof value !== 
     fail("validation_failed", `${label} must contain 1–${max} characters`); return value.trim(); }
 function files(value: unknown): string[] { if (!Array.isArray(value) || value.length > 100 || value.some(p => typeof p !== "string" || !p || p.length > 2000 || p.startsWith("/") || p.split(/[\\/]/).includes("..") || p.includes("\0")))
     fail("validation_failed", "Choose at most 100 repository-relative new files"); return value as string[]; }
-function candidateFrom(p: Proposal): Candidate {
-    const { attemptTimeoutMs: _, ...limits } = p.definition.limits;
-    return { ...p.definition, limits, participants: p.definition.participants.map(({ id, provider, model, effort, binding }) => ({ id, provider, model, effort, binding })) };
-}
+const candidateFrom = (p: Proposal): Candidate => editableCandidate(p.definition);
 function visibleContext(context: Proposal["context"]) {
     const { attachments, ...rest } = context;
     return { ...rest, ...(attachments?.length ? { attachments: attachments.map(file => ({ name: file.name, bytes: Buffer.byteLength(file.data, "base64") })) } : {}) };
@@ -51,11 +50,43 @@ export class TaskConversations {
                 this.tasks.set(task.id, task);
             }
     }
+    /** Project the canonical CLI proposal; no inference, approval or execution is performed. */
+    async syncCliProposal(p: Proposal, event?: { id: string; body: string; runId?: string; noteId?: string }) {
+        if (!p.project || !p.taskId || !p.chatId) fail("scope_denied", "Missing CLI workspace identity");
+        await this.authorize(p.project, p.repo);
+        return this.serialized(async () => {
+            const existing = this.tasks.get(p.taskId!);
+            if (existing && (existing.project !== p.project || existing.repo !== p.repo || existing.chatId !== p.chatId)) fail("scope_denied", "Task workspace identity changed");
+            const first = p.definition.participants.find(a => a.binding !== "current_session") ?? p.definition.participants[0]!;
+            const t: TaskConversation = existing ? structuredClone(existing) : {
+                id: p.taskId!, version: 0, project: p.project!, repo: p.repo, chatId: p.chatId, createHash: digest(["cli", p.taskId]), createdAt: Date.now(), updatedAt: Date.now(), request: p.task,
+                source: p.source.source, untracked: p.context.untracked ?? [], coordinator: { id: "coordinator", provider: first.provider, model: first.model, effort: first.effort },
+                messages: [], preparation: { ...PREPARATION_LIMITS, runs: [], processed: [] }, proposals: [], executions: [], changes: [], receipts: {},
+            };
+            let changed = !existing;
+            const known = t.approaches?.some(a => a.id === p.id && a.revision === p.revision);
+            if (!known) {
+                // Do not let a delayed projection replace a newer browser revision.
+                const newer = t.approaches?.some(a => a.id === p.id && a.revision > p.revision);
+                if (!newer) {
+                    t.request = p.task; t.source = p.source.source; t.untracked = p.context.untracked ?? [];
+                    t.attachments = p.context.attachments; t.contextNotes = p.context.notes; t.continuation = p.context.continueRunId; t.sourceRunId = p.context.sourceRunId;
+                    if (!t.proposals.includes(p.id)) t.proposals.push(p.id);
+                    (t.approaches ??= []).push({ id: p.id, revision: p.revision, hash: p.hash, scope: p.definition.scope, at: Date.now() });
+                    this.addMessage(t, "user", p.task, `cli-proposal-${p.id}-${p.revision}`); changed = true;
+                }
+            }
+            if (p.runId && !t.executions.includes(p.runId)) { t.executions.push(p.runId); changed = true; }
+            if (event && !t.messages.some(m => m.id === event.id)) { this.addMessage(t, "user", event.body, event.id); Object.assign(t.messages.at(-1)!, { runId: event.runId, noteId: event.noteId }); changed = true; }
+            if (changed) await this.save(t);
+            return t;
+        });
+    }
     private serialized<T>(work: () => Promise<T>): Promise<T> { const next = this.tail.then(work); this.tail = next.catch(() => undefined); return next; }
     private async save(t: TaskConversation, touch = true) { if (touch) {
         t.version++;
         t.updatedAt = Date.now();
-    } await journalEntry(META, `task:${t.id}`, t); this.tasks.set(t.id, t); this.bus.emit(t.id); }
+    } await journalEntry(META, `task:${t.id}`, t); this.tasks.set(t.id, t); this.bus.emit(t.id); this.bus.emit("change", t.id); }
     private scope(t: TaskConversation): ConversationScope { return { repo: t.repo, project: t.project, taskId: t.id, chatId: t.chatId, surface: "web" }; }
     private async task(id: string) { const t = this.tasks.get(id); if (!t)
         fail("not_found", "This task conversation is unavailable"); await this.authorize(t.project, t.repo); return t; }
@@ -75,7 +106,8 @@ export class TaskConversations {
         if (!task || task.project !== project || task.repo !== repo) fail("scope_denied", "Task belongs to another conversation source");
         const run = task.executions.length ? this.manager.get(task.executions.at(-1)!) : undefined;
         const proposal = this.proposal(task);
-        return { id, request: task.request, updatedAt: Math.max(task.updatedAt, run?.endedAt ?? run?.createdAt ?? 0), runId: run?.id, status: run?.status, paused: !!run?.pauseRequested, outcome: run?.cliTeam?.outcome, scope: proposal?.definition.scope, preparing: !!task.preparation.active, ready: !!proposal && !proposal.runId, runIds: [...task.executions, ...task.preparation.runs] };
+        const view = taskView({ task, proposal, execution: run ? { id: run.id, host: this.core.hostState(run), status: run.status, outcome: run.cliTeam?.outcome, paused: !!run.pauseRequested, pausePending: !!run.pauseRequested && run.steps.some(s => s.status === "running"), recoveryRequired: !!run.cliTeam?.recoveryRequired, waitingForSlot: !!run.cliTeam?.waitingForSlot, failureKind: run.failure?.kind, questions: Object.values(run.cliTeam?.questions ?? {}).filter(q => !q.answer), participation: [] } : undefined });
+        return { view, id, request: task.request, updatedAt: Math.max(task.updatedAt, run?.endedAt ?? run?.createdAt ?? 0), runId: run?.id, status: run?.status, paused: !!run?.pauseRequested, outcome: run?.cliTeam?.outcome, scope: proposal?.definition.scope, preparing: !!task.preparation.active, ready: !!proposal && !proposal.runId, runIds: [...task.executions, ...task.preparation.runs] };
     }
     async create(a: any, link?: { chatId: string; continueRunId?: string; sourceRunId?: string; contextNotes?: string }) {
         fields(a, ["operationId", "project", "repo", "request", "source", "untracked", "coordinator", "attachments"]);
@@ -164,7 +196,7 @@ export class TaskConversations {
         this.checkIntent(t, candidate);
         candidate.source = t.source;
         const previous = this.proposal(t), prior = t.continuation ? this.manager.get(t.continuation) : undefined, artifact = prior ? Object.values(prior.cliTeam!.artifacts).filter(a => a.kind === "result").at(-1) : undefined;
-        const p = await this.core.operateWeb(this.scope(t), "codeflow_propose_run", { operationId, task: this.goal(t), candidate, ...(previous && !previous.runId ? { proposalId: previous.id, expectedRevision: previous.revision } : {}), context: { notes: [t.contextNotes, t.messages.filter(m => m.role === "user").slice(-12).map(m => m.body).join("\n")].filter(Boolean).join("\n").slice(-8000), untracked: t.untracked, attachments: t.attachments, sourceRunId: t.sourceRunId, continueRunId: t.continuation, ...(artifact && prior ? { artifacts: [{ runId: prior.id, artifactId: artifact.id, sha256: artifact.sha256 }] } : {}) } });
+        const p = await this.core.operateWeb(this.scope(t), "codeflow_propose_run", { operationId, task: this.goal(t), candidate, ...(previous && !previous.runId ? { proposalId: previous.id, expectedRevision: previous.revision } : {}), context: { notes: (t.contextNotes ? [t.messages.filter(m => m.role === "user").slice(-12).map(m => m.body).join("\n").slice(-1600), t.contextNotes].join("\n") : t.messages.filter(m => m.role === "user").slice(-12).map(m => m.body).join("\n")).slice(-8000), untracked: t.untracked, attachments: t.attachments, sourceRunId: t.sourceRunId, continueRunId: t.continuation, ...(artifact && prior ? { artifacts: [{ runId: prior.id, artifactId: artifact.id, sha256: artifact.sha256 }] } : previous && !previous.runId && previous.context.artifacts ? { artifacts: previous.context.artifacts } : {}) } });
         if (t.proposals.at(-1) !== p.proposalId)
             t.proposals.push(p.proposalId);
         const next = this.proposal(t)!;
@@ -258,7 +290,7 @@ export class TaskConversations {
         const definition: Definition = { scope: "plan", participants: [coordinator], steps: [{ id: "prepare", type: "task", operation: "propose", participant: coordinator.id, instructions: "Prepare the approach" }, { id: "finish", type: "finish", outcome: "plan_ready", inputs: ["prepare"] }], completion: ["A valid approach or material clarification"], limits: { maxInvocations: calls, maxMinutes: minutes, concurrency: 1, maxAttempts: Math.min(3, calls), attemptTimeoutMs: Math.min(5 * 60000, minutes * 60000) } };
         await this.manager.start({ pattern: preparationPattern, project: t.project, requireProjectRepo: true, repo: t.repo, baseRef: source.commit, task: prompt, roles: { coordinator: [coordinator.provider] }, options: {}, trust: "standard", approvals: {}, loop: { maxSteps: calls, maxInvocations: calls, maxMinutes: minutes, setup: "", check: "", copy: [] }, cliTeam: { version: 1, taskConversation: { id: t.id, phase: "preparation" }, proposalId: `prepare-${operationId}`, proposalHash: digest(prompt), definition, source, hostConnection: "", artifacts: {}, pending: {}, questions: {} }, beforeDispatch: async (r) => { await flushWrites(); t.preparation.runs.push(r.id); t.preparation.active = r.id; delete t.error; delete t.question; await this.save(t); } });
     }
-    async action(id: string, a: any) {
+    async action(id: string, a: any, trigger?: Run["trigger"], untrustedText = false) {
         const inputs: Record<string, string[]> = { prepare: ["message", "request", "source", "untracked"], edit: ["candidate", "source", "untracked"], start: ["proposalId", "revision", "hash"], pause: [], resume: [], cancel: [], message: ["message"], answer: ["message", "questionId"], status: ["message"], allow_preparation: ["maxCalls", "maxMinutes"] };
         if (!a || !Object.hasOwn(inputs, a.action))
             fail("validation_failed", "Unknown task action");
@@ -314,7 +346,7 @@ export class TaskConversations {
                     const p = this.proposal(t);
                     if (!p || p.id !== a.proposalId || p.revision !== a.revision || p.hash !== a.hash || t.preparation.active)
                         fail("acceptance_stale", "Review the current approach before starting");
-                    const started = await this.core.acceptAndStartWeb(this.scope(t), { operationId, proposalId: p.id, expectedRevision: p.revision, proposalHash: p.hash });
+                    const started = await this.core.acceptAndStartWeb(this.scope(t), { operationId, proposalId: p.id, expectedRevision: p.revision, proposalHash: p.hash }, trigger, untrustedText);
                     if (!t.executions.includes(started.runId))
                         t.executions.push(started.runId);
                     const priorRun = t.continuation && this.manager.get(t.continuation);
@@ -378,18 +410,25 @@ export class TaskConversations {
             }
         });
     }
-    async get(id: string, after?: string, waitMs = 0, signal?: AbortSignal) {
+    subscribeChanges(listener: (id: string) => void) { this.bus.on("change", listener); return () => { this.bus.off("change", listener); }; }
+    async advance(id: string) { return this.serialized(() => this.protect(async () => this.reconcile(await this.task(id)))); }
+    async advancePreparations() { for (const t of this.tasks.values()) if (t.preparation.active) await this.advance(t.id).catch(() => undefined); }
+    read(id: string, after?: string, waitMs = 0, signal?: AbortSignal) { return this.get(id, after, waitMs, signal, false); }
+    readExecution(id: string, runId: string) { return this.get(id, undefined, 0, undefined, false, runId); }
+    async get(id: string, after?: string, waitMs = 0, signal?: AbortSignal, advance = true, executionId?: string) {
         let t = await this.task(id);
-        await this.serialized(() => this.protect(async () => this.reconcile(await this.task(id))));
+        if (advance) await this.advance(id);
         const project = async () => {
             t = await this.task(id);
-            const p = this.proposal(t), runId = t.executions.at(-1), run = runId ? this.manager.get(runId) : undefined, preparing = t.preparation.active ? this.manager.get(t.preparation.active) : undefined;
+            if (executionId && !t.executions.includes(executionId)) fail("scope_denied", "That execution belongs to another task");
+            let p = this.proposal(t); const runId = executionId ?? t.executions.at(-1), run = runId ? this.manager.get(runId) : undefined, preparing = t.preparation.active ? this.manager.get(t.preparation.active) : undefined;
             const state = run?.cliTeam;
-            const participation = state?.definition.participants.map(p => ({ id: p.id, provider: p.provider, model: p.model, effort: p.effort, binding: p.binding, assignments: run!.steps.filter(s => s.kind === "agent" && s.role === p.id).map(s => ({ id: s.id, status: s.status, model: s.settings?.model, effort: s.settings?.effort, invocations: s.invocations ?? 0, sessionId: s.sessionId })) })) ?? [];
+            if (executionId && state) { const approach = t.approaches?.find(a => a.hash === state.proposalHash); if (!approach) fail("not_found", "The preserved execution approach is unavailable"); p = { ...this.core.getWebProposal(this.scope(t), state.proposalId, approach.revision), runId: run!.id }; }
+            const participation = state?.definition.participants.map(p => ({ id: p.id, provider: p.provider, model: p.model, effort: p.effort, binding: p.binding, hostSubmissions: p.binding === "current_session" ? Object.values(state.artifacts).filter(a => a.participant === p.id && (a.kind === "plan" || a.kind === "review")).length : 0, assignments: run!.steps.filter(s => s.kind === "agent" && s.role === p.id).map(s => ({ id: s.id, status: s.status, model: s.settings?.model, effort: s.settings?.effort, invocations: s.invocations ?? 0, sessionId: s.sessionId })) })) ?? [];
             const snapshot = { task: t, proposal: p ? { id: p.id, revision: p.revision, hash: p.hash, task: p.task, definition: p.definition, source: p.source, context: visibleContext(p.context), runId: p.runId } : undefined, preparationUsage: this.usage(t), executionTotals: t.executions.reduce((total, id) => { const r = this.manager.get(id); return { calls: total.calls + (r?.cliTeam?.managedInvocations ?? 0), ms: total.ms + Math.max(r?.clockUsedMs ?? 0, r?.cliTeam?.accountedExecutionMs ?? 0) }; }, { calls: 0, ms: 0 }), preparing: preparing ? { id: preparing.id, status: preparing.status, error: preparing.error, steps: preparing.steps.map(s => ({ title: s.title, status: s.status })) } : undefined,
-                execution: run ? { id: run.id, status: run.status, participation, paused: !!run.pauseRequested, pausePending: !!run.pauseRequested && run.steps.some(s => s.status === "running"), waitingForSlot: !!state?.waitingForSlot, limits: state?.definition.limits, recoveryRequired: !!state?.recoveryRequired, outcome: state?.outcome, error: run.error, detail: state?.detail, stopReason: run.stopReason, usage: { calls: state?.managedInvocations ?? 0, ms: Math.max(run.clockUsedMs ?? 0, state?.accountedExecutionMs ?? 0) }, activity: state?.activity ?? [], questions: Object.entries(state?.questions ?? {}).filter(([, q]) => !q.answer).map(([id, q]) => ({ id, ...q })), artifacts: Object.values(state?.artifacts ?? {}).map(({ id, sha256, kind, data }) => ({ id, sha256, kind, data: kind === "review" || kind === "decision" || kind === "result" ? data : undefined })), worktrees: run.worktrees.map(w => ({ branch: w.branch, path: w.path })), notes: run.notes.map(n => ({ id: n.id, status: n.status, deliveredTo: n.deliveredTo })) } : undefined };
+                execution: run ? { id: run.id, status: run.status, host: this.core.hostState(run), participation, paused: !!run.pauseRequested, pausePending: !!run.pauseRequested && run.steps.some(s => s.status === "running"), waitingForSlot: !!state?.waitingForSlot, limits: state?.definition.limits, recoveryRequired: !!state?.recoveryRequired, failureKind: run.failure?.kind ?? run.steps.find(s => s.status === "failed")?.errorKind, outcome: state?.outcome, error: run.error, detail: state?.detail, stopReason: run.stopReason, usage: { calls: state?.managedInvocations ?? 0, ms: Math.max(run.clockUsedMs ?? 0, state?.accountedExecutionMs ?? 0) }, activity: state?.activity ?? [], questions: Object.entries(state?.questions ?? {}).filter(([, q]) => !q.answer).map(([id, q]) => ({ id, ...q })), artifacts: Object.values(state?.artifacts ?? {}).map(({ id, sha256, kind, data }) => ({ id, sha256, kind, data: kind === "review" || kind === "decision" || kind === "result" ? data : undefined })), worktrees: run.worktrees.map(w => ({ branch: w.branch, path: w.path })), notes: run.notes.map(n => ({ id: n.id, status: n.status, deliveredTo: n.deliveredTo })) } : undefined };
             const { receipts: _, createHash: __, attachments: ___, ...safeTask } = snapshot.task;
-            const visible = structuredClone({ ...snapshot, task: safeTask }), hash = digest(visible), old = this.observations.get(id);
+            const visible = structuredClone({ ...snapshot, task: safeTask, view: taskView(snapshot) }), hash = digest(visible), old = this.observations.get(id);
             const observation = old?.hash === hash ? old.revision : (old?.revision ?? 0) + 1;
             this.observations.set(id, { hash, revision: observation });
             return { ...visible, generation: this.generation, observation, cursor: `${this.generation}:${hash}` };
@@ -398,7 +437,7 @@ export class TaskConversations {
         if (after === value.cursor && waitMs > 0) {
             await new Promise<void>(resolve => { const off = [...t.executions.slice(-1), ...(t.preparation.active ? [t.preparation.active] : [])].map(id => this.manager.subscribe(id, finish)); const timer = setTimeout(finish, Math.min(waitMs, 25000)).unref(); function finish() { clearTimeout(timer); off.forEach(fn => fn()); thisBus.off(id, finish); signal?.removeEventListener("abort", finish); resolve(); } const thisBus = this.bus; this.bus.once(id, finish); signal?.addEventListener("abort", finish, { once: true }); if (signal?.aborted)
                 finish(); });
-            await this.serialized(() => this.protect(async () => this.reconcile(await this.task(id))));
+            if (advance) await this.advance(id);
             value = await project();
         }
         return value;

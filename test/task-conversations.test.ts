@@ -33,7 +33,7 @@ async function chatFixture(mode: "agent" | "team" = "team", candidate = plan()) 
     };
     adapters.claude.run = stub; adapters.codex.run = stub;
     const created = await service.create({ operationId: `chat-${++sequence}`, project: f.project.id, repo: f.repo, defaults: { mode, provider: "claude", trust: "standard", tools: false } });
-    const read = () => service.get(created.id);
+    const read = async () => { await service.advance(created.id); return service.get(created.id); };
     const act = async (action: string, extra: object = {}, operationId = `chat-op-${++sequence}`) => service.action(created.id, { action, ...extra, operationId, expectedVersion: (await read()).chat.version });
     const settle = async () => { let state = await read(); for (let i = 0; i < 2000 && state.turn; i++) { await pause(); state = await read(); } assert.ok(!state.turn, JSON.stringify(state.turn)); return state; };
     const taskAction = async (taskId: string, action: string, extra: object = {}, operationId?: string) => {
@@ -461,4 +461,265 @@ test("explicit plan-only instructions block a writing proposal until the user ch
     assert.equal(revised.task.executions.length, 0);
     const done = await f.start();
     assert.equal(done.execution!.outcome, "verified_changes", done.execution!.error);
+});
+
+test("history reads never reconcile or dispatch a submitted lead response", async () => {
+    const f = await chatFixture();
+    await f.act("send", { message: "Create an approach" });
+    const initial = await f.chats.get(f.chatId), runId = initial.turn!.runId!;
+    for (let i = 0; i < 2000 && f.manager.get(runId)?.status === "running"; i++) await pause();
+    const snapshots = await Promise.all(Array.from({ length: 8 }, () => f.chats.get(f.chatId)));
+    for (const state of snapshots) { assert.equal(state.chat.version, initial.chat.version); assert.equal(state.tasks.length, 0); assert.equal(state.chat.events.length, 1); }
+    assert.equal(f.leadCalls(), 1);
+    await f.chats.advance(f.chatId);
+    const ready = await f.chats.get(f.chatId); assert.equal(ready.tasks.length, 1); assert.equal(ready.tasks[0]!.view.startLabel, "Start planning");
+});
+test("backend advances queued turns without any history reader", async () => {
+    const f = await chatFixture(); f.setReply({ kind: "answer", body: "A read-only discussion" });
+    await f.act("send", { message: "First question" }); await f.act("send", { message: "Second question" });
+    const stop = f.chats.watch();
+    try { for (let i = 0; i < 600 && (await f.chats.get(f.chatId)).turn; i++) await pause(20);
+      const done = await f.chats.get(f.chatId); assert.ok(!done.turn); assert.equal(done.chat.events.filter(e => e.kind === "answer").length, 2); assert.equal(f.leadCalls(), 2);
+    } finally { await stop(); }
+});
+test("paged history, message search and chat organization survive restart without executing work", async () => {
+    const f = await chatFixture(); f.setReply({ kind: "answer", body: "The distinct answer mentions retry semantics." });
+    for (let i = 0; i < 4; i++) { await f.act("send", { message: `Discuss option ${i}` }); await f.settle(); }
+    const latest = await f.chats.get(f.chatId, { limit: 3 }); assert.equal(latest.chat.events.length, 3); assert.ok(latest.history.hasOlder);
+    const older = await f.chats.get(f.chatId, { limit: 3, before: latest.history.before });
+    assert.equal(older.chat.events.at(-1)!.sequence + 1, latest.chat.events[0]!.sequence);
+    await assert.rejects(f.chats.get(f.chatId, { limit: 1000 }), /1–100/);
+    const calls = f.leadCalls();
+    await f.act("organize", { title: "Retry design", pinned: true });
+    const matches = await f.chats.list(f.project.id, { q: "retry semantics" }); assert.equal(matches[0]!.id, f.chatId); assert.match(matches[0]!.match!.snippet, /retry semantics/);
+    const op = `organize-${++sequence}`; await f.act("organize", { archived: true }, op); await f.act("organize", { archived: true }, op);
+    assert.ok(!(await f.chats.list(f.project.id)).some(c => c.id === f.chatId));
+    await flushWrites(); const restored = new Conversations(f.manager, f.service, f.service.authorize); await restored.load();
+    const archive = await restored.list(f.project.id, { archived: true }); assert.equal(archive[0]!.title, "Retry design"); assert.ok(archive[0]!.pinned); assert.equal(f.leadCalls(), calls);
+    assert.equal((await restored.get(f.chatId, { limit: 3 })).history.total, latest.history.total);
+});
+test("chat update cursors replay invalidation and reset across restart without exposing messages", async () => {
+    const f = await chatFixture(), first: any[] = [];
+    const off = await f.chats.subscribe(f.chatId, undefined, d => first.push(d)); await pause();
+    const cursor = first.at(-1).cursor; assert.equal(first[0].reset, true); off();
+    await f.act("organize", { title: "Changed while disconnected" });
+    const replay: any[] = [], stop = await f.chats.subscribe(f.chatId, cursor, d => replay.push(d)); await pause(); stop();
+    assert.equal(replay[0].reset, false); assert.ok(replay.some(d => d.type === "changed")); assert.doesNotMatch(JSON.stringify(replay), /Changed while disconnected/);
+    await flushWrites(); const restored = new Conversations(f.manager, f.service, f.service.authorize); await restored.load();
+    const reset: any[] = [], stop2 = await restored.subscribe(f.chatId, cursor, d => reset.push(d)); await pause(); stop2(); assert.equal(reset[0].reset, true);
+});
+
+test("project context is versioned, scoped and pinned before dispatch; accepted tasks retain it", async () => {
+    const f = await chatFixture();
+    const input = { project: f.project.id, repo: f.repo, expectedRevision: 0, operationId: `context-${++sequence}`, instructions: "Use keyboard-accessible controls.", attachments: [{ name: "requirements.txt", data: Buffer.from("Must support keyboard navigation.").toString("base64") }] };
+    const context = await f.chats.setProjectContext(input); assert.equal(context.revision, 1); await f.chats.setProjectContext(input); assert.equal((await f.chats.projectContext(f.project.id, f.repo)).revision, 1);
+    await f.act("send", { message: "Prepare the implementation plan" });
+    await f.chats.setProjectContext({ ...input, operationId: `context-${++sequence}`, expectedRevision: 1, instructions: "New instructions for later work.", attachments: [] });
+    const ready = await f.settle(), message = ready.chat.events.find(e => e.kind === "user")!, proposal = ready.tasks[0]!.proposal!;
+    assert.equal(message.projectContext!.revision, 1); assert.equal(message.projectContext!.files[0]!.name, "requirements.txt");
+    assert.match(proposal.context.notes ?? "", /Use keyboard-accessible controls/); assert.doesNotMatch(proposal.context.notes ?? "", /New instructions/);
+    assert.equal(ready.projectContext.revision, 2); assert.deepEqual(ready.chat.files, []);
+    await assert.rejects(f.chats.setProjectContext({ ...input, operationId: `stale-${++sequence}` }), /changed in another view/);
+    await assert.rejects(f.chats.projectContext("another-project", f.repo));
+    await assert.rejects(f.act("send", { message: "Conflicting file", attachments: [{ name: "requirements.txt", data: Buffer.from("Different requirements").toString("base64") }] }), /different contents/);
+});
+
+test("repository-free discussion disables tools and can attach a repository without treating discussion files as source", async () => {
+    const f = await chatFixture(), beforeProjects = f.projects.list().length;
+    const service = f.chats, created = await service.create({ operationId: `discussion-${++sequence}`, project: "", repo: "", defaults: { mode: "team", provider: "claude", trust: "full", tools: true } });
+    let captured: any;
+    const stub = adapters.claude.run;
+    adapters.claude.run = async (opts, emit) => { if (opts.disableTools) { captured = opts; return { ok: true, finalText: "We can discuss the tradeoffs before choosing a repository.", sessionId: "native-discussion" }; } return stub(opts, emit); };
+    try {
+      await service.action(created.id, { action: "send", operationId: `discuss-${++sequence}`, expectedVersion: created.version, message: "Discuss accessible login design." });
+      for (let i = 0; i < 2000; i++) { await service.advance(created.id); if (!(await service.get(created.id)).turn) break; await pause(); }
+      const done = await service.get(created.id); assert.ok(!done.turn); assert.equal(done.tasks.length, 0); assert.equal(done.chat.repo, ""); assert.match(done.chat.events.at(-1)!.body!, /tradeoffs/);
+      assert.ok(captured.disableTools); assert.equal(captured.mode, "read"); assert.equal(captured.permissions.externalTools, "disabled"); assert.equal(captured.permissions.nativeDelegation, false); assert.ok(!captured.teamTools && !captured.agentTools); assert.equal(f.projects.list().length, beforeProjects);
+      await service.action(created.id, { action: "repository", operationId: `attach-${++sequence}`, expectedVersion: done.chat.version, project: f.project.id, repo: f.repo, source: "head", untracked: [] });
+      const attached = await service.get(created.id); assert.equal(attached.chat.repo, f.repo); assert.equal(attached.chat.agentRuns.length, 1);
+      await service.action(created.id, { action: "send", operationId: `plan-${++sequence}`, expectedVersion: attached.chat.version, message: "Now plan the implementation" });
+      for (let i = 0; i < 2000; i++) { await service.advance(created.id); if (!(await service.get(created.id)).turn) break; await pause(); }
+      const ready = await service.get(created.id); assert.equal(ready.tasks.length, 1); assert.ok(!ready.tasks[0]!.proposal!.context.sourceRunId);
+      await assert.rejects(service.create({ operationId: `unsupported-${++sequence}`, project: "", repo: "", defaults: { mode: "agent", provider: "codex", trust: "standard", tools: false } }), /requires Claude/);
+    } finally { adapters.claude.run = stub; }
+});
+
+test("automation pins the reviewed team, creates independent executions in the same chat, and retries idempotently", async () => {
+    const f = await chatFixture();
+    await f.act("send", { message: "Plan the repository improvements. Plan only." });
+    const ready = await f.settle(), task = ready.tasks[0]!;
+    const body = await f.chats.automationRecipe(f.chatId, task.task.id, task.proposal!.hash);
+    assert.equal(body.chatRecipe.candidate.source, "head");
+    assert.equal(body.chatRecipe.candidate.participants[0]!.effort, "high");
+    await assert.rejects(f.chats.automationRecipe(f.chatId, task.task.id, "stale"), /current approach/);
+    const trigger = { id: "automation-test", name: "Daily planning", via: "manual" as const };
+    const [a, b] = await Promise.all([f.chats.startAutomation(body, trigger, "test-1"), f.chats.startAutomation(body, trigger, "test-1")]);
+    assert.equal(a.id, b.id); assert.equal(a.trigger!.id, trigger.id);
+    for (let i=0; i<2000 && a.status === "running"; i++) await pause();
+    assert.equal(a.cliTeam!.outcome, "plan_ready");
+    const second = await f.chats.startAutomation(body, trigger, "test-2");
+    assert.notEqual(second.id, a.id);
+    const state = await f.read();
+    assert.equal(state.chat.taskIds.length, 3);
+    assert.equal(state.tasks.find(t => t.task.id === task.task.id)!.execution, undefined, "the original approach has not been approved by testing a recurrence");
+    assert.equal(f.leadCalls(), 1, "scheduled work never silently replans its team");
+});
+
+test("project execution defaults are validated and pinned in the submitted turn", async () => {
+    const f = await chatFixture();
+    await f.chats.setProjectContext({ project: f.project.id, repo: f.repo, operationId: `defaults-${++sequence}`, expectedRevision: 0, instructions: "Project conventions", defaults: { check: "npm test", maxCalls: 4, maxMinutes: 15, trust: "safe" } });
+    await f.act("send", { message: "Prepare a plan" });
+    const submitted = await f.chats.get(f.chatId);
+    assert.equal(submitted.chat.pending!.projectContext!.defaults!.check, "npm test");
+    await assert.rejects(f.chats.setProjectContext({ project: f.project.id, repo: f.repo, operationId: `bad-${++sequence}`, expectedRevision: 1, instructions: "", defaults: { maxCalls: 999 } }), /Invalid project/);
+    await f.settle();
+});
+
+// The CLI adapter uses the same proposal and execution authority as web conversations.
+async function cliWorkspaceFixture(candidate = plan()) {
+    const f = await fixture(candidate);
+    const chats = new Conversations(f.manager, f.service, f.service.authorize); await chats.load();
+    const { connectCliWorkspace } = await import("../src/cli-teams/workspace.js");
+    const opened: string[] = [];
+    connectCliWorkspace(f.core, f.service, chats, f.projects, { url: path => `http://localhost:49999${path}`, open: async path => { opened.push(path); return true; } });
+    const connection = await f.core.connect(f.repo);
+    const call = (name: string, args: object = {}) => f.core.call(connection, `codeflow_${name}`, { ...(name === "open_task" || name === "get_run" ? {} : { operationId: `cli-workspace-${++sequence}` }), ...args }) as Promise<any>;
+    const proposal = await call("propose_run", { task: "CLI login plan", candidate });
+    const taskId = proposal.workspace.taskId, chatId = proposal.workspace.chatId;
+    const act = async (action: string, extra: object = {}) => f.service.action(taskId, { action, ...extra, operationId: `web-cli-${++sequence}`, expectedVersion: (await f.service.get(taskId)).task.version });
+    return { ...f, chats, connection, call, proposal, taskId, chatId, act, opened };
+}
+
+test("CLI proposals appear in one durable chat; browser edits fence stale CLI approvals and both surfaces start one execution", async () => {
+    const f = await cliWorkspaceFixture();
+    assert.equal(f.counts().prepared, 0); assert.equal(f.counts().workers, 0);
+    assert.equal(f.manager.list().length, 0);
+    assert.match(f.proposal.workspace.url, /localhost:49999\/\?team=local#\/chat\/[a-f0-9]{32}$/);
+    assert.deepEqual((await f.chats.get(f.chatId)).chat.taskIds, [f.taskId]);
+    await f.call("open_task", { id: f.proposal.proposalId, open: false }); assert.equal(f.opened.length, 0);
+    await f.call("open_task", { id: f.proposal.proposalId }); assert.equal(f.opened.length, 1);
+    const changed = plan(); changed.participants[0]!.effort = "low";
+    await f.act("edit", { candidate: changed });
+    const latest = await f.call("open_task", { id: f.proposal.proposalId, open: false });
+    assert.equal(latest.conversation.latestProposal.revision, 2);
+    assert.equal(latest.conversation.latestProposal.definition.participants[0].effort, "low");
+    await assert.rejects(f.call("start_run", { proposalId: f.proposal.proposalId, expectedRevision: 1, proposalHash: f.proposal.proposalHash }), /Proposal changed/);
+    const p = (await f.service.get(f.taskId)).proposal!;
+    await f.act("start", { proposalId: p.id, revision: p.revision, hash: p.hash });
+    await f.core.accept(f.connection, p.id, p.revision, p.hash); // An already-open native form may finish after browser start.
+    const repeated = await f.call("start_run", { proposalId: p.id, expectedRevision: p.revision, proposalHash: p.hash });
+    assert.equal(f.manager.list().length, 1);
+    const state = await waitCliTask(f, s => s.execution?.status !== "running");
+    assert.equal(state.execution?.id, repeated.runId); assert.equal(state.execution?.outcome, "plan_ready");
+    const beforeNoop = (await f.chats.get(f.chatId)).chat.events.length;
+    const noopArgs = { runId: repeated.runId, action: "resume", operationId: `completed-noop-${++sequence}` };
+    assert.equal((await f.call("control_run", noopArgs)).accepted, false);
+    assert.equal((await f.call("control_run", noopArgs)).accepted, false);
+    await f.core.reconcileWorkspace();
+    assert.equal((await f.chats.get(f.chatId)).chat.events.length, beforeNoop, "a declined control and its replay must not claim work resumed in chat");
+    const result = Object.values(f.manager.get(repeated.runId)!.cliTeam!.artifacts).find(a => a.kind === "result")!;
+    const references = [{ runId: repeated.runId, artifactId: result.id, sha256: result.sha256 }];
+    const continuation = await f.call("propose_run", { task: "Implement the agreed plan", context: { chatId: f.chatId, artifacts: references }, candidate: build() });
+    await f.service.action(continuation.workspace.taskId, { action: "edit", candidate: build(), operationId: `edit-context-${++sequence}`, expectedVersion: (await f.service.get(continuation.workspace.taskId)).task.version });
+    assert.deepEqual((await f.service.get(continuation.workspace.taskId)).proposal!.context.artifacts, references, "browser revisions retain the CLI's exact plan references");
+    assert.equal(continuation.workspace.chatId, f.chatId);
+    assert.equal(f.manager.list().length, 1, "continuing with a write task requires a fresh approval");
+    assert.equal((await f.chats.get(f.chatId)).chat.taskIds.length, 2);
+    const events = (await f.chats.get(f.chatId)).chat.events.length;
+    await f.core.reconcileWorkspace(); await f.core.reconcileWorkspace();
+    assert.equal((await f.chats.get(f.chatId)).chat.events.length, events, "reconciliation is idempotent");
+    const restoredCore = new CliTeamsService(f.manager); await restoredCore.load();
+    const restoredTasks = new TaskConversations(f.manager, restoredCore, f.service.authorize); await restoredTasks.load();
+    const restoredChats = new Conversations(f.manager, restoredTasks, restoredTasks.authorize); await restoredChats.load();
+    const { connectCliWorkspace } = await import("../src/cli-teams/workspace.js");
+    connectCliWorkspace(restoredCore, restoredTasks, restoredChats, f.projects, { url: path => `http://localhost:49999${path}`, open: async () => false });
+    await restoredCore.reconcileWorkspace();
+    assert.equal((await restoredChats.get(f.chatId)).chat.events.length, events);
+    const second = (await restoredTasks.get(continuation.workspace.taskId)).proposal!;
+    await restoredTasks.action(continuation.workspace.taskId, { action: "start", operationId: `restored-start-${++sequence}`, expectedVersion: (await restoredTasks.get(continuation.workspace.taskId)).task.version, proposalId: second.id, revision: second.revision, hash: second.hash });
+    for (let i = 0; i < 1500 && (await restoredTasks.get(continuation.workspace.taskId)).execution?.status === "running"; i++) await pause();
+    const built = await restoredTasks.get(continuation.workspace.taskId);
+    assert.equal(built.execution?.outcome, "verified_changes");
+    assert.equal(built.execution?.participation.length, 2);
+    const nextConnection = await restoredCore.connect(f.repo);
+    const next: any = await restoredCore.call(nextConnection, "codeflow_propose_run", { operationId: `inherit-chat-${++sequence}`, task: "Plan the next improvement", candidate: plan(), context: { continueRunId: built.execution!.id } });
+    assert.equal(next.workspace.chatId, f.chatId, "continuations inherit their original chat without an explicit chat selector");
+});
+async function waitCliTask(f: Awaited<ReturnType<typeof cliWorkspaceFixture>>, check: (s: Awaited<ReturnType<InstanceType<typeof TaskConversations>["get"]>>) => boolean) {
+    let s = await f.service.get(f.taskId);
+    for (let i = 0; i < 1500 && !check(s); i++) { await pause(); s = await f.service.get(f.taskId); }
+    assert.ok(check(s), JSON.stringify(s.execution)); return s;
+}
+
+test("CLI guidance survives projection failure; browser questions and controls remain authoritative", async () => {
+    const candidate = plan(); candidate.steps.unshift({ id: "decision", type: "user_decision", question: "Which style?", options: ["Compact", "Detailed"] });
+    const f = await cliWorkspaceFixture(candidate), p = f.proposal;
+    await f.core.accept(f.connection, p.proposalId, p.revision, p.proposalHash);
+    const run = await f.call("start_run", { proposalId: p.proposalId, expectedRevision: p.revision, proposalHash: p.proposalHash });
+    const waiting = await waitCliTask(f, s => !!s.execution?.questions.length);
+    await f.act("message", { message: "Keep keyboard navigation" });
+    const status = await f.call("get_run", { runId: run.runId });
+    assert.ok(status.conversation.taskMessages.some((m: any) => m.body.includes("Keep keyboard navigation")));
+    const sync = f.core.workspace!.sync;
+    f.core.workspace!.sync = async () => { throw new Error("projection interrupted"); };
+    const args = { runId: run.runId, message: "Keep the design small", operationId: `durable-note-${++sequence}` };
+    await assert.rejects(f.call("steer_run", args), /projection interrupted/);
+    f.core.workspace!.sync = sync;
+    await f.core.reconcileWorkspace();
+    assert.equal((await f.chats.get(f.chatId)).chat.events.filter(e => e.body === args.message).length, 1);
+    await f.call("steer_run", args);
+    assert.equal((await f.chats.get(f.chatId)).chat.events.filter(e => e.body === args.message).length, 1);
+    await f.call("control_run", { runId: run.runId, action: "pause" });
+    assert.equal((await f.service.get(f.taskId)).execution?.paused, true);
+    await f.act("resume");
+    assert.equal((await f.call("get_run", { runId: run.runId })).paused, false);
+    const questionId = waiting.execution!.questions[0]!.id;
+    await f.act("answer", { questionId, message: "Compact" });
+    await assert.rejects(f.call("steer_run", { runId: run.runId, questionId, message: "Detailed" }), /pending question/);
+    assert.equal((await waitCliTask(f, s => s.execution?.status !== "running")).execution?.outcome, "plan_ready");
+});
+
+test("current-session work is shown as waiting for CLI and cannot be claimed by another connection", async () => {
+    const candidate = plan(); candidate.participants[0] = { id: "planner", provider: "claude", binding: "current_session" };
+    const f = await cliWorkspaceFixture(candidate), p = f.proposal;
+    await f.act("edit", { candidate }); // Browser edits preserve, never silently convert, the binding.
+    const revised = (await f.service.get(f.taskId)).proposal!;
+    await f.act("start", { proposalId: revised.id, revision: revised.revision, hash: revised.hash });
+    const waiting = await waitCliTask(f, s => s.view.status === "waiting_cli");
+    assert.equal(waiting.execution?.host?.connected, true);
+    f.core.disconnect(f.connection);
+    const disconnected = await f.service.get(f.taskId);
+    assert.match(disconnected.view.stage, /Reconnect your CLI/);
+    const second = await f.core.connect(f.repo), runId = waiting.execution!.id;
+    const status: any = await f.core.call(second, "codeflow_get_run", { runId });
+    assert.equal(status.assignments.length, 0);
+    await f.core.attach(second, runId, second.id);
+    const attached: any = await f.core.call(second, "codeflow_get_run", { runId });
+    const assignment = attached.assignments[0]; assert.ok(assignment);
+    const claim: any = await f.core.call(second, "codeflow_claim_step", { runId, operationId: `claim-${++sequence}`, stepId: assignment.id, attemptId: assignment.attemptId });
+    await f.core.call(second, "codeflow_submit_step", { runId, operationId: `submit-${++sequence}`, stepId: assignment.id, attemptId: assignment.attemptId, claimToken: claim.claimToken, output: { body: "CLI-authored login plan: labels, focus, and validation" } });
+    assert.equal((await waitCliTask(f, s => s.execution?.status !== "running")).execution?.outcome, "plan_ready");
+    assert.match((await f.service.get(f.taskId)).view.participants[0]!.participation, /Result submitted by CLI/);
+    const unrelated = await fixture();
+    const outside = await f.core.connect(unrelated.repo);
+    await assert.rejects(f.core.call(outside, "codeflow_open_task", { id: p.proposalId, open: false }), /unavailable/);
+    await assert.rejects(f.core.call(outside, "codeflow_propose_run", { operationId: `cross-${++sequence}`, task: "Wrong repository", candidate: plan(), context: { chatId: f.chatId } }), /another repository/);
+});
+
+
+test("CLI workspace resolves a new repository project once and rejects conflicting explicit context", async () => {
+    const f = await cliWorkspaceFixture();
+    await assert.rejects(f.call("propose_run", { proposalId: f.proposal.proposalId, expectedRevision: 1, task: "Move proposal", candidate: plan(), context: { chatId: "f".repeat(32) } }), /original project and chat/);
+    await f.projects.remove(f.project.id);
+    const [first, second] = await Promise.all([
+        f.call("propose_run", { task: "First fresh CLI task", candidate: plan() }),
+        f.call("propose_run", { task: "Second fresh CLI task", candidate: plan() }),
+    ]);
+    assert.equal(first.workspace.projectId, second.workspace.projectId);
+    assert.notEqual(first.workspace.projectId, f.project.id);
+    assert.equal(f.projects.list().length, 1);
+    assert.equal(f.projects.get(first.workspace.projectId)!.repos[0], f.repo);
+    await f.core.reconcileWorkspace(); // The removed project's old proposal cannot break other chats.
+    assert.equal((await f.chats.get(first.workspace.chatId)).chat.taskIds.length, 1);
+    await assert.rejects(f.call("propose_run", { task: "Invalid project", candidate: plan(), context: { projectId: "does-not-exist" } }), /containing this repository/);
 });

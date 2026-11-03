@@ -82,7 +82,7 @@ test("Kilo and Cline presets connect through ACP, preserve edited invocations, a
     await page.goto(`${base}/#/settings/general`);
     await page.getByRole("heading", { name: "General", exact: true }).waitFor();
     await page.getByLabel("Search settings").fill(name);
-    await page.getByRole("region", { name: "Settings search results" }).getByRole("button", { name: /Agents & models/ }).click();
+    await page.getByRole("region", { name: "Settings search results" }).getByRole("button", { name: /Providers/ }).click();
     const panel = page.getByRole("region", { name: "ACP connections", exact: true });
     await panel.getByRole("button", { name: `Connect ${name}`, exact: true }).click();
     assert.equal(await panel.getByLabel("ACP connection ID").inputValue(), command);
@@ -207,7 +207,7 @@ test("settings navigation, search, appearance, and run defaults persist and driv
   await page.getByLabel("Minutes per run").blur();
   assert.equal(await page.getByLabel("Minutes per run").inputValue(), "37");
   await page.getByRole("button", { name: "New chat", exact: true }).click();
-  await page.getByRole("button", { name: "Existing workflows", exact: true }).click();
+  await page.evaluate(() => { location.hash = "#/workflows"; });
   await page.locator(".composer-options > summary").click();
   await page.locator("details.advanced-controls > summary").click();
   await page.locator("details.settings > summary").filter({ has: page.locator(".st", { hasText: /^Branches and limits$/ }) }).click();
@@ -276,7 +276,7 @@ test("saved SSH connections survive reload, reject invalid ports, and retain a c
 
 test("all settings categories render; desktop and mobile preferences are accessible", async () => {
   await page.goto(`${base}/#/settings`);
-  for (const name of ["Agents & models", "Notifications", "Connections", "Integrations", "Projects", "Extensions", "Data & storage", "Advanced"]) {
+  for (const name of ["Providers", "Notifications", "Connections", "Integrations", "Projects", "Extensions", "Data & storage", "Advanced"]) {
     await category(name);
     await page.getByRole("heading", { name, exact: true }).first().waitFor();
   }
@@ -299,7 +299,7 @@ test("operational tools are direct destinations and old Settings links still wor
   await page.setViewportSize({ width: 1440, height: 1000 });
   for (const [path, name] of [["workspace", "Repository tools"], ["automations", "Scheduling"], ["inbox", "Inbox"], ["insights", "Insights"]] as const) {
     await page.goto(`${base}/#/${path}`);
-    await page.getByRole("heading", { name, exact: true }).first().waitFor();
+    await page.getByRole("heading", { name: path === "automations" ? "What would you like to automate?" : name, exact: true }).first().waitFor();
     assert.ok(page.url().endsWith(`#/${path}`));
     assert.equal(await page.getByRole("navigation", { name: "Settings categories" }).count(), 0);
     await page.getByRole("button", { name: /^Open command palette/ }).click();
@@ -313,12 +313,12 @@ test("operational tools are direct destinations and old Settings links still wor
   await page.getByRole("navigation", { name: "Repository tools" }).waitFor();
   await page.locator("#main-content").focus();
   await page.keyboard.press("a");
-  await page.getByRole("navigation", { name: "Scheduling purpose", exact: true }).waitFor();
+  await page.getByRole("heading", { name: "What would you like to automate?", exact: true }).waitFor();
   assert.ok(page.url().endsWith("#/automations"));
   await page.goBack();
   await page.getByRole("navigation", { name: "Repository tools" }).waitFor();
   await page.goForward();
-  await page.getByRole("navigation", { name: "Scheduling purpose", exact: true }).waitFor();
+  await page.getByRole("heading", { name: "What would you like to automate?", exact: true }).waitFor();
   await page.locator("#main-content").focus();
   await page.keyboard.press("i");
   await page.getByRole("heading", { name: "Insights", exact: true }).first().waitFor();

@@ -14,7 +14,10 @@ export interface Automation {
   name: string;
   enabled: boolean;
   revision?: number;
-  run: { repo: string; project?: string; pattern: string; task: string; roles: Record<string, string[]> };
+  run: { repo: string; project?: string; pattern: string; task: string; roles: Record<string, string[]>; chatRecipe?: { chatId: string } };
+  onceAt?: number;
+  missedPolicy?: "run_once" | "skip";
+  lastTest?: { runId?: string; revision: number; state: string; error?: string };
   schedule?: Schedule;
   scheduleText: string;
   webhook: boolean;
@@ -29,6 +32,7 @@ export interface Automation {
   /** A recurring sweep: lists this kind of work and starts runs for new items. */
   sweep?: { kind: "issues" | "dependabot" | "alerts"; max: number };
   handled?: string[];
+  progress?: { total: number; items: { key: string; runId: string; state: string }[] };
   /** Webhook events waiting for the running run to end. */
   queued?: unknown[];
 }

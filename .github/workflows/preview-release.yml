@@ -25,7 +25,8 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    # Keep every test; allow the full macOS suite to finish on slower hosts.
+    timeout-minutes: ${{ matrix.os == 'macos-latest' && 60 || 45 }}
     steps:
       - uses: actions/checkout@v4
         with:

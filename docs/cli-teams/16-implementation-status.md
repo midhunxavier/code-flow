@@ -8,12 +8,12 @@ The initial task-first implementation is in `src/cli-teams/`. It adds a private 
 
 Implemented components:
 
-- Strict candidate and preference contracts, model/effort discovery and pin resolution, source capture, immutable proposals, native MCP form confirmation, and terminal acceptance as a fallback.
+- Strict candidate and preference contracts, model/effort discovery and pin resolution, source capture, immutable proposals, native MCP form confirmation, and browser or terminal acceptance as a fallback.
 - Task-generated participant definitions and seven structured node types; no initial preset or saved-team APIs.
 - A deterministic executor using the existing journal, provider adapters, worktrees, shared agent/check slots, command evidence, and run controls.
 - Exact-target agreement, fresh final reviewers, bounded revision loops, serialized managed writes, and verification tied to the delivered snapshot.
 - Plain-plan completion without false agreement, checks-only completion when no independent review was requested, and verification-only continuations that retain completed code without launching another writer. These remain explicit outcomes rather than presets.
-- Ten project-scoped public MCP tools, stdio protocol negotiation, separate loopback session capabilities, bounded reads, heartbeats, host claim fencing, and artifact pagination.
+- Twelve project-scoped public MCP tools, stdio protocol negotiation, separate loopback session capabilities, bounded reads, heartbeats, host claim fencing, and artifact pagination.
 - Reuse of the web owner or headless bootstrap of the same server; existing state-directory locking arbitrates competing startups.
 - Transactional project configuration/skill installation, doctor, explicit preferences, interactive host attachment, terminal status/result/control commands, and ownership-aware uninstall.
 - Lifetime launch/time accounting, shared transport/schema attempt ceilings per assignment, conservative accounting of unsettled invocation time, and worktree-preserving accepted continuations.
@@ -86,3 +86,17 @@ A bounded live web continuation on 2026-11-02 (`2611022102-bdb9fa87`) completed 
 Native skill discovery, exact current-session model metadata, native form presentation, and live model behavior remain provider/version-dependent. The implementation uses documented project configuration, capability-negotiated form elicitation, and an explicit terminal fallback. Automated tests exercise accept/decline/cancel, stale revisions, duplicate starts, disconnects, and rejection of model-authored approval arguments. Full release certification still requires bounded live walkthroughs in both native hosts, with the tested versions, settings, output delivery, and limitations recorded.
 
 Do not label the integration as release-certified from fake-provider tests alone. Keep the CLI guide's experimental label until the live evidence required by [12](12-test-and-release-plan.md) is available. Interrupted writes without durable completion are preserved and require inspection/a fresh continuation proposal; they are not blindly relaunched.
+
+## CLI visual workspace stages 1–3
+
+Implemented: stable task links; explicit `codeflow open` / `codeflow_open_task`; durable project/chat/task association; native or browser acceptance of the same exact revision; shared progress, questions, guidance, controls and recovery; startup reconciliation; visible disconnected CLI assignments. The public MCP surface now has twelve tools. The existing web workflow engine is preserved. Embedded MCP Apps UI and mirroring a native host's full transcript remain deferred.
+
+Validation covers both form-capable and tool-only MCP hosts, a real browser with isolated fixture providers, exact-revision fencing, duplicate starts, continuation approvals, both providers participating, journal recovery, cross-repository isolation and expiring browser handoffs. Fixture checks do not claim live vendor inference certification.
+
+## CLI reliability follow-up
+
+Attachment transport now accommodates the supported file limits and returns correlated validation errors. Artifact discovery and recorded changed-file metadata paginate independently. MCP exposes recorded participant settings, sessions, snapshot evidence, last review decisions and continuation context. Recent/unfinished work can be discovered without a known run ID. Terminal status connections are never offered as attachment targets; expired sessions are rejected.
+
+Setup/status output is readable by default with `--json` for scripts. Deterministic snapshot/check nodes no longer require host-authored instructions. Attempt timeouts are capped by the run's execution allowance. Completed work returns an explicit no-op on resume. Start preflight checks every managed provider's availability before dispatch, while doctor distinguishes model discovery from authentication and execution permissions.
+
+The 2026-11-03 native read-only probe passed with Codex CLI 0.165.0 and Claude Code 2.1.317: both discovered all twelve tools and the skill, and both declared form support. Codex's confirmation was safely declined without creating a run. This probe used zero inference calls and does not certify live worker behaviour or Claude's interactive approval dialog.

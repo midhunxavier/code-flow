@@ -94,7 +94,7 @@ test("Agent UI renders replies, keeps drafts and files across provider tabs, res
   assert.equal(execFileSync("git",["rev-parse","HEAD"],{cwd:child.worktrees[0].path}).toString().trim(),originalHead);
   if(live) assert.match(child.summary,/cobalt-731/);
   await page.waitForURL(new RegExp(second.id));
-  const rail = page.getByRole("navigation", {name:"Runs",exact:true});
+  const rail = page.getByRole("navigation", {name:"Workspace navigation",exact:true});
   assert.equal(await rail.locator(".run-item").count(), 1, "provider forks belong to one sidebar task");
   assert.equal(await rail.locator('.run-item[aria-current="page"]').count(), 1, "the task stays selected on a fork");
   await rail.locator(".run-item").click(); await page.waitForURL(new RegExp(second.id));
@@ -213,7 +213,7 @@ test("closing the final working tab keeps its agent running and the task can be 
   const result = await done(separate.id);
   assert.equal(result.followUps.at(-1).message, "Keep working after the tab closes");
   assert.equal(result.archived, false);
-  await page.getByRole("navigation", {name:"Runs",exact:true}).locator(".run-item").filter({hasText:"A separate task"}).click();
+  await page.getByRole("navigation", {name:"Workspace navigation",exact:true}).locator(".run-item").filter({hasText:"A separate task"}).click();
   await page.waitForURL(new RegExp(separate.id));
   await main.getByText("Keep working after the tab closes", {exact:true}).waitFor();
 });
@@ -223,7 +223,7 @@ test("sidebar task actions archive, restore and delete the whole chat family", {
   const rootRun = all.find((run:any) => run.task === "Agent UI first message");
   const family = await api(`/api/runs/${rootRun.id}/chats`);
   assert.equal(family.length, 3);
-  const rail = page.getByRole("navigation", {name:"Runs",exact:true});
+  const rail = page.getByRole("navigation", {name:"Workspace navigation",exact:true});
   const row = rail.getByRole("group", {name:"Agent UI first message",exact:true});
   await row.getByRole("button", {name:"Run actions",exact:true}).click();
   await page.getByRole("menuitem", {name:"Archive",exact:true}).click();

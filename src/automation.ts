@@ -22,6 +22,8 @@ export interface Trigger {
   id: string;
   target?: { kind: "project-team"; teamId: string };
   name: string;
+  creationKey?: string;
+  creationHash?: string;
   enabled: boolean;
   /**
    * Counts your changes (1 when it was made). A change sent with the revision it was based on is
@@ -31,6 +33,11 @@ export interface Trigger {
   /** The run to start: the same fields as a run request from the composer. */
   run: Record<string, any> & { repo: string; pattern: string; task: string };
   schedule?: Schedule;
+  /** New chat automations collapse all missed occurrences into one on return. */
+  missedPolicy?: "run_once" | "skip";
+  onceAt?: number;
+  /** A test is tied to a saved revision; it never enables the schedule. */
+  lastTest?: { operationId: string; revision: number; runId?: string; state: "starting" | "started" | "failed"; error?: string };
   /** Accept POST /hooks/<id> authenticated with the token (Bearer, or GitHub's signature). */
   webhook: boolean;
   token: string;
@@ -50,6 +57,7 @@ export interface Trigger {
   sweep?: { kind: SweepKind; max: number };
   /** Items a sweep has started a run for ("issue#12", "dependabot#5"…), so it never starts them twice. */
   handled?: string[];
+  progress?: { total: number; items: { key: string; runId: string; state: "running" | "completed" | "attention" }[] };
   /**
    * The latest webhook deliveries, so one sent again doesn't start another run: GitHub's ids, and
    * for a delivery signed with GitHub's signature the hash of its body too ("sha256:…").
@@ -125,8 +133,9 @@ export class ManagedAutomationError extends Error {
 export class AutomationValidationError extends Error {
   readonly status = 400;
 }
-function requireTrigger(trigger: Pick<Trigger, "schedule" | "webhook">) {
-  if (!trigger.schedule && !trigger.webhook) throw new AutomationValidationError("Give it a schedule, a webhook, or both");
+function requireTrigger(trigger: Pick<Trigger, "schedule" | "webhook" | "onceAt">) {
+  if (trigger.onceAt && (trigger.schedule || trigger.webhook)) throw new AutomationValidationError("Choose one time, a repeat schedule, or a webhook");
+  if (!trigger.schedule && !trigger.webhook && !trigger.onceAt) throw new AutomationValidationError("Give it a schedule, a webhook, or both");
 }
 
 /** A change based on an older revision: another window changed the automation first. */
@@ -378,7 +387,7 @@ export class Automations {
     let missed = false;
     for (const t of this.triggers) {
       const saved = t.nextAt;
-      t.nextAt = t.enabled && t.schedule ? resumeSchedule(t.schedule, saved, now) : undefined;
+      t.nextAt = t.enabled ? t.onceAt ? saved ?? t.onceAt : t.schedule ? t.missedPolicy === "run_once" && saved ? saved : resumeSchedule(t.schedule, saved, now) : undefined : undefined;
       if (!t.enabled || !t.schedule || saved === undefined || saved > now) continue;
       if (t.nextAt === saved) this.resumed.set(t.id, { due: saved, at: now });
       else { this.recordMissed(t, saved); missed = true; }
@@ -413,15 +422,17 @@ export class Automations {
     input: Omit<Trigger, "id" | "revision" | "token" | "createdAt" | "nextAt" | "handled" | "deliveries" | "queued" | "webhookStarts" | "webhookSources" | "eventHistory"> & { handled?: string[] },
   ): Promise<Trigger> {
     this.requireWritable();
-    const trigger: Trigger = { ...input, id: `t-${randomBytes(4).toString("hex")}`, revision: 1, token: randomBytes(24).toString("hex"), createdAt: Date.now() };
-    trigger.nextAt = trigger.enabled && trigger.schedule ? nextFire(trigger.schedule, Date.now()) : undefined;
+    const creationHash = createHash("sha256").update(JSON.stringify(input)).digest("hex");
+    if (input.creationKey) { const previous = this.triggers.find(t => t.creationKey === input.creationKey); if (previous) { if (previous.creationHash !== creationHash) throw new AutomationConflictError(); return { ...previous }; } }
+    const trigger: Trigger = { ...input, creationHash, id: `t-${randomBytes(4).toString("hex")}`, revision: 1, token: randomBytes(24).toString("hex"), createdAt: Date.now() };
+    trigger.nextAt = trigger.enabled ? trigger.onceAt ?? (trigger.schedule ? nextFire(trigger.schedule, Date.now()) : undefined) : undefined;
     this.triggers.push(trigger);
     await this.save();
     return { ...trigger };
   }
 
   /** `revision`: the one this change was based on; refused when the automation changed since. */
-  async update(id: string, patch: Partial<Pick<Trigger, "name" | "enabled" | "schedule" | "webhook" | "isolate" | "image" | "run" | "revision">> & { rotateToken?: boolean }) {
+  async update(id: string, patch: Partial<Pick<Trigger, "name" | "enabled" | "schedule" | "webhook" | "isolate" | "image" | "run" | "revision" | "onceAt" | "missedPolicy">> & { rotateToken?: boolean }) {
     this.requireWritable();
     const t = this.require(id);
     if (t.target) throw new ManagedAutomationError("Edit this automation from its project mission");
@@ -429,7 +440,7 @@ export class Automations {
     if (revision !== undefined && revision !== t.revision) throw new AutomationConflictError();
     requireTrigger({ ...t, ...rest });
     t.revision++;
-    const timing = JSON.stringify([t.enabled, t.schedule]);
+    const timing = JSON.stringify([t.enabled, t.schedule, t.onceAt]);
     Object.assign(t, rest);
     if ("schedule" in patch && !patch.schedule) t.schedule = undefined;
     if (rotateToken) t.token = randomBytes(24).toString("hex");
@@ -437,8 +448,8 @@ export class Automations {
     // (or a sweep warning whose settings cannot be repaired by this editor).
     if (t.lastError?.startsWith("Turned off: ") && !t.lastError.includes("sweep") && ("schedule" in rest || "webhook" in rest || rest.enabled === true)) t.lastError = undefined;
     // Renaming it doesn't move its next time; changing when it runs (or turning it on) does.
-    if (JSON.stringify([t.enabled, t.schedule]) !== timing || (t.enabled && t.schedule && !t.nextAt)) {
-      t.nextAt = t.enabled && t.schedule ? nextFire(t.schedule, Date.now()) : undefined;
+    if (JSON.stringify([t.enabled, t.schedule, t.onceAt]) !== timing || (t.enabled && t.schedule && !t.nextAt)) {
+      t.nextAt = t.enabled ? t.onceAt ?? (t.schedule ? nextFire(t.schedule, Date.now()) : undefined) : undefined;
     }
     if (!t.enabled) {
       for (const queued of t.queued ?? []) this.updateEvent(t, queued.eventId, "dropped", "Automation was disabled before this event could run");
@@ -494,7 +505,15 @@ export class Automations {
     for (const t of this.triggers) {
       if (this.stopped) return;
       if (t.queued?.length) void this.drain(t);
-      if (!t.enabled || !t.schedule) continue;
+      if (!t.enabled) continue;
+      if (t.onceAt) {
+        if (t.onceAt > now) continue;
+        // Persist consumption before dispatch; a crash is visible in event history, never replayed silently.
+        t.enabled = false; t.nextAt = undefined; t.revision++; await this.save(true);
+        await this.fire(t.id, { via: "manual", occurrence: `once:${t.onceAt}` }).catch(error => logWarn("One-time automation could not start", { error: (error as Error).message }));
+        continue;
+      }
+      if (!t.schedule) continue;
       if (!t.nextAt) {
         t.nextAt = nextFire(t.schedule, now);
         changed = true;
@@ -528,7 +547,7 @@ export class Automations {
       this.resumed.delete(t.id);
       t.nextAt = nextFire(t.schedule, now);
       changed = true;
-      if (!stillDue(t.schedule, due, judgedAt)) {
+      if (t.missedPolicy !== "run_once" && !stillDue(t.schedule, due, judgedAt)) {
         this.recordMissed(t, due);
         continue;
       }
@@ -592,7 +611,7 @@ export class Automations {
     const event = input.eventId ? t.eventHistory?.find((e) => e.id === input.eventId) : undefined;
     const tracked = event ?? this.recordEvent(t, validated);
     try {
-      const result = await this.fireOne(t, { ...validated, occurrence: input.occurrence, eventId: tracked.id });
+      const result = await this.fireOne(t, { ...validated, occurrence: input.occurrence ?? tracked.id, eventId: tracked.id });
       const runs = result.runs ?? (result.run ? [result.run] : []);
       tracked.runIds = runs.map((run) => run.id);
       const state = result.queued ? "queued" : result.deduplicated ? "deduplicated" : result.skipped ? /already started \d+ runs from webhooks/.test(result.skipped) ? "dropped" : "skipped" : "started";
@@ -603,6 +622,26 @@ export class Automations {
       this.updateEvent(t, tracked.id, "failed", (err as Error).message);
       throw err;
     } finally { await this.save(); }
+  }
+
+  async test(id: string, revision: number, operationId: string): Promise<FireResult> {
+    this.requireWritable();
+    const t = this.require(id);
+    if (!operationId || operationId.length > 100) throw new AutomationValidationError("Provide a test operation ID");
+    if (t.revision !== revision) throw new AutomationConflictError();
+    if (t.lastTest?.operationId === operationId) {
+      if (t.lastTest.revision !== revision) throw new AutomationConflictError();
+      const run = t.lastTest.runId ? this.manager.get(t.lastTest.runId) : undefined;
+      if (run) return { run };
+      throw new AutomationConflictError(); // An uncertain dispatch must be inspected, never duplicated.
+    }
+    if (t.lastTest?.state === "starting") throw new AutomationConflictError();
+    t.lastTest = { operationId, revision, state: "starting" }; await this.save(true);
+    try {
+      const result = await this.fire(id, { via: "manual", occurrence: `test:${operationId}` });
+      const run = result.run ?? result.runs?.[0];
+      t.lastTest = { operationId, revision, state: run ? "started" : "failed", runId: run?.id, error: result.skipped }; await this.save(true); return result;
+    } catch (error) { t.lastTest = { operationId, revision, state: "failed", error: (error as Error).message }; await this.save(true); throw error; }
   }
 
   /** Recent queue decisions, start failures and dropped deliveries, newest first. */
@@ -722,6 +761,7 @@ export class Automations {
     if (sourceKey) this.startingSources.set(t.id, sourceKey);
     const body: Record<string, any> = {
       ...t.run,
+      automationOccurrence: input.occurrence ?? input.eventId,
       task: withDetails(t.run.task, input),
       source: input.source ?? t.run.source,
       loop: { ...(t.run.loop ?? {}), container: t.isolate ? { image: t.image || "node:22", network: true } : undefined },
@@ -780,6 +820,7 @@ export class Automations {
   private runChanged(run: RunSummary) {
     if (run.deleted) return;
     const t = run.trigger && run.status !== "running" ? this.get(run.trigger.id) : undefined;
+    if (t?.progress) { const item = t.progress.items.find(i => i.runId === run.id); if (item) { item.state = run.status === "done" && !["blocked", "stopped_limit"].includes(run.cliTeam?.outcome ?? "") ? "completed" : "attention"; void this.save(); } }
     if (t?.queued?.length && t.lastRunId === run.id) void this.drain(t);
   }
 
@@ -830,6 +871,7 @@ export class Automations {
   private async fireSweep(t: Trigger, input: FireInput): Promise<FireResult & { runs: Run[] }> {
     if (input.source) return this.fireSweepItem(t, input, input.source);
     if (!this.listSweep) throw new Error("Sweeps aren't available here");
+    if (t.sweep?.max === 1 && this.busy(t)) return { runs: [], skipped: this.busy(t) };
     if (this.sweeping.has(t.id)) return { runs: [], skipped: "it's already sweeping" };
     this.sweeping.add(t.id);
     const sweep = t.sweep!;
@@ -838,6 +880,8 @@ export class Automations {
     t.lastFiredAt = Date.now();
     try {
       const list = await this.listSweep(t.run.repo, sweep.kind);
+      if (input.via !== "manual" && !t.enabled) return { runs: [], skipped: "Paused before starting the next item" };
+      if (t.run.chatRecipe) { const progress = t.progress ?? { total: 0, items: [] }; progress.total = new Set([...progress.items.map(i => i.key), ...list.items.filter(i => i.selected).map(i => i.key)]).size; t.progress = progress; }
       const handled = new Set(t.handled ?? []);
       if (upgradeLegacyKeys(list, handled)) t.handled = [...handled].slice(-MAX_HANDLED);
       const items = nextSweepItems(list, new Set([...handled, ...claimed]), sweep.max);
@@ -851,6 +895,7 @@ export class Automations {
       for (const item of items) {
         try {
           runs.push(await this.startRun(this.sweepRun(t, item.task, item.source), { trigger: { id: t.id, name: t.name, via: input.via } }));
+          if (t.progress) t.progress.items = [...t.progress.items, { key: item.key, runId: runs.at(-1)!.id, state: "running" as const }].slice(-MAX_HANDLED);
           this.handle(t, sourceKeys(item.source));
         } catch (err) {
           errors.push(`${item.key}: ${(err as Error).message}`);
@@ -924,7 +969,7 @@ export class Automations {
   }
 
   private sweepRun(t: Trigger, task: string, source: SourceInput): Record<string, any> {
-    return { ...t.run, task, source, loop: { ...(t.run.loop ?? {}), container: t.isolate ? { image: t.image || "node:22", network: true } : undefined } };
+    return { ...t.run, task: t.run.chatRecipe ? `${t.run.task}\n\n${untrustedBlock("current backlog item", task)}` : task, automationOccurrence: `item:${sourceKeys(source).join(",")}`, source, loop: { ...(t.run.loop ?? {}), container: t.isolate ? { image: t.image || "node:22", network: true } : undefined } };
   }
 
   private handle(t: Trigger, keys: string[]) {
@@ -1061,11 +1106,16 @@ function readTrigger(raw: any): Trigger | undefined {
   return {
     id: raw.id,
     target: raw.target,
+    creationKey: typeof raw.creationKey === "string" ? raw.creationKey : undefined,
+    creationHash: typeof raw.creationHash === "string" ? raw.creationHash : undefined,
     name: typeof raw.name === "string" && raw.name.trim() ? raw.name.slice(0, 80) : "Automation",
     enabled: raw.enabled === true && !problems.length,
     revision: Number.isSafeInteger(raw.revision) && raw.revision > 0 ? raw.revision : 1,
     run,
     schedule,
+    onceAt: time(raw.onceAt),
+    missedPolicy: raw.missedPolicy === "run_once" ? "run_once" : "skip",
+    lastTest: raw.lastTest && typeof raw.lastTest.operationId === "string" && Number.isSafeInteger(raw.lastTest.revision) ? { operationId: raw.lastTest.operationId, revision: raw.lastTest.revision, state: raw.lastTest.state === "started" ? "started" : "failed", runId: typeof raw.lastTest.runId === "string" ? raw.lastTest.runId : undefined, error: raw.lastTest.state === "starting" ? "Code Flow restarted during test admission. Inspect history before retrying." : raw.lastTest.error } : undefined,
     webhook: raw.webhook === true,
     token: raw.token,
     isolate: raw.isolate === true,
@@ -1077,6 +1127,7 @@ function readTrigger(raw: any): Trigger | undefined {
     lastError: problems.length ? `Turned off: ${problems.join("; ")}` : typeof raw.lastError === "string" ? raw.lastError : undefined,
     sweep,
     handled: strings(raw.handled)?.slice(-MAX_HANDLED),
+    progress: raw.progress && Number.isSafeInteger(raw.progress.total) && Array.isArray(raw.progress.items) ? { total: raw.progress.total, items: raw.progress.items.filter((i: any) => i && typeof i.key === "string" && typeof i.runId === "string" && ["running", "completed", "attention"].includes(i.state)).slice(-MAX_HANDLED) } : undefined,
     deliveries: strings(raw.deliveries)?.slice(-MAX_DELIVERIES),
     queued: queued?.length ? queued : undefined,
     eventHistory,

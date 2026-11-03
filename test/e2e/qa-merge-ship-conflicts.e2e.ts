@@ -179,7 +179,7 @@ test("after a resolution, Review lists what the target brought in, labelled, and
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.getByText("Review tools", { exact: true }).click();
   const coverage = page.locator(".review-coverage");
-  await coverage.locator("summary").filter({ hasText: "Human review coverage · 0/2 files" }).click();
+  await coverage.locator("summary").filter({ hasText: "File review" }).click();
   assert.match(await coverage.locator(".rc-file", { hasText: "target-only.txt" }).innerText(), /merged in/);
   await coverage.getByText(/came from qa-conflict-t when it was merged to resolve conflicts\. They count here/).waitFor();
   await page.addScriptTag({ content: axe.source });

@@ -20,18 +20,22 @@ let lineMode = false, sleepMs = "20";
 const expectedNetwork: string[] = [];
 const consoleErrors: string[] = [], pageErrors: string[] = [], serverLog: string[] = [];
 type Restart = { started: number; ready?: number; pid: number | undefined };
-type NetworkRequest = { page: number; url: string; method: string; started: number; responseAt?: number; failedAt?: number; status?: number; body?: unknown; failure?: string; deliberateOffline?: boolean; navigationAt?: number };
+type NetworkRequest = { page: number; url: string; method: string; started: number; responseAt?: number; failedAt?: number; status?: number; body?: unknown; failure?: string; deliberateOffline?: boolean; navigationAt?: number; streamClosedAt?: number };
 type ConsoleError = { page: number; url: string; at: number; text: string };
 const restarts: Restart[] = [], requests: NetworkRequest[] = [], observedConsole: ConsoleError[] = [], exceptions: string[] = [];
 const requestRecords = new WeakMap<Request, NetworkRequest>(), responseReads = new Set<Promise<void>>();
 const pageIds = new WeakMap<Page, number>();
 let nextPage = 0;
-const now = () => performance.now();
+const now = () => Date.now();
 const transportError = /^net::ERR_(FAILED|INCOMPLETE_CHUNKED_ENCODING|CONNECTION_REFUSED|CONNECTION_RESET|EMPTY_RESPONSE|INTERNET_DISCONNECTED|SOCKET_NOT_CONNECTED)$/;
 function expectedFailure(request: NetworkRequest, windows: Restart[]) {
   const url = new URL(request.url);
   if (url.origin !== base || !url.pathname.startsWith("/api/")) return false;
   if (request.status === undefined && request.deliberateOffline && request.method === "POST" && url.pathname === "/api/notes" && request.failure === "net::ERR_INTERNET_DISCONNECTED") return true;
+  // EventSource.close() deliberately cancels an opening stream, including when
+  // the app changes its owner/session broker. Record the actual close call so
+  // arbitrary aborts and connection failures cannot borrow this exception.
+  if (request.status === undefined && request.method === "GET" && url.pathname === "/api/stream" && request.failure === "net::ERR_ABORTED" && request.streamClosedAt !== undefined && request.started <= request.streamClosedAt && request.failedAt !== undefined && request.failedAt >= request.streamClosedAt && request.failedAt - request.streamClosedAt <= 5000) return true;
   // Only a stream open before a test-initiated document navigation/close can
   // report this cancellation. Unexplained stream errors and other API aborts still fail.
   if (request.status === undefined && request.method === "GET" && url.pathname === "/api/stream" && request.failure === "net::ERR_ABORTED" && request.navigationAt !== undefined && request.started <= request.navigationAt && request.failedAt !== undefined && request.failedAt >= request.navigationAt && request.failedAt - request.navigationAt <= 5000) return true;
@@ -114,9 +118,20 @@ async function settled(id: string) {
   for (let i = 0; i < 300; i++) { const result = (await api(`/api/runs/${id}`)).body; if (result.status !== "running") return result; await new Promise(resolve => setTimeout(resolve, 100)); }
   throw new Error(`Run did not finish: ${id}`);
 }
-function watch(p: Page) {
+async function watch(p: Page) {
   const pageId = ++nextPage;
   pageIds.set(p, pageId);
+  await p.exposeBinding("qaStreamClosed", (_source, url: string, at: number) => {
+    const request = [...requests].reverse().find(record => record.page === pageId && record.url === url && record.started <= at);
+    if (request) request.streamClosedAt = at;
+  });
+  await p.addInitScript(() => {
+    const close = EventSource.prototype.close;
+    EventSource.prototype.close = function () {
+      void (window as unknown as { qaStreamClosed: (url: string, at: number) => Promise<void> }).qaStreamClosed(this.url, Date.now());
+      return close.call(this);
+    };
+  });
   p.on("request", request => {
     if (!request.url().startsWith(base + "/api/")) return;
     const record = { page: pageId, url: request.url(), method: request.method(), started: now() };
@@ -168,7 +183,7 @@ before(async () => {
   alpha = (await api("/api/projects", { name: "Side Alpha", repos: [repository("alpha", { "sub/.keep": "" })] })).body;
   beta = (await api("/api/projects", { name: "Side Beta", repos: [repository("beta")] })).body;
   browser = await chromium.launch({ channel: "chrome", headless: true });
-  const context = await browser.newContext({ viewport: { width: 1440, height: 1100 }, colorScheme: "light" }); page = await context.newPage(); watch(page);
+  const context = await browser.newContext({ viewport: { width: 1440, height: 1100 }, colorScheme: "light" }); page = await context.newPage(); await watch(page);
 });
 after(async () => {
   try { for (const context of browser?.contexts() ?? []) for (const p of context.pages()) navigating(p); await browser?.close(); } finally {
@@ -191,7 +206,7 @@ test("offline notes recover against their original revision and both conflict ch
   assert.match(await page.locator(".notes-foot").innerText(), /running\? Your draft/); assert.doesNotMatch(await page.locator(".notes-foot").innerText(), /\?\./);
   navigating(page); await page.close(); await context.unroute("**/api/notes");
   assert.equal((await api("/api/notes", { key: alpha.repos[0], text: "PHONE EDIT", expectedRevision: original.revision })).status, 200);
-  page = await context.newPage(); watch(page); await panel();
+  page = await context.newPage(); await watch(page); await panel();
   await page.getByRole("alert").filter({ hasText: "This note changed" }).waitFor();
   await pause(850); assert.equal((await currentNote()).text, "PHONE EDIT"); assert.equal(await page.getByRole("textbox", { name: "Notes", exact: true }).inputValue(), "offline laptop draft");
   await page.screenshot({ path: join(evidence, "offline-conflict.png"), fullPage: true });
@@ -352,6 +367,11 @@ test("restart audit rejects normal-operation errors and keeps exact shutdown bou
   }
   assert.equal(expectedFailure({ ...late, url: base + "/api/notes", method: "POST", failure: "net::ERR_INTERNET_DISCONNECTED", deliberateOffline: true }, []), true);
   assert.equal(expectedFailure({ ...late, url: base + "/api/notes", method: "POST", failure: "net::ERR_INTERNET_DISCONNECTED" }, []), false);
+  const closed: NetworkRequest = { page: 1, url: base + "/api/stream?subs=[]", method: "GET", started: 1, streamClosedAt: 10, failedAt: 11, failure: "net::ERR_ABORTED" };
+  assert.deepEqual(networkAudit([closed], [], []).consoleErrors, []);
+  for (const request of [{ ...closed, streamClosedAt: undefined }, { ...closed, streamClosedAt: 0 }, { ...closed, failedAt: 9 }, { ...closed, failedAt: 5011 }, { ...closed, url: base + "/api/notes" }, { ...closed, method: "POST" }, { ...closed, failure: "net::ERR_CONNECTION_RESET" }]) {
+    assert.throws(() => assert.deepEqual(networkAudit([request], [], []).consoleErrors, []), "only an observed EventSource close explains a stream abort");
+  }
   const navigated: NetworkRequest = { page: 1, url: base + "/api/stream?subs=[]", method: "GET", started: 1, navigationAt: 10, failedAt: 11, failure: "net::ERR_ABORTED" };
   assert.deepEqual(networkAudit([navigated], [], []).consoleErrors, []);
   for (const request of [{ ...navigated, navigationAt: undefined }, { ...navigated, navigationAt: 0 }, { ...navigated, failedAt: 9 }, { ...navigated, failedAt: 5011 }, { ...navigated, url: base + "/api/notes" }, { ...navigated, method: "POST" }, { ...navigated, failure: "net::ERR_CONNECTION_RESET" }]) {

@@ -1,3 +1,6 @@
+import { connectCliWorkspace } from "./cli-teams/workspace.js";
+import { WorkspaceHandoffs, openWorkspaceBrowser } from "./cli-teams/browser.js";
+import { assertChatSubscriptions } from "./conversational/stream-access.js";
 import { groupPrTargets } from "./pr-targets.js";
 import { EXECUTION_LIMITS, MAX_COMPARE_RUNS, MAX_COMPARE_REPEAT, numberProblem } from "./start-input-validation.js";
 import { validateTaskTeam } from "./task-team.js";
@@ -271,7 +274,7 @@ const teamTerminals = new TeamTerminals({
 sharedAccounts.onChange(() => { void teamTerminals.reap().catch((error) => logError("Team terminal revocation failed", error)); });
 const notes = new Notes();
 const watcher = new PrWatcher(manager);
-const automations = new Automations(manager, (body, extra) => trackPolicyPreparation(() => startFromBody(body, extra)), (repo, kind) => trackPolicyPreparation(async () => { assertPolicyExecution(await fileAccess.execution(repo), "Automation source discovery"); return listSweep(repo, kind, manager.list()); }));
+const automations = new Automations(manager, (body, extra) => trackPolicyPreparation(async () => { if (!body.chatRecipe) return startFromBody(body, extra); if (!taskConversationsReady) throw new HttpError(503, "Chat automation is paused: repair chat storage and restart Code Flow"); return conversations.startAutomation(body, extra.trigger!, body.automationOccurrence, extra.untrustedText); }), (repo, kind) => trackPolicyPreparation(async () => { assertPolicyExecution(await fileAccess.execution(repo), "Automation source discovery"); return listSweep(repo, kind, manager.list()); }));
 const projectTeams = new ProjectTeams({ manager, projects, automations, build: buildStartInput, allowed: async (repo) => assertPolicyExecution(await fileAccess.execution(repo), "Project missions") });
 async function pausePolicyBackground() {
   const results = await Promise.allSettled([watcher.stop(), automations.stop(), projectTeams.stop(), deferredRuns.stop(), coordinatedApi.service.stop(), ...(notificationsReady ? [notifications.stop()] : [])]);
@@ -1060,7 +1063,7 @@ function automationRun(body: Record<string, any>) {
 }
 
 function describeAutomation(t: ReturnType<typeof automations.list>[number]) {
-  return { ...t, scheduleText: describeSchedule(t.schedule), hookPath: `/hooks/${t.id}` };
+  return { ...t, scheduleText: t.onceAt ? `Once · ${new Date(t.onceAt).toISOString()}` : describeSchedule(t.schedule), hookPath: `/hooks/${t.id}` };
 }
 
 /** Unauthenticated-origin routes with their own tokens: webhooks and the phone link. */
@@ -1383,6 +1386,14 @@ projects.onChange(() => teamBroadcast({ type: "resync" }));
  * live events; `after` is the cursor (`<epoch>:<seq>`) of the last event it got before reconnecting.
  */
 const topics: Record<string, TopicSource> = {
+  async chat(name, after, deliver) {
+    if (!taskConversationsReady || fileAccess.hasRestrictions()) throw new TopicError(403, "Chat updates are unavailable");
+    return conversations.subscribe(name, after, deliver);
+  },
+  async chats(name, after, deliver) {
+    if (name !== "all" || !taskConversationsReady || fileAccess.hasRestrictions()) throw new TopicError(403, "Chat updates are unavailable");
+    return conversations.subscribe("all", after, deliver);
+  },
   approvals(_name, _after, deliver) {
     if (fileAccess.hasRestrictions()) throw new TopicError(403, "Approvals are unavailable under filesystem restrictions");
     const generation = filesystemFeedRevision;
@@ -1533,7 +1544,7 @@ async function closeOwnerStreams(rotate = false) {
 filePolicies.onChange(() => closeOwnerStreams());
 
 /** A window's one stream (see src/stream.ts), opened with what it watches already. */
-function openHubStream(res: ServerResponse, url: URL) {
+function openHubStream(res: ServerResponse, url: URL, via: string) {
   const raw = url.searchParams.get("subs") ?? "[]";
   if (raw.length > 16_384) throw new HttpError(400, "Too many subscriptions");
   let subs: unknown;
@@ -1542,6 +1553,7 @@ function openHubStream(res: ServerResponse, url: URL) {
   } catch {
     throw new HttpError(400, "subs must be JSON");
   }
+  assertChatSubscriptions(subs, via);
   const stream = openStream(res);
   ownerHubStreams.add(res);
   const stopPolicy = filePolicies.onChange(() => res.end());
@@ -1575,6 +1587,7 @@ async function streamTopic(req: IncomingMessage, res: ServerResponse, kind: "run
 /** Which listener a request came in on: this machine's, or the one on your network. */
 type Via = "local" | "lan";
 
+const workspaceHandoffs = new WorkspaceHandoffs();
 const performanceMetrics = new PerformanceMetrics();
 async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
   performanceMetrics.observe(req, res);
@@ -1584,6 +1597,14 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
   if (parts[0] === "api") parts = await attempt(async () => canonicalSharedPath(req.url ?? "/").parts);
   if (await handlePublic(req, res, url, parts, via)) return;
   if (via === "lan") checkLanOrigin(req); else checkOrigin(req);
+  if (url.pathname.startsWith("/cli-workspace/") && req.method === "GET") {
+    if (via !== "local") throw new HttpError(404, "Not found");
+    const destination = workspaceHandoffs.consume(url.pathname.slice("/cli-workspace/".length));
+    if (!destination) throw new HttpError(410, "This workspace link expired. Run codeflow open again.");
+    auth.claimable = false;
+    res.writeHead(303, { location: destination, "set-cookie": [sessionCookie(), clearCookie(SHARED_COOKIE)], "cache-control": "no-store", "referrer-policy": "no-referrer", ...NO_FRAMES });
+    return res.end();
+  }
   // A public local-origin bounce lets Strict cookies accompany a hub-initiated handoff.
   // It carries only a narrowly matched hash, never a token, redirect URL or API response.
   if (url.pathname === "/team-handoff" && req.method === "GET") {
@@ -2025,9 +2046,10 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     if (limit !== undefined && (!Number.isInteger(limit) || limit < 1 || limit > 100)) throw new HttpError(400, "History page size must be between 1 and 100");
     return streamAllRuns(req, res, limit);
   }
-  if (req.method === "GET" && parts[1] === "stream" && !parts[2]) return openHubStream(res, url);
+  if (req.method === "GET" && parts[1] === "stream" && !parts[2]) return openHubStream(res, url, via);
   if (req.method === "POST" && parts[1] === "stream" && parts[2]) {
     const body = await readJson(req);
+    assertChatSubscriptions(body.subscribe, via);
     if (!hub.update(parts[2], body)) throw new HttpError(404, "That stream has closed; open a new one");
     return send(res, 200, { ok: true });
   }
@@ -2350,6 +2372,13 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     return send(res, 200, remoteInfo(via));
   }
   if (parts[1] === "automations") {
+    if (parts[2] === "prepare" && req.method === "POST") {
+      if (via !== "local") throw new HttpError(403, "Use the owner app on this computer for chat automation");
+      if (!taskConversationsReady) throw new HttpError(503, "Chat storage is unavailable");
+      const body = await readJson(req);
+      const run = await conversations.automationRecipe(body.chatId, body.taskId, body.proposalHash);
+      return send(res, 200, { run });
+    }
     if (parts[2] === "storage" && !parts[3] && req.method === "GET") return send(res, 200, automations.storageStatus());
     if (parts[2] === "schedule-preview" && req.method === "POST") {
       const body = await readJson(req);
@@ -2361,20 +2390,38 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
       return send(res, 200, { times: await attempt(async () => previewSchedule(schedule, body.after, body.count)), ...(timezone ? { timezone } : {}) });
     }
     const id = parts[2];
-    if (!id && req.method === "GET") return send(res, 200, automations.list().map(describeAutomation));
+    if (!id && req.method === "GET") return send(res, 200, automations.list().filter(t => via === "local" || !t.run.chatRecipe).map(describeAutomation));
     if (!id && req.method === "POST") {
       const body = await readJson(req);
       const name = String(body.name ?? "").trim().slice(0, 80);
       if (!name) throw new HttpError(400, "Name the automation");
-      const run = automationRun(body.run ?? {});
-      await buildStartInput(run); // Validate the current interactive choice before saving unattended work.
-      delete run.projectSelection; // Future fires may fall back if this project is deleted.
+      if (body.operationId !== undefined && (typeof body.operationId !== "string" || !body.operationId || body.operationId.length > 100)) throw new HttpError(400, "Provide an operation ID of 1–100 characters");
+      if (body.fromChat && !body.operationId) throw new HttpError(400, "Provide an operation ID for this automation setup");
+      if (body.fromChat && (via !== "local" || !taskConversationsReady)) throw new HttpError(403, "Use the owner app with available chat storage");
+      if (body.fromChat && body.isolate) throw new HttpError(400, "Chat automation uses the reviewed managed policy. Use an existing container workflow for container execution.");
+      const run = body.fromChat ? await conversations.automationRecipe(body.fromChat.chatId, body.fromChat.taskId, body.fromChat.proposalHash) : automationRun(body.run ?? {});
+      if (!body.fromChat) await buildStartInput(run); // Validate the current interactive choice before saving unattended work.
+      delete (run as Record<string, any>).projectSelection; // Future fires may fall back if this project is deleted.
       const schedule = await attempt(async () => validateSchedule(body.schedule));
-      if (!schedule && !body.webhook) throw new HttpError(400, "Give it a schedule, a webhook, or both");
-      const trigger = await attempt(() => automations.create({ name, enabled: body.enabled !== false, run, schedule, webhook: !!body.webhook, isolate: !!body.isolate, image: typeof body.image === "string" ? body.image.trim() || undefined : undefined }));
+      if (body.onceAt !== undefined && (!Number.isFinite(body.onceAt) || !Number.isFinite(new Date(body.onceAt).getTime()) || body.onceAt <= Date.now() || schedule || body.webhook)) throw new HttpError(400, "Choose one future time, without a repeat or webhook");
+      if (!schedule && !body.webhook && !body.onceAt) throw new HttpError(400, "Choose when this automation runs");
+      if (body.sweep && !["issues", "dependabot", "alerts"].includes(body.sweep.kind)) throw new HttpError(400, "Choose a supported backlog");
+      const trigger = await attempt(() => automations.create({ name, creationKey: body.operationId, enabled: body.enabled !== false, run, schedule, onceAt: body.onceAt, missedPolicy: body.fromChat ? "run_once" : undefined, ...(body.sweep ? { sweep: { kind: body.sweep.kind, max: 1 } } : {}), webhook: !!body.webhook, isolate: !!body.isolate, image: typeof body.image === "string" ? body.image.trim() || undefined : undefined }));
       return send(res, 201, describeAutomation(trigger));
     }
     if (id && !automations.get(id)) throw new HttpError(404, "Automation not found");
+    if (id && automations.get(id)?.run.chatRecipe && via !== "local") throw new HttpError(403, "Use the owner app for this chat automation");
+    if (id && parts[3] === "test-evidence" && req.method === "GET") {
+      const test = automations.get(id)!.lastTest, run = test?.runId ? manager.get(test.runId) : undefined;
+      const taskId = run?.cliTeam?.taskConversation?.id;
+      return send(res, 200, { test, snapshot: taskId ? await taskConversations.read(taskId) : undefined });
+    }
+    if (id && parts[3] === "test" && req.method === "POST") {
+      const body = await readJson(req);
+      const result = await attempt(() => automations.test(id, body.revision, body.operationId));
+      if (result.skipped) throw new HttpError(409, result.skipped);
+      return send(res, 201, { id: result.run?.id ?? result.runs?.[0]?.id });
+    }
     if (id && parts[3] === "events" && req.method === "GET") return send(res, 200, redactExport(automations.events(id)));
     if (id && parts[3] === "events" && parts[4] && parts[5] === "retry" && req.method === "POST") {
       const result = await attempt(() => automations.retryEvent(id, parts[4]!));
@@ -2406,6 +2453,12 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
       if (typeof body.isolate === "boolean") patch.isolate = body.isolate;
       if (typeof body.image === "string") patch.image = body.image.trim() || undefined;
       if ("schedule" in body) patch.schedule = await attempt(async () => validateSchedule(body.schedule));
+      if ("onceAt" in body) {
+        if (!Number.isFinite(body.onceAt) || !Number.isFinite(new Date(body.onceAt).getTime()) || body.onceAt <= Date.now()) throw new HttpError(400, "Choose a future time");
+        patch.onceAt = body.onceAt;
+      }
+      if (body.isolate && automations.get(id)?.run.chatRecipe) throw new HttpError(400, "Container settings cannot replace the reviewed managed policy");
+      if (body.run && automations.get(id)?.run.chatRecipe) throw new HttpError(400, "Adjust the approach in its chat, then review a new automation setup");
       if (body.run) { const run = automationRun(body.run); await buildStartInput(run); delete run.projectSelection; patch.run = run; }
       if (body.rotateToken) patch.rotateToken = true;
       if (body.revision !== undefined) {
@@ -2960,8 +3013,7 @@ if (notificationsReady) {
     }
   });
 }
-if (!fileAccess.hasRestrictions()) startPolicyBackground();
-else await pausePolicyBackground();
+if (fileAccess.hasRestrictions()) await pausePolicyBackground();
 teamConnections.start();
 await teamTerminals.load().then(() => teamTerminals.start()).catch((error) => logError("Team terminals disabled: repair their access storage", error));
 await hostExecution.load().then(() => hostExecution.start()).catch((error) => logError("Host execution disabled: repair its queue storage", error));
@@ -3002,10 +3054,25 @@ const taskConversations = new TaskConversations(manager, cliTeams, async (projec
 }, trackPolicyPreparation);
 const conversations = new Conversations(manager, taskConversations, taskConversations.authorize, trackPolicyPreparation);
 let taskConversationsReady = false;
-const cliTransport = await cliTeams.load().then(() => startCliTeamsTransport(cliTeams)).catch(error => { logError("CLI teams unavailable; repair private control storage and restart", error); return undefined; });
-await taskConversations.load().then(() => { taskConversationsReady = !!cliTransport; }).catch(error => logError("Task conversations unavailable; repair private storage and restart", error));
+const cliReady = await cliTeams.load().then(() => true).catch(error => { logError("CLI teams unavailable; repair private control storage and restart", error); return false; });
+await taskConversations.load().then(() => { taskConversationsReady = cliReady; }).catch(error => logError("Task conversations unavailable; repair private storage and restart", error));
 await conversations.load().catch(error => { taskConversationsReady = false; logError("Chat storage unavailable; repair private storage and restart", error); });
-const stopChatWatch = conversations.watch();
+if (taskConversationsReady) {
+  const workspaceUrl = (path: string) => `http://localhost:${PORT}${path}`;
+  connectCliWorkspace(cliTeams, taskConversations, conversations, projects, {
+    url: workspaceUrl,
+    open: async path => {
+      const ticket = workspaceHandoffs.issue(path);
+      const opened = await openWorkspaceBrowser(workspaceUrl(`/cli-workspace/${ticket}`));
+      if (!opened) workspaceHandoffs.consume(ticket);
+      return opened;
+    },
+  });
+  await cliTeams.reconcileWorkspace().catch(error => { cliTeams.workspace = undefined; logError("CLI workspace synchronization unavailable; existing web conversations remain available", error); });
+}
+const cliTransport = cliReady ? await startCliTeamsTransport(cliTeams).catch(error => { logError("CLI bridge unavailable", error); return undefined; }) : undefined;
+const stopChatWatch = taskConversationsReady ? conversations.watch() : async () => {};
+if (!fileAccess.hasRestrictions()) startPolicyBackground();
 const server = createServer({ maxHeaderSize: MAX_HEADER_SIZE }, listener("local")).listen(PORT, HOST, async () => {
   const agents = fileAccess.hasRestrictions() ? [] : await trackPolicyPreparation(() => agentAvailability());
   const runs = manager.list();

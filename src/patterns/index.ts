@@ -1,3 +1,4 @@
+import { discussionPattern } from "../conversational/discussion.js";
 import type { Pattern } from "../engine.js";
 import { fixReviewPattern } from "./fix-review.js";
 import { pipelinePattern } from "./pipeline.js";
@@ -19,6 +20,7 @@ import { chatLeadPattern } from "../conversational/chat-lead.js";
 export const patterns: Pattern[] = [autoTeamPattern, fixReviewPattern, pipelinePattern, loopPattern, racePattern, debatePattern, supervisorPattern, tddPattern, councilPattern, soloPattern];
 
 export function findPattern(id: string): Pattern | undefined {
+  if (id === discussionPattern.id) return discussionPattern;
   if (id === chatLeadPattern.id) return chatLeadPattern;
   if (id === preparationPattern.id) return preparationPattern;
   if (id === cliTeamPattern.id) return cliTeamPattern;

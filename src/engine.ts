@@ -820,6 +820,8 @@ export interface Pattern {
 }
 
 export interface AskParams {
+  /** Internal discussion path: no provider tools, hooks or MCP. */
+  disableTools?: boolean;
   /** Private graph assignment identity; bounds all transport/schema attempts together. */
   cliAssignment?: string;
   /** Allocate the initial team/plan revision from supplied context and local read tools.
@@ -3008,7 +3010,7 @@ export class TeamContext {
         cli.nodeInvocations[assignment] = (cli.nodeInvocations[assignment] ?? 0) + 1;
         cli.managedInvocations = (cli.managedInvocations ?? 0) + 1;
         const usedMs = this.elapsedExecutionMs;
-        await this.persist(`cli-launch:${randomBytes(12).toString("hex")}`, { stepId: step.id, assignment, at: Date.now(), usedMs, reservedMs: Math.min(cli.definition.limits.attemptTimeoutMs, Math.max(0, cli.definition.limits.maxMinutes * 60_000 - usedMs)) });
+        await this.persist(`cli-launch:${randomBytes(12).toString("hex")}`, { stepId: step.id, mode: params.mode, assignment, at: Date.now(), usedMs, reservedMs: Math.min(cli.definition.limits.attemptTimeoutMs, Math.max(0, cli.definition.limits.maxMinutes * 60_000 - usedMs)) });
       }
       if (this.run.team && !recoveringRemote) {
         if (this.teamBudgetRemaining(params.coordination) <= 0) {
@@ -3065,7 +3067,8 @@ export class TeamContext {
       let result: RunResult;
       try {
         const agentOptions: import("./adapters/types.js").RunOptions = {
-          excludeCodeflowMcp: !!this.run.cliTeam,
+          excludeCodeflowMcp: !!this.run.cliTeam || !!params.disableTools,
+          disableTools: params.disableTools,
           conversation: this.run.pattern === "solo" && !this.run.checkpointOnFinish && !this.run.trigger,
           onQuestion: this.run.pattern === "solo" && !this.run.checkpointOnFinish && !this.run.trigger && !remote ? async (questions, signal) => {
             this.pauseClock();
@@ -3341,6 +3344,8 @@ export interface StartRunInput {
   deferred?: Run["deferred"];
   coordination?: Run["coordination"];
   requireProjectRepo?: boolean;
+  /** Internal discussion path must not register its empty private workspace as a project. */
+  unscopedDiscussion?: boolean;
   roleSettings?: Record<string, AgentSettings>;
   trust?: Trust;
   /** Start from a GitHub issue or PR (a PR's branch becomes the base). */
@@ -4242,6 +4247,7 @@ export class RunManager {
     },
   ) {
     const run = this.require(id);
+    if (run.pattern === "chat-discussion") throw new RunConflictError("Continue this tool-free discussion in its owning chat. Attach a repository before starting code work.");
     const operationHash = input.operationId ? createHash("sha256").update(JSON.stringify(input)).digest("hex") : undefined;
     const repeated = input.operationId ? run.followUps.find(turn => turn.operationId === input.operationId) : undefined;
     if (repeated) {
@@ -5682,6 +5688,7 @@ export class RunManager {
   private async prepareStart(input: StartRunInput) {
     if (input.pattern.id === "cli-team" && !input.cliTeam) throw new Error("Conversational teams require the project-scoped proposal and acceptance flow");
     if (input.pattern.id === "task-prepare" && input.cliTeam?.taskConversation?.phase !== "preparation") throw new Error("Task preparation is an internal bounded operation");
+    if (input.unscopedDiscussion !== (input.pattern.id === "chat-discussion") && (input.unscopedDiscussion || input.pattern.id === "chat-discussion")) throw new Error("Discussion requires the internal conversation path");
     validateTestRun(input.testRun);
     if (this.shuttingDown) throw new Error("code-flow is shutting down; new runs cannot start");
     const filePolicies = await this.assertExecutionAllowed(input.repo, undefined, "run startup");
@@ -5862,7 +5869,7 @@ export class RunManager {
     });
     // An automation's saved project may have been deleted since: then the repo's project takes its
     // runs. With projects off (projects.json unreadable), runs still start and record none.
-    const placed = await (this.projects?.available ? this.projects : undefined)?.place(repo, { requested: input.project, parent: parent?.project, lenient: !!input.trigger, requireRepo: input.requireProjectRepo }).catch(async (err) => {
+    const placed = await (!input.unscopedDiscussion && this.projects?.available ? this.projects : undefined)?.place(repo, { requested: input.project, parent: parent?.project, lenient: !!input.trigger, requireRepo: input.requireProjectRepo }).catch(async (err) => {
       await rm(worktreeDir, { recursive: true, force: true });
       throw err;
     });

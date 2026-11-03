@@ -14,7 +14,7 @@ ui/collab-*.tsx          the Team page: the board and its inbox (collab-board), 
 ui/styles.css, ui/fonts  the stylesheet (the paper theme, light and dark) and its font (Inter; licence included)
 ui/theme.ts              light or dark: follows the system until you pick one with the top bar's theme button
 scripts/build-ui.mjs     builds hashed ESM chunks and CSS, then atomically publishes public/index.html (npm start builds it)
-scripts/check-node.mjs   stops npm start and npm run dev on a Node older than 20, saying why
+scripts/check-node.mjs   stops npm start and npm run dev on a Node older than 22.13, saying why
 scripts/pty.py           the Terminal's pseudo-terminal (Python 3 standard library, no native npm module): runs your login shell in a pty, relays its bytes, takes resizes and reports the shell's pid, its terminal and the foreground on fd 3; when it ends, it hangs up everything in the shell's session
 src/server.ts            HTTP API + SSE on 127.0.0.1 (Host/Origin checked, session cookie or Bearer token)
 src/stream.ts            one event stream per browser window (/api/stream), carrying every topic it watches: runs, run:<id>, shell:<id>
@@ -148,7 +148,7 @@ The GitHub tests cover untrusted issues (lockdown, fenced text, Docker or your c
 
 ## What's next
 
-- A container option for the agents themselves (today only checks and setup run in Docker).
+- Broader provider compatibility for the existing agent-container mode; native Docker tests remain necessary to verify mounts, credentials and cancellation.
 - Linear as a source, next to GitHub issues.
 
 ## Dynamic team control and replay

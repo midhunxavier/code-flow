@@ -2,6 +2,7 @@ import { scrollBehavior } from "./lib.js";
 import { useMessageDraft } from "./message-draft.js";
 import { appendDraftText, conversationAnswer, recoveryMessage, setupRecovery, replySignInIssue } from "./conversation-feedback.js";
 import { runTitle } from "../src/run-title.js";
+import { ChatLeadResult } from "./chat-lead-result.js";
 import { planRejected, failedWork, dispatchLabel } from "../src/run-outcome.js";
 import { BrowserMessage, BrowserDraftCards } from "./browser-context-cards.js";
 import { browserImageNames, editBrowserText, parseBrowserMessage } from "./browser-context.js";
@@ -228,6 +229,7 @@ export function RunView({ id }: { id: string }) {
   };
   const p = patterns.value.find((x) => x.id === run.pattern);
   const owningChat = run.conversationId ?? run.cliTeam?.taskConversation?.chatId ?? (run.pattern === "chat-lead" ? run.cliTeam?.taskConversation?.id : undefined);
+  const leadTurn = run.pattern === "chat-lead" || run.pattern === "chat-discussion";
   const state = runState(run);
   /** A tool approval or a question of this run waits in the approval inbox. */
   const approvalPending = run.status === "running" && pendingApprovals.value.some((record) => record.runId === run.id);
@@ -290,14 +292,14 @@ export function RunView({ id }: { id: string }) {
                 </span>
                 {runStateBadges(run).map((label) => <span key={label} class="status-pill run-state" title={label}>{label}</span>)}
                 {run.chatLink?.kind !== "side" ? <ProjectChip run={run} /> : null}
-                <span class="run-pattern">{p?.name ?? run.pattern}</span>
+                <span class="run-pattern">{leadTurn ? "Conversation lead" : p?.name ?? run.pattern}</span>
                 {run.permissions?.antigravityExecution === "native" ? <span class="badge warn run-unrestricted" title="Antigravity turns in this run use your normal profile and settings without Code Flow's sandbox">Unrestricted Antigravity</span> : null}
                 {teamTask ? <a class="run-team-task" href={`#/team/task/${enc(teamTask)}`} title="This run executes a task of the team board">Team task</a> : null}
               </div>
-              <h2 title={run.task}>{runTitle(run)}</h2>
+              <h2 title={leadTurn ? "Conversation lead" : run.task}>{runTitle(run)}</h2>
             </div>
             <div class="run-actions">
-              {finished && !chat ? <Menu label="More run actions" icon="more">{close => <>
+              {finished && !chat && !leadTurn ? <Menu label="More run actions" icon="more">{close => <>
                 <MenuItem onClick={() => { close(); try {
                   const common = { id: `strategy-${Date.now().toString(36)}`, name: run.task.split("\n")[0]!.slice(0, 80), scope: run.project ? "project" as const : "personal" as const, ...(run.project ? { project: run.project } : {}) };
                   setSavingStrategy(run.team ? templateFromPlan(run.team, common) : { schemaVersion: 1, ...common, version: 1, description: "Saved workflow. Parameterize inputs before reuse.", autoEnabled: false, parameters: ["task"], roles: [], tasks: [], contracts: [], workflow: run.pattern, task: "{{task}}", criteria: [] });
@@ -325,7 +327,7 @@ export function RunView({ id }: { id: string }) {
         <div class="thread">
           {persistence?.state === "saving" ? <p class="help" role="status">Saving run…</p> : persistence?.state === "error" ? <div class="banner bad" role="alert"><p>{persistence.error || "Run changes have not been saved."}</p></div> : null}
           {/* Your task, as the message that started the conversation. */}
-          <div class="msg-you">
+          {!leadTurn ? <div class="msg-you">
             <div class="bubble">
               <div class="run-task" tabIndex={0} role="region" aria-label="Your task">
                 {run.projectTeam && brief ? <MissionTask brief={brief} /> : <BrowserMessage text={run.task} />}
@@ -338,9 +340,9 @@ export function RunView({ id }: { id: string }) {
               {run.parentRunId && run.supersededBy ? <span class="help" aria-hidden="true"> · </span> : null}
               {run.supersededBy ? <a class="help" href={`#/run/${run.supersededBy}`}>Continue with the revised goal →</a> : null}
             </div>
-          </div>
+          </div> : null}
 
-          {!chat && next && !(hasResult && next.kind === "review") ? <section class={`next-action ${["resume", "provider", "provider-limit", "check", "revise"].includes(next.kind) ? "needs-attention" : ""}`} aria-label="Next action">
+          {!chat && !leadTurn && next && !(hasResult && next.kind === "review") ? <section class={`next-action ${["resume", "provider", "provider-limit", "check", "revise"].includes(next.kind) ? "needs-attention" : ""}`} aria-label="Next action">
             <div><h3>{next.title}</h3><p>{next.detail}</p>
               {next.kind === "resume" ? <div class="resume-budget" role="group" aria-label="Resume budget">
                 <div class="resume-budget-fields">
@@ -386,7 +388,7 @@ export function RunView({ id }: { id: string }) {
             </div>
           ) : null}
 
-          {run.status === "done" ? <RunResultSummary run={run} /> : null}
+          {run.status === "done" && !leadTurn ? <RunResultSummary run={run} /> : null}
           {chat ? (
             <><ChatThread run={run} steps={steps} data={data.current} />{failedSetup ? <SetupRecoveryCard run={run} step={failedSetup} data={data.current} resume={resume} busy={actionBusy} error={actionError} /> : ["failed", "stopped", "interrupted", "cancelled"].includes(run.status) ? <div class="chat-recovery" role="status"><p>{next?.kind === "provider-limit" ? next.detail : recoveryMessage(run, steps)}</p>{next?.kind === "provider" || next?.kind === "provider-limit" ? <button class="btn small" onClick={() => { healthOpen.value = true; }}>{next.label}</button> : null}<button class="btn small" disabled={actionBusy || next?.kind === "provider-limit" && (run.providerLimit?.resetsAt ?? 0) > providerTime} onClick={() => planRejected(run) ? void editAndRerun(run) : void resume()}>{actionBusy ? "Resuming…" : planRejected(run) ? "Edit & run again" : next?.kind === "provider-limit" ? "Resume after reset" : run.providerRecovery ? "Retry reply" : "Resume"}</button>{actionError ? <p class="help" role="alert">{actionError}</p> : null}</div> : null}</>
           ) : (
@@ -435,23 +437,23 @@ export function RunView({ id }: { id: string }) {
           )}
 
 
-          {!chat && run.patternDone && (run.patternSummary || run.summary) ? <div class="workflow-answer"><div class="lbl">{run.pattern === "solo" ? "Agent" : "Team"}</div><Markdown text={run.patternSummary ?? run.summary ?? ""} /></div> : null}
-          {chat ? null : <FollowUpThread run={run} data={data.current} />}
+          {!chat && run.patternDone && (run.patternSummary || run.summary) ? leadTurn ? <ChatLeadResult text={run.patternSummary ?? run.summary ?? ""} chatId={owningChat}/> : <div class="workflow-answer"><div class="lbl">{run.pattern === "solo" ? "Agent" : "Team"}</div><Markdown text={run.patternSummary ?? run.summary ?? ""} /></div> : null}
+          {chat || leadTurn ? null : <FollowUpThread run={run} data={data.current} />}
           {hasResult ? <ResultStudio run={run} /> : null}
           {finished && run.review && !run.artifacts.length ? <section id="run-publish-review" aria-label="Council review"><ReviewCard run={run} /></section> : null}
           {finished && !chat && (run.status !== "done" || failedWork(steps).length > 0) ? <ResultCard run={run} steps={steps} onSelectStep={selectStep} /> : null}
-          {!chat ? <details class="result-details"><summary>{run.testRun ? "Test details" : "Details and publishing"}</summary>
+          {!chat ? <details class="result-details"><summary>{leadTurn ? "Execution details" : run.testRun ? "Test details" : "Details and publishing"}</summary>
           {!chat ? <RunEvidence run={run} checking={checking} /> : null}
           {run.teamTemplate || run.team?.templateUses?.length ? <details class="settings"><summary>Template provenance</summary><div class="settings-body">{run.teamTemplate ? <p>Selected: {run.teamTemplate.template.name} v{run.teamTemplate.template.version}</p> : null}{run.team?.templateUses?.map(use => <p key={use.id}>{use.id}: {use.templateId} v{use.version}{use.instructions ? ` · adaptation: ${use.instructions}` : ""}</p>)}<p class="help">Definitions and inputs are pinned to this run. Library edits do not change this execution.</p></div></details> : null}
           {!chat && run.permissions ? <details class="settings"><summary>Run permissions · {run.permissions.trust}{run.permissions.antigravityExecution === "native" ? " · Unrestricted Antigravity" : ""}</summary><div class="settings-body"><p>{run.permissions.antigravityExecution === "native" ? "Unrestricted Antigravity uses the existing login and normal provider settings. Its read-only requests are advisory; terminal, browser, MCP, hooks and native agents are unrestricted by Code Flow, including child usage outside the worker budget. Other providers inherit the run policy." : "Workers inherit this run’s policy. Planning and review turns use narrower access. Native agent delegation is disabled; Code Flow schedules the team."}</p>{[...data.current.steps.values()].filter(step => step.permissions).map(step => <p key={step.id}>{step.title}: {step.permissions!.trust} · {step.permissions!.mode} · {step.permissions!.isolation} · command network {step.permissions!.commandNetwork} · external tools {step.permissions!.externalTools}{step.permissions!.implementation ? <><br /><span class="help">{step.permissions!.implementation}: {step.permissions!.limitations.join(" ")}</span></> : null}</p>)}<p class="help">Worktrees do not restrict reads. External browser/MCP tools retain their provider permissions unless explicitly disabled. Setup, checks and previews use their separately configured execution environment.</p></div></details> : null}
-          {finished && run.status === "done" && !failedWork(steps).length ? <ResultCard run={run} steps={steps} onSelectStep={selectStep} /> : null}
+          {finished && !leadTurn && run.status === "done" && !failedWork(steps).length ? <ResultCard run={run} steps={steps} onSelectStep={selectStep} /> : null}
           <RunMeta run={run} /><RunChips run={run} />
           <ActivityLog logs={data.current.logs} count={data.current.logs.length} />
           </details> : null}
         </div>
       </div>
 
-      {run.projectTeam && run.status !== "running" ? <MissionRunNote run={run} /> : <ConversationBar key={run.id} run={run} steps={steps} chat={chat} />}
+      {leadTurn ? null : run.projectTeam && run.status !== "running" ? <MissionRunNote run={run} /> : <ConversationBar key={run.id} run={run} steps={steps} chat={chat} />}
       {recovering ? <RecoveryCheckDialog run={run} onClose={() => setRecovering(false)} /> : null}
       {savingStrategy ? <SaveStrategyDialog template={savingStrategy} onClose={() => setSavingStrategy(null)} /> : null}
       {deleting ? <DeleteRunDialog run={run} onClose={() => setDeleting(false)} /> : null}
@@ -1379,7 +1381,13 @@ function WatchPanel({ run, branch, steps, worktree }: { run: RunSummary; branch:
 function useTargetBranches(run: RunSummary): { branches: string[]; initial: string } {
   const [info, setInfo] = useState<RepoInfo | null>(null);
   useEffect(() => {
-    api<RepoInfo>(`/api/branches?repo=${encodeURIComponent(run.repo)}`).then(setInfo, () => setInfo(null));
+    let current = true;
+    setInfo(null);
+    if (run.repo) api<RepoInfo>(`/api/branches?repo=${encodeURIComponent(run.repo)}`).then(
+      value => { if (current) setInfo(value); },
+      () => { if (current) setInfo(null); },
+    );
+    return () => { current = false; };
   }, [run.repo]);
   const branches = (info?.branches ?? []).filter((b) => b.kind === "local" && !run.worktrees.some((tree) => tree.branch === b.name)).map((b) => b.name);
   const initial = run.baseLabel !== "HEAD" && branches.includes(run.baseLabel) ? run.baseLabel : info?.current ?? branches[0] ?? "";
@@ -2020,7 +2028,7 @@ export function ConversationBar({ run, steps, chat, onOpenChat }: { run: RunSumm
         {running && pendingNotes.length ? <div class="notes">{pendingNotes.map(noteChip)}</div> : null}
         {!draftReady ? <p class="help" role="status">Restoring reply draft…</p> : draftWarning ? <p class="msg warn" role="status">{draftWarning}</p> : null}
         {undelivered.length ? <UndeliveredNotes notes={undelivered} onRestore={note => { setText(value => appendDraftText(value, [note.text])); area.current?.focus(); }} /> : null}
-        {signedOut || authFailed ? <p class="msg warn reply-provider-warning" role="alert">{latestReplyFailed ? "The latest reply didn't finish. " : ""}{signedOut ? `${signedOut.name} isn't signed in` : `The latest reply couldn't sign in to ${agentName(replyAgent)}`} — <a href="#/settings/agents">open Settings → Agents &amp; models</a>. After signing in, send your reply again. <button type="button" class="btn small" disabled={providersRefreshing.value} onClick={() => void refreshProviders()}>{providersRefreshing.value ? "Checking…" : "Recheck sign-in"}</button></p> : latestReplyFailed ? <p class="help" role="status">The latest reply didn't finish. Work is saved; send another reply to continue.</p> : null}
+        {signedOut || authFailed ? <p class="msg warn reply-provider-warning" role="alert">{latestReplyFailed ? "The latest reply didn't finish. " : ""}{signedOut ? `${signedOut.name} isn't signed in` : `The latest reply couldn't sign in to ${agentName(replyAgent)}`} — <a href="#/settings/providers">open Settings → Providers</a>. After signing in, send your reply again. <button type="button" class="btn small" disabled={providersRefreshing.value} onClick={() => void refreshProviders()}>{providersRefreshing.value ? "Checking…" : "Recheck sign-in"}</button></p> : latestReplyFailed ? <p class="help" role="status">The latest reply didn't finish. Work is saved; send another reply to continue.</p> : null}
         <BrowserDraftCards text={text} onText={setText} images={images} onImages={setImages} />
         <DraftImages message={text} images={images} onRemove={(i) => setImages(images.filter((_, j) => j !== i))} />
         <div class="chatbox">

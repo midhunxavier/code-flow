@@ -54,7 +54,7 @@ test("automation time zones, dry-run settings, failed events and explicit retry 
   await until(() => api<AutomationEvent[]>(`/api/automations/${trigger.id}/events`), (events) => events.some((event) => event.state === "failed"));
   await page.goto(base + "/#/settings/automations");
   const row = page.locator(".auto-row", { hasText: "Automation QA" });
-  await row.getByText("Schedule and next times", { exact: true }).click();
+  if (!await row.getByText("Schedule and next times", { exact: true }).isVisible()) await row.getByRole("button", { name: "Edit", exact: true }).click(); await row.getByText("Schedule and next times", { exact: true }).click();
   await row.getByLabel("Time zone", { exact: true }).fill("America/New_York");
   await row.getByRole("button", { name: "Save schedule", exact: true }).click();
   await until(() => api<Trigger[]>("/api/automations"), (triggers) => { const schedule = triggers.find((t) => t.id === trigger.id)?.schedule; return !!schedule && "at" in schedule && schedule.timezone === "America/New_York"; });
