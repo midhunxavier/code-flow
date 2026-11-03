@@ -149,11 +149,11 @@ export class CliTeamsService {
       `Task: ${compact ? p.task.slice(0, 2000) : p.task}`, `Project: ${p.repo}`, `Scope: ${p.definition.scope}; source: ${p.source.source}; snapshot: ${p.source.commit}`,
       ...(p.definition.scope === "write" && !hasWriter ? ["Verification only: no code editing assignment is included. Setup/check commands run as shown below."] : []),
       ...p.definition.participants.map(a => `${a.id}: ${a.provider}${a.binding === "current_session" ? " (host-reported, unverified)" : ""} / ${a.model ?? "provider default (unverified)"} / ${a.effort ?? "default (unverified)"} / ${a.binding ?? "managed"}; model from ${a.provenance.model}, effort from ${a.provenance.effort}`),
-      `Completion: ${p.definition.completion.map(s => compact ? s.slice(0, 300) : s).join("; ")}`, `Work sequence:\n${describe(p.definition.steps).join("\n\n")}`,
-      ...(compact ? ["This is a compact preview. The interactive confirmation shows the full request, instructions, inputs, and configuration."] : [`Context notes: ${p.context.notes ?? "none"}\nSelected untracked files: ${p.context.untracked?.join(", ") || "none"}\nContinuation of: ${p.context.continueRunId ?? p.context.sourceRunId ?? "none"}\nAttached files: ${p.context.attachments?.map(file => `${file.name} (${Buffer.byteLength(file.data, "base64")} bytes)`).join("; ") || "none"}\nReferenced artifacts: ${p.context.artifacts?.map(a => `${a.artifactId} (${a.sha256}) from ${a.runId}`).join("; ") || "none"}`]),
       `Setup: ${p.definition.setup || "none"}; check: ${p.definition.check || "none"}`,
       `Limits: ${p.definition.limits.maxInvocations} lifetime managed calls; ${p.definition.limits.maxMinutes} execution minutes; ${p.definition.limits.concurrency} concurrent workers; ${p.definition.limits.maxAttempts} managed attempts per assignment, including transport/schema repair; ${p.definition.limits.attemptTimeoutMs / 60000} minutes per attempt. Host usage unobserved; waiting time excluded.`,
       `Permissions: Standard managed tools, native delegation disabled; current-session assignments remain read-only cooperative work. Existing provider/file access boundaries apply. No merge/push/deploy.`,
+      `Completion: ${p.definition.completion.map(s => compact ? s.slice(0, 300) : s).join("; ")}`, `Work sequence:\n${describe(p.definition.steps).join("\n\n")}`,
+      ...(compact ? ["This is a compact preview. The interactive confirmation shows the full request, instructions, inputs, and configuration."] : [`Context notes: ${p.context.notes ?? "none"}\nSelected untracked files: ${p.context.untracked?.join(", ") || "none"}\nContinuation of: ${p.context.continueRunId ?? p.context.sourceRunId ?? "none"}\nAttached files: ${p.context.attachments?.map(file => `${file.name} (${Buffer.byteLength(file.data, "base64")} bytes)`).join("; ") || "none"}\nReferenced artifacts: ${p.context.artifacts?.map(a => `${a.artifactId} (${a.sha256}) from ${a.runId}`).join("; ") || "none"}`]),
       `Proposal ${p.id} revision ${p.revision}; hash ${p.hash}`,
       `Approve this exact revision in the connected host when supported. Terminal fallback: codeflow approve ${p.id} --revision ${p.revision}`,
     ].join("\n\n");
@@ -317,6 +317,7 @@ export class CliTeamsService {
       else if (run.status === "running") this.manager.setPaused(run.id, false);
       else {
         if (run.status === "done") return { runId: run.id, action: a.action, accepted: false, status: run.status, message: "Already completed. Describe the next task to create a new reviewed approach.", nextAction: "propose_continuation" };
+        if (state.recoveryRequired) fail("recovery_required", "The interrupted writer may have saved partial changes. Inspect the preserved worktree and create a new reviewed proposal with context.continueRunId; select any untracked files to retain. The writer will not be replayed automatically.");
         if (state.outcome === "stopped_limit" || state.outcome === "blocked" || run.stopReason?.startsWith("assignment attempt limit") || (run.clockUsedMs ?? 0) >= state.definition.limits.maxMinutes * 60_000) fail("budget_exhausted", "Create a new proposal for completed work, changed completion criteria, or extended execution limits");
         await this.manager.resume(run.id, undefined, true);
       }

@@ -114,6 +114,8 @@ test("CLI UX: engine steps need no invented instructions and attempt limits fit 
   const p = await f.call("propose_run", { task: "Plan", candidate });
   const preview = await f.service.acceptancePreview(f.connection, p.proposalId, p.revision);
   assert.match(preview.preview, /5 minutes per attempt/);
+  assert.ok(preview.preview.indexOf("Limits:") < preview.preview.indexOf("Work sequence:"));
+  assert.ok(preview.preview.indexOf("Permissions:") < preview.preview.indexOf("Work sequence:"), "native forms show approval boundaries before long step instructions");
 });
 
 test("CLI UX: supported attachments cross both transports and validation failures retain request IDs", async () => {
@@ -577,6 +579,29 @@ test("crash recovery preserves time/call ceilings and bounds overlapping unsettl
   const settled = structuredClone(run); settled.clockUsedMs = 100;
   journal.set("cli-settled:first", {}); journal.set("cli-settled:parallel", {});
   recoverCliAccounting(settled, journal); assert.equal(settled.clockUsedMs, 500, "durably settled turns use observed time");
+});
+
+test("an unsettled writer is visibly fenced before resume, including exhausted budgets and legacy receipts", async () => {
+  const f = await setup(); let calls = 0;
+  stub(async opts => { calls++; return { ok: true, finalText: opts.jsonSchema ? JSON.stringify({ body: "Approved", verdict: "approve", findings: [] }) : "Plan" }; });
+  const run = await start(f); await finished(run);
+  const priorCalls = calls, step = run.steps.find(s => s.kind === "agent")!;
+  run.status = "interrupted"; step.mode = "write";
+  const journal = new Map<string, unknown>([["cli-launch:lost", { stepId: step.id, assignment: "workflow/write", usedMs: 0, reservedMs: run.cliTeam!.definition.limits.maxMinutes * 60000 }]]);
+  recoverCliAccounting(run, journal);
+  assert.equal(run.cliTeam!.recoveryRequired, true, "old receipts use the persisted step mode");
+  const status = await f.call("get_run", { runId: run.id });
+  assert.equal(status.recovery.requiresReview, true);
+  await assert.rejects(f.call("control_run", { runId: run.id, action: "resume" }), /interrupted writer.*preserved worktree/);
+  assert.equal(calls, priorCalls); assert.equal(run.status, "interrupted");
+
+  const missingStep = structuredClone(run); missingStep.steps = []; missingStep.cliTeam!.recoveryRequired = false;
+  journal.set("cli-launch:lost", { stepId: step.id, mode: "write" });
+  recoverCliAccounting(missingStep, journal);
+  assert.equal(missingStep.cliTeam!.recoveryRequired, true, "new receipts carry mode even if step projection was lost");
+  const settled = structuredClone(missingStep); settled.cliTeam!.recoveryRequired = false;
+  journal.set(`cli-settled:${step.id}`, {}); recoverCliAccounting(settled, journal);
+  assert.equal(settled.cliTeam!.recoveryRequired, false, "settled writes are not falsely fenced");
 });
 
 test("an early rejected gate skips later work and retries the declared process without missing-input errors", async () => {

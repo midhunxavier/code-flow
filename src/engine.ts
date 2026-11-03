@@ -3010,7 +3010,7 @@ export class TeamContext {
         cli.nodeInvocations[assignment] = (cli.nodeInvocations[assignment] ?? 0) + 1;
         cli.managedInvocations = (cli.managedInvocations ?? 0) + 1;
         const usedMs = this.elapsedExecutionMs;
-        await this.persist(`cli-launch:${randomBytes(12).toString("hex")}`, { stepId: step.id, assignment, at: Date.now(), usedMs, reservedMs: Math.min(cli.definition.limits.attemptTimeoutMs, Math.max(0, cli.definition.limits.maxMinutes * 60_000 - usedMs)) });
+        await this.persist(`cli-launch:${randomBytes(12).toString("hex")}`, { stepId: step.id, mode: params.mode, assignment, at: Date.now(), usedMs, reservedMs: Math.min(cli.definition.limits.attemptTimeoutMs, Math.max(0, cli.definition.limits.maxMinutes * 60_000 - usedMs)) });
       }
       if (this.run.team && !recoveringRemote) {
         if (this.teamBudgetRemaining(params.coordination) <= 0) {
