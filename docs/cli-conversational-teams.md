@@ -2,7 +2,7 @@
 
 The conversational CLI integration builds a team and process from your task. You can choose Claude Code, Codex, individual models, and supported effort values in the same instruction. Existing web workflows and saved web teams are unchanged.
 
-This integration is experimental. Automated tests exercise the project installer, public MCP protocol, worktrees, checks, agreement loops, host participation, and recovery with fixture providers. Native discovery was also checked on Claude Code 2.1.316 and Codex CLI 0.165.0: both found the skill and all ten tools without inference. These checks do not establish that a model will follow every instruction correctly or certify other CLI versions.
+This integration is experimental. Automated tests exercise the project installer, public MCP protocol, worktrees, checks, agreement loops, host participation, and recovery with fixture providers. Native discovery was also checked on Claude Code 2.1.316 and Codex CLI 0.165.0: both found the skill and the then-current ten tools without inference. The new workspace tool brings the surface to eleven; its current validation uses protocol and browser fixtures. These checks do not establish that a model will follow every instruction correctly or certify other CLI versions.
 
 ## Install and connect
 
@@ -54,7 +54,9 @@ When your host declares MCP form elicitation support, Code Flow displays the ful
 
 The confirmation waits up to five minutes. The installed Codex configuration allows seven minutes per MCP call so its tool timeout leaves room for confirmation and owner communication. This does not increase the run's managed execution allowance. See [Claude Code's elicitation documentation](https://code.claude.com/docs/en/mcp#respond-to-mcp-elicitation-requests) and [Codex's native elicitation protocol](https://learn.chatgpt.com/docs/app-server#mcp-server-elicitation-requests).
 
-If your host cannot display the native form, use the interactive terminal fallback returned by the proposal:
+Every new CLI proposal also has an **Open in Code Flow** link. If your host cannot display the native form, open that chat and use **Start planning**, **Start implementation**, or **Start review**. The CLI and browser share the same acceptance and execution, so returning to the CLI does not start duplicate work.
+
+You can also use the interactive terminal fallback:
 
 ```sh
 codeflow approve PROPOSAL_ID --revision 1
@@ -77,11 +79,12 @@ Ask questions or steer work in the same conversation:
 
 Material changes produce another proposal. Pausing waits at execution boundaries; an active turn may still finish. Cancellation requests termination and preserves artifacts and worktrees. Agreement loops have a fixed pass limit; remaining disagreement is returned to you rather than forced into consensus.
 
-Continuations can start from a preserved run worktree, retaining completed implementation. Exact plan artifacts can also be supplied as context; source changes require revalidation. Continue CLI runs through this proposal flow rather than web follow-up/permission editors. Existing web-created workflows retain their normal controls.
+Continuations can start from a preserved run worktree, retaining completed implementation. Exact plan artifacts can also be supplied as context; source changes require revalidation. Continue through the CLI or the linked Code Flow chat. Changed scope, workers, and limits still require a revised approach. Existing web-created workflows retain their normal controls.
 
 You can also inspect/control a run from a terminal:
 
 ```sh
+codeflow open PROPOSAL_OR_RUN_ID
 codeflow status RUN_ID
 codeflow result RUN_ID
 codeflow pause RUN_ID
@@ -123,3 +126,19 @@ codeflow uninstall --project
 User-modified entries, preferences, history, branches, and worktrees are preserved.
 
 Configuration references: [Codex MCP configuration](https://learn.chatgpt.com/docs/extend/mcp?surface=cli), [Codex skill locations](https://learn.chatgpt.com/docs/build-skills). See the internal [redesign plan](cli-teams/15-conversational-ux-redesign.md) for intended scope and acceptance scenarios.
+
+## Open the shared workspace
+
+In Claude Code or Codex CLI, ask:
+
+> Use Code Flow to plan a login form with Claude Haiku and Codex at high effort. Open it in Code Flow so I can review the approach there.
+
+Code Flow associates the canonical repository with an existing project, or creates a project when needed. The proposal appears as a normal Team chat before any workers start. `codeflow open PROPOSAL_OR_RUN_ID` opens that chat in your browser; opening never approves or starts work. The bridge uses the running owner's actual port, including an automatically started owner's port. Keep the same `CODEFLOW_HOME` in the CLI and UI to use the same workspace.
+
+Approve in either surface, then watch recorded agent participation, checks, reviews, questions and results in the chat. Guidance and pause/resume/cancel actions affect the same execution. A browser edit invalidates an older CLI revision. When continuing the initiative, the host passes the returned `context.chatId`; retaining code additionally uses `context.continueRunId`. A new implementation after planning needs its own approval.
+
+Only Code Flow task data is synchronized. Ordinary messages or work outside Code Flow in the native CLI are not mirrored. Managed workers can continue when the CLI closes; assignments bound to that CLI show **Waiting for CLI** until the host returns. Reopening the browser does not take over that assignment.
+
+The browser is opened only on explicit request. Opening uses a short-lived, one-use local handoff; stable task links and MCP responses contain no login token. In SSH/headless environments, Code Flow returns the stable link instead. Forward the runtime's port to your computer and sign in to that owner before opening it. Full MCP Apps rendering inside hosts is not part of this integration.
+
+After upgrading, rebuild/restart the Code Flow owner once existing work has settled, rerun `codeflow init` to refresh the installed skill, and reconnect the MCP session. Existing saved workflows and historical runs remain available.

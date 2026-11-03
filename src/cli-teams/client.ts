@@ -39,5 +39,10 @@ export async function connectRuntime(projectRoot: string, start = true) {
   }
   if (!runtime) throw new Error("No compatible Code Flow owner is running");
   const connection = await runtimeRequest(runtime, "/connect", { projectRoot });
-  return { runtime, ...connection, call: (name: string, args: unknown) => runtimeRequest(runtime!, "/call", { name, arguments: args }, connection.token), close: () => runtimeRequest(runtime!, "/disconnect", {}, connection.token).catch(() => undefined) };
+  return { runtime, ...connection, call: (name: string, args: unknown) => {
+    // The caller may be remote even when the shared owner has a local display.
+    const remote = process.env.CODEFLOW_NO_BROWSER === "1" || !!process.env.SSH_CONNECTION || !!process.env.CODEFLOW_SSH_HOST;
+    const input = name === "codeflow_open_task" && remote && args && typeof args === "object" && !Array.isArray(args) ? { ...args, open: false } : args;
+    return runtimeRequest(runtime!, "/call", { name, arguments: input }, connection.token);
+  }, close: () => runtimeRequest(runtime!, "/disconnect", {}, connection.token).catch(() => undefined) };
 }

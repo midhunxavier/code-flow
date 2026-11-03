@@ -10,7 +10,7 @@ const usage = `Code Flow preview — your coding agents, one workspace.
 
 Usage: codeflow [start] [--port NUMBER] [--no-open]
        codeflow client <command> [arguments]
-       codeflow init|doctor|mcp|approve|status|result|pause|resume|cancel|attach|preferences|uninstall [arguments]
+       codeflow init|doctor|mcp|approve|open|status|result|pause|resume|cancel|attach|preferences|uninstall [arguments]
        codeflow --version
 
 Starts a local server and opens your browser. Keep this terminal open;
@@ -72,7 +72,7 @@ export async function launch(args = process.argv.slice(2)) {
     await supervise(client);
     return;
   }
-  if (["init", "doctor", "mcp", "approve", "status", "result", "pause", "resume", "cancel", "attach", "preferences", "uninstall"].includes(args[0])) {
+  if (["init", "doctor", "mcp", "approve", "open", "status", "result", "pause", "resume", "cancel", "attach", "preferences", "uninstall"].includes(args[0])) {
     const compiled = fileURLToPath(new URL("src/cli-teams/cli.js", root));
     const source = fileURLToPath(new URL("src/cli-teams/cli.ts", root));
     const compiledExists = await access(compiled).then(() => true, () => false);

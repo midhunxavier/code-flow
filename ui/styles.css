@@ -4351,7 +4351,7 @@ dialog.rail::backdrop { background: rgb(0 0 0 / .28); }
 .unified-chat .chat-add .pop-menu { min-width: 220px; }
 .unified-chat .chat-add .pi-main { display: flex; align-items: center; gap: 10px; }
 .unified-chat .chat-add .pi-main .icon { width: 16px; height: 16px; color: var(--muted); }
-.unified-chat .chat-model-summary { min-width: 0; min-height: 34px; max-width: 300px; padding: 5px 8px; gap: 7px; border: 0; color: var(--text-2); font-size: 12px; }
+.unified-chat .chat-model-summary { min-width: 0; min-height: 34px; max-width: min(300px, 100%); padding: 5px 8px; gap: 7px; border: 0; color: var(--text-2); font-size: 12px; }
 .unified-chat .chat-model-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .unified-chat .chat-model-summary > .icon { width: 12px; height: 12px; flex: none; }
 .unified-chat .chat-effort { border-left: 1px solid var(--border); padding-left: 7px; color: var(--muted); text-transform: capitalize; font-size: 11px; }

@@ -102,8 +102,8 @@ function stub(fn?: typeof adapters.claude.run) {
   adapters.claude.run = worker; adapters.codex.run = worker;
 }
 
-test("UX01/02/14: strict task-generated contracts expose ten tools and leave the web picker unchanged", () => {
-  assert.equal(CLI_TOOLS.length, 10); assert.equal(new Set(CLI_TOOLS.map(t => t.name)).size, 10);
+test("UX01/02/14: strict task-generated contracts expose eleven tools and leave the web picker unchanged", () => {
+  assert.equal(CLI_TOOLS.length, 11); assert.equal(new Set(CLI_TOOLS.map(t => t.name)).size, 11);
   assert.ok(!CLI_TOOLS.some(t => /team|preset/.test(t.name)));
   assert.ok(!patterns.some(p => p.id === "cli-team")); assert.ok(findPattern("cli-team"));
   assert.deepEqual(validateCandidate(planning()), planning());
@@ -332,7 +332,7 @@ test("project-scoped loopback and stdio MCP negotiate and deny owner-tool expans
     assert.match(stdout, /2025-03-26/, stderr);
     child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" }) + "\n");
     for (let i = 0; i < 200 && !stdout.includes('"id":2'); i++) await pause();
-    const response = stdout.trim().split("\n").map(s => JSON.parse(s)).find(r => r.id === 2); assert.equal(response.result.tools.length, 10);
+    const response = stdout.trim().split("\n").map(s => JSON.parse(s)).find(r => r.id === 2); assert.equal(response.result.tools.length, 11);
     const denied = await fetch(`${bridge.descriptor.endpoint}/call`, { method: "POST", headers: { "content-type": "application/json", origin: "https://evil.invalid", authorization: `Bearer ${bridge.descriptor.bootstrap}` }, body: "{}" }); assert.equal(denied.status, 403);
   } finally { child.stdin.end(); await new Promise<void>(resolve => { child.once("exit", () => resolve()); setTimeout(() => { child.kill(); resolve(); }, 3000).unref(); }); await bridge.close(); }
 });

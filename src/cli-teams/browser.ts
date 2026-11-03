@@ -1,0 +1,27 @@
+import { randomBytes } from "node:crypto";
+import { spawn } from "node:child_process";
+
+/** Single-use, short-lived browser handoffs. Never return these secrets through MCP. */
+export class WorkspaceHandoffs {
+  private tickets = new Map<string, { path: string; expires: number }>();
+  constructor(private now = () => Date.now()) {}
+  issue(path: string) {
+    if (!/^\/\?team=local#\/(?:chat\/[a-f0-9]{32}|run\/[a-zA-Z0-9-]+)$/.test(path)) throw new Error("Invalid workspace destination");
+    for (const [id, t] of this.tickets) if (t.expires <= this.now()) this.tickets.delete(id);
+    if (this.tickets.size >= 100) throw new Error("Too many pending browser handoffs; try again shortly");
+    const id = randomBytes(32).toString("hex"); this.tickets.set(id, { path, expires: this.now() + 60_000 }); return id;
+  }
+  consume(id: string) { const ticket = this.tickets.get(id); this.tickets.delete(id); return ticket && ticket.expires > this.now() ? ticket.path : undefined; }
+}
+export async function openWorkspaceBrowser(url: string): Promise<boolean> {
+  // A remote/headless shell must not launch a browser on the wrong computer.
+  if (process.env.CODEFLOW_NO_BROWSER === "1" || process.env.SSH_CONNECTION || process.env.CODEFLOW_SSH_HOST || process.platform === "linux" && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) return false;
+  const command = process.platform === "darwin" ? "open" : process.platform === "win32" ? "rundll32.exe" : "xdg-open";
+  const args = process.platform === "win32" ? ["url.dll,FileProtocolHandler", url] : [url];
+  return new Promise(resolve => {
+    const child = spawn(command, args, { stdio: "ignore", windowsHide: true });
+    const timer = setTimeout(() => { child.kill(); resolve(false); }, 5000);
+    child.once("error", () => { clearTimeout(timer); resolve(false); });
+    child.once("exit", code => { clearTimeout(timer); resolve(code === 0); });
+  });
+}

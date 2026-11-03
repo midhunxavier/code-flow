@@ -160,6 +160,32 @@ export class Conversations {
       await this.save(chat); return { id, version: chat.version };
     });
   }
+  async cliContext(id: string, repo: string) {
+    const chat = await this.require(id);
+    if (chat.repo !== repo) fail("scope_denied", "This chat belongs to another repository");
+    return { project: chat.project, chatId: chat.id };
+  }
+  /** Attach durable CLI work to the existing chat timeline without submitting another turn. */
+  async syncCliTask(task: import("./model.js").TaskConversation, event?: { id: string; body: string; runId?: string; noteId?: string }) {
+    const id = task.chatId!;
+    return this.serialized(id, async () => {
+      const stored = this.records.get(id);
+      if (stored && (stored.project !== task.project || stored.repo !== task.repo)) fail("scope_denied", "Chat workspace identity changed");
+      const chat: ChatRecord = stored ? { ...structuredClone({ ...stored, events: [] }), events: [...stored.events] } : {
+        id, version: 0, project: task.project, repo: task.repo, title: task.request.split("\n")[0]!.slice(0, 90), createdAt: task.createdAt, updatedAt: task.updatedAt,
+        defaults: { mode: "team", provider: task.coordinator.provider, model: task.coordinator.model, effort: task.coordinator.effort, trust: "standard", tools: false },
+        events: [], taskIds: [], agentRuns: [], leadRuns: [], leadAllowance: { ...CHAT_LEAD_ALLOWANCE }, source: task.source, untracked: task.untracked, receipts: {}, createHash: digest(["cli", id]),
+      };
+      const count = chat.events.length;
+      if (!chat.taskIds.includes(task.id)) {
+        this.event(chat, { id: `cli-request-${task.id}`, kind: "user", body: task.request, mode: "team" });
+        this.event(chat, { id: `task-${task.id}`, kind: "task", taskId: task.id });
+        chat.taskIds.push(task.id); chat.activeTask = task.id;
+      }
+      if (event) this.event(chat, { id: event.id, kind: "user", body: event.body, taskId: task.id, runId: event.runId });
+      if (count !== chat.events.length || !stored) await this.save(chat); else this.index(chat);
+    });
+  }
   async projectContext(project: string, repo: string) {
     await this.authorizeChat(project, repo);
     const { receipts: _, ...value } = this.contexts.get(project) ?? { project, revision: 0, instructions: "", files: [], receipts: {} };

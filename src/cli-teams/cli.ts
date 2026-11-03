@@ -15,6 +15,7 @@ const usage = `Code Flow conversational teams
   codeflow doctor
   codeflow mcp [--project-root PATH]
   codeflow approve PROPOSAL_ID --revision NUMBER
+  codeflow open PROPOSAL_OR_RUN_ID
   codeflow status RUN_ID
   codeflow result RUN_ID
   codeflow pause|resume|cancel RUN_ID
@@ -25,10 +26,10 @@ const usage = `Code Flow conversational teams
 Use the codeflow skill in your Claude or Codex conversation to describe a task.
 Teams and processes are generated for that task. No presets or saved teams.
 Run approval uses your host's native confirmation form when available.
-Terminal approval is a fallback. Host reattachment requires an interactive terminal.
+Browser or terminal approval is a fallback. Host reattachment requires an interactive terminal.
 Existing bare codeflow and codeflow client commands are unchanged.
 `;
-export const CLI_COMMANDS = new Set(["init", "doctor", "mcp", "approve", "status", "result", "pause", "resume", "cancel", "attach", "preferences", "uninstall"]);
+export const CLI_COMMANDS = new Set(["open", "init", "doctor", "mcp", "approve", "status", "result", "pause", "resume", "cancel", "attach", "preferences", "uninstall"]);
 export async function launchCli(args = process.argv.slice(2)) {
   const command = args.shift();
   if (!command || args.includes("--help")) { console.log(usage); return; }
@@ -67,8 +68,15 @@ export async function launchCli(args = process.argv.slice(2)) {
   }
   if (!CLI_COMMANDS.has(command)) throw new Error(usage);
   if ((command === "approve" || command === "attach") && (!process.stdin.isTTY || !process.stdout.isTTY)) fail("acceptance_required", "Use your own interactive terminal; unattended approval is unavailable");
+  if (command === "open" && !args[0]) throw new Error("Choose a proposal or run ID");
   const client = await connectRuntime(root);
   try {
+    if (command === "open") {
+      const result = await client.call("codeflow_open_task", { id: args[0] });
+      console.log(`${result.opened ? "Opened in Code Flow" : "Open in Code Flow"}: ${result.workspace.url}`);
+      if (!result.opened) console.log("No local browser opened. Use an authenticated browser on this computer; for SSH, forward the displayed port first.");
+      return;
+    }
     if (command === "approve" || command === "attach") {
       if (!process.stdin.isTTY || !process.stdout.isTTY) fail("acceptance_required", "Use your own interactive terminal; unattended approval is unavailable");
       const prompt = createInterface({ input: process.stdin, output: process.stdout });

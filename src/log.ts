@@ -8,11 +8,11 @@ import { CODEFLOW_HOME } from "./config.js";
  * processes. One line per entry, JSON, rotated to `server.log.1` past 5 MB.
  */
 export const LOG_FILE = join(CODEFLOW_HOME, "server.log");
-/** Keep phone capability paths out of request-failure logs, including encoded route names. */
+/** Keep browser handoff and phone capability paths out of request-failure logs, including encoded route names. */
 export function requestLogPath(value: string): string {
   const path = value.split("?")[0] ?? "/";
   const parts = path.split("/");
-  try { if (decodeURIComponent(parts[1] ?? "") === "r" && parts.length > 2) parts[2] = "[redacted]"; } catch { /* malformed paths have not been accepted as capabilities */ }
+  try { if (["r", "cli-workspace"].includes(decodeURIComponent(parts[1] ?? "")) && parts.length > 2) parts[2] = "[redacted]"; } catch { /* malformed paths have not been accepted as capabilities */ }
   return parts.join("/");
 }
 const MAX_BYTES = 5 * 1024 * 1024;

@@ -1,3 +1,5 @@
+import { connectCliWorkspace } from "./cli-teams/workspace.js";
+import { WorkspaceHandoffs, openWorkspaceBrowser } from "./cli-teams/browser.js";
 import { assertChatSubscriptions } from "./conversational/stream-access.js";
 import { groupPrTargets } from "./pr-targets.js";
 import { EXECUTION_LIMITS, MAX_COMPARE_RUNS, MAX_COMPARE_REPEAT, numberProblem } from "./start-input-validation.js";
@@ -1585,6 +1587,7 @@ async function streamTopic(req: IncomingMessage, res: ServerResponse, kind: "run
 /** Which listener a request came in on: this machine's, or the one on your network. */
 type Via = "local" | "lan";
 
+const workspaceHandoffs = new WorkspaceHandoffs();
 const performanceMetrics = new PerformanceMetrics();
 async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
   performanceMetrics.observe(req, res);
@@ -1594,6 +1597,14 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
   if (parts[0] === "api") parts = await attempt(async () => canonicalSharedPath(req.url ?? "/").parts);
   if (await handlePublic(req, res, url, parts, via)) return;
   if (via === "lan") checkLanOrigin(req); else checkOrigin(req);
+  if (url.pathname.startsWith("/cli-workspace/") && req.method === "GET") {
+    if (via !== "local") throw new HttpError(404, "Not found");
+    const destination = workspaceHandoffs.consume(url.pathname.slice("/cli-workspace/".length));
+    if (!destination) throw new HttpError(410, "This workspace link expired. Run codeflow open again.");
+    auth.claimable = false;
+    res.writeHead(303, { location: destination, "set-cookie": [sessionCookie(), clearCookie(SHARED_COOKIE)], "cache-control": "no-store", "referrer-policy": "no-referrer", ...NO_FRAMES });
+    return res.end();
+  }
   // A public local-origin bounce lets Strict cookies accompany a hub-initiated handoff.
   // It carries only a narrowly matched hash, never a token, redirect URL or API response.
   if (url.pathname === "/team-handoff" && req.method === "GET") {
@@ -3043,9 +3054,23 @@ const taskConversations = new TaskConversations(manager, cliTeams, async (projec
 }, trackPolicyPreparation);
 const conversations = new Conversations(manager, taskConversations, taskConversations.authorize, trackPolicyPreparation);
 let taskConversationsReady = false;
-const cliTransport = await cliTeams.load().then(() => startCliTeamsTransport(cliTeams)).catch(error => { logError("CLI teams unavailable; repair private control storage and restart", error); return undefined; });
-await taskConversations.load().then(() => { taskConversationsReady = !!cliTransport; }).catch(error => logError("Task conversations unavailable; repair private storage and restart", error));
+const cliReady = await cliTeams.load().then(() => true).catch(error => { logError("CLI teams unavailable; repair private control storage and restart", error); return false; });
+await taskConversations.load().then(() => { taskConversationsReady = cliReady; }).catch(error => logError("Task conversations unavailable; repair private storage and restart", error));
 await conversations.load().catch(error => { taskConversationsReady = false; logError("Chat storage unavailable; repair private storage and restart", error); });
+if (taskConversationsReady) {
+  const workspaceUrl = (path: string) => `http://localhost:${PORT}${path}`;
+  connectCliWorkspace(cliTeams, taskConversations, conversations, projects, {
+    url: workspaceUrl,
+    open: async path => {
+      const ticket = workspaceHandoffs.issue(path);
+      const opened = await openWorkspaceBrowser(workspaceUrl(`/cli-workspace/${ticket}`));
+      if (!opened) workspaceHandoffs.consume(ticket);
+      return opened;
+    },
+  });
+  await cliTeams.reconcileWorkspace().catch(error => { cliTeams.workspace = undefined; logError("CLI workspace synchronization unavailable; existing web conversations remain available", error); });
+}
+const cliTransport = cliReady ? await startCliTeamsTransport(cliTeams).catch(error => { logError("CLI bridge unavailable", error); return undefined; }) : undefined;
 const stopChatWatch = taskConversationsReady ? conversations.watch() : async () => {};
 if (!fileAccess.hasRestrictions()) startPolicyBackground();
 const server = createServer({ maxHeaderSize: MAX_HEADER_SIZE }, listener("local")).listen(PORT, HOST, async () => {

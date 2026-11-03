@@ -21,7 +21,7 @@ async function until<T>(read: () => Promise<T>, check: (v: T) => boolean, descri
 } while (Date.now() < end); throw new Error(`${description}: ${JSON.stringify(value!)}`); }
 async function page() { const context = await browser.newContext({ viewport: { width: 1400, height: 1000 } }); await context.addInitScript(() => localStorage.setItem("sideOpen", "0")); const page = await context.newPage(); page.setDefaultTimeout(25000); page.on("pageerror", e => errors.push(e.message)); await page.goto(`${base}/?token=${token}#/project/${project.id}/chat`); await page.getByRole("textbox", { name: "Message", exact: true }).waitFor(); return { context, page }; }
 async function startServer() {
-    server = spawn(process.execPath, ["--import", "tsx", "src/server.ts"], { cwd: root, env: { ...process.env, CODEFLOW_HOME: join(home, "state"), CODEFLOW_TOKEN: token, PORT: new URL(base).port, SHELL: "/bin/sh", PATH: `${join(root, "test/fake-bin")}:${process.env.PATH}`, CODEFLOW_RETRY_DELAYS_MS: "0" }, stdio: ["ignore", "pipe", "pipe"] });
+    server = spawn(process.execPath, ["--import", "tsx", "src/server.ts"], { cwd: root, env: { ...process.env, CODEFLOW_HOME: join(home, "state"), CODEFLOW_TOKEN: token, PORT: new URL(base).port, SHELL: "/bin/sh", PATH: `${join(home, "bin")}:${join(root, "test/fake-bin")}:${process.env.PATH}`, CODEFLOW_NO_BROWSER: "0", SSH_CONNECTION: "", CODEFLOW_SSH_HOST: "", DISPLAY: ":fixture", CODEFLOW_BROWSER_CAPTURE: join(home, "opened-url"), CODEFLOW_RETRY_DELAYS_MS: "0" }, stdio: ["ignore", "pipe", "pipe"] });
     for (const stream of [server.stdout, server.stderr])
         stream?.on("data", c => logs += c);
     await until(() => { if (server.exitCode !== null)
@@ -29,6 +29,8 @@ async function startServer() {
 }
 before(async () => {
     home = await mkdtemp(join(tmpdir(), "codeflow-chat-ui-"));
+    await mkdir(join(home, "bin"));
+    for (const command of ["open", "xdg-open"]) await writeFile(join(home, "bin", command), '#!/bin/sh\nprintf "%s" "$1" > "$CODEFLOW_BROWSER_CAPTURE"\n', { mode: 0o755 });
     repo = join(home, "repo");
     await mkdir(repo); repo = await realpath(repo);
     execFileSync("git", ["init", "-q", "-b", "main"], { cwd: repo });
@@ -145,8 +147,13 @@ test("Team discussion stays lightweight, then one chat plans, implements and ret
         await p.locator(".chat-deliverable").last().getByRole("button", { name: "View changes", exact: true }).click();
         await p.getByRole("button", { name: "Reviews", exact: true }).click();
         await p.getByLabel("Task output", { exact: true }).getByLabel("Task result", { exact: true }).waitFor();
-        const modelBox = await p.getByRole("button", { name: "Message settings", exact: true }).boundingBox(), permissionsBox = await p.locator(".unified-chat .chat-permissions > button").boundingBox();
-        assert.ok(modelBox && permissionsBox && (modelBox.x + modelBox.width <= permissionsBox.x + 1 || modelBox.y + modelBox.height <= permissionsBox.y + 1), "model and permission controls do not overlap beside the output");
+        // Read both rectangles in one frame after the responsive layout settles.
+        // Compact controls may wrap in either order.
+        await p.waitForFunction(() => {
+            const model = document.querySelector(".unified-chat .chat-model-summary")?.getBoundingClientRect();
+            const permission = document.querySelector(".unified-chat .chat-permissions > button")?.getBoundingClientRect();
+            return !!model?.width && !!permission?.width && (model.right <= permission.left + 1 || permission.right <= model.left + 1 || model.bottom <= permission.top + 1 || permission.bottom <= model.top + 1);
+        });
         await p.getByRole("button", { name: "Close task output" }).click();
         completedTask = ready.id;
         const reply = p.getByRole("textbox", { name: "Message", exact: true }), box = await reply.boundingBox();
@@ -512,5 +519,101 @@ test("project selection inherits a single repository and preserves explicit mult
         assert.equal(await p.getByRole("button",{name:"Create automation",exact:true}).isDisabled(),true);
         await p.getByLabel("Automation repository",{exact:true}).selectOption(second);
         assert.equal(await p.getByRole("button",{name:"Create automation",exact:true}).isEnabled(),true);
+    } finally { await context.close(); }
+});
+
+test("CLI workspace: real MCP proposal opens an authenticated chat, browser approval and native approval stay in sync", { timeout: 120000 }, async () => {
+    const child = spawn(process.execPath, ["--import", "tsx", "src/cli-teams/cli.ts", "mcp", "--project-root", repo], { cwd: root, env: { ...process.env, CODEFLOW_HOME: join(home, "state") }, stdio: ["pipe", "pipe", "pipe"] });
+    let seq = 0, buffer = "", elicited = 0;
+    const pending = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>();
+    const send = (m: object) => child.stdin!.write(JSON.stringify({ jsonrpc: "2.0", ...m }) + "\n");
+    child.stdout!.on("data", chunk => {
+        buffer += chunk; let end: number;
+        while ((end = buffer.indexOf("\n")) >= 0) {
+            const m = JSON.parse(buffer.slice(0, end)); buffer = buffer.slice(end + 1);
+            if (m.method === "elicitation/create") { elicited++; send({ id: m.id, result: { action: "accept", content: { approve: true } } }); continue; }
+            const waiter = pending.get(m.id); if (waiter) { pending.delete(m.id); clearTimeout(waiter.timer); m.error ? waiter.reject(new Error(m.error.message)) : waiter.resolve(m.result); }
+        }
+    });
+    const request = (method: string, params: object) => new Promise<any>((resolve, reject) => { const id = ++seq; const timer = setTimeout(() => { pending.delete(id); reject(new Error(`MCP ${method} timeout`)); }, 30000); pending.set(id, { resolve, reject, timer }); send({ id, method, params }); });
+    const call = async (name: string, args: object) => { const r = (await request("tools/call", { name: `codeflow_${name}`, arguments: args })).structuredContent; assert.equal(r.ok, true, JSON.stringify(r)); return r.data; };
+    const candidate = { scope: "plan", participants: [{ id: "author", provider: "claude", model: "haiku", effort: "high" }, { id: "reviewer", provider: "codex", effort: "high" }], completion: ["A reviewed login plan"], steps: [
+        { id: "draft", type: "task", operation: "propose", participant: "author", instructions: "Write the login plan" },
+        { id: "review", type: "task", operation: "review_plan", participant: "reviewer", instructions: "Review the plan", inputs: ["draft"] },
+        { id: "gate", type: "gate", policy: "agreement", target: "draft", reviews: ["review"] },
+        { id: "result", type: "finish", outcome: "agreed_plan", inputs: ["draft", "gate"] },
+    ] };
+    const context = await browser.newContext(), p = await context.newPage();
+    try {
+        await request("initialize", { protocolVersion: "2025-11-25", capabilities: { elicitation: { form: {} } } });
+        const proposal = await call("propose_run", { operationId: "cli-ui-plan", task: "Plan a login form from CLI", candidate });
+        const again = await call("propose_run", { operationId: "cli-ui-plan", task: "Plan a login form from CLI", candidate });
+        assert.equal(proposal.proposalId, again.proposalId); assert.equal(proposal.workspace.chatId, again.workspace.chatId);
+        assert.equal(proposal.approvalMethod, "native_form");
+        const opened = await call("open_task", { id: proposal.proposalId }); assert.equal(opened.opened, true);
+        assert.equal(new URL(opened.workspace.url).port, new URL(base).port);
+        assert.doesNotMatch(JSON.stringify(opened), /cli-workspace\/|token=|bootstrap/);
+        const handoff = await readFile(join(home, "opened-url"), "utf8");
+        const rejected = await fetch(handoff, { headers: { origin: "https://untrusted.invalid" }, redirect: "manual" }); assert.equal(rejected.status, 403);
+        await p.goto(handoff);
+        await p.getByRole("button", { name: "Start planning", exact: true }).waitFor();
+        assert.equal(p.url(), opened.workspace.url);
+        assert.equal((await fetch(handoff, { redirect: "manual" })).status, 410, "ticket cannot be replayed");
+        await p.locator(`button[data-chat="${proposal.workspace.chatId}"]`).waitFor();
+        assert.equal(await p.locator(`button[data-chat="${proposal.workspace.chatId}"]`).count(), 1);
+        const done = await startTask(p, proposal.workspace.chatId, proposal.workspace.taskId);
+        assert.equal(done.tasks[0].execution.outcome, "agreed_plan");
+        assert.ok(done.tasks[0].execution.participation.every((a: any) => a.assignments.some((s: any) => s.invocations > 0)), "both fixture providers participated");
+        const resumed = await call("start_run", { operationId: "recover-ui-start", proposalId: proposal.proposalId, expectedRevision: proposal.revision, proposalHash: proposal.proposalHash });
+        assert.equal(resumed.runId, done.tasks[0].execution.id); assert.equal(elicited, 0, "browser approval is already authoritative");
+        const next = await call("propose_run", { operationId: "cli-ui-next", task: "Review the login plan again", candidate, context: { chatId: proposal.workspace.chatId } });
+        assert.equal(next.workspace.chatId, proposal.workspace.chatId);
+        await p.reload(); await p.getByRole("button", { name: "Start planning", exact: true }).waitFor();
+        const native = await call("start_run", { operationId: "native-start-ui", proposalId: next.proposalId, expectedRevision: next.revision, proposalHash: next.proposalHash });
+        assert.equal(elicited, 1);
+        await until(() => api(`/api/chats/${proposal.workspace.chatId}`), s => s.tasks[1]?.execution?.outcome === "agreed_plan", "native-approved run visible in browser");
+        const status = await call("get_run", { runId: native.runId }); assert.equal(status.workspace.chatId, proposal.workspace.chatId);
+        assert.equal(status.conversation.latestProposal.runId, native.runId);
+        await p.screenshot({ path: join(root, "output/playwright/cli-workspace-synced.png"), fullPage: true });
+    } finally {
+        await context.close(); child.stdin!.end();
+        await until(async () => child.exitCode, x => x !== null, "MCP shutdown", 15000).catch(() => child.kill());
+        for (const waiter of pending.values()) clearTimeout(waiter.timer);
+    }
+});
+
+test("CLI workspace: tool-only host gets browser approval and the same chat survives an owner restart", { timeout: 90000 }, async () => {
+    const child = spawn(process.execPath, ["--import", "tsx", "src/cli-teams/cli.ts", "mcp", "--project-root", repo], { cwd: root, env: { ...process.env, CODEFLOW_HOME: join(home, "state") }, stdio: ["pipe", "pipe", "pipe"] });
+    const responses: any[] = []; let buffer = "";
+    child.stdout!.on("data", chunk => { buffer += chunk; let end: number; while ((end = buffer.indexOf("\n")) >= 0) { responses.push(JSON.parse(buffer.slice(0, end))); buffer = buffer.slice(end + 1); } });
+    const send = (m: object) => child.stdin!.write(JSON.stringify({ jsonrpc: "2.0", ...m }) + "\n");
+    let workspace: any;
+    try {
+        send({ id: 1, method: "initialize", params: { protocolVersion: "2025-03-26", capabilities: {} } });
+        await until(async () => responses.find(r => r.id === 1), Boolean, "tool-only initialization");
+        send({ id: 2, method: "tools/call", params: { name: "codeflow_propose_run", arguments: { operationId: "tool-only-proposal", task: "CLI-only approval fallback", candidate: { scope: "plan", participants: [{ id: "planner", provider: "codex" }], completion: ["A plan"], steps: [{ id: "draft", type: "task", operation: "propose", participant: "planner", instructions: "Write a plan" }, { id: "result", type: "finish", outcome: "plan_ready", inputs: ["draft"] }] } } } });
+        const reply: any = await until(async () => responses.find(r => r.id === 2), Boolean, "tool-only proposal");
+        const value = reply.result.structuredContent; assert.equal(value.ok, true, JSON.stringify(value));
+        assert.equal(value.data.approvalMethod, "browser"); workspace = value.data.workspace;
+        assert.match(value.data.nextAction, /Code Flow/);
+        await rm(join(home, "opened-url"), { force: true });
+        const remoteCmd = execFileSync(process.execPath, [join(root, "bin/codeflow.mjs"), "open", value.data.proposalId], { cwd: repo, env: { ...process.env, CODEFLOW_HOME: join(home, "state"), SSH_CONNECTION: "fixture" }, encoding: "utf8" });
+        assert.match(remoteCmd, /Open in Code Flow:/); assert.doesNotMatch(remoteCmd, /Opened in Code Flow:/);
+        await assert.rejects(readFile(join(home, "opened-url")), { code: "ENOENT" });
+        const cmd = execFileSync(process.execPath, [join(root, "bin/codeflow.mjs"), "open", value.data.proposalId], { cwd: repo, env: { ...process.env, CODEFLOW_HOME: join(home, "state") }, encoding: "utf8" });
+        assert.ok(cmd.includes(workspace.url)); assert.doesNotMatch(cmd, /cli-workspace\/|token=/);
+    } finally { child.stdin!.end(); await until(async () => child.exitCode, x => x !== null, "tool-only MCP shutdown", 15000).catch(() => child.kill()); }
+    const before = await api(`/api/chats/${workspace.chatId}`);
+    server.kill("SIGTERM"); await until(async () => server.exitCode, x => x !== null, "owner shutdown", 30000);
+    await startServer();
+    const restored = await api(`/api/chats/${workspace.chatId}`);
+    assert.equal(restored.chat.id, before.chat.id); assert.equal(restored.chat.events.length, before.chat.events.length);
+    assert.equal(restored.tasks[0].proposal.hash, before.tasks[0].proposal.hash);
+    const context = await browser.newContext(), p = await context.newPage();
+    try {
+        await p.goto(`${base}/?token=${token}#/chat/${workspace.chatId}`);
+        await p.getByRole("button", { name: "Start planning", exact: true }).waitFor();
+        await startTask(p, workspace.chatId, workspace.taskId);
+        await p.getByRole("heading", { name: "Plan ready", exact: true }).waitFor();
     } finally { await context.close(); }
 });
