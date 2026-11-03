@@ -54,7 +54,7 @@ This small demo uses Node's built-in test runner, with no framework or dependenc
 
 ## Agent mode
 
-For a new chat, choose the computer, project and repository above the message box. After typing, **Improve** previews an editable, structured rewrite using your saved rewrite settings. **Use this prompt** replaces the draft; **Undo rewrite** restores it. Rewriting does not send the message or approve work. It currently requires a repository; Quick uses only the draft text, while Repo uses a committed snapshot.
+For a new chat, choose the computer and project above the message box. A project with one repository selects it automatically; projects with several repositories show a repository choice. The selected project and repository survive reloads. Choose **No project · discussion** to start without code context. **Add files or context → Project and source** can turn off repository files for a discussion within a single-repository project. After typing, **Improve** previews an editable, structured rewrite using your saved rewrite settings. **Use this prompt** replaces the draft; **Undo rewrite** restores it. Rewriting does not send the message or approve work. It currently requires a repository; Quick uses only the draft text, while Repo uses a committed snapshot.
 
 Agent uses the existing provider adapter, tools and permission choices. Send authorizes that turn within its displayed allowance; there is no Team approach approval for an ordinary Agent turn. The default allowance is 12 managed calls and 30 execution minutes. **Task details → Agent allowance for new work** changes future turns.
 
@@ -140,3 +140,5 @@ Saved one-time dates can be changed through **Edit → Run at → Save time** wi
 Results and their independent executions stay in the owning chat and history. Task details follows the selected task, displaying its state, participants, checks, allowances, recovery and revision history. Clean routine automation results stay in history; findings, failed or blocked work, verified changes and decisions appear in the Inbox. Desktop and configured notification targets use the same quiet-success policy for chat automations. No merge, push or deployment is automatic.
 
 The new chat-based automation adapter is owner-local, as are chat and its private files. Historical scheduling, remote workflows and missions remain under Advanced. Switching computers selects the computer that owns its own projects and automations; it does not migrate an existing automation to a different host.
+
+Scheduling focuses on describing new automation. **Manage automations** opens **App settings → Automations**, with project filtering, saved automations and advanced scheduling tools. Existing direct scheduling links remain available. The Changes side panel leads with changed files, followed by collapsed **File review** and **Comments** sections; review metadata and manual rework remain available inside File review.

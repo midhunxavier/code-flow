@@ -301,7 +301,7 @@ test("long history loads in bounded pages, preserves the visible message and sea
 test("start without a repository, then attach one in the same chat", { timeout: 90000 }, async () => {
   const { context, page: p } = await page();
   try {
-    await p.getByLabel("Repository", { exact: true }).selectOption(""); await p.getByLabel("Project", { exact: true }).selectOption("");
+    await p.getByLabel("Project", { exact: true }).selectOption("");
     const discussed = await sendMessage(p, "Discuss login accessibility without inspecting code.");
     assert.equal(discussed.state.chat.repo, ""); assert.equal(discussed.state.tasks.length, 0);
     await p.getByRole("button", { name: "Task details", exact: true }).click();
@@ -320,6 +320,15 @@ test("task-first automation reviews, tests and enables the exact team without ap
         assert.equal(await p.getByRole("button", { name: "Existing workflows", exact: true }).count(), 0);
         await p.goto(`${base}/#/project/${project.id}/automation`);
         await p.getByRole("heading", { name: "What would you like to automate?" }).waitFor();
+        assert.equal(await p.getByLabel("Automation project", { exact: true }).inputValue(), project.id);
+        assert.equal(await p.getByLabel("Automation repository", { exact: true }).count(), 0);
+        await p.getByRole("button", { name: /Daily review/ }).click();
+        assert.equal(await p.getByRole("textbox", { name: "Automation task" }).inputValue(), "Review repository changes every morning");
+        await p.screenshot({path:join(root,"output/playwright/automation-home-refined.png")});
+        await p.setViewportSize({width:390,height:844});
+        assert.equal(await p.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
+        await p.screenshot({path:join(root,"output/playwright/automation-home-refined-mobile.png")});
+        await p.setViewportSize({width:1400,height:1000});
         await p.getByRole("textbox", { name: "Automation task" }).fill("WEB_TASK_PLAN Plan the repository improvements every weekday. Plan only. Use Claude and Codex at high effort.");
         await p.getByRole("button", { name: "Create automation", exact: true }).click();
         await p.waitForURL(/#\/chat\/[a-f0-9]+$/);
@@ -392,7 +401,7 @@ test("chat webhook setup stays disabled during testing and authenticated events 
     const once = await api("/api/automations", { ...request, operationId: crypto.randomUUID(), name: "One-time team", webhook: false, onceAt: Date.now()+86400000 });
     const { context, page: p } = await page();
     try {
-        await p.goto(`${base}/#/automations`);
+        await p.goto(`${base}/#/settings/automations`);
         const row = p.locator(".auto-row").filter({has:p.getByText("One-time team",{exact:true})});
         await row.getByRole("button",{name:"Edit",exact:true}).click();
         const when = new Date(Date.now()+2*86400000);
@@ -448,5 +457,55 @@ test("chat composer previews and undoes prompt rewrites without submitting work;
         assert.equal(await p.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
         assert.ok((await row.boundingBox())!.y < (await message.boundingBox())!.y);
         await p.screenshot({path:join(root,"output/playwright/chat-composer-refined-mobile.png")});
+    } finally { await context.close(); }
+});
+
+
+test("project selection inherits a single repository and preserves explicit multi-repository choices across reloads", {timeout:90000}, async () => {
+    const first = join(await realpath(home), "service"), second = join(await realpath(home), "website");
+    for (const folder of [first,second]) execFileSync("git", ["clone", "--quiet", repo, folder]);
+    const multi = await api("/api/projects", {name:"Multiple repositories", repos:[first,second]});
+    const empty = await api("/api/projects", {name:"Discussion project", repos:[]});
+    const {context, page:p} = await page();
+    try {
+        const contextRow=p.getByLabel("Chat project and repository",{exact:true});
+        assert.equal(await contextRow.getByLabel("Repository",{exact:true}).count(),0);
+        const chooseProject=contextRow.getByLabel("Project",{exact:true});
+        await p.getByRole("textbox",{name:"Message",exact:true}).fill("CHAT_AGENT Keep this project draft");
+        await chooseProject.selectOption(multi.id);
+        await p.waitForURL(new RegExp(`/project/${multi.id}/chat$`));
+        const chooseRepo=contextRow.getByLabel("Repository",{exact:true});
+        await chooseRepo.waitFor(); assert.equal(await chooseRepo.inputValue(),"");
+        await p.getByRole("textbox",{name:"Message",exact:true}).fill("CHAT_AGENT Inspect the selected repository");
+        assert.equal(await p.getByRole("button",{name:"Send",exact:true}).isDisabled(),true);
+        await chooseRepo.selectOption(second); await p.reload();
+        await chooseRepo.waitFor(); assert.equal(await chooseRepo.inputValue(),second);
+        assert.equal(await p.getByRole("textbox",{name:"Message",exact:true}).inputValue(),"CHAT_AGENT Inspect the selected repository");
+        const sent=await sendMessage(p,"CHAT_AGENT Inspect the selected repository");
+        assert.equal(sent.state.chat.repo,second); assert.equal(sent.state.chat.project,multi.id);
+        await p.goto(`${base}/#/project/${project.id}/chat`);
+        await chooseProject.waitFor();
+        assert.equal(await p.getByRole("textbox",{name:"Message",exact:true}).inputValue(),"CHAT_AGENT Keep this project draft");
+        await chooseProject.selectOption(empty.id); assert.equal(await contextRow.getByLabel("Repository",{exact:true}).count(),0);
+        await p.getByRole("button",{name:"Add repository",exact:true}).waitFor();
+        await chooseProject.selectOption(""); await p.reload(); await chooseProject.waitFor();
+        assert.equal(await chooseProject.inputValue(),""); assert.equal(await contextRow.getByLabel("Repository",{exact:true}).count(),0);
+        await chooseProject.selectOption(project.id);
+        const single=await sendMessage(p,"CHAT_AGENT Use the inherited repository");
+        assert.equal(single.state.chat.repo,repo); assert.equal(single.state.chat.project,project.id);
+        await p.goto(`${base}/#/automations`);
+        await p.getByRole("link",{name:"Manage automations",exact:true}).waitFor();
+        assert.equal(await p.locator(".automations, .automation-legacy, .automation-list-heading").count(),0);
+        await p.getByRole("link",{name:"Manage automations",exact:true}).click();
+        await p.waitForURL(/#\/settings\/automations$/);
+        await p.locator(".automations").waitFor();
+        await p.getByText("Advanced scheduling tools",{exact:true}).click();
+        await p.getByRole("link",{name:"Run once later",exact:true}).waitFor();
+        await p.goto(`${base}/#/project/${multi.id}/automation`);
+        await p.getByLabel("Automation repository",{exact:true}).waitFor();
+        await p.getByRole("textbox",{name:"Automation task"}).fill("Review each morning");
+        assert.equal(await p.getByRole("button",{name:"Create automation",exact:true}).isDisabled(),true);
+        await p.getByLabel("Automation repository",{exact:true}).selectOption(second);
+        assert.equal(await p.getByRole("button",{name:"Create automation",exact:true}).isEnabled(),true);
     } finally { await context.close(); }
 });

@@ -1,6 +1,6 @@
 import { useState } from "preact/hooks";
 import type { Board } from "../src/collab/model.js";
-import { api, collaborationHref, ownerOnLocalListener, enc, usePoll, workspaceId } from "./lib.js";
+import { api, collaborationHref, ownerOnLocalListener, enc, workspaceId } from "./lib.js";
 import { useDialog } from "./app.js";
 import { repositoryChoice } from "./team-repository-choice.js";
 import { ProjectInvitations } from "./project-invitations.js";
@@ -8,12 +8,8 @@ import { rememberSetupMappings } from "./team-setup-state.js";
 
 /** Project pages always share their owning computer's project, regardless of the selected team. */
 export function ProjectShare({ project }: { project: { id: string; name: string } }) {
-  const [open, setOpen] = useState(false), [count, setCount] = useState<number | null>(null);
-  usePoll(async current => {
-    try { const b = await api<Board>("/api/team/board?teamConnection=local"); if (current()) setCount(b.projects.find(p => p.id === project.id)?.members.length ?? null); }
-    catch { if (current()) setCount(null); }
-  }, 15_000, [project.id, open]);
-  return <><a class="btn project-member-count" href={collaborationHref(`#/project/${enc(project.id)}/people`, "local")}>{count === null ? "People and access" : `${count} ${count === 1 ? "member" : "members"}`}</a>
+  const [open, setOpen] = useState(false);
+  return <>
     <button class="btn" onClick={() => setOpen(true)}>Share</button>
     {open ? <ProjectShareDialog project={project} onClose={() => setOpen(false)} /> : null}</>;
 }

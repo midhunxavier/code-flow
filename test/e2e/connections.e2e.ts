@@ -114,7 +114,7 @@ test("a run view with a side chat, two terminals and a second tab still gets its
 
   // A side chat on the run (it reads the run as the run view does).
   await side.getByRole("tab", { name: "Chat" }).click();
-  await side.getByText("Chat about this run").waitFor();
+  await side.getByLabel("Message", { exact: true }).waitFor();
   await side.getByLabel("Message").fill("E2E: what did this run change?");
   await side.getByLabel("Message").press("Enter");
   await side.locator("#side-pane-chat .fu-answer.done").first().waitFor({ timeout: 30_000 });

@@ -65,8 +65,8 @@ test("collapsed badges remain visible, search peek preserves storage and mobile 
   await page.setViewportSize({ width: 390, height: 844 }); await page.getByRole("button", { name: "Show runs", exact: true }).click(); await until(() => inbox.locator(".nav-label").boundingBox(), box => !!box && box.x >= 0 && box.x + box.width < 390); assert.ok(await inbox.locator(".nav-label").isVisible()); assert.ok(await page.getByRole("link", { name: "Scheduling", exact: true }).locator(".nav-label").isVisible()); assert.equal(await page.evaluate(() => localStorage.getItem("railCollapsed")), "1"); await shot("mobile-destination-labels"); await page.setViewportSize({ width: 1440, height: 1000 });
 });
 
-test("Settings search and legacy scheduling route still open the standalone destination", async () => {
-  await page.goto(`${base}/#/settings`); await page.getByRole("searchbox", { name: "Search settings", exact: true }).fill("Scheduling"); await page.getByRole("button", { name: /Scheduling/ }).click(); await page.waitForURL(/#\/automations$/); await page.goto(`${base}/#/settings/automations`); await page.waitForURL(/#\/automations$/); assert.equal(await page.locator(".settings-tools").count(), 0);
+test("Settings search opens automation management", async () => {
+  await page.goto(`${base}/#/settings`); await page.getByRole("searchbox", { name: "Search settings", exact: true }).fill("Scheduling"); await page.getByRole("button", { name: /Automations/ }).click(); await page.waitForURL(/#\/settings\/automations$/); await page.goto(`${base}/#/settings/automations`); await page.waitForURL(/#\/settings\/automations$/); assert.equal(await page.locator(".settings-tools").count(), 0);
 });
 
 test("sidebar width can be dragged, restored after collapse and reload, and adapted around the side panel", async () => {

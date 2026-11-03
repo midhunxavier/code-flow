@@ -122,8 +122,6 @@ export function ChangesTab({ run }: { run: RunSummary }) {
           Full review
         </button>
       </div>
-      {!last ? <ReviewCoveragePanel runId={run.id} branch={branch} refreshKey={moved} onOpen={setOpen} /> : null}
-      {!last ? <CollaborationPanel runId={run.id} branch={branch} refreshKey={moved} /> : null}
       <div class="changes">
         {error ? <div class="side-empty msg err">{error}</div> : null}
         {!files && !error ? <div class="side-empty help">Loading…</div> : null}
@@ -152,16 +150,16 @@ export function ChangesTab({ run }: { run: RunSummary }) {
           </>
         ) : files ? (
           <>
-            <div class="changes-sum help">
+            <div class={files.length ? "changes-sum help" : "changes-empty"}>
               {files.length ? (
                 <>
                   {files.length} file{files.length === 1 ? "" : "s"} · <span class="add">+{totals!.add}</span> <span class="del">−{totals!.del}</span>
                   {last ? " in the last step" : ""}
                 </>
               ) : last ? (
-                "No commits on this branch yet."
+                <><strong>No commits yet</strong><p>The latest committed changes will appear here.</p></>
               ) : (
-                "No changes on this branch yet."
+                <><strong>No changes on this branch yet.</strong><p>Changed files and their diffs will appear here.</p></>
               )}
             </div>
             {files.map((f) => {
@@ -188,6 +186,10 @@ export function ChangesTab({ run }: { run: RunSummary }) {
             <MergedNote files={files} />
           </>
         ) : null}
+      </div>
+      <div class="changes-review-tools">
+      {!last ? <ReviewCoveragePanel runId={run.id} branch={branch} refreshKey={moved} onOpen={setOpen} /> : null}
+      {!last ? <CollaborationPanel runId={run.id} branch={branch} refreshKey={moved} /> : null}
       </div>
       {comments.length ? (
         <div class="changes-send">

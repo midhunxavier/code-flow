@@ -196,7 +196,7 @@ export function AutomationsView({ mode = "all", category, projectId, showScope =
           list.map((a) => <AutomationRow key={a.id} a={a} scoped={scoped} />)
         ) : (
           <p class="help empty">
-            {automationStorage.value?.state === "unavailable" || automationLoadError.value ? "Saved automations are hidden until storage can be read." : category ? <>None{here} yet. Set up a task in Saved workflows, then choose <b>Schedule → Repeat</b>.</> : <>No automations{here} yet. Describe a task above, or choose <b>Automate this</b> on a reviewed approach in chat.</>}
+            {automationStorage.value?.state === "unavailable" || automationLoadError.value ? "Saved automations are hidden until storage can be read." : category ? <>None{here} yet. Set up a task in Saved workflows, then choose <b>Schedule → Repeat</b>.</> : <>No automations{here} yet. Choose <a href="#/automations">Create automation</a>, or select <b>Automate this</b> on a reviewed approach in chat.</>}
           </p>
         )}
       </section> : null}
@@ -569,7 +569,7 @@ export function SaveAutomationDialog({ body, onClose }: { body: Record<string, a
       // Show the project it went in (from "No project", its repo's), as starting a run does.
       const p = automationProject(saved.run);
       if (currentProject.value !== ALL && p && p.id !== currentProject.value) selectProject(p.id, { defaults: false, repo: false });
-      route.value = { view: "automations" };
+      route.value = { view: "settings", section: "automations" };
     } catch (err) {
       setError((err as Error).message);
     } finally {

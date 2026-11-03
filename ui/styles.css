@@ -2682,7 +2682,7 @@
   .workflow-timing + .help { margin: 10px 0 0; }
 
   /* ---------- Changes tab: human review coverage and collaboration comments ---------- */
-  /* two quiet disclosure rows between the toolbar and the file list; open, each scrolls under its own sticky row */
+  /* Quiet disclosure rows; expanded details keep their heading visible. */
   .review-coverage, .collaboration-comments { flex: none; min-width: 0; padding: 0 12px; border-bottom: 1px solid var(--border); font-size: 13px; }
   .review-coverage[open], .collaboration-comments[open] { max-height: min(48vh, 460px); overflow-y: auto; padding-bottom: 12px; }
   .review-coverage > summary, .collaboration-comments > summary { position: sticky; top: 0; z-index: 1; list-style: none; display: flex; align-items: center; gap: 8px; min-height: 38px; margin: 0 -12px; padding: 6px 12px; background: var(--raised); font-weight: 500; line-height: 1.4; color: var(--text-2); cursor: pointer; transition: background-color .16s var(--ease), color .16s var(--ease); }
@@ -4483,15 +4483,41 @@ dialog.rail::backdrop { background: rgb(0 0 0 / .28); }
 /* A single task-first entry into scheduled work. */
 .automation-home { max-width: 1000px; margin: 0 auto; padding: 24px clamp(16px, 3vw, 40px); }
 .automation-start { max-width: 740px; margin: 30px auto 56px; }
-.automation-start > h1 { font-size: clamp(26px, 3vw, 36px); margin: 18px 0 8px; }
-.automation-start > p { color: var(--muted); }
+.automation-intro h1 { font-size: clamp(26px, 3vw, 36px); margin: 18px 0 8px; }
+.automation-intro { text-align: center; }
+.automation-intro .task-heading-mark { margin-inline: auto; }
+.automation-intro p { color: var(--muted); }
 .automation-start form { margin-top: 26px; padding: 16px; border: 1px solid var(--border); border-radius: 20px; background: var(--raised); box-shadow: 0 5px 20px #00000005; }
 .automation-start textarea.field { border: 0; background: transparent; resize: vertical; min-height: 110px; box-shadow: none; }
-.automation-start-footer, .automation-timing, .automation-examples, .automation-host { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.automation-start-footer, .automation-timing, .automation-host { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .automation-start-footer { justify-content: space-between; }
-.automation-start-footer select { border: 0; background: transparent; color: inherit; max-width: 220px; }
-.automation-examples { margin: 16px 0; gap: 6px; }
-.automation-host { padding: 14px 0; font-size: 13px; }
+.automation-context-picker { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
+.automation-context-picker label { display: inline-flex; align-items: center; gap: 6px; padding: 6px 8px; border-radius: 8px; color: var(--text-2); background: var(--bg); min-width: 0; }
+.automation-context-picker .icon { width: 14px; height: 14px; flex: none; color: var(--muted); }
+.automation-start-footer select { border: 0; background: transparent; color: inherit; max-width: min(220px, 55vw); padding: 4px; font: inherit; font-size: 13px; }
+.automation-examples { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 18px 0; gap: 10px; }
+.automation-example { display: flex; align-items: flex-start; gap: 10px; padding: 16px 12px; border: 1px solid var(--border); border-radius: 12px; background: transparent; color: var(--text); text-align: left; }
+.automation-example:hover:not(:disabled) { background: var(--hover); border-color: var(--dim); }
+.automation-example > .icon { width: 16px; height: 16px; flex: none; margin-top: 2px; color: var(--muted); }
+.automation-example > .icon:last-child { display: none; transform: rotate(-90deg); }
+.automation-example > span { display: grid; gap: 6px; }
+.automation-example strong { font-size: 13px; font-weight: 500; }
+.automation-example span span { font-size: 12px; line-height: 1.5; color: var(--muted); }
+.automation-setup-hint { text-align: center; font-size: 12px; }
+.automation-list-heading { padding-top: 24px; border-top: 1px solid var(--border); }
+@media (max-width: 600px) {
+  .automation-examples { grid-template-columns: 1fr; }
+  .automation-example { align-items: center; padding: 12px; }
+  .automation-example > span { flex: 1; gap: 3px; }
+  .automation-example > .icon:last-child { display: block; }
+  .automation-start-footer > .btn { margin-left: auto; }
+}
+.automation-host { padding: 14px 16px; margin-top: 24px; border: 1px solid var(--border); border-radius: 12px; font-size: 13px; background: var(--raised); flex-wrap: nowrap; }
+.automation-host-icon { display: grid; place-items: center; flex: none; width: 28px; height: 28px; border-radius: 50%; background: var(--selected); color: var(--accent-ink); }
+.automation-host-icon .icon { width: 15px; height: 15px; }
+.automation-host b { font-weight: 500; }
+.automation-host.unavailable { border-color: var(--warn); flex-wrap: wrap; }
+.automation-host.unavailable .automation-host-icon { color: var(--warn); background: var(--warn-soft); }
 .automation-host p { margin: 3px 0 0; }
 .automation-legacy { margin: 24px 0; color: var(--muted); }
 .automation-setup-dialog { width: min(760px, calc(100vw - 32px)); max-height: 90dvh; padding: 26px; border: 1px solid var(--border); border-radius: 20px; background: var(--raised); color: var(--text); overflow-y: auto; }
@@ -4550,3 +4576,20 @@ dialog.rail::backdrop { background: rgb(0 0 0 / .28); }
 .rail-archive-view { margin-top: 8px; padding: 6px 10px; border-radius: 8px; background: var(--selected); font-size: 12px; }
 .rail-archive-view .rail-archive-toggle { padding: 2px 0; }
 .rail-history:empty { display: none; }
+
+/* Keep creation focused; saved automations belong to settings. */
+.automation-manage-link { display: flex; justify-content: center; margin-top: 12px; }
+.automation-management { min-width: 0; }
+.automation-management > .page-head { flex-wrap: wrap; gap: 12px; }
+.automation-management .automation-legacy { margin-top: 24px; }
+/* Diffs get the main canvas, with optional human review below. */
+.changes-review-tools { flex: none; max-height: 50%; overflow: auto; border-top: 1px solid var(--border); }
+.changes-review-tools:empty { display: none; }
+.changes-review-tools .review-coverage[open], .changes-review-tools .collaboration-comments[open] { max-height: none; overflow: visible; }
+.review-summary-meta { margin-left: auto; font-size: 12px; font-weight: 400; color: var(--muted); }
+.changes-empty { padding: 32px 20px; text-align: center; color: var(--text-2); }
+.changes-empty strong { font-size: 15px; font-weight: 500; }
+.changes-empty p { margin: 8px 0 0; font-size: 13px; color: var(--muted); }
+.review-metadata { padding-bottom: 8px; }
+.collaboration-comments > .help { margin-top: 4px; }
+.collaboration-comments form { padding: 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); }

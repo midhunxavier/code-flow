@@ -82,7 +82,7 @@ test("the side panel works in a run's worktree while its first step is still run
   await openRun(id);
   await page.getByRole("button", { name: "Side panel", exact: true }).click();
   await page.getByRole("tab", { name: "Chat", exact: true }).click();
-  await page.locator("#side-pane-chat h3", { hasText: "Chat about this run" }).waitFor();
+  await page.locator("#side-pane-chat").getByLabel("Message", { exact: true }).waitFor();
   const run = await runOf(id);
   assert.equal(run.steps.at(-1)?.status, "running", "still in its first step");
   assert.ok((await api<Run[]>("/api/runs")).find((summary) => summary.id === id)!.worktrees.some((tree) => tree.name === "build"), "the run list has its worktree");

@@ -19,19 +19,19 @@ export function CollaborationPanel({ runId, branch, refreshKey }: { runId: strin
     finally { if (current.current === scope && request === generation.current) setLoading(false); }
   };
   useEffect(() => { setThread(undefined); setHead(""); if (opened) void refresh(); return () => { generation.current++; }; }, [runId, branch, refreshKey, opened]);
-  return <details class="collaboration-comments" onToggle={(event) => setOpened(event.currentTarget.open)}><summary>Human collaboration comments{thread ? ` · ${thread.comments.length}` : ""}</summary>
-    <p class="help">Comments from project reviewers and the owner are anchored to their observed result commit. They never send instructions to agents or resume work.</p>
-    <button class="btn small" type="button" disabled={busy || loading} onClick={() => void refresh()}>Refresh human comments</button>
-    {loading ? <p class="help" role="status">Loading human review…</p> : null}
+  return <details class="collaboration-comments" onToggle={(event) => setOpened(event.currentTarget.open)}><summary>Comments<span class="review-summary-meta">{error ? "Needs attention" : thread?.comments.length ? thread.comments.length : ""}</span></summary>
+    <p class="help">Leave feedback on this result. To request changes from agents, use the main chat.</p>
+    <button class="btn small" type="button" disabled={busy || loading} onClick={() => void refresh()}>Refresh comments</button>
+    {loading ? <p class="help" role="status">Loading comments…</p> : null}
     {error ? <p class="msg err" role="alert">{error} Your comment draft is kept.</p> : null}
     {thread?.comments.map((comment) => <article key={comment.id}><strong>{comment.actor.name}</strong><p class="help">{comment.branch} · {comment.head.slice(0, 12)} · {new Date(comment.at).toLocaleString()}{comment.branch !== branch || head && comment.head !== head ? " · another branch or earlier commit" : ""}</p><pre>{comment.text}</pre></article>)}
-    {thread && !thread.comments.length ? <p class="help">No human comments yet.</p> : null}
+    {thread && !thread.comments.length ? <p class="help">No comments yet.</p> : null}
     <form onSubmit={async (event) => {
       event.preventDefault(); if (mutation.current || !head || !text.trim()) return;
       mutation.current = true; generation.current++; setLoading(false); setBusy(true); setError("");
       try { const result = await post<CollaborationThread>(`/api/runs/${enc(runId)}/collaboration`, { branch, expectedHead: head, text }); if (current.current === scope) { setThread(result); setDraft({ scope, text: "" }); } }
       catch (problem) { if (current.current === scope) setError((problem as Error).message); }
       finally { mutation.current = false; setBusy(false); }
-    }}><label>Owner comment on this result commit<textarea class="field" rows={3} maxLength={4000} value={text} onInput={(event) => setDraft({ scope, text: event.currentTarget.value })} /></label><p class="help">{head ? `Observed commit ${head.slice(0, 12)}` : "Load the current result commit before commenting."}</p><button class="btn small" disabled={busy || loading || !head || !text.trim()}>{busy ? "Recording…" : "Record owner comment"}</button></form>
+    }}><label>Your comment<textarea class="field" rows={3} maxLength={4000} value={text} onInput={(event) => setDraft({ scope, text: event.currentTarget.value })} /></label><p class="help">{head ? `Result commit ${head.slice(0, 12)}` : "Load the current result commit before commenting."}</p><button class="btn small" disabled={busy || loading || !head || !text.trim()}>{busy ? "Saving…" : "Add comment"}</button></form>
   </details>;
 }

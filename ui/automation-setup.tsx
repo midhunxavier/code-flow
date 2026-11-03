@@ -13,7 +13,7 @@ import type { TaskSnapshot } from "../src/conversational/service.js";
 
 export function AutomationHostStatus() {
   const ready = connection.value.state === "connected" && !executionPaused.value;
-  return <div class="automation-host"><span class={`dot ${ready ? "done" : "failed"}`}/><div><b>{computerLabel()} {ready ? "is ready" : executionPaused.value ? "is paused by policy" : "is offline"}</b><p class="help">Scheduled work runs while Code Flow is running.</p></div>{!ready ? <HostControl/> : null}</div>;
+  return <div class={`automation-host ${ready ? "ready" : "unavailable"}`} role="status"><span class="automation-host-icon" aria-hidden="true"><Icon name={ready ? "check" : "clock"}/></span><div><b>{computerLabel()} {ready ? "is ready" : executionPaused.value ? "is paused by policy" : "is offline"}</b><p class="help">Scheduled work runs while Code Flow is running.</p></div>{!ready ? <HostControl/> : null}</div>;
 }
 
 /** Saving a setup is not execution authority. Test and enable are separate explicit actions. */

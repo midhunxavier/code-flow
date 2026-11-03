@@ -1,3 +1,4 @@
+import { AutomationManagement } from "./scheduling.js";
 import { browserPerformance } from "./performance.js";
 import { DesktopUpdatesCard } from "./desktop-updates.js";
 import { MlSettingsCard } from "./ml/settings.js";
@@ -48,14 +49,14 @@ export function SettingsView({ section = "general", group, connection }: { secti
   const item = SETTINGS_SECTIONS.find((item) => item.id === section)!;
   const matches = searchSettings(query);
   const host = executionHost.value;
-  const go = (section: SettingsSection) => { setQuery(""); route.value = section === "workspace" || section === "automations" || section === "insights" ? { view: section } : { view: "settings", section }; };
+  const go = (section: SettingsSection) => { setQuery(""); route.value = section === "workspace" || section === "insights" ? { view: section } : { view: "settings", section }; };
   return <div class="settings-page">
     <header class="settings-header"><div><div class="eyebrow">Your workspace, your way</div><h1>Settings</h1></div><span class="settings-scope"><Icon name={host.kind === "local" ? "panel" : "terminal"} />{host.kind === "ssh" ? host.name : host.kind === "host" ? "Remote server" : "This computer"}</span></header>
     <div class="settings-layout">
       <aside class="settings-sidebar">
         <div class="settings-search"><Icon name="search" /><input class="field" type="search" aria-label="Search settings" placeholder="Search settings…" value={query} onInput={(e) => setQuery(e.currentTarget.value)} /></div>
         <nav ref={navigation} aria-label="Settings categories">
-          {["Preferences", "Connections", "Management"].map((group) => <div key={group} class="settings-nav-group"><div class="settings-nav-label">{group}</div>{SETTINGS_SECTIONS.filter((entry) => entry.group === group && !["workspace", "automations", "insights"].includes(entry.id)).map((entry) => <a key={entry.id} class={`settings-nav-item ${section === entry.id && !query.trim() ? "active" : ""}`} href={`#/settings/${entry.id}`} aria-current={section === entry.id && !query.trim() ? "page" : undefined} onClick={() => setQuery("")}><Icon name={entry.icon} />{entry.label}</a>)}</div>)}
+          {["Preferences", "Connections", "Management"].map((group) => <div key={group} class="settings-nav-group"><div class="settings-nav-label">{group}</div>{SETTINGS_SECTIONS.filter((entry) => entry.group === group && !["workspace", "insights"].includes(entry.id)).map((entry) => <a key={entry.id} class={`settings-nav-item ${section === entry.id && !query.trim() ? "active" : ""}`} href={`#/settings/${entry.id}`} aria-current={section === entry.id && !query.trim() ? "page" : undefined} onClick={() => setQuery("")}><Icon name={entry.icon} />{entry.label}</a>)}</div>)}
         </nav>
         <p class="settings-nav-note">A little more you.<br />A little less setup.</p>
       </aside>
@@ -71,6 +72,7 @@ export function SettingsView({ section = "general", group, connection }: { secti
             {section === "integrations" ? <IntegrationsScreen /> : null}
             {section === "projects" ? <ProjectSettings /> : null}
             {section === "extensions" ? <ExtensionsPanel /> : null}
+            {section === "automations" ? <AutomationManagement /> : null}
             {section === "data" ? <WorkbenchRetentionPanel /> : null}
             {section === "advanced" ? <AdvancedSettings /> : null}
           </div>

@@ -685,7 +685,7 @@ test("side panel: follows the run you open, side chats in its worktree, its chan
 
   // A side chat asks in the run's worktree; nothing is committed and the run's thread stays the team's.
   await side.getByRole("tab", { name: "Chat" }).click();
-  await side.getByText("Chat about this run").waitFor();
+  await side.getByLabel("Message", { exact: true }).waitFor();
   await side.getByLabel("Message").fill("E2E: what did this run change?");
   await side.getByLabel("Message").press("Enter");
   await side.locator("#side-pane-chat .fu-answer.done").first().waitFor({ timeout: 30_000 });

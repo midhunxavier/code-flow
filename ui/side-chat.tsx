@@ -283,22 +283,7 @@ function SideChatView({ run: summary, chat }: { run: RunSummary; chat: string })
 
 /** Where a side chat about a run starts. */
 function NewSideChat({ run }: { run: RunSummary }) {
-  const wt = resultWorktree(run)!;
-  return (
-    <>
-      <div class="chat-scroll">
-        <div class="side-empty">
-          <h3>{run.pattern === "solo" ? "Side chat" : "Chat about this run"}</h3>
-          <p class="help">
-            {run.pattern === "solo" ? <>Ask about this conversation and its files in an independent, read-only session. The main agent can keep working while you talk here.</> : <>The agent works in this run's worktree (<code>{wt.branch}</code>), in a conversation of its own. <b>Ask</b> reads it and changes nothing; <b>Change</b> edits it, and code-flow commits the change on
-            the run's branch and runs the check.
-            {run.status === "running" ? " While the team is working, your message waits for it to finish." : ""}</>}
-          </p>
-        </div>
-      </div>
-      <SideComposer run={run} />
-    </>
-  );
+  return <><div class="chat-scroll" /><SideComposer run={run} /></>;
 }
 
 /** A side chat's message box: Ask or Change, the agent, and send. Without a chat, sending starts one. */

@@ -103,6 +103,7 @@ test("human review is commit-scoped and a rejected rework record retains the use
   assert.equal(await panel.getByLabel("What changed", { exact: true }).inputValue(), "This draft must survive a changed branch");
   const moved = await api(endpoint); assert.equal(moved.stale, true); assert.equal(moved.coverage.reviewed, 0); assert.equal(moved.rework.length, 1);
   await page.reload(); await panel.locator(":scope > summary").click();
+  await panel.getByText(/Review details/).click();
   await panel.getByText(/previous review refers to older code/).waitFor();
   assert.equal(await panel.getByLabel(`Mark ${coverage.files[0]} reviewed`, { exact: true }).isChecked(), false);
 });
