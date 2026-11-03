@@ -440,13 +440,21 @@ test("native adapter transports execute a generated mixed-provider process witho
 
 test("durable replay resumes failed review without redispatching completed work or resetting lifetime calls", async () => {
   const f = await setup(); let drafts = 0, failed = false, calls = 0;
+  let run: Run | undefined;
   stub(async opts => {
     calls++;
     if (!opts.jsonSchema) { drafts++; return { ok: true, finalText: "Durable plan" }; }
-    if (opts.prompt.includes("PEER:") && !failed) { failed = true; return { ok: false, finalText: "", error: "Sign in required", errorKind: "auth" }; }
+    if (opts.prompt.includes("PEER:") && !failed) {
+      // A parallel failure cancels unfinished siblings. Exercise replay of a
+      // durably completed review, not whichever sibling wins an I/O race.
+      const authorSaved = () => Object.values(run?.cliTeam?.artifacts ?? {}).some(a => a.kind === "review" && a.participant === "author");
+      for (let i = 0; i < 1000 && !authorSaved(); i++) await pause();
+      assert.ok(authorSaved(), "author review must be durable before the peer fails");
+      failed = true; return { ok: false, finalText: "", error: "Sign in required", errorKind: "auth" };
+    }
     return { ok: true, finalText: JSON.stringify({ body: "Approved", verdict: "approve", findings: [] }) };
   });
-  const run = await start(f); await finished(run); assert.equal(run.status, "failed", run.error);
+  run = await start(f); await finished(run); assert.equal(run.status, "failed", run.error);
   const firstCalls = calls; await f.call("control_run", { runId: run.id, action: "resume" }); await finished(run);
   assert.equal(run.status, "done", run.error); assert.equal(drafts, 1); assert.equal(calls, firstCalls + 1);
   assert.equal(run.cliTeam!.managedInvocations, calls);
