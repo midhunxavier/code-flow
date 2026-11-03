@@ -59,6 +59,15 @@ const setPage = (key: string, fn: (p: PageState) => PageState) => (pages.value =
 /** How to reach each page's overlay (set while its frame is shown). */
 const overlays = new Map<string, (msg: Record<string, unknown>) => void>();
 
+/** Cancel the annotation tool without sending a key against a stale canvas frame. */
+export function cancelBrowserAnnotation(pageKey: string): boolean {
+  const mode = pageState(pageKey).mode;
+  if (!mode || mode === "off") return false;
+  setPage(pageKey, page => ({ ...page, mode: "off" }));
+  overlays.get(pageKey)?.({ type: "mode", mode: "off" });
+  return true;
+}
+
 /** An address as the browser should load it: with a scheme, and from the phone, on the computer's Wi-Fi address. */
 export function address(target: string): string {
   let next = target.trim();

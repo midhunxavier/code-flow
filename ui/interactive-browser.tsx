@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "preact/hooks";
 import { api, ApiError, apiPath, post, usePoll } from "./lib.js";
 import { Icon } from "./icons.js";
 import type { DevServer } from "./types.js";
-import { LiveBrowserTools, LiveBrowserTray, receiveBrowserOverlay } from "./browser.js";
+import { LiveBrowserTools, LiveBrowserTray, receiveBrowserOverlay, cancelBrowserAnnotation } from "./browser.js";
 import { Strip } from "./panel-bits.js";
 import { executionPaused, rememberSide, sideMemo, sideMemory, sideOpen, sideScope, sideTab, supersedePreviewBrowserPage } from "./state.js";
 import { PolicyPauseNotice } from "./policy-pause.js";
@@ -218,6 +218,9 @@ export function InteractiveBrowser() {
   };
   const key = (event:KeyboardEvent) => {
     if (event.isComposing || ["Shift","Control","Meta","Alt"].includes(event.key)) return;
+    if (event.key === "Escape" && selected && cancelBrowserAnnotation(`${scope}|${selected.id}`)) {
+      event.preventDefault(); event.stopPropagation(); keyboard.current?.blur(); return;
+    }
     if ((event.metaKey || event.ctrlKey) && ["l","r"].includes(event.key.toLowerCase())) {
       event.preventDefault(); if (event.key.toLowerCase() === "l") { addressInput.current?.focus(); addressInput.current?.select(); } else act("reload"); return;
     }

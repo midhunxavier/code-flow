@@ -17,7 +17,8 @@ jobs:
   test:
     name: test (${{ matrix.os }}, Node ${{ matrix.node }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 40
+    # The full macOS suite can exceed 40 minutes on shared hosted runners.
+    timeout-minutes: ${{ matrix.os == 'macos-latest' && 60 || 40 }}
     strategy:
       fail-fast: false
       matrix:
