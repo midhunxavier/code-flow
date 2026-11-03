@@ -118,7 +118,13 @@ test("legacy load warnings clear after schedule repair; mission guards return 40
   list.push({ id: "t-bad-schedule", name: "Repair schedule record", enabled: true, revision: 1, run: run(), schedule: { every: -1 }, webhook: false, isolate: false, token: "q".repeat(48), createdAt: Date.now() });
   list.push({ id: "t-legacy-explicit", name: "Legacy explicit record", enabled: true, revision: 1, run: { ...run(), project: "p-deleted-fixture", projectSelection: "explicit" }, webhook: true, isolate: false, token: "l".repeat(48), createdAt: Date.now() });
   list.push({ id: "t-managed", target: { kind: "project-team", teamId: "pt-" + "a".repeat(24) }, name: "Managed record", enabled: false, revision: 1, run: run(), schedule: { every: 60 }, webhook: false, isolate: false, token: "m".repeat(48), createdAt: Date.now() });
-  await writeFile(file, JSON.stringify(list)); await start(); await open(); await page.getByTitle("Filter projects", { exact: true }).click(); await page.getByRole("dialog", { name: "Projects", exact: true }).getByRole("button", { name: /^All projects/ }).click();
+  await writeFile(file, JSON.stringify(list)); await start(); await open();
+  const filter = page.getByTitle("Filter projects", { exact: true });
+  await filter.waitFor();
+  if (!(await filter.innerText()).includes("All projects")) {
+    await filter.click();
+    await page.getByRole("dialog", { name: "Projects", exact: true }).getByRole("button", { name: /^All projects/ }).click();
+  }
   const row = page.locator(".auto-row", { hasText: "Repair schedule record" }); await row.getByText(/Turned off: its schedule couldn't be read/).waitFor(); assert.doesNotMatch(await row.innerText(), /couldn.t start:.*Turned off/i);
   if (!await row.getByText("Schedule and next times", { exact: true }).isVisible()) await row.getByRole("button", { name: "Edit", exact: true }).click(); await row.getByText("Schedule and next times", { exact: true }).click(); await row.getByLabel("Schedule for Repair schedule record", { exact: true }).selectOption("every"); await row.getByLabel("Minutes", { exact: true }).fill("30"); await row.getByRole("button", { name: "Save schedule", exact: true }).click(); await until(() => record("t-bad-schedule"), v => !v.lastError && v.schedule?.every === 30, "schedule repair"); await row.getByRole("switch", { name: "Repair schedule record: on", exact: true }).check(); await until(() => record("t-bad-schedule"), v => v.enabled, "re-enable repaired record"); await page.reload(); await row.getByText(/Next:/).waitFor(); assert.doesNotMatch(await row.innerText(), /Turned off/); await shot("07-repaired-schedule");
   const legacy = await api("/api/automations/t-legacy-explicit/run", {}); const legacyRun = await until(() => api(`/api/runs/${legacy.id}`), v => v.status !== "running", "legacy explicit marker fallback"); assert.equal(legacyRun.project, project);
