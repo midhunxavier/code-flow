@@ -90,7 +90,7 @@ for (const [lead, worker] of (live ? [["claude", "codex"], ["codex", "agy"], ["a
     elapsedMs: plans.at(-1).endedAt - plan.startedAt, contextInput: plan.contextInput } : undefined;
   console.log(lead, "planning measurement", JSON.stringify(planning));
   evidence.push({ lead, worker, preset: run.taskTeam.preset, task: first.id, execution: child.id, teamStatus: child.status, planning, check: child.lastCheck, sameWorkspace: true, unchangedHead: true, draftPreserved: true, singleAgain: true });
-  const rail = page.getByRole("navigation", { name: "Runs", exact: true }); assert.equal(await rail.locator(".run-item").count(), evidence.length);
+  const rail = page.getByRole("navigation", { name: "Workspace navigation", exact: true }); assert.equal(await rail.locator(".run-item").count(), evidence.length);
 });
 
 

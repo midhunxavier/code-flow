@@ -188,7 +188,7 @@ function MainApp() {
               <div class="composer" role="alert">
                 <h1>This link is invalid</h1>
                 <p class="lede">The address contains an invalid or unsupported destination. Your saved work is available from the project and run lists.</p>
-                <button class="btn primary" onClick={() => (route.value = { view: "composer" })}>Open new run</button>
+                <button class="btn primary" onClick={() => (route.value = { view: "composer" })}>New chat</button>
               </div>
             ) : (
               !draftsReady.value || composerLoading.value || route.value.view === "composer" && route.value.project !== undefined && route.value.project !== composerProject.value ? <div class="composer" role="status">{draftError.value || "Restoring your project draft…"}</div> : route.value.view === "composer" && !route.value.legacy && route.value.project === undefined && !onPhone && ownerOnLocalListener.value && executionHost.value.kind === "local" ? <ChatPage id="new" /> : <Composer key={composerProject.value} />
@@ -222,7 +222,7 @@ function TopBar() {
   const dark = theme.value === "dark";
   return (
     <header class="topbar">
-      <button class="icon-btn menu-btn" aria-label="Show runs" aria-expanded={railOpen.value} onClick={() => (railOpen.value = !railOpen.value)}>
+      <button class="icon-btn menu-btn" aria-label="Show sidebar" aria-expanded={railOpen.value} onClick={() => (railOpen.value = !railOpen.value)}>
         <Icon name="menu" />
       </button>
       <HostControl />
@@ -291,7 +291,7 @@ function Crumbs() {
     );
   } else if (r.view === "project") {
     trail = (
-      <><a class="crumb" href={`#/project/${encodeURIComponent(r.id)}`} aria-current={!r.section ? "page" : undefined}>{projects.value.find((p) => p.id === r.id)?.name ?? "Project"}</a>{r.section ? <>{sep}<span class="crumb here" aria-current="page">{{ runs: "Runs", repositories: "Repositories", settings: "Project settings", board: "Board", people: "People", automation: "Automation", connections: "Connections", ml: "ML" }[r.section]}</span></> : null}</>
+      <><a class="crumb" href={`#/project/${encodeURIComponent(r.id)}`} aria-current={!r.section ? "page" : undefined}>{projects.value.find((p) => p.id === r.id)?.name ?? "Project"}</a>{r.section ? <>{sep}<span class="crumb here" aria-current="page">{{ runs: "History", repositories: "Repositories", settings: "Project settings", board: "Board", people: "People", automation: "Automation", connections: "Connections", ml: "ML" }[r.section]}</span></> : null}</>
     );
   } else if (r.view === "team" || r.view === "team-task" || r.view === "team-people") {
     // The board, or a task under it: its title comes from the open task, else from the board's card.
@@ -396,8 +396,8 @@ export function notifyFinished(run: RunSummary) {
 // ---------------------------------------------------------------- keyboard
 const SHORTCUTS: [string, string][] = [
   ["⌘, / Ctrl+,", "Settings"],
-  ["⌘K / Ctrl+K", "Commands, projects and runs"],
-  ["/", "Search runs"],
+  ["⌘K / Ctrl+K", "Commands, projects and chats"],
+  ["/", "Search chats and runs"],
   ["j / k", "Next / previous run in the list"],
   ["[ / ]", "Previous / next step or agent turn"],
   ["n", "New chat"],

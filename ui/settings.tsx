@@ -51,14 +51,13 @@ export function SettingsView({ section = "general", group, connection }: { secti
   const host = executionHost.value;
   const go = (section: SettingsSection) => { setQuery(""); route.value = section === "workspace" || section === "insights" ? { view: section } : { view: "settings", section }; };
   return <div class="settings-page">
-    <header class="settings-header"><div><div class="eyebrow">Your workspace, your way</div><h1>Settings</h1></div><span class="settings-scope"><Icon name={host.kind === "local" ? "panel" : "terminal"} />{host.kind === "ssh" ? host.name : host.kind === "host" ? "Remote server" : "This computer"}</span></header>
+    <header class="settings-header"><div><h1>Settings</h1></div><span class="settings-scope"><Icon name={host.kind === "local" ? "panel" : "terminal"} />{host.kind === "ssh" ? host.name : host.kind === "host" ? "Remote server" : "This computer"}</span></header>
     <div class="settings-layout">
       <aside class="settings-sidebar">
         <div class="settings-search"><Icon name="search" /><input class="field" type="search" aria-label="Search settings" placeholder="Search settings…" value={query} onInput={(e) => setQuery(e.currentTarget.value)} /></div>
         <nav ref={navigation} aria-label="Settings categories">
           {["Preferences", "Connections", "Management"].map((group) => <div key={group} class="settings-nav-group"><div class="settings-nav-label">{group}</div>{SETTINGS_SECTIONS.filter((entry) => entry.group === group && !["workspace", "insights"].includes(entry.id)).map((entry) => <a key={entry.id} class={`settings-nav-item ${section === entry.id && !query.trim() ? "active" : ""}`} href={`#/settings/${entry.id}`} aria-current={section === entry.id && !query.trim() ? "page" : undefined} onClick={() => setQuery("")}><Icon name={entry.icon} />{entry.label}</a>)}</div>)}
         </nav>
-        <p class="settings-nav-note">A little more you.<br />A little less setup.</p>
       </aside>
       <div class="settings-content">
         {query.trim() ? <section aria-label="Settings search results"><h2>Search settings</h2><p class="help" role="status">{matches.length} {matches.length === 1 ? "category" : "categories"} for “{query.trim()}”</p>{matches.length ? matches.map((entry) => <button key={entry.id} class="settings-result" onClick={() => go(entry.id)}><Icon name={entry.icon} /><span><strong>{entry.label}</strong><span>{entry.description}</span></span><span aria-hidden="true">→</span></button>) : <div class="settings-empty"><Icon name="search" /><h3>No matching settings</h3><p>Try “SSH”, “models”, “theme” or “permissions”.</p><button class="btn" onClick={() => setQuery("")}>Clear search</button></div>}</section> : <>
@@ -90,7 +89,6 @@ function SettingsRow({ title, description, children }: { title: string; descript
 function GeneralSettings() {
   return <>
     <DesktopUpdatesCard />
-    <MlSettingsCard />
     <SettingsCard title="Appearance">
       <p class="help">Choose a look. Your preference is saved in this browser and applies to every workspace.</p>
       <div class="theme-options" role="group" aria-label="Appearance">
@@ -102,7 +100,7 @@ function GeneralSettings() {
       <SettingsRow title="Show archived runs" description="Include archived work in your run list."><button class="settings-switch" role="switch" aria-label="Show archived runs" aria-checked={railView.value.archived} onClick={() => setRailView({ archived: !railView.value.archived })}><span /></button></SettingsRow>
       <SettingsRow title="Keyboard shortcuts" description="Move around your workspace without leaving the keyboard."><button class="btn small" onClick={() => { shortcutsOpen.value = true; }}>View shortcuts</button></SettingsRow>
     </SettingsCard>
-    <div class="settings-callout"><Icon name="terminal" /><div><strong>Take your workspace further</strong><p>Connect a VM and keep your projects and tools on your remote machine.</p><a href="#/settings/connections/workspace">Set up an SSH connection <span aria-hidden="true">→</span></a></div></div>
+    <MlSettingsCard />
   </>;
 }
 function AgentSettings() {
@@ -110,10 +108,7 @@ function AgentSettings() {
   const paused = executionPaused.value;
   return <>
     <PolicyPauseNotice what="Provider checks and agent runs are paused" />
-    <PromptImprovementSettings />
-    <AcpConnectionsPanel />
-    <details class="settings"><summary>Check this computer</summary><div class="settings-body"><DependencyDiscovery /></div></details>
-    <p class="help">Saved model choices apply to new runs in this workspace. A project’s remembered team, a template or a role override can choose other models for one draft without changing these. Sign in through each agent’s CLI on the machine where it runs.</p>
+    <p class="help">Connect providers on this computer and choose defaults for new work. Each task shows its resolved models before starting.</p>
     <div class="settings-actions"><button class="btn" disabled={busy || providersRefreshing.value} onClick={async () => { setBusy(true); try { await refreshProviders(); } finally { setBusy(false); } }}>{busy || providersRefreshing.value ? "Checking…" : "Refresh providers"}</button><button class="btn" onClick={() => { healthOpen.value = true; }}>Health & usage</button></div>
     {healthError.value && !paused ? <p class="msg err" role="alert">{healthError.value}</p> : null}
     {agents.value.map((agent) => {
@@ -124,6 +119,9 @@ function AgentSettings() {
       const checked = !policyPaused && status?.installed ? status : undefined;
       return <SettingsCard key={agent.id} title={agent.displayName}><div class="settings-provider-status"><span class={`badge ${status?.installed && status.signedIn !== false ? "ok" : ""}`}>{policyPaused ? POLICY_PAUSED : status ? !status.installed ? "Not installed" : status.signedIn === false ? "Signed out" : status.signedIn ? "Signed in" : "Installed · login unknown" : healthError.value ? "Health unavailable" : "Checking health…"}</span>{checked && unrestrictedOnly(checked) ? <span class="badge warn">Unrestricted only</span> : null}<span class="help">{status?.version}</span></div>{agent.available ? <ModelRow agent={agent} used /> : policyPaused ? <p class="help">Models can be configured again once no project restricts file access.</p> : <p class="help">Install this CLI on the current machine to configure its models.</p>}{checked?.warnings?.map((warning) => <p class="msg warn" key={warning}>{warning}</p>)}{status?.fix ? <p class="msg warn">{status.fix}</p> : null}</SettingsCard>;
     })}
+    <PromptImprovementSettings />
+    <AcpConnectionsPanel />
+    <details class="settings"><summary>Check this computer</summary><div class="settings-body"><DependencyDiscovery /></div></details>
   </>;
 }
 function NumberSetting({ label, value, min = 1, max, step = 1, optional = false, save }: { label: string; value?: number; min?: number; max?: number; step?: number; optional?: boolean; save: (value: number | undefined) => void }) {

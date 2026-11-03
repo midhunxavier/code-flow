@@ -55,7 +55,7 @@ export function ProjectsPage() {
         <div class="projects-card-top"><span class="projects-mark"><Icon name="project" /></span><span>{plural(project.repos.length, "repository", "repositories")}</span></div>
         <h2><a href={`#/project/${encodeURIComponent(project.id)}`}>{project.name}</a></h2>
         {project.repos.length ? <ul class="projects-card-repos">{project.repos.slice(0, 2).map(path => <li key={path} title={path}><Icon name="folder" /><span>{baseName(path)}</span></li>)}{project.repos.length > 2 ? <li class="projects-repos-more">+{plural(project.repos.length - 2, "more repository", "more repositories")}</li> : null}</ul> : <p class="projects-card-empty">Add a repository to start a task.</p>}
-        <div class="projects-card-actions"><button class="btn primary" disabled={composerLoading.value} onClick={() => openChat(project.id)}>New chat<span aria-hidden="true">→</span></button><a class="btn ghost" href={`#/project/${encodeURIComponent(project.id)}/runs`}>View results</a></div>
+        <div class="projects-card-actions"><button class="btn primary" disabled={composerLoading.value} onClick={() => openChat(project.id)}><Icon name="compose" />New chat</button><a class="btn ghost" href={`#/project/${encodeURIComponent(project.id)}/runs`}>View results</a></div>
       </article>)}</div>
     </> : <section class="projects-welcome" aria-labelledby="projects-welcome-title">
       <div class="projects-welcome-body">

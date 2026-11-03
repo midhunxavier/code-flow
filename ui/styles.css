@@ -1,11 +1,10 @@
-  /* Inter (400/500/600), latin subset; build-ui.mjs inlines these files (ui/fonts). Georgia and the
-     system monospace need no files. */
+  /* Inter (400/500/600), latin subset; build-ui.mjs inlines these files (ui/fonts). The system monospace needs no files. */
   @font-face { font-family: "Inter"; font-style: normal; font-weight: 400; font-display: swap; src: url("fonts/inter-latin-400.woff") format("woff"); }
   @font-face { font-family: "Inter"; font-style: normal; font-weight: 500; font-display: swap; src: url("fonts/inter-latin-500.woff") format("woff"); }
   @font-face { font-family: "Inter"; font-style: normal; font-weight: 600; font-display: swap; src: url("fonts/inter-latin-600.woff") format("woff"); }
 
   /* The paper theme (OntoLab's, after Helix Foundry): warm paper surfaces, olive ink for primary
-     actions, fine borders, a restrained mint accent; Georgia page headings, Inter for everything else.
+     actions, fine borders, a restrained mint accent; Inter typography throughout.
      Light by default; dark follows the system unless the theme button picked one ([data-theme]). */
   /* Task conversations keep reading, replying and task administration in separate surfaces. */
   .task-conversation { height: 100%; min-height: 0; width: 100%; display: flex; flex-direction: column; color: var(--text); }
@@ -274,7 +273,7 @@
     --backdrop: rgba(41, 42, 38, .28);
     --radius: 12px; --radius-sm: 8px; --radius-xs: 6px; --radius-xl: 16px;
     --sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    --display: Georgia, "Times New Roman", serif;
+    --display: var(--sans);
     --mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace;
     --ease: cubic-bezier(.2, .8, .2, 1);
     color-scheme: light;
@@ -535,7 +534,7 @@
   main { flex: 1; min-height: 0; overflow-y: auto; min-width: 0; }
 
   /* ---------- composer ---------- */
-  /* One centred 820px column (900 less the page's 40px sides); a Georgia page head like OntoLab's. */
+  /* One centred 820px column (900 less the page's 40px sides); a restrained page heading. */
   .composer { container: composer / inline-size; max-width: 900px; margin: 0 auto; padding: 16px 40px 64px; }
   .eyebrow { display: flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 500; color: var(--muted); margin: 0 0 8px; }
   .eyebrow::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
@@ -1403,7 +1402,7 @@
   .field.inline.num { width: 60px; }
 
   /* ---------- automations ---------- */
-  /* An OntoLab page: a Georgia heading over a muted description, the project switch on the right,
+  /* A project page: a clear heading over a muted description, the project switch on the right,
      then each section as one card whose items are rows divided by hairlines. */
   /* the 1200px column Insights and a project's page use, so the heading stays put between them;
      the cards keep a readable 800px, from the left */
@@ -4359,7 +4358,7 @@ dialog.rail::backdrop { background: rgb(0 0 0 / .28); }
 .unified-chat .chat-send { width: 34px; height: 34px; min-height: 34px; padding: 0; margin-left: 2px; border-radius: 50%; flex: none; }
 .unified-chat .chat-send > .icon { width: 19px; height: 19px; }
 .unified-chat .chat-composer-note { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 16px; margin: 10px 8px 0; color: var(--faint); font-size: 10px; line-height: 1.5; }
-.unified-chat .chat-composer-note > span:only-child, .unified-chat .chat-composer-note > span:last-child { margin-left: auto; }
+.unified-chat .chat-composer-note > span { margin-right: auto; }
 .unified-chat .chat-project-context { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-start; gap: 8px; margin: 0 0 12px; }
 .unified-chat .chat-project-context label { display: flex; align-items: center; gap: 5px; min-width: 0; max-width: 46%; color: var(--muted); }
 .unified-chat .chat-project-context label > .icon { width: 14px; height: 14px; flex: none; }
@@ -4387,7 +4386,6 @@ dialog.rail::backdrop { background: rgb(0 0 0 / .28); }
   .unified-chat .chat-permissions > .icon-btn { width: 34px; padding: 8px; overflow: hidden; }
   .unified-chat .chat-permissions > .icon-btn > span { position: absolute; clip-path: inset(50%); width: 1px; height: 1px; overflow: hidden; }
   .unified-chat .chat-permissions > .icon-btn > .icon:last-child { display: none; }
-  .unified-chat .chat-composer-note > span:last-child { display: none; }
   .unified-chat .task-new-intro { margin-bottom: 22px; }
 }
 @media (pointer: coarse) {
@@ -4437,8 +4435,8 @@ dialog.rail::backdrop { background: rgb(0 0 0 / .28); }
 .chat-output-diff summary span { float: right; margin-left: 12px; font-size: 11px; color: var(--muted); }
 .chat-output-diff pre { overflow: auto; margin: 0; padding: 12px; font-size: 11px; line-height: 1.65; }
 .chat-settings-anchor { min-width: 0; }
-.chat-settings-popover { position: fixed; z-index: 120; padding: 16px; border: 1px solid var(--border); border-radius: 14px; background: var(--raised); box-shadow: 0 12px 40px #0002; }
-.chat-settings-heading { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+.chat-settings-popover { position: fixed; z-index: 120; padding: 12px; border: 1px solid var(--border); border-radius: 12px; background: var(--raised); box-shadow: 0 8px 28px #0002; }
+.chat-settings-heading { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
 .chat-settings-popover .chat-controls { display: flex; flex-wrap: wrap; gap: 8px; }
 .chat-settings-popover .help { margin: 12px 0 0; }
 .chat-history-more { align-self: center; }
@@ -4478,7 +4476,6 @@ dialog.rail::backdrop { background: rgb(0 0 0 / .28); }
 .unified-chat.chat-is-compact .chat-permissions > .icon-btn { width: 34px; padding: 8px; overflow: hidden; }
 .unified-chat.chat-is-compact .chat-permissions > .icon-btn > span { position: absolute; clip-path: inset(50%); width: 1px; height: 1px; overflow: hidden; }
 .unified-chat.chat-is-compact .chat-permissions > .icon-btn > .icon:last-child { display: none; }
-.unified-chat.chat-is-compact .chat-composer-note > span:last-child { display: none; }
 
 /* A single task-first entry into scheduled work. */
 .automation-home { max-width: 1000px; margin: 0 auto; padding: 24px clamp(16px, 3vw, 40px); }
@@ -4593,3 +4590,62 @@ dialog.rail::backdrop { background: rgb(0 0 0 / .28); }
 .review-metadata { padding-bottom: 8px; }
 .collaboration-comments > .help { margin-top: 4px; }
 .collaboration-comments form { padding: 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); }
+
+/* Shared hierarchy for chat, projects and operational screens. */
+.page-head h1, .settings-header h1 { font-weight: 600; font-size: 26px; line-height: 1.3; letter-spacing: -.65px; }
+.settings-section-heading h2, .settings-content > section > h2 { font-weight: 500; }
+.project-page, .activity-page { max-width: 1200px; padding: 24px 32px 48px; }
+.settings-page { padding-top: 24px; }
+.settings-header { padding-bottom: 20px; }
+.settings-card, .pp-card, .auto-card, .projects-card { box-shadow: none; }
+.project-tabs { gap: 4px; padding: 0; margin-block: 12px 24px; }
+.project-tabs .btn { min-height: 42px; padding: 10px 13px; border: 0; border-radius: 6px 6px 0 0; background: transparent; color: var(--muted); box-shadow: none; }
+.project-tabs .btn:hover { background: var(--hover); color: var(--text); }
+.project-tabs a[aria-current="page"] { color: var(--text); font-weight: 600; box-shadow: inset 0 -2px var(--text); }
+.project-settings-card, .project-advanced { padding: 20px 24px; }
+.project-settings-card h2, .project-chat-history h2 { margin: 0 0 14px; font-size: 18px; font-weight: 500; }
+.project-advanced > summary { cursor: pointer; color: var(--text-2); font-size: 13px; }
+.project-advanced[open] > summary { margin-bottom: 20px; }
+.project-chat-history { padding-top: 20px; }
+.project-chat-history > h2, .project-chat-history > .project-history-controls, .project-chat-history > p { margin-inline: 20px; }
+.project-chat-history > .project-history-controls { margin-block: 12px 20px; }
+.project-chat-history > p { padding-bottom: 12px; }
+.project-chat-history .pp-row > span:not(.t):not(.m) { color: var(--muted); font-size: 12px; }
+.inbox-tools { margin: 0 20px 16px; }
+.inbox-tools > summary { display: flex; align-items: center; gap: 8px; cursor: pointer; list-style: none; font-size: 13px; color: var(--muted); padding-block: 12px; }
+.inbox-tools > summary::-webkit-details-marker { display: none; }
+.inbox-tools > summary .icon { width: 15px; height: 15px; }
+.inbox-tools .inbox-filters { margin: 0 0 12px; }
+.inbox-tools .inbox-filters > label { flex: 1 1 160px; min-width: 0; }
+.inbox-tools .inbox-filters > label:has(input) { flex: 2 1 200px; }
+.inbox-empty { padding: 24px 24px 40px; text-align: center; }
+.inbox-empty > .icon { width: 32px; height: 32px; padding: 7px; border-radius: 50%; background: var(--accent-soft); color: var(--accent-ink); }
+.inbox-empty h3 { font-size: 18px; font-weight: 500; margin: 14px 0 8px; }
+.inbox-empty p { color: var(--muted); font-size: 13px; margin: 0; line-height: 1.6; }
+.chat-composer-note:has(> span:only-child:empty) { display: none; }
+@media (max-width: 760px) {
+  .project-page, .activity-page { padding: 18px 16px 32px; }
+  .page-head h1, .settings-header h1 { font-size: 24px; }
+  .project-settings-card, .project-advanced { padding: 18px; }
+  .project-chat-history .pp-row { flex-wrap: wrap; gap: 4px 10px; }
+  .project-chat-history .pp-row > .t { flex-basis: 100%; }
+  .project-history-controls label:first-child { min-width: 0; }
+  .inbox-tools { margin-inline: 16px; }
+}
+.stopped-result { display: grid; gap: 20px; font-size: 14px; line-height: 1.65; }
+.stopped-result h3 { margin: 0 0 10px; font: 500 15px/1.45 var(--sans); }
+.stopped-result-status { display: flex; align-items: flex-start; gap: 12px; padding: 16px; border-radius: 12px; background: var(--warn-soft); }
+.stopped-result-status > .icon { color: var(--warn); flex: none; width: 18px; margin-top: 2px; }
+.stopped-result-status p { margin: 0; color: var(--text-2); font-size: 13px; }
+.stopped-result-status h3 { margin-bottom: 6px; }
+.result-review { border: 1px solid var(--border); padding: 16px; border-radius: 12px; }
+.result-review > header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 12px; }
+.result-review > header h3 { margin: 0; }
+.stopped-result :is(.result-review, .preserved-result) .md > :first-child { margin-top: 0; }
+.stopped-result dl { display: grid; grid-template-columns: 90px minmax(0, 1fr); gap: 10px 12px; margin: 0; font-size: 12px; }
+.stopped-result dt { color: var(--muted); }
+.stopped-result dd { margin: 0; overflow-wrap: anywhere; }
+.result-technical { border-top: 1px solid var(--border); padding-top: 12px; color: var(--muted); font-size: 12px; }
+.result-technical summary { cursor: pointer; padding-block: 6px; }
+.result-technical dl { margin-block: 12px; }
+.result-technical pre { white-space: pre-wrap; overflow-wrap: anywhere; }

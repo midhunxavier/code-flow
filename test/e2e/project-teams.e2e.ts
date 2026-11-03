@@ -202,7 +202,7 @@ test("owner creates a standing team, previews, runs, reviews and approves with o
   await tab.goto(`${base}/#/run/${resultId}`);
   await tab.getByRole("main").getByText(/Project mission implementation/).waitFor();
   assert.equal(await tab.getByRole("main").getByRole("button", { name: "Delete…", exact: true }).count(), 0);
-  const rail = tab.getByRole("navigation", { name: "Runs", exact: true });
+  const rail = tab.getByRole("navigation", { name: "Workspace navigation", exact: true });
   await rail.getByRole("button", { name: "Select runs", exact: true }).click();
   await rail.getByRole("button", { name: "Select loaded", exact: true }).click();
   assert.equal(await rail.getByRole("button", { name: "Delete…", exact: true }).isEnabled(), true, "the server checks each selected mission run at deletion time");

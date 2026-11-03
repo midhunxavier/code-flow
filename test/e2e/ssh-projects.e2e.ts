@@ -128,7 +128,7 @@ test("connect from the app, browse a remote folder, run there, reconnect and ret
     await page.getByRole("heading", { name: "Remote web app", exact: true }).waitFor();
     assert.equal(page.url(), remoteProjectUrl);
     await page.setViewportSize({ width: 390, height: 844 });
-    await page.getByRole("button", { name: "Show runs", exact: true }).click();
+    await page.getByRole("button", { name: "Show sidebar", exact: true }).click();
     await localGroup.getByRole("link", { name: "Remote web app", exact: true }).waitFor();
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
     await page.screenshot({ path: "output/playwright/connected-projects-mobile.png", animations: "disabled" });

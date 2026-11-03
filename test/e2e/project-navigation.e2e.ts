@@ -211,7 +211,7 @@ test("project pages fit narrow screens, expose accessible navigation and have no
   const audit = await page.evaluate(async () => (window as any).axe.run(".project-page", { runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21a"] } }));
   assert.deepEqual(audit.violations.map((violation: any) => violation.id), []);
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.getByRole("navigation", { name: "Runs", exact: true }).waitFor({ state: "hidden" });
+  await page.getByRole("navigation", { name: "Workspace navigation", exact: true }).waitFor({ state: "hidden" });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
   assert.equal(await page.locator(".project-page").evaluate(element => element.getBoundingClientRect().right <= innerWidth), true, "project page fits the viewport");
   assert.equal(await page.locator(".project-start").evaluate(element => element.scrollWidth <= element.clientWidth), true, "task entry content is not clipped");

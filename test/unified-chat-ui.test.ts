@@ -227,6 +227,8 @@ test("message settings are anchored, keyboard accessible and distinguish lead fr
     const trigger = p.getByRole("button", { name: "Message settings", exact: true }); await trigger.click();
     const picker = p.getByRole("dialog", { name: "Message settings", exact: true }); await picker.waitFor();
     await picker.getByText("Team lead", { exact: true }).waitFor();
+    assert.doesNotMatch(await picker.innerText(), /Changes apply to new messages|The lead prepares approaches/);
+    assert.ok((await picker.boundingBox())!.height < 200);
     assert.equal(await p.getByRole("dialog", { name: "Task details", exact: true }).isVisible(), false);
     await picker.getByRole("button", { name: /Default effort/ }).click(); await p.getByRole("menuitem", { name: "high", exact: true }).click();
     assert.match(await trigger.innerText(), /high/i); await p.keyboard.press("Escape"); assert.equal(await trigger.evaluate(el => el === document.activeElement), true);
@@ -266,7 +268,7 @@ test("chat menus rename, pin, archive and restore; search finds message contents
     await p.getByRole("heading", { name: "Architecture notes", exact: true }).waitFor();
     await row().hover(); await options().click(); await p.getByRole("menuitem", { name: "Pin", exact: true }).click();
     await until(() => api(`/api/chats/${sent.id}`), s => s.chat.pinned, "chat pinned");
-    const search = p.getByRole("searchbox", { name: "Search runs (press / to focus)" }); await search.fill("Searchable architecture");
+    const search = p.getByRole("searchbox", { name: "Search chats and runs (press / to focus)" }); await search.fill("Searchable architecture");
     await row().getByText(/Searchable architecture discussion/).waitFor(); await row().getByRole("button", { name: /Architecture notes/ }).first().click();
     await p.getByText("Viewing earlier messages", { exact: false }).waitFor(); await search.fill("");
     await row().hover(); await options().click(); await p.getByRole("menuitem", { name: "Archive chat", exact: true }).click();
@@ -293,7 +295,7 @@ test("long history loads in bounded pages, preserves the visible message and sea
     assert.ok(Math.abs((await anchor.boundingBox())!.y - before) < 5, "prepending history preserves the visible message");
     assert.ok(await p.locator(".chat-event").count() <= 150);
     await p.getByRole("button", { name: "Back to latest", exact: true }).click(); await p.getByText("Historical message 2100", { exact: true }).waitFor();
-    await p.getByRole("searchbox", { name: "Search runs (press / to focus)" }).fill("Archived needle");
+    await p.getByRole("searchbox", { name: "Search chats and runs (press / to focus)" }).fill("Archived needle");
     await p.locator(`button[data-chat="${created.id}"]`).click(); await p.getByText("Archived needle: accessible keyboard focus", { exact: true }).waitFor();
     assert.ok(await p.locator(".chat-event").count() <= 150);
   } finally { await context.close(); }
@@ -427,6 +429,9 @@ test("chat composer previews and undoes prompt rewrites without submitting work;
     });
     try {
         const message=p.getByRole("textbox",{name:"Message",exact:true});
+        const improve=p.getByRole("button",{name:"Improve prompt",exact:true});
+        assert.equal(await improve.isVisible(),true); assert.equal(await improve.isDisabled(),true);
+        assert.equal(await p.getByText("Enter to send · Shift + Enter for a new line",{exact:true}).count(),0);
         const row=p.getByLabel("Chat project and repository",{exact:true});
         assert.ok((await row.boundingBox())!.y < (await message.boundingBox())!.y);
         assert.equal(await p.getByRole("button",{name:/^SSH connections:/}).count(),1);

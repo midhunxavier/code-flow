@@ -11,7 +11,7 @@ export function MessageSettings({ summary, title, children }: { summary: Compone
     if (!open) return;
     const position = () => {
       const anchor = trigger.current?.getBoundingClientRect(); if (!anchor || !panel.current) return;
-      const width = Math.min(360, window.innerWidth - 24);
+      const width = Math.min(320, window.innerWidth - 24);
       Object.assign(panel.current.style, { width: `${width}px`, left: `${Math.max(12, Math.min(anchor.right - width, window.innerWidth - width - 12))}px`, bottom: `${window.innerHeight - anchor.top + 8}px`, maxHeight: `${Math.max(120, anchor.top - 20)}px` });
     };
     position(); panel.current?.querySelector<HTMLButtonElement>("button")?.focus();
@@ -23,6 +23,6 @@ export function MessageSettings({ summary, title, children }: { summary: Compone
   }, [open]);
   return <div class="chat-settings-anchor" ref={root} onKeyDown={e => { if (open && e.key === "Escape") { e.preventDefault(); e.stopPropagation(); close(); } }}>
     <button ref={trigger} type="button" class="btn ghost small chat-model-summary" aria-label="Message settings" aria-haspopup="dialog" aria-expanded={open} title={title} onClick={() => setOpen(!open)}>{summary}<Icon name="chevron"/></button>
-    {open ? <div class="chat-settings-popover" ref={panel} role="dialog" aria-label="Message settings"><div class="chat-settings-heading"><b>{title}</b><button type="button" class="icon-btn" aria-label="Close message settings" onClick={() => close()}><Icon name="close"/></button></div>{children}<p class="help">Changes apply to new messages. Accepted tasks keep their reviewed settings.</p></div> : null}
+    {open ? <div class="chat-settings-popover" ref={panel} role="dialog" aria-label="Message settings"><div class="chat-settings-heading"><b>{title}</b><button type="button" class="icon-btn" aria-label="Close message settings" onClick={() => close()}><Icon name="close"/></button></div>{children}</div> : null}
   </div>;
 }

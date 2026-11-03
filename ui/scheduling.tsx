@@ -84,7 +84,6 @@ export function SchedulingView({ kind, projectId }: { kind?: string; projectId?:
           {icon:"layers", title:"Issue queue", detail:"Work through issues one at a time", prompt:"Work through open issues one at a time"},
         ] as const).map(example => <button key={example.title} type="button" class="automation-example" disabled={busy} onClick={() => { setMessage(example.prompt); input.current?.focus(); }}><Icon name={example.icon}/><span><strong>{example.title}</strong><span>{example.detail}</span></span><Icon name="chevron"/></button>)}
       </div>
-      <p class="help automation-setup-hint">Review the approach in chat, then test and enable it.</p>
       {project && !project.repos.length ? <p class="help">Add a repository in <a href={hashFor({view:"project", id:project.id, section:"repositories"})}>Repositories</a> to start an automation.</p> : null}
       {error ? <p class="msg err" role="alert">{error}</p> : null}
       <AutomationHostStatus/>

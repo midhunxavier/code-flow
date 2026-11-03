@@ -1,3 +1,4 @@
+import { StoppedResult } from "./stopped-result.js";
 import { editableCandidate as editable } from "../src/cli-teams/editable.js";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { api, post, enc, baseName, store, workspaceKey, onPhone } from "./lib.js";
@@ -371,7 +372,7 @@ export function TaskResult({ taskId, execution, preferredId, label = "Task resul
     } })(); return () => controller.abort(); }, [taskId, execution.id, artifact?.id, artifact?.sha256]);
     if (!artifact)
         return null;
-    return <section class="task-result" aria-label={label}>{error ? <p role="alert">{error}</p> : body ? <Markdown text={body}/> : <p role="status">Loading the complete artifact…</p>}<details class="task-result-options"><summary><Icon name="files" />Result and evidence <span>{artifacts.length}</span></summary><label>Show artifact<select class="field" value={artifact.id} onChange={e => setSelected(e.currentTarget.value)}>{artifacts.map(a => <option key={a.id} value={a.id}>{a.kind.replaceAll("_", " ")} · {a.id.slice(-8)}</option>)}</select></label><p class="help">Agreement records reviewer verdicts on a specific version. Passing checks apply to their recorded code snapshot.</p></details></section>;
+    return <section class="task-result" aria-label={label}>{error ? <p role="alert">{error}</p> : body ? artifact.kind === "result" ? <StoppedResult body={body}/> : <Markdown text={body}/> : <p role="status">Loading the complete artifact…</p>}<details class="task-result-options"><summary><Icon name="files" />Result and evidence <span>{artifacts.length}</span></summary><label>Show artifact<select class="field" value={artifact.id} onChange={e => setSelected(e.currentTarget.value)}>{artifacts.map(a => <option key={a.id} value={a.id}>{a.kind.replaceAll("_", " ")} · {a.id.slice(-8)}</option>)}</select></label><p class="help">Agreement records reviewer verdicts on a specific version. Passing checks apply to their recorded code snapshot.</p></details></section>;
 }
 function HistoricalApproach({ taskId, proposalId, revision, scope }: {
     taskId: string;

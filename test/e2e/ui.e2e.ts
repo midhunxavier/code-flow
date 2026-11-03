@@ -439,7 +439,7 @@ test("phone: with full control, the phone link signs a phone in to the whole app
   await tab.goto(`${PHONE}${phonePath}`);
   await tab.getByRole("textbox", { name: "Task", exact: true }).waitFor();
   assert.equal(new URL(tab.url()).pathname, "/");
-  await tab.getByRole("button", { name: "Show runs" }).click();
+  await tab.getByRole("button", { name: "Show sidebar" }).click();
   await tab.locator(".rail.open").waitFor();
 
   // A QR scanner hands the link over from another app, which the browser counts as cross-site:
@@ -1421,7 +1421,7 @@ test("sidebar archives, hides and deletes runs with confirmation across tabs", a
   try {
     await fresh.goto(`${BASE}/?token=${TOKEN}#/run/${created.id}`);
     await other.goto(`${BASE}/?token=${TOKEN}#/run/${created.id}`);
-    const rail = fresh.getByRole("navigation", { name: "Runs", exact: true });
+    const rail = fresh.getByRole("navigation", { name: "Workspace navigation", exact: true });
     const row = rail.locator(".rail-run-row").filter({ has: fresh.locator(".run-item", { hasText: task }) }).first();
     await row.hover();
     await row.getByRole("button", { name: "Run actions", exact: true }).click();
@@ -1477,7 +1477,7 @@ test("bulk run selection archives and deletes with partial failure recovery", as
   const fresh = await browser.newPage({ viewport: { width: 1267, height: 1042 } });
   try {
     await fresh.goto(`${BASE}/?token=${TOKEN}#/workflows`);
-    const rail = fresh.getByRole("navigation", { name: "Runs", exact: true });
+    const rail = fresh.getByRole("navigation", { name: "Workspace navigation", exact: true });
     await rail.getByRole("searchbox").fill("Bulk history fixture");
     await rail.locator(".rail-run-row").filter({ hasText: "Bulk history fixture two" }).waitFor();
     await rail.getByRole("button", { name: "Select runs", exact: true }).click();

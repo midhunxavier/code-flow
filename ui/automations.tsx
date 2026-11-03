@@ -164,7 +164,6 @@ export function AutomationsView({ mode = "all", category, projectId, showScope =
       {mode !== "automations" ? <ProjectTeamsInbox projectId={currentProject.value !== ALL && currentProject.value !== NONE ? currentProject.value : undefined} /> : null}
       {showScope ? <div class="page-head">
         <div class="ph-text page-head-text">
-          <h3>Project scope</h3>
           <p class="lede">
             {mode === "inbox" ? "Questions, blocked work, failed checks and results waiting for your review." : "Schedule work and manage triggers. Results wait in your Inbox; nothing is merged automatically."}
           </p>
@@ -178,11 +177,10 @@ export function AutomationsView({ mode = "all", category, projectId, showScope =
           Review inbox {pendingTotal ? <span class="count">{pendingTotal}</span> : null}
         </h2>
         <Elsewhere count={allPendingTotal - pendingTotal} what={(n) => `${n} in other projects need${n === 1 ? "s" : ""} you`} />
-        <p class="help inbox-note">Higher run priorities come first, then questions, blocked work, failures and results. Older items come first within each priority. Open a run to answer approvals, resume work or review its evidence.</p>
         {!projectCounts.value ? <p class="help" role="status">Counts currently show loaded review items.</p> : null}
         {pendingTotal > pending.length ? <p class="help" role="status">Showing {pending.length} of {pendingTotal} review items in this scope. Older items are still in history.{filterActive.value ? <> <button class="btn small" onClick={() => setRunFilter({ q: "", status: "all", pattern: "", agent: "", repo: "" })}>Clear sidebar filters to load older items</button></> : historyNextCursor.value ? <> <button class="btn small" disabled={historyLoadingMore.value} onClick={() => void loadOlderRuns()}>{historyLoadingMore.value ? "Loading…" : "Load older review items"}</button></> : null}</p> : null}
-        <div class="wb-row inbox-filters"><label>Group by<select class="field" aria-label="Group review inbox" value={grouping} onChange={(event) => setGrouping(event.currentTarget.value)}><option value="project">Project</option><option value="repo">Repository</option><option value="reason">Attention needed</option><option value="none">No grouping</option></select></label><label>Show<select class="field" aria-label="Filter review inbox" value={filter} onChange={(event) => setFilter(event.currentTarget.value)}><option value="">All attention items</option>{Object.entries(REVIEW_REASON_LABELS).map(([id, label]) => <option value={id}>{label}</option>)}</select></label><label>Search<input class="field" aria-label="Search review inbox" value={query} onInput={(event) => setQuery(event.currentTarget.value)} placeholder="Task, repository or run ID" /></label></div>
-        {filtered.length ? groups.map((group) => <section key={group.id} class="inbox-group" aria-label={`Review group ${group.label}`}><h3>{group.label} <span class="count">{group.runs.length}</span></h3>{group.runs.map((r) => <InboxItem key={r.id} run={r} scoped={scoped} />)}</section>) : <p class="help empty">{pendingTotal ? "No loaded attention items match these filters." : `Nothing to review${here}. Runs that changed nothing are archived on their own.`}</p>}
+        <details class="inbox-tools"><summary><Icon name="sliders"/>Filters{query || filter ? <span class="count">Active</span> : null}</summary><div class="wb-row inbox-filters"><label>Group by<select class="field" aria-label="Group review inbox" value={grouping} onChange={(event) => setGrouping(event.currentTarget.value)}><option value="project">Project</option><option value="repo">Repository</option><option value="reason">Attention needed</option><option value="none">No grouping</option></select></label><label>Show<select class="field" aria-label="Filter review inbox" value={filter} onChange={(event) => setFilter(event.currentTarget.value)}><option value="">All attention items</option>{Object.entries(REVIEW_REASON_LABELS).map(([id, label]) => <option value={id}>{label}</option>)}</select></label><label>Search<input class="field" aria-label="Search review inbox" value={query} onInput={(event) => setQuery(event.currentTarget.value)} placeholder="Task, repository or run ID" /></label></div><p class="help">Sorted by priority, then oldest first.</p></details>
+        {filtered.length ? groups.map((group) => <section key={group.id} class="inbox-group" aria-label={`Review group ${group.label}`}><h3>{group.label} <span class="count">{group.runs.length}</span></h3>{group.runs.map((r) => <InboxItem key={r.id} run={r} scoped={scoped} />)}</section>) : <div class="inbox-empty"><Icon name={pendingTotal ? "search" : "check"}/><h3>{pendingTotal ? "No matching items" : "You’re all caught up"}</h3><p>{pendingTotal ? "Try a different search or filter." : `Nothing needs your attention${here}. Questions and results will appear here.`}</p></div>}
       </section> : null}
 
       {mode !== "inbox" ? <section class="section auto-card" aria-labelledby="automations-title">
@@ -201,7 +199,6 @@ export function AutomationsView({ mode = "all", category, projectId, showScope =
         )}
       </section> : null}
 
-      <p class="help">To access this computer from another device, open <a href="#/settings/connections/devices">Connections → Share access</a>.</p>
     </div>
   );
 }

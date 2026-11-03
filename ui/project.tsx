@@ -68,7 +68,7 @@ export function ProjectView({ id, section, repository, tool, kind }: { id: strin
         .map(([value, label]) => <a key={value ?? "overview"} class={`btn ${section === value ? "primary" : ""}`} href={destination(value)} aria-current={section === value ? "page" : undefined}>{label}</a>)}
     </nav>
     {!section ? <>
-      <section class="project-start pp-card" aria-label="Start work"><h2>{draftTask.trim() ? "Continue your draft" : "What would you like to work on?"}</h2><p>{p.repos.length ? "Describe the outcome, choose your agents, and review the result here." : "Add a repository to start a run in this project."}</p>
+      <section class="project-start pp-card" aria-label="Start work"><h2>{draftTask.trim() ? "Continue your draft" : "What would you like to work on?"}</h2><p>{p.repos.length ? "Describe the outcome, choose your agents, and review the result here." : "Add a repository to work with code in this project."}</p>
         {draftTask.trim() ? <p class="draft-preview">{draftTask.slice(0, 240)}</p> : null}
         <button class="btn primary" disabled={!draftsReady.value || composerLoading.value} onClick={() => p.repos.length ? draftTask.trim() ? void openComposer(id) : openChat(id) : addRepositoryToProject(id)}>{p.repos.length ? draftTask.trim() ? "Continue draft" : "Describe a task" : "Add repository"}</button>
       </section>
@@ -81,9 +81,9 @@ export function ProjectView({ id, section, repository, tool, kind }: { id: strin
       {selectedRepository ? <WorkbenchView key={`${id}:${selectedRepository}`} projectId={id} initialFolder={selectedRepository} initialTool={tool} onNavigate={(folder, nextTool) => { route.value = { view: "project", id, section: "repositories", repository: folder, tool: nextTool }; }} /> : p.repos.length ? <p class="help">Choose a repository to inspect its files, checks, services and history.</p> : null}
     </> : <>
       <section class="pp-card project-start"><h2>Project settings</h2><p>Manage the project's name and repository membership.</p><button class="btn" onClick={() => editProject(id)}>Edit project</button></section>
-      <section class="pp-card"><h2>Defaults</h2><p>Optional instructions, files, check commands, permissions and limits for future work. Each approach shows the settings it will use.</p><button class="btn" disabled={!p.repos.length} onClick={() => setContextOpen(true)}>Edit project defaults</button><p class="help">Provider connections and authentication live in <a href="#/settings/providers">App settings → Providers</a>.</p></section>
+      <section class="pp-card project-settings-card"><h2>Defaults</h2><p>Optional instructions, files, check commands, permissions and limits for future work. Each approach shows the settings it will use.</p><button class="btn" disabled={!p.repos.length} onClick={() => setContextOpen(true)}>Edit project defaults</button><p class="help">Provider connections and authentication live in <a href="#/settings/providers">App settings → Providers</a>.</p></section>
       <ProjectContextEditor project={id} repo={p.repos[0] ?? ""} open={contextOpen} onClose={() => setContextOpen(false)}/>
-      <details class="pp-card"><summary>Advanced · saved workflows and repository configuration</summary><button class="btn" disabled={!draftsReady.value || composerLoading.value} onClick={() => void openComposer(id)}>Saved workflows</button><ProjectRunSettings projectId={id} repositories={p.repos}/>{p.repos.map(folder => <ScenarioLibrary key={folder} repository={folder} />)}<OutcomeMetrics project={id}/></details>
+      <details class="pp-card project-advanced"><summary>Advanced · saved workflows and repository configuration</summary><button class="btn" disabled={!draftsReady.value || composerLoading.value} onClick={() => void openComposer(id)}>Saved workflows</button><ProjectRunSettings projectId={id} repositories={p.repos}/>{p.repos.map(folder => <ScenarioLibrary key={folder} repository={folder} />)}<OutcomeMetrics project={id}/></details>
     </>}
   </div>;
 }
@@ -123,7 +123,7 @@ function ProjectOverview({ id }: { id: string }) {
       const page = report.sections[section];
       if (section !== "results" && !page.total) return null;
       return <Section key={section} title={{ waiting: "Needs you", running: "Running", results: "Recent results" }[section]}
-        count={page.total} runs={page.runs} attention={section === "waiting"} empty="No results yet. Start a run above."
+        count={page.total} runs={page.runs} attention={section === "waiting"} empty="No results yet. Start a chat to begin."
         more={page.nextCursor ? () => more(section) : undefined} moreCount={Math.max(0, page.total - page.runs.length)} loading={loading} />;
     })}
   </>;
@@ -248,14 +248,15 @@ function RunRow({ run }: { run: RunSummary }) {
 
 
 function ProjectChatHistory({ projectId }: { projectId: string }) {
+  const [loaded, setLoaded] = useState(false);
   const [items, setItems] = useState<ChatSummary[]>([]), [error, setError] = useState(""), [query, setQuery] = useState(""), [archived, setArchived] = useState(false), [limit, setLimit] = useState(20);
   const allowed = !onPhone && ownerOnLocalListener.value && executionHost.value.kind === "local";
   useEffect(() => {
     if (!allowed) return;
-    const controller = new AbortController();
-    const timer = setTimeout(() => { void api<{ items: ChatSummary[] }>(`/api/chats?${new URLSearchParams({ project: projectId, q: query, archived: String(archived) })}`, { signal: controller.signal }).then(value => { setItems(value.items); setError(""); setLimit(20); }).catch(e => { if (!controller.signal.aborted) setError(e.message); }); }, 150);
+    const controller = new AbortController(); setLoaded(false);
+    const timer = setTimeout(() => { void api<{ items: ChatSummary[] }>(`/api/chats?${new URLSearchParams({ project: projectId, q: query, archived: String(archived) })}`, { signal: controller.signal }).then(value => { if (controller.signal.aborted) return; setItems(value.items); setError(""); setLimit(20); setLoaded(true); }).catch(e => { if (!controller.signal.aborted) setError(e.message); }); }, 150);
     return () => { clearTimeout(timer); controller.abort(); };
   }, [projectId, query, archived, allowed]);
   if (!allowed) return null;
-  return <section class="pp-card" aria-label="Project chat history"><h2>Chats</h2><label>Search chats<input class="field" type="search" value={query} onInput={e => setQuery(e.currentTarget.value)}/></label><label class="check"><input type="checkbox" checked={archived} onChange={e => setArchived(e.currentTarget.checked)}/>Archived chats</label>{error ? <p role="alert">{error}</p> : items.length ? <div class="pp-list">{items.slice(0,limit).map(chat => <a class="pp-row" href={`#/chat/${encodeURIComponent(chat.id)}`} key={chat.id}><span class="t">{chat.title}</span><span>{chat.status}</span><span class="m">{ago(chat.updatedAt)}</span></a>)}</div> : <p class="help">No chats match this view.</p>}{items.length > limit ? <button class="btn" onClick={() => setLimit(limit+20)}>Show more chats</button> : null}</section>;
+  return <section class="pp-card project-chat-history" aria-label="Project chat history"><h2>Chats</h2><div class="project-history-controls"><label>Search chats<input class="field" type="search" value={query} onInput={e => setQuery(e.currentTarget.value)}/></label><label class="check"><input type="checkbox" checked={archived} onChange={e => setArchived(e.currentTarget.checked)}/>Archived chats</label></div>{error ? <p role="alert">{error}</p> : !loaded ? <p class="help" role="status">Loading chats…</p> : items.length ? <div class="pp-list">{items.slice(0,limit).map(chat => <a class="pp-row" href={`#/chat/${encodeURIComponent(chat.id)}`} key={chat.id}><span class="t">{chat.title}</span><span>{chat.status}</span><span class="m">{ago(chat.updatedAt)}</span></a>)}</div> : <p class="help">No chats match this view.</p>}{items.length > limit ? <button class="btn" onClick={() => setLimit(limit+20)}>Show more chats</button> : null}</section>;
 }

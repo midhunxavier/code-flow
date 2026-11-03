@@ -453,7 +453,7 @@ export function Rail() {
   const filterRepos = [...new Set([...projects.value.flatMap(project => project.repos), ...all.map(run => run.repo), ...(f.repo ? [f.repo] : [])])].sort();
   const empty = !list.length && !chats.value.length;
   return (
-    <RailElement ref={railRef} inert={phone && !railOpen.value} aria-hidden={phone && !railOpen.value ? true : undefined} class={`rail ${railOpen.value ? "open" : ""}`} aria-label="Runs" onClick={event => {
+    <RailElement ref={railRef} inert={phone && !railOpen.value} aria-hidden={phone && !railOpen.value ? true : undefined} class={`rail ${railOpen.value ? "open" : ""}`} aria-label="Workspace navigation" onClick={event => {
       if (!phone || event.target !== event.currentTarget) return;
       const bounds = event.currentTarget.getBoundingClientRect();
       if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) railOpen.value = false;
@@ -464,7 +464,7 @@ export function Rail() {
     }}>
       {!phone && !collapsed ? <RailResizeHandle /> : null}
       <div class="rail-head">
-        <a class="brand" href="#/" aria-label="code-flow: new run" onClick={() => (railOpen.value = false)}>
+        <a class="brand" href="#/" aria-label="Code Flow: new chat" onClick={() => (railOpen.value = false)}>
           <span class="brand-name">
             code<span>-flow</span>
           </span>
@@ -482,7 +482,7 @@ export function Rail() {
         <a class="nav-item" href="#/inbox" aria-label={`Inbox${pending ? ` ${collapsed && pending > 99 ? "99+ · " : ""}${pending} need attention` : ""}`} title="Inbox" aria-current={r.view === "inbox" ? "page" : undefined}><Icon name="bell" /><span class="nav-label">Inbox</span> {pending ? <span class="count">{collapsed && pending > 99 ? "99+" : pending}</span> : null}</a>
         <a class="nav-item" href="#/automations" title="Scheduling" aria-label="Scheduling" aria-current={r.view === "automations" ? "page" : undefined}><Icon name="clock" /><span class="nav-label">Scheduling</span></a>
       </div>
-      {collapsed ? <button type="button" class="icon-btn rail-search-button" aria-label="Search runs" title="Search runs (/)" onClick={() => { peekRail(); requestAnimationFrame(() => document.getElementById("run-search")?.focus()); }}><Icon name="search" /></button> : null}
+      {collapsed ? <button type="button" class="icon-btn rail-search-button" aria-label="Search chats and runs" title="Search chats and runs (/)" onClick={() => { peekRail(); requestAnimationFrame(() => document.getElementById("run-search")?.focus()); }}><Icon name="search" /></button> : null}
       <div class="rail-search">
         <Icon name="search" />
         <input
@@ -490,7 +490,7 @@ export function Rail() {
           class="field"
           type="search"
           placeholder="Search chats and runs"
-          aria-label="Search runs (press / to focus)"
+          aria-label="Search chats and runs (press / to focus)"
           value={f.q}
           onInput={(e) => setRunFilter({ q: e.currentTarget.value })}
           onKeyDown={(e) => {
