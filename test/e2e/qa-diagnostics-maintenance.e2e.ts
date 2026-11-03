@@ -38,7 +38,7 @@ before(async () => {
 after(async () => { await browser?.close(); await stop(); await writeFile(join(evidence, "server.log"), output); await writeFile(join(evidence, "browser-errors.json"), JSON.stringify({ errors, expectedErrors }, null, 2)); await rm(directory, { recursive: true, force: true }); });
 
 test("context inspector renders one intact redaction for token-shaped and quoted secrets", async () => {
-  await open(`project/${project}`); await page.locator(".project-page").getByRole("button", { name: "New run", exact: true }).click();
+  await open(`project/${project}`); await page.locator(".project-page").getByRole("button", { name: "Existing workflows", exact: true }).click();
   await page.locator(".taskbox").getByRole("button", { name: "Files", exact: true }).click(); await page.getByRole("button", { name: "Add qa-secret.txt to the task", exact: true }).click();
   if (await page.locator(".composer-options").getAttribute("open") === null) await page.locator(".composer-options > summary").click(); await page.locator(".context-inspector > summary").click(); await page.getByRole("button", { name: "Preview selected context", exact: true }).click();
   const result = page.locator(".context-inspection-results"); await result.getByText(/qa-secret.txt ·/).click(); const text = await result.innerText(); assert.ok(text.includes('api_key = "[REDACTED]"')); assert.ok(!text.includes(contextToken)); assert.ok(!text.includes(fake)); assert.ok(!text.includes("[REDACTED] TOKEN]")); await shot("context-redaction");

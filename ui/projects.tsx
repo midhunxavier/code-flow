@@ -1,3 +1,4 @@
+import { openChat } from "./chat-state.js";
 import { automations, automationProject, loadAutomations } from "./automation-state.js";
 import { confirmAction } from "./confirm-state.js";
 import { useEffect, useRef, useState } from "preact/hooks";
@@ -42,12 +43,42 @@ const reposText = (p: Project) => (p.repos.length ? p.repos.map(baseName).join("
 const Tail = ({ text }: { text: string }) => <span class="pr-path">{`\u200E${text}\u200E`}</span>;
 
 export function ProjectsPage() {
+  const createProject = () => { projectEdit.value = "new"; projectsOpen.value = true; };
   return <div class="project-page projects-page">
-    <header class="page-head"><div><h1>Projects</h1><p>Choose a project, describe a task, and review the result.</p></div><button class="btn primary" onClick={() => { projectEdit.value = "new"; projectsOpen.value = true; }}>New project</button></header>
-    {!projectsLoaded.value ? <p role="status">Loading projects…</p> : !projectsStatus.value.available ? <p role="alert">Projects couldn’t be loaded. <button class="btn" onClick={() => void loadProjects()}>Try again</button></p> : projects.value.length ? <div class="projects-grid">{byName(projects.value).map(project => <article class="pp-card" key={project.id}>
-      <h2><a href={`#/project/${encodeURIComponent(project.id)}`}>{project.name}</a></h2><p class="help">{reposText(project)}</p>
-      <div class="settings-actions"><button class="btn primary" disabled={composerLoading.value} onClick={() => void openComposer(project.id)}>Describe a task</button><a class="btn" href={`#/project/${encodeURIComponent(project.id)}/runs`}>View results</a></div>
-    </article>)}</div> : <section class="pp-card"><h2>Your first project</h2><p>Create a project and add its repository to start a task.</p></section>}
+    <header class="page-head projects-heading">
+      <div class="page-head-text"><h1>Projects</h1><p>Your repositories, agent tasks, and results in one place.</p></div>
+      <button class="btn primary" onClick={createProject}><Icon name="plus" />New project</button>
+    </header>
+    {!projectsLoaded.value ? <div class="projects-status" role="status"><Icon name="clock" /><p>Loading projects…</p></div> : !projectsStatus.value.available ? <div class="projects-status" role="alert"><Icon name="alert" /><div><p>Projects couldn’t be loaded.</p><button class="btn" onClick={() => void loadProjects()}>Try again</button></div></div> : projects.value.length ? <>
+      <div class="projects-collection-heading"><h2>All projects</h2><span>{plural(projects.value.length, "project")}</span></div>
+      <div class="projects-grid">{byName(projects.value).map(project => <article class="projects-card" key={project.id}>
+        <div class="projects-card-top"><span class="projects-mark"><Icon name="project" /></span><span>{plural(project.repos.length, "repository", "repositories")}</span></div>
+        <h2><a href={`#/project/${encodeURIComponent(project.id)}`}>{project.name}</a></h2>
+        {project.repos.length ? <ul class="projects-card-repos">{project.repos.slice(0, 2).map(path => <li key={path} title={path}><Icon name="folder" /><span>{baseName(path)}</span></li>)}{project.repos.length > 2 ? <li class="projects-repos-more">+{plural(project.repos.length - 2, "more repository", "more repositories")}</li> : null}</ul> : <p class="projects-card-empty">Add a repository to start a task.</p>}
+        <div class="projects-card-actions"><button class="btn primary" disabled={composerLoading.value} onClick={() => openChat(project.id)}>New chat<span aria-hidden="true">→</span></button><a class="btn ghost" href={`#/project/${encodeURIComponent(project.id)}/runs`}>View results</a></div>
+      </article>)}</div>
+    </> : <section class="projects-welcome" aria-labelledby="projects-welcome-title">
+      <div class="projects-welcome-body">
+        <div class="projects-welcome-copy">
+          <span class="projects-kicker">Start with your code</span>
+          <h2 id="projects-welcome-title">A home for your next idea.</h2>
+          <p>Connect a repository, describe what you want to do, and keep your agents’ work together.</p>
+          <button class="btn primary" onClick={createProject}><Icon name="plus" />Create your first project<span aria-hidden="true">→</span></button>
+          <small>Use a local repository or a connected computer.</small>
+        </div>
+        <div class="projects-visual" aria-hidden="true">
+          <div class="projects-visual-back" />
+          <div class="projects-visual-folder"><Icon name="folder" /><span>Your project</span><i /><i /></div>
+          <span class="projects-visual-badge"><Icon name="check" /></span>
+          <span class="projects-visual-note"><Icon name="chat" /></span>
+        </div>
+      </div>
+      <ol class="projects-steps" aria-label="How projects work">
+        <li><span class="projects-step-number">01</span><div><h3>Connect your code</h3><p>Add the repositories you work in.</p></div></li>
+        <li><span class="projects-step-number">02</span><div><h3>Describe a task</h3><p>Give your agents a clear outcome.</p></div></li>
+        <li><span class="projects-step-number">03</span><div><h3>Review the result</h3><p>Keep plans, changes, and feedback together.</p></div></li>
+      </ol>
+    </section>}
   </div>;
 }
 
@@ -82,6 +113,7 @@ export function ProjectsDialog() {
   const counts = (scope: string) => projectCounts.value?.[scope];
   const choose = async (id: string) => {
     if (projectPickerPurpose.value === "composer") await openComposer(id, { carryUnassigned: !!composerProject.value && !projects.value.some(item => item.id === composerProject.value) });
+    else if (projectPickerPurpose.value === "chat") openChat(id);
     else selectProject(id);
     close();
   };
@@ -172,6 +204,7 @@ function ProjectEditor({ project, onDone, onCreated }: { project?: Project; onDo
       await loadProjects();
       if (project) return onDone();
       if (projectPickerPurpose.value === "composer") await openComposer(saved.id);
+      else if (projectPickerPurpose.value === "chat") openChat(saved.id);
       else route.value = { view: "project", id: saved.id };
       onCreated();
       showToast(`Created the project ${saved.name}`);

@@ -98,7 +98,7 @@ Exit: existing dirty work is reviewed accurately and preserved; check-unavailabl
 
 Dependencies: P2–P5.
 
-- [ ] Implement all twelve tools from [06](06-mcp-contract.md).
+- [ ] Implement all ten core tools from [06](06-mcp-contract.md); saved-team APIs are deferred.
 - [ ] Add protocol negotiation, structured/text responses, argument bounds, cursors, and bounded waits.
 - [ ] Implement proposal preview and revision-bound acceptance.
 - [ ] Implement consistent error codes and actionable next steps.
@@ -109,16 +109,16 @@ Proposed file: `mcp.ts`; proposed packaged skill sources under `integrations/cla
 
 Exit: a user can begin from either CLI and finish without the dashboard. If a host requires terminal acceptance fallback, onboarding and tests disclose that interaction rather than claiming an unsupported native approval integration.
 
-## P7 — Project installation and saved presets
+## P7 — Project installation and preferences
 
 Dependencies: P1, P6.
 
 - [ ] Add proposed commands to the existing launcher with backward-compatible routing.
 - [ ] Implement idempotent project setup, config merging, owned-entry uninstall, and doctor.
-- [ ] Add portable project profile/team/workflow files with local overrides outside Git.
-- [ ] Support save-from-proposal, immutable versions, and per-run overrides.
+- [ ] Add lean portable project preferences with explicit task/project/personal/default precedence.
+- [ ] Store generated definitions immutably with each accepted run; defer saved-team management.
 - [ ] Package skills/bridge/runtime files through the existing release builder.
-- [ ] Ship Plan, Feature, and Review starter workflows; offer Fix as a parameterized preset.
+- [ ] Support task-generated planning, implementation, and review processes without preset selection.
 
 Touchpoints: [bin/launcher.mjs](../../bin/launcher.mjs), [scripts/package-npm.mjs](../../scripts/package-npm.mjs), [team-template-store.ts](../../src/team-template-store.ts). Proposed file: `install.ts`.
 
@@ -145,7 +145,7 @@ Exit: all release requirements passed, no unresolved state-corruption or workspa
 4. Managed participants, then host participation.
 5. Workspaces/checks/result artifacts.
 6. MCP/skills and confirmation path.
-7. Installer/presets/package integration.
+7. Installer/preferences/package integration.
 8. Recovery hardening, live evidence, and documentation.
 
 Each change should leave legacy execution usable. Keep graph execution opt-in until release gates pass. Do not migrate historical run semantics merely to make the new schema uniform.

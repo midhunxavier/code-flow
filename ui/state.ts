@@ -1,3 +1,4 @@
+import { activeChatContext } from "./chat-context.js";
 import { fillTemplate } from "./composer-tools.js";
 import { EXECUTION_LIMITS, numberProblem } from "../src/start-input-validation.js";
 import type { ProjectHistoryCounts } from "../src/project-report.js";
@@ -271,7 +272,7 @@ export const draftsReady = signal(false);
 export const draftError = signal("");
 export const unreadableDrafts = signal<Record<string, string>>({});
 export const draftUnavailable = computed(() => unreadableDrafts.value[composerProject.value] ?? "");
-export const projectPickerPurpose = signal<"filter" | "composer">("filter");
+export const projectPickerPurpose = signal<"filter" | "composer" | "chat">("filter");
 export const repositoryChoice = signal<{ repository: string; project?: string } | null>(null);
 export const composerRunOptions = signal<{
   taskTeam?: import("../src/task-team.js").TaskTeamConfig;
@@ -470,6 +471,12 @@ export const projectKeyOf = (run: RunSummary) => projectScope(projectFor(run), r
 /** What the panel would show if it weren't pinned. */
 const followed = computed<SideScope>(() => {
   const r = route.value;
+  const chat = activeChatContext.value;
+  if (chat && (r.view === "chat" || r.view === "composer" && !r.legacy && r.project === undefined)) {
+    const run = chat.runId ? runs.value.get(chat.runId) : undefined;
+    if (run) return runScope(run);
+    return projectScope(projects.value.find(project => project.id === chat.project), chat.repo);
+  }
   if (r.view === "project" || r.view === "workspace" && r.project) {
     // A project's page: its repository you're working in, else the one its latest run used.
     const p = projects.value.find((x) => x.id === (r.view === "project" ? r.id : r.project));
@@ -668,6 +675,9 @@ const forOpened: HandOff[] = [];
  * in the main window, the one that opened it (or a new one if that's gone), and the drafts go along.
  */
 export function navigate(to: Route, drafts: ChatDraft[] = []) {
+  // Existing draft handoffs target the workflow composer. New chat navigation
+  // uses its own route and must not consume or hide those saved workflow drafts.
+  if (to.view === "composer" && to.project === undefined) to = { ...to, legacy: true };
   if (route.value.view === "side") return handOff({ type: HANDOFF, route: to, drafts });
   for (const d of drafts) draftTo(d.to, d.text, d.images);
   route.value = to;

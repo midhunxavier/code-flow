@@ -457,10 +457,10 @@ export function lineSplitter(maxBytes: number, onLine: (line: string) => void, o
 }
 
 /** Run a short command and return its stdout (used for model listings). */
-export function captureOutput(command: string, args: string[], timeoutMs = 30_000): Promise<string> {
+export function captureOutput(command: string, args: string[], timeoutMs = 30_000, cwd?: string): Promise<string> {
   if (args.includes("--help")) return captureHelp(command, args, timeoutMs);
   return new Promise((resolve, reject) => {
-    execFile(command, args, { timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024, env: childEnv() }, (err, stdout, stderr) => {
+    execFile(command, args, { timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024, env: childEnv(), ...(cwd ? { cwd } : {}) }, (err, stdout, stderr) => {
       if (err) reject(new Error(`${command} ${args.join(" ")} failed: ${stderr.toString().trim() || err.message}`));
       else resolve(stdout.toString());
     });

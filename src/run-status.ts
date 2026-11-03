@@ -55,6 +55,8 @@ export function runState(run: Evidence): string {
 }
 
 export function needsYou(run: RunSummary): boolean {
+  if (run.cliTeam?.taskConversation?.phase === "preparation") return false;
+  if (run.cliTeam?.taskConversation && run.status === "running" && Object.values(run.cliTeam.questions).some(q => !q.answer)) return true;
   if (run.archived) return false;
   const question = run.status === "running" && (!!run.team?.awaitingRequestId || run.approvalPending === true);
   if (run.awaiting || question) return true;
@@ -80,6 +82,7 @@ export type HistoryStatus = typeof HISTORY_STATUSES[number];
 export type ProjectSection = "waiting" | "running" | "results";
 export interface HistoryFilter { status?: HistoryStatus; pattern?: string; agent?: string; repo?: string; section?: ProjectSection; archived?: "include" | "exclude" | "only" }
 export function matchesHistoryFilter(run: RunSummary, filter: HistoryFilter): boolean {
+  if (run.cliTeam?.taskConversation?.phase === "preparation") return false;
   if (filter.archived === "exclude" && run.archived || filter.archived === "only" && !run.archived) return false;
   if (filter.repo && run.repo !== filter.repo || filter.pattern && run.pattern !== filter.pattern) return false;
   if (filter.agent && !Object.values(run.roles).some(ids => ids.some(id => id === filter.agent))) return false;

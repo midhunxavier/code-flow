@@ -46,7 +46,7 @@ before(async () => {
   page.setDefaultTimeout(15000);
   page.on("pageerror", error => errors.push(error.message));
   await page.addInitScript(() => { if (localStorage.getItem("sideOpen") === null) localStorage.setItem("sideOpen", "0"); });
-  await page.goto(`${base}/?token=${token}`);
+  await page.goto(`${base}/?token=${token}#/workflows`);
 });
 after(async () => { await browser?.close(); if (server?.exitCode === null) { const exited = new Promise<void>(resolve => server.once("exit", () => resolve())); server.kill("SIGTERM"); await exited; } rmSync(home, { recursive: true, force: true }); assert.deepEqual(errors, []); });
 

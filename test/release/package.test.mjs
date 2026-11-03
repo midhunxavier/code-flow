@@ -128,3 +128,82 @@ test("the packed npm install runs outside the checkout, opens its authenticated 
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("packed conversational teams install, bootstrap one owner, execute through MCP and return the actual plan", { timeout: 120_000 }, async () => {
+  const directory = await mkdtemp(join(tmpdir(), "codeflow-package-cli-")), repo = join(directory, "repo"), home = join(directory, "state"), install = join(directory, "install");
+  let child, ownerPid;
+  try {
+    await mkdir(repo);
+    execFileSync("git", ["init", "-q"], { cwd: repo });
+    await writeFile(join(repo, "README.md"), "Fixture login project\n");
+    execFileSync("git", ["add", "."], { cwd: repo });
+    execFileSync("git", ["-c", "user.name=Test", "-c", "user.email=test@localhost", "commit", "-qm", "fixture"], { cwd: repo });
+    const [packed] = JSON.parse(execFileSync("npm", ["pack", "./dist/npm", "--ignore-scripts", "--json", "--pack-destination", directory], { cwd: root, encoding: "utf8" }));
+    assert.ok(packed.files.some(f => f.path === "integrations/cli-teams/SKILL.md"));
+    execFileSync("npm", ["install", "--prefix", install, "--ignore-scripts", "--no-audit", "--no-fund", join(directory, packed.filename)], { cwd: directory, stdio: "pipe" });
+    const bin = join(install, "node_modules/.bin/codeflow");
+    const env = { ...process.env, CODEFLOW_HOME: home, PATH: [join(install, "node_modules/.bin"), join(root, "test/fake-bin"), process.env.PATH].join(delimiter) };
+    const initialized = JSON.parse(execFileSync(bin, ["init", "--providers", "claude,codex"], { cwd: repo, env, encoding: "utf8" }));
+    assert.ok(initialized.changes.some(c => c.path === ".agents/skills/codeflow/SKILL.md"));
+    assert.equal(JSON.parse(execFileSync(bin, ["init", "--providers", "claude,codex"], { cwd: repo, env, encoding: "utf8" })).changes.length, 0);
+    assert.throws(() => execFileSync(bin, ["approve", "fixture", "--revision", "1"], { cwd: repo, env, stdio: "pipe" }), /interactive terminal/);
+    child = spawn(bin, ["mcp", "--project-root", "."], { cwd: repo, env, stdio: ["pipe", "pipe", "pipe"] });
+    const pending = new Map(), approvals = []; let next = 0, buffered = "", stderr = "";
+    child.stderr.on("data", c => stderr += c);
+    child.stdout.on("data", chunk => {
+      buffered += chunk;
+      let newline;
+      while ((newline = buffered.indexOf("\n")) >= 0) {
+        const line = buffered.slice(0, newline); buffered = buffered.slice(newline + 1);
+        let message; try { message = JSON.parse(line); } catch { assert.fail(`MCP stdout contains a non-JSON message`); }
+        if (message.method === "elicitation/create") {
+          // The fixture native host supplies a human form response, not a tool argument.
+          approvals.push(message.params);
+          child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: message.id, result: { action: "accept", content: { approve: true } } }) + "\n"); continue;
+        }
+        const waiter = pending.get(message.id);
+        if (waiter) { pending.delete(message.id); clearTimeout(waiter.timer); message.error ? waiter.reject(new Error(message.error.message)) : waiter.resolve(message.result); }
+      }
+    });
+    const rpc = (method, params) => new Promise((resolve, reject) => {
+      const id = ++next;
+      const timer = setTimeout(() => { pending.delete(id); reject(new Error(`MCP ${method} timed out; ${stderr.slice(-1000)}`)); }, 35000);
+      pending.set(id, { resolve, reject, timer }); child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
+    });
+    const call = async (name, args = {}) => {
+      const result = await rpc("tools/call", { name: `codeflow_${name}`, arguments: args });
+      assert.equal(result.isError, false, JSON.stringify(result)); return result.structuredContent.data;
+    };
+    assert.equal((await rpc("initialize", { protocolVersion: "2025-11-25", capabilities: { elicitation: { form: {} } }, clientInfo: { name: "package-test", version: "1" } })).serverInfo.name, "code-flow");
+    assert.equal((await rpc("tools/list", {})).tools.length, 10);
+    ownerPid = JSON.parse(await readFile(join(home, "server.lock"), "utf8")).pid;
+    const candidate = { scope: "plan", participants: [{ id: "author", provider: "claude" }, { id: "reviewer", provider: "codex" }], completion: ["The plan has independent review"], steps: [
+      { id: "draft", type: "task", operation: "propose", participant: "author", instructions: "Draft the login plan" },
+      { id: "review", type: "task", operation: "review_plan", participant: "reviewer", instructions: "Review the plan", inputs: ["draft"] },
+      { id: "gate", type: "gate", policy: "agreement", target: "draft", reviews: ["review"] },
+      { id: "result", type: "finish", outcome: "agreed_plan", inputs: ["draft", "gate"] },
+    ] };
+    const proposal = await call("propose_run", { operationId: "package-propose", task: "CODEFLOW_CONVERSATIONAL_TEST: plan a login form", candidate });
+    assert.equal(proposal.approvalMethod, "native_form");
+    const { runId } = await call("start_run", { operationId: "package-start", proposalId: proposal.proposalId, expectedRevision: proposal.revision, proposalHash: proposal.proposalHash });
+    assert.equal(approvals.length, 1); assert.match(approvals[0].message, new RegExp(proposal.proposalHash));
+    let run, cursor = 0;
+    for (let i = 0; i < 20; i++) {
+      run = await call("get_run", { runId, afterCursor: cursor, waitMs: 1000 }); cursor = run.afterCursor;
+      if (run.status !== "running") break;
+    }
+    assert.equal(run.status, "done", JSON.stringify(run));
+    const artifact = run.artifacts.find(a => a.kind === "result"); assert.ok(artifact);
+    const result = await call("get_artifact", { runId, artifactId: artifact.id, sha256: artifact.sha256 }); assert.match(result.body, /Fixture login plan/);
+    const status = JSON.parse(execFileSync(bin, ["status", runId], { cwd: repo, env, encoding: "utf8" })); assert.equal(status.outcome, "agreed_plan");
+    assert.equal(JSON.parse(await readFile(join(home, "server.lock"), "utf8")).pid, ownerPid, "the terminal client reuses the same owner");
+    execFileSync(bin, ["uninstall", "--project"], { cwd: repo, env, stdio: "pipe" });
+    assert.equal(await readFile(join(repo, "README.md"), "utf8"), "Fixture login project\n");
+    await access(join(home, "runs", `${runId}.journal.jsonl`)); await access(join(repo, ".codeflow/cli-teams.json"));
+  } finally {
+    if (child && child.exitCode === null) { const done = once(child, "exit"); child.stdin.end(); const exited = await Promise.race([done.then(() => true), pause(5000).then(() => false)]); if (!exited) { child.kill("SIGTERM"); await done; } }
+    if (!ownerPid) ownerPid = await readFile(join(home, "server.lock"), "utf8").then(t => JSON.parse(t).pid, () => undefined);
+    if (ownerPid) { try { process.kill(ownerPid, "SIGTERM"); } catch {} for (let i = 0; i < 100; i++) { try { process.kill(ownerPid, 0); } catch { break; } await pause(50); } }
+    await rm(directory, { recursive: true, force: true });
+  }
+});

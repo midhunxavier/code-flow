@@ -1,6 +1,6 @@
 # Public MCP interface
 
-Status: proposed. [Index](README.md)
+Status: revised for the initial ten-tool implementation. [Index](README.md). Authoritative argument schemas: `src/cli-teams/tools.ts`. See [16](16-implementation-status.md) for contract differences from the original design.
 
 ## Connection and authority
 
@@ -12,7 +12,7 @@ MCP version/capability negotiation follows the installed host's supported protoc
 
 All tools return versioned structured content plus a concise text rendering. Use `protocolVersion: 1` for the Code Flow application contract, separate from the negotiated MCP protocol version.
 
-Mutating tools require `operationId`. Edits to an existing mutable object additionally require `expectedRevision` or `expectedVersion`. The server stores the operation's scope, canonical argument digest, and receipt durably. Same ID/same payload returns the original receipt; same ID/different payload returns `idempotency_conflict`. There is no implicit second run on retry.
+Mutating tools require `operationId`. Proposal edits/start require the expected proposal revision; start also names its hash. Controls are serialized and idempotent. Host claims use exact step/attempt/token fencing rather than an unrelated global event revision. The server stores the operation's scope, canonical argument digest, and receipt durably. Same ID/same payload returns the original receipt; same ID/different payload returns `idempotency_conflict`. Host claim/submit receipts are additionally scoped to the bound connection. There is no implicit second run on retry.
 
 ```json
 {
@@ -31,18 +31,16 @@ Errors use `ok: false`, a stable `error.code`, readable `message`, `retryable`, 
 | --- | --- | --- |
 | `codeflow_list_providers` | optional `refresh` | Bounded readiness/capability records; no paid inference |
 | `codeflow_list_models` | `providerId`, optional `cursor`, `limit`, `refresh` | Available models, supported efforts, defaults/provenance, next cursor |
-| `codeflow_list_teams` | optional `scope`, `cursor`, `limit`, `includeHistory` | Team definitions with pinned workflow/profile refs and version summaries |
-| `codeflow_propose_team` | `task`, explicit `context`, optional `teamRef`, `workflowRef`, `candidate`, `overrides`, `proposalId` | New immutable proposal revision, validation findings, readable preview, unresolved inputs, acceptance instructions |
-| `codeflow_save_team` | `sourceProposalRef` or `definition`, `scope`, `name`, optional existing `teamId`, `expectedVersion` | Validated immutable saved version; excludes task-specific history, host connection IDs, credentials, and runtime state |
+| `codeflow_propose_run` | `task`, required structured `candidate`, optional `context`, `proposalId`, `expectedRevision` | New immutable task-specific proposal revision, resolved settings, compact preview, acceptance instructions; no presets or saved-team selection |
 | `codeflow_start_run` | `proposalId`, `expectedRevision`, `proposalHash` | Checks stored user acceptance and readiness; returns stable run ID promptly; no `approved: true` argument |
 | `codeflow_get_run` | `runId`, optional `afterCursor`, `limit`, `waitMs` | Current state/revision, incremental events, ready host assignments, questions, artifact refs, usage provenance |
-| `codeflow_claim_step` | `runId`, `stepId`, `expectedRevision` | Atomic claim for the bound host participant; assignment, exact inputs, opaque claim token and deadline |
-| `codeflow_submit_step` | `runId`, `stepId`, `attemptId`, `claimToken`, `inputRefs`, typed `output` | Validated durable outcome receipt; rejects stale target, wrong participant, expired/revoked attempt, or invalid schema |
-| `codeflow_get_artifact` | `runId`, exact `artifactRef`, optional `cursor`, `maxBytes` | Typed content plus readable body, integrity metadata, and continuation cursor |
-| `codeflow_steer_run` | `runId`, `expectedRevision`, `message`, optional `questionId` | Instruction/answer receipt or new proposal revision if scope/configuration changes; never implicitly increases authority |
-| `codeflow_control_run` | `runId`, `expectedRevision`, `action: pause|resume|cancel`, optional `reason` | Durable control receipt, effective state, active/uncertain work, and next action |
+| `codeflow_claim_step` | `runId`, `stepId`, `attemptId` | Atomic claim for the bound host participant; assignment, exact input references, opaque claim token and deadline |
+| `codeflow_submit_step` | `runId`, `stepId`, `attemptId`, `claimToken`, typed `output` | Validated durable outcome receipt; rejects wrong participant, expired/revoked attempt, or invalid schema; inputs derive from the claim |
+| `codeflow_get_artifact` | `runId`, exact `artifactId`, `sha256`, optional byte `cursor`, `maxBytes` | Typed content plus readable body, integrity metadata, and continuation cursor |
+| `codeflow_steer_run` | `runId`, `message`, optional `questionId`, `candidate` | Instruction/answer receipt, or a continuation proposal for material changes after active work settles; never implicitly increases authority |
+| `codeflow_control_run` | `runId`, `action: pause|resume|cancel` | Durable control receipt, effective state, active/uncertain work, and next action |
 
-For `propose_team`, an existing `proposalId` requires `expectedRevision`; a new proposal does not. For `save_team`, `expectedVersion: 0` means create. Run-wide revisions may change while workers run; clients refresh after a conflict instead of guessing a revision.
+For `propose_run`, an existing `proposalId` requires `expectedRevision`; a new proposal does not. A candidate contains run-local participants, ordered typed steps, scope, completion criteria, commands where authorized, and bounded limits. Optional context can include notes, selected untracked paths, immutable artifacts from the same project, and an explicit continuation run. Changed source invalidates acceptance or stale artifact reuse. List/save team tools are deferred.
 
 A claim token binds the accepted step and attempt, so `submit_step` need not require the latest global run revision. This avoids unrelated parallel completions invalidating an otherwise correct submission. Relevant configuration/input changes revoke the token.
 
@@ -85,7 +83,7 @@ A waiter holds no worker slot. The bridge never waits for the entire workflow in
 
 ## Example host participation
 
-1. Propose and preview a Feature team.
+1. Propose and preview a task-generated team and process.
 2. User accepts the displayed proposal through the supported confirmation channel.
 3. `start_run` returns `run-123`.
 4. `get_run` reports a ready host review assignment targeting plan v2.

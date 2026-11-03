@@ -63,7 +63,7 @@ test("explicit refresh bypasses warm model cache and detects provider sign-out",
 });
 
 test("never-discovered catalogs remain unknown after repeated failed refreshes", async () => {
-  mode({ FAKE_AGY_MODELS_FAIL: "network" }); const p = await open("", { repo, composerAdvanced: "1", pattern: "auto-team" });
+  mode({ FAKE_AGY_MODELS_FAIL: "network" }); const p = await open("workflows", { repo, composerAdvanced: "1", pattern: "auto-team" });
   // Both live catalog API entry points expose the same unknown state on a first failed discovery.
   const first = await api("/api/model-catalog?antigravityExecution=native"), second = await api("/api/model-catalog", { antigravityExecution: "native" });
   for (const result of [first, second]) { const catalog = result.providers.find((v: any) => v.provider === "agy").catalog; assert.equal(catalog.state, "unknown"); assert.equal(catalog.discoveredAt, 0); }

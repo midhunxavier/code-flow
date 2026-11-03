@@ -1,3 +1,4 @@
+import { activeChatContext } from "./chat-context.js";
 import { lazyView } from "./lazy-view.js";
 import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 const BrowserTab = lazyView(() => import("./interactive-browser.js").then((module) => module.BrowserTab));
@@ -364,7 +365,8 @@ function NotesTab() {
           disabled={!text.trim()}
           onClick={() => {
             // The composer takes it as a draft, so from a popped-out panel it goes to the main window's.
-            navigate({ view: "composer" }, [{ to: "composer", text: selection(), images: [] }]);
+            if (activeChatContext.value) activeChatContext.value.appendText(selection());
+            else navigate({ view: "composer" }, [{ to: "composer", text: selection(), images: [] }]);
             showToast("Added to the task");
           }}
         >

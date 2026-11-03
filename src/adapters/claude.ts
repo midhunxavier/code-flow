@@ -109,7 +109,7 @@ export const claudeAdapter: AgentAdapter = {
     if (opts.effort) args.push("--effort", opts.effort);
     if (opts.jsonSchema) args.push("--json-schema", JSON.stringify(opts.jsonSchema));
     if (teamTools) args.push("--mcp-config", teamTools.claudeConfig, "--strict-mcp-config");
-    else if (opts.permissions?.externalTools === "disabled") args.push("--mcp-config", '{"mcpServers":{}}', "--strict-mcp-config");
+    else if (opts.permissions?.externalTools === "disabled" || opts.excludeCodeflowMcp) args.push("--mcp-config", '{"mcpServers":{}}', "--strict-mcp-config");
     if (agentTools) args.push("--mcp-config", agentTools.claudeConfig);
     if (opts.permissions?.externalTools === "disabled") args.push("--no-chrome");
     const collaborationTools = [...(teamTools ? TEAM_TOOL_ALLOWLIST : []), ...(agentTools ? AGENT_TOOL_ALLOWLIST : [])];

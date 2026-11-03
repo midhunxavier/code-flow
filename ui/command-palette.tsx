@@ -1,3 +1,4 @@
+import { openChat } from "./chat-state.js";
 import { paletteResults, type PaletteRow } from "./command-palette-model.js";
 import { runSearchText } from "../src/run-history.js";
 import type { RunSummary } from "./types.js";
@@ -35,7 +36,7 @@ export function CommandPalette() {
   const allRuns = new Map(runs.value); for (const item of saved?.runs ?? []) allRuns.set(item.id, item);
   const serverMatches = new Set(saved?.runs.map(item => item.id));
   const actions: Command[] = [
-    { id: "new", label: "New run", detail: "Actions", icon: "plus", run: () => { void openComposer(); } },
+    { id: "new", label: "New chat", detail: "Actions", icon: "plus", run: () => { openChat(); } },
     { id: "docs", label: "Help & documentation", detail: "Guides, search and Ask code-flow using your local CLI", icon: "help", run: () => { window.open("/docs/", "_blank", "noopener"); } },
     { id: "settings", label: "Settings", detail: "Preferences, agents and remote connections", icon: "sliders", run: () => (route.value = { view: "settings" }) },
     { id: "inbox", label: "Inbox", detail: "Questions, failures and results needing review", icon: "bell", run: () => (route.value = { view: "inbox" }) },

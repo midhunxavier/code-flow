@@ -52,7 +52,7 @@ before(async () => {
   browser = await chromium.launch({ channel: "chrome", headless: true });
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } }); contexts.push(context); page = await context.newPage(); page.on("pageerror", (error) => errors.push(`owner: ${error.message}`));
   await page.addInitScript((path) => localStorage.setItem("repo", path), repo); // the composer's repository, which "Use current repository" fills in
-  await page.goto(`${base}/?token=${token}`); await page.getByRole("button", { name: "New run", exact: true }).waitFor();
+  await page.goto(`${base}/?token=${token}`); await page.getByRole("button", { name: "New chat", exact: true }).waitFor();
 });
 after(async () => { for (const context of contexts) await context.close().catch(() => undefined); await browser?.close(); server?.kill("SIGTERM"); await new Promise<void>((resolve) => { if (!server || server.exitCode !== null) return resolve(); server.once("exit", () => resolve()); setTimeout(resolve, 5000).unref(); }); rmSync(fixture, { recursive: true, force: true }); });
 
@@ -314,7 +314,7 @@ test("a route handed off by another window cancels destructive confirmation", as
 
 test("the rail's Team badge counts the inbox from the first paint, and marking items read clears the cards' Needs-you badges at once", async () => {
   // A fresh load lands on the composer: the badge must not wait for a Team page to load the board.
-  await page.goto(`${base}/#/`); await page.reload(); await page.getByRole("button", { name: "New run", exact: true }).waitFor();
+  await page.goto(`${base}/#/`); await page.reload(); await page.getByRole("button", { name: "New chat", exact: true }).waitFor();
   await page.locator(".rail-menu-count", { hasText: "1" }).waitFor({ timeout: 10_000 });
   await page.getByRole("button", { name: /^Application menu:/ }).click();
   await page.getByRole("menuitem", { name: /^Board 1 unread$/ }).click(); await page.waitForURL(/#\/team$/);

@@ -49,7 +49,7 @@ let result: any;
 
 test("template library and workflow selection preserve intentional drafts and expose the effective configuration", { timeout: 45_000 }, async () => {
   page.on("pageerror", error => errors.push(error.message));
-  await page.goto(base + "/#/");
+  await page.goto(base + "/#/workflows");
   const choose = async (id: string) => {
     await openAdvanced(page); await page.getByRole("button", { name: "Browser task library", exact: true }).click();
     const dialog = page.getByRole("dialog", { name: "Template library", exact: true });

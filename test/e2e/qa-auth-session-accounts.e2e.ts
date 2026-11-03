@@ -54,7 +54,7 @@ async function stop(instance: Instance) {
   const child = instance.child; if (!child || child.exitCode !== null || child.signalCode !== null) return;
   const done = new Promise<void>(resolve => child.once("exit", () => resolve())); const timer = setTimeout(() => child.kill("SIGKILL"), 5000); child.kill("SIGTERM"); await done; clearTimeout(timer);
 }
-async function owner(page: Page, instance = a, hash = "") { await page.goto(`${base(instance)}/?token=${instance.token}${hash}`); await page.getByRole("button", { name: "New run", exact: true }).waitFor(); }
+async function owner(page: Page, instance = a, hash = "") { await page.goto(`${base(instance)}/?token=${instance.token}${hash}`); await page.getByRole("button", { name: "New chat", exact: true }).waitFor(); }
 async function self(page: Page, instance = a) { await page.goto(base(instance)); return page.evaluate(async () => (await fetch("/api/auth/self")).json()); }
 async function login(page: Page, username = "bob", origin = base()) {
   await page.goto(origin); await page.getByLabel("Username", { exact: true }).fill(username); await page.getByLabel("Password", { exact: true }).fill(password); await page.getByRole("button", { name: "Sign in", exact: true }).click(); await page.getByRole("tab", { name: "Board", exact: true }).waitFor();

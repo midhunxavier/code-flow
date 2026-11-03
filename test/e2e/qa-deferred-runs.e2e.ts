@@ -55,7 +55,7 @@ before(async () => {
   fixture = `<!doctype html><html><body><script type="module">${bundle.outputFiles![0]!.text.replace(/<\/script/gi, "<\\/script")}</script></body></html>`;
   browser = await chromium.launch({ channel: "chrome", headless: true });
   app = await browser.newContext({ viewport: { width: 1440, height: 1000 } }); app.setDefaultTimeout(10_000);
-  const signIn = await app.newPage(); await signIn.goto(`${base}/?token=${token}`); await signIn.close();
+  const signIn = await app.newPage(); await signIn.goto(`${base}/?token=${token}#/workflows`); await signIn.close();
 });
 after(async () => { await browser?.close(); if (child && child.exitCode === null) { child.kill("SIGTERM"); await new Promise((resolve) => child.once("exit", resolve)); } await rm(directory, { recursive: true, force: true }); });
 
@@ -198,7 +198,7 @@ test("an unreadable queue is reported once and the panel and project page stop p
     const created = await fetch(faultBase + "/api/projects", { method: "POST", headers, body: JSON.stringify({ name: "Deferred fault QA", repos: [repo] }) });
     assert.equal(created.status, 201, await created.clone().text());
     const faultProject = (await created.json() as { id: string }).id;
-    const signIn = await context.newPage(); await signIn.goto(`${faultBase}/?token=${token}`); await signIn.close();
+    const signIn = await context.newPage(); await signIn.goto(`${faultBase}/?token=${token}#/workflows`); await signIn.close();
     const page = await context.newPage(), reads: string[] = [];
     page.on("request", (sent) => { if (new URL(sent.url()).pathname.endsWith("/api/deferred-runs") && sent.method() === "GET") reads.push(sent.url()); });
     await page.clock.install();

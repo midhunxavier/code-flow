@@ -10,6 +10,8 @@
   ],
   "Work with agents": [
     "runs",
+    "conversational-tasks",
+    "cli-conversational-teams",
     "auto-team",
     "project-teams",
     "review-inbox",

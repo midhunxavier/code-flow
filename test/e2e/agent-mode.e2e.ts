@@ -39,7 +39,7 @@ after(async () => { await browser?.close(); server?.kill("SIGTERM"); });
 
 test("Agent UI renders replies, keeps drafts and files across provider tabs, restores tabs, and answers in the side panel", {timeout: live ? 360000 : 90000}, async () => {
   if (live) console.log("Live UI: opening Agent composer");
-  await page.goto(`${base}/?token=${token}`);
+  await page.goto(`${base}/?token=${token}#/workflows`);
   await page.getByRole("switch", { name: "AI team", exact: true }).waitFor();
   assert.equal(await page.getByRole("switch", { name: "AI team", exact: true }).count(), 1);
   const first = await api("/api/runs", { repo, pattern:"solo", task: live ? "Remember cobalt-731. Reply with Ready cobalt-731. Do not use tools." : "Agent UI first message", roles:{agent:["claude"]}, options:{}, trust:"standard" });
@@ -164,7 +164,7 @@ test("Agent UI renders replies, keeps drafts and files across provider tabs, res
   assert.equal(await tabs.locator(".sess-pick").count(), 1, "closed tabs stay closed after reload");
   assert.equal(await draftText(panel.getByRole("textbox", {name:"Message agent",exact:true})), "Keep side draft");
   await tabs.getByRole("button", {name:/^Close Codex/}).click();
-  await page.getByRole("switch", {name:"AI team",exact:true}).waitFor();
+  await page.getByRole("textbox", {name:"Message",exact:true}).waitFor();
   assert.equal(await rail.locator(".run-item").count(), 2, "closing the last tab keeps the sidebar task");
   await rail.locator(".run-item").filter({hasText:first.task ?? (live ? "Remember cobalt-731" : "Agent UI first message")}).click();
   await page.waitForURL(new RegExp(second.id));

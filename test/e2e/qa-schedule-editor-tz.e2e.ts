@@ -32,7 +32,7 @@ async function until<T>(read: () => Promise<T>, ready: (value: T) => boolean): P
 async function browserIn(timezoneId: string) {
   const context = await browser.newContext({ viewport: { width: 1400, height: 1000 }, timezoneId });
   context.setDefaultTimeout(10_000);
-  const signIn = await context.newPage(); await signIn.goto(`${base}/?token=${token}`); await signIn.close();
+  const signIn = await context.newPage(); await signIn.goto(`${base}/?token=${token}#/workflows`); await signIn.close();
   return context;
 }
 async function open(context: BrowserContext, hash: string): Promise<{ page: Page; errors: string[] }> {

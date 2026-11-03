@@ -111,7 +111,17 @@ test("cancel before a held launch receipt retains the result and never dispatche
 
 test("an unknown launch can be explicitly linked after it becomes discoverable without restarting", { timeout: 60000 }, async () => {
   const created = await api("/api/coordinated-changes", jobRequest("QA_UNKNOWN_RECEIPT")); await until(() => job(created.id), value => value.nodes[0].status === "unknown"); const runId = await readFile(join(gate, "unknown-run"), "utf8"); await finished(runId); assert.ok(!(await api("/api/runs")).some((r: any) => r.id === runId));
-  const page = await open(`/project/${project}/repositories`); try { await coordinationPanel(page); const card = page.getByRole("article", { name: "Coordinated change QA_UNKNOWN_RECEIPT", exact: true }); await card.getByLabel("Matching run for repo1", { exact: true }).waitFor(); await writeFile(join(gate, "discover-unknown"), "discover"); assert.ok((await api("/api/runs")).some((r: any) => r.id === runId)); assert.equal((await job(created.id)).nodes[0].status, "unknown"); await card.getByLabel("Matching run for repo1", { exact: true }).fill(runId); await card.getByRole("button", { name: "Link matching run repo1", exact: true }).click(); const ready = await until(() => job(created.id), value => value.status === "ready"); assert.equal(ready.nodes[0].runId, runId); assert.equal(ready.nodes[0].attempts, 1); assert.equal(ready.nodes[1].attempts, 1); await page.getByRole("button", { name: "Refresh coordinated changes", exact: true }).click(); await shot(page, "unknown-manually-linked"); observations.push({ feature: "GIT-34", runId, ready }); } finally { await page.close(); }
+  const page = await open(`/project/${project}/repositories`); try { await coordinationPanel(page); const card = page.getByRole("article", { name: "Coordinated change QA_UNKNOWN_RECEIPT", exact: true }); await card.getByLabel("Matching run for repo1", { exact: true }).waitFor(); await writeFile(join(gate, "discover-unknown"), "discover"); assert.ok((await api("/api/runs")).some((r: any) => r.id === runId)); assert.equal((await job(created.id)).nodes[0].status, "unknown"); await card.getByLabel("Matching run for repo1", { exact: true }).fill(runId); const link = async () => { const response = page.waitForResponse(r => r.request().method() === "POST" && new URL(r.url()).pathname.endsWith("/nodes/repo1/attach")); await card.getByRole("button", { name: "Link matching run repo1", exact: true }).click(); return response; };
+    let linked = await link();
+    if (linked.status() === 409) {
+      assert.equal((await linked.json()).error, "This coordinated change changed. Refresh before acting.");
+      await card.getByRole("alert").filter({ hasText: "Refresh before acting" }).waitFor();
+      const current = await job(created.id); assert.equal(current.nodes[0].status, "unknown", "A stale link leaves the launch claim untouched");
+      await page.getByRole("button", { name: "Refresh coordinated changes", exact: true }).click();
+      await card.getByText(new RegExp(`revision ${current.revision}$`)).waitFor();
+      linked = await link();
+    }
+    assert.equal(linked.status(), 200, await linked.text()); const ready = await until(() => job(created.id), value => value.status === "ready"); assert.equal(ready.nodes[0].runId, runId); assert.equal(ready.nodes[0].attempts, 1); assert.equal(ready.nodes[1].attempts, 1); await page.getByRole("button", { name: "Refresh coordinated changes", exact: true }).click(); await shot(page, "unknown-manually-linked"); observations.push({ feature: "GIT-34", runId, ready }); } finally { await page.close(); }
 });
 
 test("read-only planner and reviewer tracked edits are restored while the source checkout is untouched", { timeout: 60000 }, async () => {

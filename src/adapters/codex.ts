@@ -75,6 +75,16 @@ export const codexAdapter: AgentAdapter = {
       ? ["-c", "sandbox_workspace_write.writable_roots=[]", ...(opts.permissions.required.includes("workspace-writes") ? ["-c", "sandbox_workspace_write.exclude_slash_tmp=true", "-c", "sandbox_workspace_write.exclude_tmpdir_env_var=true"] : [])]
       : [];
     const nativeTools = [...(teamTools?.codexConfig ?? []), ...(agentTools?.codexConfig ?? [])];
+    let ownerMcpDisabled: Record<string, unknown> = {};
+    if (opts.excludeCodeflowMcp) {
+      const configured = await captureOutput("codex", ["mcp", "get", "codeflow", "--json"], 5000, opts.cwd).then(text => !!JSON.parse(text)).catch(error => {
+        if (/no mcp server|mcp server.*not found|not found.*mcp server/i.test(String(error.message))) return false;
+        throw new Error("Cannot verify the Code Flow MCP boundary in this workspace; repair the CLI configuration before running managed workers");
+      });
+      const disabled = { command: process.execPath, args: [], enabled: false };
+      ownerMcpDisabled = configured ? { "mcp_servers.codeflow.enabled": false } : { "mcp_servers.codeflow": disabled };
+      nativeTools.push("-c", configured ? "mcp_servers.codeflow.enabled=false" : `mcp_servers.codeflow={command=${JSON.stringify(process.execPath)},args=[],enabled=false}`);
+    }
     const teamConfig = [...nativeTools, ...(opts.questionProtocol === "structured" || opts.permissions?.nativeDelegation === false ? ["-c", "agents.enabled=false", "-c", "features.multi_agent=false", "-c", "features.multi_agent_v2.enabled=false", "-c", "features.hooks=false"] : [])];
     const transport = codexTransport();
 
@@ -172,7 +182,7 @@ export const codexAdapter: AgentAdapter = {
         outputSchema: opts.jsonSchema,
         questionProtocol: opts.questionProtocol,
         config: [...network, ...teamConfig, ...managedSandbox],
-        threadConfig: { ...teamTools?.codexThreadConfig, ...agentTools?.codexThreadConfig, ...Object.fromEntries([...network, ...teamConfig.slice(nativeTools.length), ...managedSandbox].filter(v=>v!=="-c").map(v=>{const split=v.indexOf("="); return [v.slice(0,split),JSON.parse(v.slice(split+1))];})) },
+        threadConfig: { ...teamTools?.codexThreadConfig, ...agentTools?.codexThreadConfig, ...ownerMcpDisabled, ...Object.fromEntries([...network, ...teamConfig.slice(nativeTools.length), ...managedSandbox].filter(v=>v!=="-c").map(v=>{const split=v.indexOf("="); return [v.slice(0,split),JSON.parse(v.slice(split+1))];})) },
         signal: opts.signal,
         timeoutMs: opts.timeoutMs,
         idleTimeoutMs: opts.idleTimeoutMs,

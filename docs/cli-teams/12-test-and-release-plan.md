@@ -44,13 +44,13 @@ Use the repository's existing Node test runner, fake provider executables, tempo
 | T20 | Retry/output-repair calls consume allowance | No unaccounted managed launches | R14 |
 | T21 | Cancel with process termination uncertainty | Honest uncertain state; files preserved | R10, R13 |
 | T22 | Unsupported effort or missing CLI flag | No silent substitution or boundary relaxation | R09 |
-| T23 | Worker calls public start/save/control or spoofs identity | Denied; no nested workflow | R17 |
+| T23 | Worker loads public start/control tools or spoofs identity | Owner connector excluded; no nested workflow authority | R17 |
 | T24 | Project-root traversal or wrong run scope | Denied before artifact/filesystem access | R16, R17 |
 | T25 | Installer rerun/uninstall against existing modified config | Unrelated and user-modified entries preserved | R16, R18 |
 | T26 | Large result/event history | Paged bounded response, no lost deliverable content | R01, R15 |
 | T27 | Plan-only task in repo with missing build dependencies | Planning works without unrelated setup | R01, R06 |
 | T28 | Nonconverging reviewers | Clear remaining disagreement; no forced consensus | R07, R15 |
-| T29 | Reuse saved team with local override | Original version unchanged; run snapshot records override | R04 |
+| T29 | Explicit task setting overrides project/personal defaults | Preference source is recorded; accepted settings remain immutable | R04 |
 | T30 | Review-only request | No implementation writes or automatic fixes | R11, R17 |
 | T31 | Existing procedural runs and HTTP clients | Existing behavior remains compatible | R18 |
 | T32 | No-change result | Explanation and evidence shown in original chat | R01, R15 |
@@ -113,7 +113,7 @@ Exercise the supported maximum participants, expanded steps, and event pages wit
 - [ ] Both native host paths deliver actual plans/results.
 - [ ] No required host capability is inferred solely from docs or a fake fixture.
 - [ ] Migration/version behavior is tested with existing saved runs and templates.
-- [ ] Package includes runtime, skills, built-in workflows, and schemas.
+- [ ] Package includes runtime, skills, and candidate schemas; no preset library is required.
 - [ ] Project configuration contains no credentials or machine-specific paths.
 - [ ] Help clearly labels current-session limitations and acceptance fallback.
 - [ ] User can diagnose missing providers, invalid settings, blocked checks, and uncertain work.

@@ -66,7 +66,7 @@ test("Connections consolidates old bookmarks and keeps access setup discoverable
 });
 
 test("one template library restores complete saved configurations and keeps legacy workflows", { timeout: 45_000 }, async () => {
-  await page.goto(`${base}/#/`);
+  await page.goto(`${base}/#/workflows`);
   await openAdvanced(page); await page.getByRole("button", { name: "Browser task library", exact: true }).click();
   let dialog = page.getByRole("dialog", { name: "Template library", exact: true });
   await dialog.getByLabel("Template", { exact: true }).selectOption("starter-explore");
@@ -140,7 +140,7 @@ test("scheduling shares four purposes and comparisons live in Insights", { timeo
   await page.getByRole("heading", { name: "Scheduled backlog work", exact: true }).waitFor();
   await page.getByRole("link", { name: "Pursue a mission", exact: true }).click();
   await page.getByText("Choose a project to create or manage its missions.").waitFor();
-  await page.goto(`${base}/#/`);
+  await page.goto(`${base}/#/workflows`);
   await page.getByLabel("Task", { exact: true }).fill("Compare this task");
   await page.getByRole("button", { name: /^Application menu:/ }).click();
   await page.getByRole("menuitem", { name: "Insights", exact: true }).click();
@@ -152,7 +152,7 @@ test("scheduling shares four purposes and comparisons live in Insights", { timeo
 
 test("side-panel and repository tools share file editing and draft recovery", { timeout: 45_000 }, async () => {
   await page.setViewportSize({ width: 1440, height: 1000 });
-  await page.goto(`${base}/#/`);
+  await page.goto(`${base}/#/workflows`);
   await page.getByRole("button", { name: "Side panel", exact: true }).click();
   await page.getByRole("tab", { name: "Files", exact: true }).click();
   const panel = page.getByRole("tabpanel", { name: "Files", exact: true });
@@ -184,7 +184,7 @@ test("side-panel and repository tools share file editing and draft recovery", { 
 });
 
 test("typing with a large attachment avoids copying its payload and comparisons retain the draft", { timeout: 45_000 }, async () => {
-  await page.goto(`${base}/#/`);
+  await page.goto(`${base}/#/workflows`);
   await page.locator('.taskbox input[type="file"]').setInputFiles({ name: "context.txt", mimeType: "text/plain", buffer: Buffer.alloc(2 * 1024 * 1024, "x") });
   await page.locator('.chip-ctx[title="context.txt"]').waitFor();
   await page.evaluate(() => {
@@ -241,10 +241,10 @@ test("the shared browser keeps binary and oversized files in bounded read-only p
 
 test("revised hubs and template picker fit phones and have no serious accessibility errors", { timeout: 45_000 }, async () => {
   await page.setViewportSize({ width: 390, height: 844 });
-  for (const route of ["#/automations/once", "#/automations/repeat", "#/automations/backlog", "#/settings/connections/workspace", "#/settings/connections/sharing", "#/"]) {
+  for (const route of ["#/automations/once", "#/automations/repeat", "#/automations/backlog", "#/settings/connections/workspace", "#/settings/connections/sharing", "#/workflows"]) {
     await page.goto(`${base}/${route}`);
     await page.locator("#main-content").waitFor();
-    if (route === "#/") {
+    if (route === "#/workflows") {
       await openAdvanced(page); await page.getByRole("button", { name: "Browser task library", exact: true }).click();
       const picker = page.getByRole("dialog", { name: "Template library", exact: true });
       await picker.waitFor();

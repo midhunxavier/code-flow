@@ -10,6 +10,47 @@ import { createHash } from "node:crypto";
  * return. Returns the answer, and the structured answer when a schema was requested.
  */
 export function work({ vendor, prompt, write, schemaRequested, fail }) {
+  if (prompt.includes("CODEFLOW_CHAT_LEAD")) {
+    const message = prompt.split("Latest message:\n").at(-1)?.split("Return JSON matching:")[0]?.trim() ?? "";
+    if (message.includes("CHAT_DISCUSS")) return { answer: JSON.stringify({ kind: "answer", body: "OAuth would change the authentication boundary. This is a discussion; no task or worker execution was created." }) };
+    if (message.includes("CHAT_GUIDANCE")) return { answer: JSON.stringify({ kind: "guidance", body: "I recorded your instruction within the accepted scope." }) };
+    if (message.includes("CHAT_CLARIFY")) return { answer: JSON.stringify({ kind: "clarify", body: "Which existing login layout should the plan follow?" }) };
+    const prepared = work({ vendor, prompt: `CODEFLOW_WEB_PREPARATION\nTask request:\n${message}\nRecent user conversation:`, write: false, schemaRequested: false, fail });
+    const response = { ...JSON.parse(prepared.answer), body: "Review the proposed deliverable, participants and allowance before starting.", target: message.includes("CHAT_REVISE") ? "current" : "new" };
+    return { answer: JSON.stringify(response) };
+  }
+  if (prompt.includes("CODEFLOW_WEB_PREPARATION")) {
+    const request = prompt.split("Task request:\n")[1]?.split("Recent user conversation:")[0] ?? "";
+    if (request.includes("WEB_TASK_QUESTION") && !prompt.includes("Use the existing layout")) { const response = { kind: "question", question: { question: "Which login layout should the task use?", options: ["Use the existing layout", "Use a compact layout"] } }; return { answer: JSON.stringify(response), structured: schemaRequested ? response : undefined }; }
+    const writing = /WEB_TASK_BUILD|implement|fix the/i.test(request) && !/plan only/i.test(request), reviewing = /WEB_TASK_REVIEW|review my/i.test(request) && !writing;
+    const participants = [{ id: writing ? "builder" : "planner", provider: "claude", model: "opus", effort: "high" }, { id: "reviewer", provider: "codex" }];
+    const steps = writing ? [
+      { id: "build", type: "task", operation: "implement", participant: "builder", instructions: "Implement the fixture value change" },
+      { id: "check", type: "task", operation: "verify", instructions: "Run the focused regression test" },
+      { id: "review", type: "task", operation: "review_code", participant: "reviewer", instructions: "Review the exact code and test evidence", inputs: ["build"] },
+      { id: "gate", type: "gate", policy: "verified", target: "build", verification: "check", reviews: ["review"] },
+      { id: "result", type: "finish", outcome: "verified_changes", inputs: ["build", "check", "review", "gate"] },
+    ] : reviewing ? [
+      { id: "snapshot", type: "task", operation: "capture_snapshot", instructions: "Capture the current changes" },
+      { id: "review", type: "task", operation: "review_code", participant: "reviewer", instructions: "Report findings without editing", inputs: ["snapshot"] },
+      { id: "result", type: "finish", outcome: "review_complete", inputs: ["review"] },
+    ] : [
+      { id: "draft", type: "task", operation: "propose", participant: "planner", instructions: "Write the login-form design plan" },
+      { id: "review", type: "task", operation: "review_plan", participant: "reviewer", instructions: "Independently review the plan", inputs: ["draft"] },
+      { id: "gate", type: "gate", policy: "agreement", target: "draft", reviews: ["review"] },
+      { id: "result", type: "finish", outcome: "agreed_plan", inputs: ["draft", "gate"] },
+    ];
+    if (writing && /before coding|before implementing/i.test(request)) steps.unshift({ id: "design", type: "task", operation: "propose", participant: "builder", instructions: "Prepare the design for human review before coding" }, { id: "approval", type: "user_decision", question: "Review this design before code editing", options: ["Approve design and continue", "Revise the design"], inputs: ["design"], continueOn: "Approve design and continue" });
+    const response = { kind: "proposal", candidate: { scope: writing ? "write" : reviewing ? "review" : "plan", participants, completion: [writing ? "The value change passes its focused test and independent review" : "Return the requested plan or findings"], ...(writing ? { check: "node --test app.test.mjs" } : {}), steps } };
+    return { answer: JSON.stringify(response), structured: schemaRequested ? response : undefined };
+  }
+  if (prompt.includes("CODEFLOW_CONVERSATIONAL_TEST")) {
+    const review = { body: "Fixture review of the exact supplied target", verdict: "approve", findings: [] };
+    return prompt.includes("Assignment (review_") ? { answer: JSON.stringify(review), structured: schemaRequested ? review : undefined } : { answer: "Fixture login plan: accessible labels, input validation, and focused tests." };
+  }
+  if (prompt.includes("Assignment (review_plan)") || prompt.includes("Assignment (review_code)")) { const review = { body: "Fixture independent review: supplied target meets the task", verdict: "approve", findings: [] }; return { answer: JSON.stringify(review), structured: schemaRequested ? review : undefined }; }
+  if (prompt.includes("Assignment (implement)") || prompt.includes("Assignment (repair)")) { if (write) writeFileSync(existsSync("app.mjs") ? "app.mjs" : "task-result.txt", existsSync("app.mjs") ? "export const value = 2;\n" : "Fixture implementation\n"); return { answer: "Fixture implementation completed for verification." }; }
+  if (prompt.includes("Assignment (propose)") || prompt.includes("Assignment (revise_proposal)") || prompt.includes("Assignment (synthesize)")) return { answer: "Fixture login plan: accessible labels, validation, keyboard focus, and focused tests." };
   if (write && existsSync("preview-setup-fixture.txt") && prompt.includes("Set up a working web preview of this result")) {
     const config = JSON.parse(readFileSync(".codeflow/config.json", "utf8"));
     writeFileSync(".codeflow/config.json", JSON.stringify({ ...config, run: { command: "node app.cjs" } }));

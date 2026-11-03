@@ -58,7 +58,7 @@ async function openPage(ignoreAbort = false): Promise<Page> {
       };
     }
   }, { repo: repos[0]!, ignoreAbort });
-  await page.goto(`${base}/?token=${token}`);
+  await page.goto(`${base}/?token=${token}#/workflows`);
   await page.locator(".composer-options > summary").click();
   await page.waitForFunction(() => document.querySelector<HTMLSelectElement>('[aria-label="Run repository"]')?.value.endsWith("/alpha"));
   await page.waitForFunction(() => !document.querySelector("#checkCmd")?.parentElement?.parentElement?.textContent?.includes("Loading repository configuration"));
@@ -259,7 +259,7 @@ test("Improve respects SSH and Docker selection and its mode menu remains access
     await page.addInitScript((repo) => { localStorage.setItem("repo", repo); localStorage.setItem("project", "alpha"); localStorage.setItem("sideOpen", "0"); }, repos[0]!);
     await page.route("**/api/remote-workers", (route) => route.fulfill({ contentType: "application/json", body: JSON.stringify([{ id: "ssh", name: "Fixture worker", repoMappings: ["project"], protocol: 1 }]) }));
     await page.route("**/api/remote-workers/ssh/probe", (route) => route.fulfill({ contentType: "application/json", body: JSON.stringify({ capabilities: { providers: [{ id: "claude", available: true }], repoMappings: ["project"] } }) }));
-    await page.goto(`${base}/?token=${token}`); await page.getByRole("textbox", { name: "Task", exact: true }).fill("A mobile task");
+    await page.goto(`${base}/?token=${token}#/workflows`); await page.getByRole("textbox", { name: "Task", exact: true }).fill("A mobile task");
     await page.locator(".composer-options > summary").click(); await page.locator(".advanced-controls > summary").click(); await page.getByLabel("Agent execution", { exact: true }).selectOption("ssh");
     assert.equal(await page.getByRole("button", { name: /^Improve ·/ }).isDisabled(), true);
     await page.getByText("Improve uses a local provider. Choose This computer to rewrite this task.", { exact: true }).waitFor();
@@ -319,7 +319,7 @@ test("Prompt improvement settings persist, select the configured provider and de
     await panel.screenshot({ path: join(root, "output/playwright/improve-settings-mobile.png") });
     await page.setViewportSize({ width: 1440, height: 1000 });
     await panel.screenshot({ path: join(root, "output/playwright/improve-settings.png") });
-    await page.goto(`${base}/#/new`);
+    await page.goto(`${base}/#/workflows`);
     const area = page.getByRole("textbox", { name: "Task", exact: true });
     await area.fill("Clarify the login task");
     assert.match(await page.getByRole("button", { name: /^Improve ·/ }).innerText(), /Codex/);

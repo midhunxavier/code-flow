@@ -1,3 +1,5 @@
+import { activeChatContext } from "./chat-context.js";
+import { OpenTaskSetup } from "./task-conversation.js";
 import { EXECUTION_BUDGET_PRESETS, budgetDuration } from "../src/execution-budget.js";
 import { teamApprovalProblem } from "./task-team-choices.js";
 import { composerCheckMode, checkExplanation, type CheckMode } from "./composer-checks.js";
@@ -360,6 +362,7 @@ export function Composer() {
         </>}</Menu>
       </>} />
       {error ? <div ref={startError} class="msg err composer-start-error" role="alert" tabIndex={-1}>{error}</div> : null}
+      <div class="task-setup-entry"><OpenTaskSetup /></div>
       <div class="composer-summary" aria-label="Run configuration summary">
         <span><b>Computer</b> {computerLabel()}{remoteWorker ? ` · Agent worker: ${remoteWorker.workerId}` : ""}</span>
         <span><b>Project</b> {target.value.project?.name ?? "Choose project"}</span>
@@ -1390,7 +1393,7 @@ export function FileTree({ root, onOpen }: { root: string; onOpen: (path: string
     return () => clearTimeout(timer);
   }, [query, root]);
 
-  const inComposer = route.value.view === "composer" && root === repo.value;
+  const inComposer = route.value.view === "composer" && !activeChatContext.value && root === repo.value;
   return (
     <>
       <input type="search" class="field files-search" placeholder="Search files…" aria-label="Search files" autocomplete="off" spellcheck={false} value={query} onInput={(e) => setQuery(e.currentTarget.value)} />

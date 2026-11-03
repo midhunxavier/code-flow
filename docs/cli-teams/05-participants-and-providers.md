@@ -34,7 +34,7 @@ Reconnection can rebind the same run through a local-user-authorized session att
 
 Use existing model discovery and provider capability probes. The cache key includes provider, executable identity/version, environment, and relevant configuration revision. Expose supported effort levels for each model; do not translate every provider into a universal numeric effort scale.
 
-Resolution order: explicit run override -> accepted team/profile version -> explicitly chosen provider default. Never fall back silently from a pinned model or effort. A current-session binding uses current observed/reported settings; the proposal must show that rather than the desired managed-worker settings.
+Initial CLI resolution order: explicit participant/task setting -> project preference -> personal preference -> discovered provider default. Resolve and freeze settings in the accepted run-local definition. Never fall back silently from a pinned model or effort. The initial current-session binding reports settings as unverified and rejects strict pins; use a managed worker for those pins. Saved profile/team versions are deferred.
 
 Readiness distinguishes installed, authenticated, unknown authentication, compatible, unavailable, and temporarily limited. A list operation does not perform paid inference. Live compatibility evidence records the tested CLI version and transport. Unknown mandatory permission/capability support blocks dispatch.
 

@@ -15,7 +15,7 @@ Take a small, well-defined task from your own repository to a reviewed result. T
 On macOS, Linux or inside Windows **WSL2**, run:
 
 ```bash
-npx --yes --package=https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.8/midhunxavier-code-flow-0.1.0-preview.8.tgz codeflow
+npx --yes --package=https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.9/midhunxavier-code-flow-0.1.0-preview.9.tgz codeflow
 ```
 
 The launcher starts Code Flow locally and opens your default browser with its sign-in link. Keep the terminal open while you work; press **Ctrl+C** to stop. If the browser does not open, copy the sign-in link printed in the terminal. Keep that link private.
@@ -36,14 +36,14 @@ Run the same install command to update. Remove the launcher with `npm uninstall 
 
 ### Download the macOS app
 
-Choose **0.1.0-preview.8** for your Mac (**macOS 13+**):
+Choose **0.1.0-preview.9** for your Mac (**macOS 13+**):
 
-- [Download Apple Silicon DMG (M1 or later)](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.8/code-flow-0.1.0-preview.8-macos-arm64-unnotarized.dmg)
-- [Download Intel DMG](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.8/code-flow-0.1.0-preview.8-macos-x64-unnotarized.dmg)
+- [Download Apple Silicon DMG (M1 or later)](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.9/code-flow-0.1.0-preview.9-macos-arm64-unnotarized.dmg)
+- [Download Intel DMG](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.9/code-flow-0.1.0-preview.9-macos-x64-unnotarized.dmg)
 
 Open the DMG, drag **Code Flow** to **Applications**, then open Code Flow. The Electron app opens its own desktop window. Closing or reloading that window keeps agents running. Click the Dock icon or **Code Flow → Show Code Flow** to return. Use **Code Flow → Quit** to stop the app; it asks before interrupting active agents. Node is bundled; install Git and sign in to a supported agent CLI before your first run. Install Chrome or Edge for the shared browser.
 
-These are **unnotarized preview builds**. macOS may block them; use npm if blocked. Quit Code Flow before replacing it with a newer download. Run one launcher at a time. [Release notes and checksums](https://github.com/midhunxavier/code-flow/releases/tag/v0.1.0-preview.8).
+These are **unnotarized preview builds**. macOS may block them; use npm if blocked. Quit Code Flow before replacing it with a newer download. Run one launcher at a time. [Release notes and checksums](https://github.com/midhunxavier/code-flow/releases/tag/v0.1.0-preview.9).
 
 New builds include in-app updates for macOS previews. After installing a build with this updater, background checks download compatible updates automatically. **Settings → General → App updates** shows download progress and **Restart to update** when ready. Restarting saves active work after confirmation, replaces the app, and reopens it. The updater verifies the release checksum, bundle identity, version, architecture and code signature, and restores the previous bundle if replacement or launch fails. Signed installations continue to use the native signed-update mechanism.
 
@@ -77,7 +77,22 @@ npm run dev:real  # installed real CLIs; sign in to each CLI first
 
 Both modes use http://localhost:4318 and `.codeflow-dev` as their home directory, rebuild the UI and restart the server on source changes. For real-agent mode, install the CLIs you intend to use and run each interactively to sign in before starting. The normal `npm start` workflow above uses http://localhost:4317.
 
+## Your first chat
+
+1. Select **New chat**. Choose a project and repository, or create your first project. Nothing runs until you send a message.
+2. Use **Agent** for ordinary questions or coding with one CLI. Choose the provider, model, supported effort and permissions beside the message box. Review its call/time allowance in **Task details**.
+3. Use **Team** to discuss complex work with a read-only lead. Describe the goal and any preferred participants, review order, checks or completion requirements in plain language.
+4. Review the proposed approach. **Adjust approach** changes models, efforts, commands and limits without another inference call. **Start task** approves and starts that exact revision once.
+5. Follow progress and ask questions in the same chat. Completed plans, implementations and later tasks remain in order. Inspect evidence and changes before applying or publishing them.
+
+The composer remains visible while you read. Enter sends; Shift + Enter adds a line. Messages sent while a turn runs queue with their selected settings. Files and unsent drafts survive reload. Mode changes affect future work, and accepted Team tasks keep their original scope and settings. See the [chat guide](conversational-tasks.md) for source selection, handoffs, allowances and recovery.
+
+Initial Team preparation supports local Git repositories with Claude/Codex managed participants. Other providers remain available in Agent mode; remote and container execution use **Existing workflows**.
+
 ## Your first run
+
+Open **Existing workflows** from a chat or project to use the workflow composer, saved drafts and templates:
+
 
 ![The composer: a task and its workflow, Plan → Build → Review, with the check that decides when it's done (demo data)](images/composer-light.png)
 

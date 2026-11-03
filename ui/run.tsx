@@ -227,6 +227,7 @@ export function RunView({ id }: { id: string }) {
     setSelected(stepId === current ? "" : stepId);
   };
   const p = patterns.value.find((x) => x.id === run.pattern);
+  const owningChat = run.conversationId ?? run.cliTeam?.taskConversation?.chatId ?? (run.pattern === "chat-lead" ? run.cliTeam?.taskConversation?.id : undefined);
   const state = runState(run);
   /** A tool approval or a question of this run waits in the approval inbox. */
   const approvalPending = run.status === "running" && pendingApprovals.value.some((record) => record.runId === run.id);
@@ -282,9 +283,10 @@ export function RunView({ id }: { id: string }) {
           <div class="run-title">
             {/* OntoLab's page head: a status line above the heading, the actions beside it */}
             <div class="run-name">
+              {owningChat ? <p class="task-run-link"><a href={`#/chat/${enc(owningChat)}`}>Return to chat</a></p> : run.cliTeam?.taskConversation ? <p class="task-run-link"><a href={`#/task/${enc(run.cliTeam.taskConversation.id)}`}>Return to task conversation</a> · {run.cliTeam.taskConversation.phase === "preparation" ? "Approach preparation" : "Managed execution"}</p> : null}
               <div class="run-kicker">
                 <span class={`status-pill ${awaitingInput ? "awaiting" : dispatchLabel(run, steps) === "Dispatch paused" ? "stopped" : state}`}>
-                  {executionLabel(run, approvalPending)}
+                  {executionLabel(run, approvalPending, steps)}
                 </span>
                 {runStateBadges(run).map((label) => <span key={label} class="status-pill run-state" title={label}>{label}</span>)}
                 {run.chatLink?.kind !== "side" ? <ProjectChip run={run} /> : null}

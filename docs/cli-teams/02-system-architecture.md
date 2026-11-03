@@ -12,7 +12,7 @@ flowchart TD
     MCP <--> API
     subgraph Runner[One local runner]
         API <--> Engine[Graph executor and reducer]
-        Library[Profiles, teams, workflows] --> Proposal[Proposal generator and validator]
+        Library[Host candidate, catalog, preferences] --> Proposal[Proposal resolver and validator]
         Proposal --> Engine
         Engine <--> Scheduler[Scheduler and participant registry]
         Engine <--> Store[(Journal and immutable artifacts)]

@@ -206,7 +206,8 @@ test("settings navigation, search, appearance, and run defaults persist and driv
   await page.getByLabel("Minutes per run").fill("9000");
   await page.getByLabel("Minutes per run").blur();
   assert.equal(await page.getByLabel("Minutes per run").inputValue(), "37");
-  await page.getByRole("button", { name: "New run", exact: true }).click();
+  await page.getByRole("button", { name: "New chat", exact: true }).click();
+  await page.getByRole("button", { name: "Existing workflows", exact: true }).click();
   await page.locator(".composer-options > summary").click();
   await page.locator("details.advanced-controls > summary").click();
   await page.locator("details.settings > summary").filter({ has: page.locator(".st", { hasText: /^Branches and limits$/ }) }).click();

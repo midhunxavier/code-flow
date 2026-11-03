@@ -110,7 +110,7 @@ test("saved repository filters load immediately after hello and do not follow co
   await rail.getByRole("button", { name: /^Application menu:/ }).click(); await page.getByRole("menuitem", { name: /View and filter runs/ }).click();
   assert.equal(await rail.getByLabel("Repository", { exact: true }).inputValue(), repo);
   await page.evaluate(() => { location.hash = "#/project/p-old"; });
-  await page.locator(".project-page").getByRole("button", { name: "New run", exact: true }).click();
+  await page.locator(".project-page").getByRole("button", { name: "Existing workflows", exact: true }).click();
   assert.equal(await rail.getByLabel("Repository", { exact: true }).inputValue(), repo);
   await rail.getByLabel("Repository", { exact: true }).selectOption(other); await until(() => rail.getByRole("region", { name: "Run history pages", exact: true }).innerText(), text => /6 matching tasks loaded/.test(text)); await shot("independent-filter");
 });
@@ -175,7 +175,7 @@ test("project selection chooses its repository, remembers the draft, and shows e
   assert.doesNotMatch(await page.locator(".composer-summary").innerText(), /Choose project/);
   await page.goto(`${base}/#/projects`);
   await page.getByRole("heading", { name: "Projects", exact: true }).waitFor();
-  await page.getByRole("navigation", { name: "Runs", exact: true }).getByRole("button", { name: "New run", exact: true }).click();
+  await page.goto(`${base}/#/workflows`);
   assert.equal(await page.getByRole("textbox", { name: "Task", exact: true }).inputValue(), "Keep my project task");
 });
 

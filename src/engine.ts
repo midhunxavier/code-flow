@@ -373,6 +373,11 @@ export interface Artifact {
 }
 
 export interface Run {
+  /** Owning unified chat, set only by its trusted server adapter. */
+  conversationId?: string;
+  /** Private conversational CLI execution; never part of the web workflow picker. */
+  cliTeam?: import("./cli-teams/model.js").RuntimeState;
+  cliTeamExecutionId?: string;
   /** Explicit user metadata; never inferred from issue text or a task mentioning tests. */
   testRun?: TestRun;
   prMergeRequests?: Record<string, { url: string; head: string; at: number }>;
@@ -598,6 +603,9 @@ export interface ApprovalAnswer {
 }
 
 export interface FollowUp {
+  /** Internal durable identity for a conversation message; never inferred from its text. */
+  operationId?: string;
+  operationHash?: string;
   /** Explicit user-authorized allocation; persisted with this follow-up. */
   budget?: Pick<LoopSettings, "maxSteps" | "maxInvocations" | "maxMinutes">;
   id: string;
@@ -812,6 +820,8 @@ export interface Pattern {
 }
 
 export interface AskParams {
+  /** Private graph assignment identity; bounds all transport/schema attempts together. */
+  cliAssignment?: string;
   /** Allocate the initial team/plan revision from supplied context and local read tools.
    * Browser/computer work and live collaboration belong to the resulting tasks. */
   planning?: boolean;
@@ -1113,6 +1123,7 @@ export class TeamContext {
     const onlyWaiting = this.slotUse.waiting > 0 && this.slotUse.holding === 0;
     if (onlyWaiting === this.slotUse.paused) return;
     this.slotUse.paused = onlyWaiting;
+    if (this.run.cliTeam) { this.run.cliTeam.waitingForSlot = onlyWaiting; this.manager.emitRun(this.run); }
     if (onlyWaiting) this.pauseClock();
     else this.resumeClock();
 
@@ -1687,6 +1698,15 @@ export class TeamContext {
     if (!keep || keep(value)) await this.persist(key, value);
     return value;
   }
+
+  /** Inspect the next replay occurrence without consuming it (CLI admission only). */
+  hasRemembered(kind: string, identity: string): boolean {
+    const base = `${kind}:${identity}`;
+    return this.journal.has(`${base}#${(this.counters.get(base) ?? 0) + 1}`);
+  }
+
+  private get elapsedExecutionMs() { return (this.run.clockUsedMs ?? 0) + (this.clock?.timer ? Math.max(0, Date.now() - this.clock.startedAt) : 0); }
+  async recordCliClock() { if (this.run.cliTeam) { const used = this.elapsedExecutionMs; await this.persist("cli-clock", used); this.run.cliTeam.accountedExecutionMs = used; } }
 
   /**
    * Run the "done when" check in a worktree — code-flow runs it, not an agent, so the result
@@ -2799,6 +2819,7 @@ export class TeamContext {
       releaseAbort(); slot.give();
       this.manager.setSteerer(this.run, step.id, params.agent, undefined);
     }
+    if (this.run.cliTeam) { await this.recordCliClock(); await this.persist(`cli-settled:${step.id}`, { at: Date.now() }); }
 
     const kind = failureKind(result, !!params.resume);
     // Out of plan usage steers "Auto" away from this agent; a per-minute 429 was just retried.
@@ -2978,6 +2999,17 @@ export class TeamContext {
       if (!recoveringRemote && this.run.loop.maxInvocations !== undefined && this.actualInvocations >= this.run.loop.maxInvocations) {
         this.stop("CLI invocation limit"); this.checkCancelled();
       }
+      if (this.run.cliTeam && !recoveringRemote) {
+        const cli = this.run.cliTeam;
+        if ((cli.managedInvocations ?? 0) >= cli.definition.limits.maxInvocations) { this.stop("lifetime CLI invocation limit"); this.checkCancelled(); }
+        const assignment = params.cliAssignment ?? params.identity ?? params.title;
+        cli.nodeInvocations ??= {};
+        if ((cli.nodeInvocations[assignment] ?? 0) >= cli.definition.limits.maxAttempts) { this.stop(`assignment attempt limit (${assignment})`); this.checkCancelled(); }
+        cli.nodeInvocations[assignment] = (cli.nodeInvocations[assignment] ?? 0) + 1;
+        cli.managedInvocations = (cli.managedInvocations ?? 0) + 1;
+        const usedMs = this.elapsedExecutionMs;
+        await this.persist(`cli-launch:${randomBytes(12).toString("hex")}`, { stepId: step.id, assignment, at: Date.now(), usedMs, reservedMs: Math.min(cli.definition.limits.attemptTimeoutMs, Math.max(0, cli.definition.limits.maxMinutes * 60_000 - usedMs)) });
+      }
       if (this.run.team && !recoveringRemote) {
         if (this.teamBudgetRemaining(params.coordination) <= 0) {
           this.stop(params.coordination ? "coordinator invocation limit" : "team invocation limit");
@@ -3033,6 +3065,7 @@ export class TeamContext {
       let result: RunResult;
       try {
         const agentOptions: import("./adapters/types.js").RunOptions = {
+          excludeCodeflowMcp: !!this.run.cliTeam,
           conversation: this.run.pattern === "solo" && !this.run.checkpointOnFinish && !this.run.trigger,
           onQuestion: this.run.pattern === "solo" && !this.run.checkpointOnFinish && !this.run.trigger && !remote ? async (questions, signal) => {
             this.pauseClock();
@@ -3060,7 +3093,7 @@ export class TeamContext {
           },
           trust: turnTrust,
           signal: turnSignal,
-          timeoutMs: STEP_TIMEOUT_MS,
+          timeoutMs: this.run.cliTeam?.definition.limits.attemptTimeoutMs ?? STEP_TIMEOUT_MS,
           isPaused: agentGrant ? () => toolWaits > 0 : undefined,
           idleTimeoutMs: STEP_IDLE_MS,
           onSteerable: params.side || remote || params.agent.startsWith("plugin:") ? undefined : (steer: ((text: string) => Promise<boolean>) | undefined) => this.manager.setSteerer(this.run, step.id, params.agent, steer),
@@ -3103,7 +3136,7 @@ export class TeamContext {
         initial = { resume, prompt };
         continue;
       }
-      if (!RETRYABLE.has(kind) || retries >= RETRY_DELAYS_MS.length) return result;
+      if (!RETRYABLE.has(kind) || retries >= RETRY_DELAYS_MS.length || this.run.cliTeam && retries >= this.run.cliTeam.definition.limits.maxAttempts - 1) return result;
       let startOver = false;
       if (params.mode === "write") {
         if (result.sessionId) {
@@ -3273,6 +3306,9 @@ function knowledgePrompt(run: Run): string {
 // ---------------------------------------------------------------------------
 
 export interface StartRunInput {
+  conversationId?: string;
+  /** Internal accepted CLI proposal; web request parsers never populate this. */
+  cliTeam?: Run["cliTeam"];
   testRun?: TestRun;
   taskTeam?: TaskTeamConfig;
   taskExecution?: Run["taskExecution"];
@@ -3340,7 +3376,10 @@ export class RunManager {
   setProjectTeamGuard(guard: (run: Run) => Promise<void>) { this.projectTeamGuard = guard; }
   private projectTeamDeletionGuard?: (run: Run, deletingProject?: string) => void;
   setProjectTeamDeletionGuard(guard: (run: Run, deletingProject?: string) => void) { this.projectTeamDeletionGuard = guard; }
-  private managedContinuation(run: Run) { if (run.projectTeam) throw new Error("Continue this result through its project mission so its scope, budget and independent review are preserved"); }
+  private managedContinuation(run: Run, cliInternal = false) {
+    if (run.projectTeam) throw new Error("Continue this result through its project mission so its scope, budget and independent review are preserved");
+    if (run.cliTeam && !cliInternal) throw new Error("Continue this conversational run through its CLI/MCP proposal so its scope, settings and verification remain explicit");
+  }
   private readonly mergeValidating = new Map<string, AbortController>();
   private readonly mergeValidationWork = new Map<string, Promise<MergeValidation>>();
   private readonly runs = new Map<string, Run>();
@@ -3391,6 +3430,7 @@ export class RunManager {
   private filesystemPolicyGuard?: (repo: string, run?: Run) => Promise<FilePolicySnapshot[]>;
   setFilesystemPolicyGuard(guard: (repo: string, run?: Run) => Promise<FilePolicySnapshot[]>) { this.filesystemPolicyGuard = guard; }
   async assertExecutionAllowed(repo: string, run?: Run, surface = "Execution"): Promise<FilePolicySnapshot[]> {
+    if (run?.cliTeam?.taskConversation && (!run.project || !this.projects?.get(run.project)?.repos.includes(run.repo))) throw new Error("Task project membership changed. Execution stopped; its work is preserved.");
     if (this.executionPolicyLease) throw new RunConflictError("Filesystem policy activation holds the global execution lease");
     const fresh = await this.filesystemPolicyGuard?.(repo, run) ?? [];
     if (this.executionPolicyLease) throw new RunConflictError("Filesystem policy activation holds the global execution lease");
@@ -4183,6 +4223,7 @@ export class RunManager {
   async followUp(
     id: string,
     input: {
+      operationId?: string;
       kind?: FollowUp["kind"];
       worktree: string;
       agent: AgentId;
@@ -4201,6 +4242,12 @@ export class RunManager {
     },
   ) {
     const run = this.require(id);
+    const operationHash = input.operationId ? createHash("sha256").update(JSON.stringify(input)).digest("hex") : undefined;
+    const repeated = input.operationId ? run.followUps.find(turn => turn.operationId === input.operationId) : undefined;
+    if (repeated) {
+      if (repeated.operationHash !== operationHash) throw new RunConflictError("This conversation message ID was already used with different arguments");
+      return run;
+    }
     this.managedContinuation(run);
     if (this.followUpClaims.has(id)) throw new RunConflictError("Another follow-up is being prepared for this run");
     const release = this.holdColdMutation(run);
@@ -4250,6 +4297,7 @@ export class RunManager {
         }
       }
       run.followUps.push({
+        operationId: input.operationId, operationHash,
         id: `f${run.followUps.length + 1}`, budget,
         kind,
         side: kind === "side" ? input.side : undefined,
@@ -4267,6 +4315,7 @@ export class RunManager {
         status: "pending",
         at: Date.now(),
       });
+      if (input.operationId) { this.emitRun(run); await waitForRunWrites(run.id); }
       // The budget is the allocation of the execution this follow-up starts. A queued one joins the
       // execution that is running (its limits are read live: shrinking them could stop the side chat
       // it waits for), so its budget is kept on the follow-up only.
@@ -5631,6 +5680,8 @@ export class RunManager {
   }
 
   private async prepareStart(input: StartRunInput) {
+    if (input.pattern.id === "cli-team" && !input.cliTeam) throw new Error("Conversational teams require the project-scoped proposal and acceptance flow");
+    if (input.pattern.id === "task-prepare" && input.cliTeam?.taskConversation?.phase !== "preparation") throw new Error("Task preparation is an internal bounded operation");
     validateTestRun(input.testRun);
     if (this.shuttingDown) throw new Error("code-flow is shutting down; new runs cannot start");
     const filePolicies = await this.assertExecutionAllowed(input.repo, undefined, "run startup");
@@ -5817,6 +5868,8 @@ export class RunManager {
     });
 
     const run: Run = {
+      ...(input.conversationId ? { conversationId: input.conversationId } : {}),
+      ...(input.cliTeam ? { cliTeam: structuredClone(input.cliTeam) } : {}),
       id,
       filePolicies,
       extensions,
@@ -5926,10 +5979,10 @@ export class RunManager {
    * runs again from the top; every step that already completed is replayed from the journal
    * instantly, and real work resumes at the first unfinished step — with a fresh budget.
    */
-  async resume(id: string, allocation?: Partial<Pick<LoopSettings, "maxSteps" | "maxInvocations" | "maxMinutes">>): Promise<Run> {
+  async resume(id: string, allocation?: Partial<Pick<LoopSettings, "maxSteps" | "maxInvocations" | "maxMinutes">>, cliInternal = false): Promise<Run> {
     const run = this.require(id);
     if (planRejected(run)) throw new RunConflictError("This plan was rejected. Edit the task and start a new run for a fresh plan.");
-    this.managedContinuation(run);
+    this.managedContinuation(run, cliInternal);
     if (!run) throw new Error("Run not found");
     if (run.steps.some((step) => step.remote?.ambiguous)) throw new RunConflictError("Inspect or cancel the ambiguous remote receipt before resuming this run");
     this.assertNoWorkspaceLease(run.repo);
@@ -6082,11 +6135,12 @@ export class RunManager {
   }
 
   private execute(run: Run, pattern: Pattern, journal: Map<string, unknown>, followUpsOnly = false) {
+    if (run.cliTeam) run.cliTeamExecutionId = randomBytes(16).toString("hex");
     const controller = new AbortController();
     this.controllers.set(run.id, controller);
     const ctx = new TeamContext(run, controller, this, journal, followUpsOnly);
     const done = this.withChatWorkspace(run, controller.signal, async () => {
-    ctx.startClock(run.loop.maxMinutes);
+    ctx.startClock(run.cliTeam ? Math.max(0, run.cliTeam.definition.limits.maxMinutes - (run.clockUsedMs ?? 0) / 60_000) : run.loop.maxMinutes);
     const patternDone = followUpsOnly
       ? Promise.resolve(run.patternSummary ?? withoutFollowUps(run.summary ?? ""))
       : this.assertExecutionAllowed(run.repo, run, "workflow dispatch").then(() => pattern.run(ctx)).then((summary) => {

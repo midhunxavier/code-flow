@@ -34,7 +34,7 @@ before(async () => {
   for (let attempt = 0; attempt < 150; attempt++) { if (await fetch(base + "/api/health", { headers }).then(response => response.ok, () => false)) break; if (attempt === 149) throw new Error("Server did not start"); await new Promise(resolve => setTimeout(resolve, 100)); }
   browser = await chromium.launch({ channel: "chrome", headless: true }); page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
   page.on("pageerror", error => errors.push(error.message));
-  await page.goto(base + "/?token=project-navigation-test");
+  await page.goto(base + "/?token=project-navigation-test#/workflows");
 });
 after(async () => { await browser?.close(); if (server?.exitCode === null) { server.kill("SIGTERM"); await new Promise<void>(resolve => { const timer = setTimeout(() => { server.kill("SIGKILL"); resolve(); }, 5000); server.once("exit", () => { clearTimeout(timer); resolve(); }); }); } if (directory) await rm(directory, { recursive: true, force: true }); });
 
@@ -49,7 +49,7 @@ async function chooseFolder(repository: string) {
 }
 async function projectNewRun(id: string) {
   await page.goto(base + `/#/project/${id}`);
-  await page.locator(".page-head-actions").getByRole("button", { name: "New run", exact: true }).click();
+  await page.locator(".page-head-actions").getByRole("button", { name: "Existing workflows", exact: true }).click();
   await page.getByLabel("Task", { exact: true }).waitFor({ timeout: 15000 }).catch(async error => { console.error(await page.locator("body").innerText(), errors); throw error; });
 }
 

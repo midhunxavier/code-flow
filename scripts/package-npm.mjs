@@ -26,18 +26,18 @@ async function sources(directory) {
 }
 await build({ entryPoints: await sources(join(root, "src")), outbase: join(root, "src"), outdir: join(output, "src"), platform: "node", format: "esm", target: "node22.13", logLevel: "warning" });
 const banner = { js: 'import { createRequire as __createRequire } from "node:module"; import { fileURLToPath as __fileURLToPath } from "node:url"; import { dirname as __dirnameOf } from "node:path"; const __filename = __fileURLToPath(import.meta.url); const __dirname = __dirnameOf(__filename); const require = __createRequire(import.meta.url);' };
-for (const [source, target] of [["src/architecture.ts", "src/architecture.js"], ["src/code-intelligence-worker.mjs", "src/code-intelligence-worker.mjs"]])
+for (const [source, target] of [["src/architecture.ts", "src/architecture.js"], ["src/code-intelligence-worker.mjs", "src/code-intelligence-worker.mjs"], ["src/cli-teams/install.ts", "src/cli-teams/install.js"]])
   await build({ entryPoints: [join(root, source)], outfile: join(output, target), bundle: true,
     plugins: [{ name: "preserve-local-modules", setup(builder) {
       builder.onResolve({ filter: /^\.\.?\// }, (args) => resolve(args.importer).startsWith(join(root, "src") + sep) ? { path: args.path, external: true } : undefined);
     } }],
     platform: "node", format: "esm", target: "node22.13", minify: true, banner, logLevel: "warning" });
-for (const path of ["bin", "public", "LICENSE", "README.md", "scripts/check-node.mjs", "scripts/codeflow.mjs", "scripts/pty.py", "scripts/computer-use.swift", "dist/remote-host.json", "dist/training-worker.json"])
+for (const path of ["bin", "public", "LICENSE", "README.md", "integrations/cli-teams", "scripts/check-node.mjs", "scripts/codeflow.mjs", "scripts/pty.py", "scripts/computer-use.swift", "dist/remote-host.json", "dist/training-worker.json"])
   // Rebuilds publish through temporary files that may disappear between listing
   // and copying. Skip them before fs.cp stats them, and never ship partial assets.
   await cp(join(root, path), join(output, path), { recursive: true, filter: source => !source.endsWith(".tmp") });
 await mkdir(join(output, "licenses"), { recursive: true });
-for (const [name, source] of [["typescript.txt", "node_modules/typescript/LICENSE.txt"], ["typescript-notices.txt", "node_modules/typescript/ThirdPartyNoticeText.txt"], ["inter.txt", "ui/fonts/OFL-1.1.txt"], ["preact.txt", "node_modules/preact/LICENSE"], ["signals.txt", "node_modules/@preact/signals/LICENSE"], ["signals-core.txt", "node_modules/@preact/signals-core/LICENSE"], ["xterm.txt", "node_modules/@xterm/xterm/LICENSE"], ["xterm-fit.txt", "node_modules/@xterm/addon-fit/LICENSE"], ["uqr.txt", "node_modules/uqr/LICENSE"]])
+for (const [name, source] of [["typescript.txt", "node_modules/typescript/LICENSE.txt"], ["typescript-notices.txt", "node_modules/typescript/ThirdPartyNoticeText.txt"], ["inter.txt", "ui/fonts/OFL-1.1.txt"], ["preact.txt", "node_modules/preact/LICENSE"], ["signals.txt", "node_modules/@preact/signals/LICENSE"], ["signals-core.txt", "node_modules/@preact/signals-core/LICENSE"], ["xterm.txt", "node_modules/@xterm/xterm/LICENSE"], ["xterm-fit.txt", "node_modules/@xterm/addon-fit/LICENSE"], ["uqr.txt", "node_modules/uqr/LICENSE"], ["smol-toml.txt", "node_modules/smol-toml/LICENSE"]])
   await cp(join(root, source), join(output, "licenses", name));
 await writeFile(join(output, "package.json"), JSON.stringify({
   name: pkg.name, version: pkg.version, description: pkg.description, license: pkg.license,
@@ -46,7 +46,7 @@ await writeFile(join(output, "package.json"), JSON.stringify({
   repository: { type: "git", url: "git+https://github.com/midhunxavier/code-flow.git" },
   homepage: "https://midhunxavier.github.io/code-flow/", bugs: "https://github.com/midhunxavier/code-flow/issues",
   publishConfig: { access: "public", tag: "preview" },
-  files: ["bin/", "src/", "scripts/", "public/", "dist/remote-host.json", "dist/training-worker.json", "licenses/"],
+  files: ["bin/", "src/", "scripts/", "public/", "integrations/cli-teams/", "dist/remote-host.json", "dist/training-worker.json", "licenses/"],
 }, null, 2) + "\n");
 await chmod(join(output, "bin/codeflow.mjs"), 0o755);
 console.log(`Built ${pkg.name}@${pkg.version} in dist/npm. Run npm pack ./dist/npm to create the release tarball.`);

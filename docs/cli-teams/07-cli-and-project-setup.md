@@ -1,38 +1,34 @@
 # CLI, project installation, and user experience
 
-Status: proposed. [Index](README.md)
+Status: revised for the conversational implementation. [Index](README.md). Current usage: [CLI conversation guide](../cli-conversational-teams.md). See [16](16-implementation-status.md) for native compatibility/release boundaries.
 
-All commands in this document describe the interface to implement. The existing release does not expose this full command set. Preserve the existing bare `codeflow` app launch and `codeflow client ...` behavior.
+The source/package adds the conversational commands below while preserving the existing bare `codeflow` app launch and `codeflow client ...` behavior. No preset or saved-team setup is required.
 
 ## Proposed commands
 
 ```text
 codeflow init --providers claude,codex
 codeflow doctor
-codeflow team list
-codeflow team configure
-codeflow team save --proposal PROPOSAL_ID --name feature
-codeflow propose "Describe the task" --team feature
 codeflow approve PROPOSAL_ID --revision 2
-codeflow run --team feature "Describe the task"
 codeflow status RUN_ID
-codeflow attach RUN_ID
+codeflow attach RUN_ID --connection CONNECTION_ID
 codeflow pause RUN_ID
 codeflow resume RUN_ID
 codeflow cancel RUN_ID
 codeflow result RUN_ID
+codeflow preferences --provider claude --model MODEL_ID --effort high
 codeflow mcp --project-root .
 codeflow uninstall --project
 ```
 
-`run` is a convenience flow: propose -> show exact preview -> confirm -> start -> display progress. It does not bypass acceptance. `approve` opens an interactive confirmation showing the exact configuration and records acceptance; it must not have a public noninteractive `--yes` bypass in V1. Host-specific trusted acceptance may avoid this fallback after compatibility validation.
+The native host skill supplies the task-generated candidate through MCP and presents the preview. On hosts declaring MCP form elicitation support, `start_run` displays native confirmation of that exact revision and starts only after the user approves. Otherwise `approve` opens a terminal confirmation showing the exact configuration; there is no public noninteractive `--yes` bypass.
 
 ## Installation journey
 
 1. Install the released package and the provider CLIs required by the team. Use each provider's native login flow.
 2. Run `codeflow init` from the project root.
 3. Detect the canonical Git repository and installed providers without making paid inference calls.
-4. Choose providers, a starter workflow, and default role settings; offer a saved team.
+4. Detect required providers and offer optional preferences; omit team naming, starter workflows, and default-role configuration.
 5. Preview project file edits, merge managed entries, and write atomically.
 6. Restart/reload the host only where required by that host's documented behavior.
 7. Run `doctor` to verify project discovery, model/effort compatibility, bridge startup, and effective configuration.
@@ -43,19 +39,16 @@ The setup MUST NOT install unrelated dependencies, run project setup scripts, la
 
 ```text
 .codeflow/
-  cli-teams.json                 # schema version and default preset reference
-  profiles/*.json                # portable model/effort selections
-  teams/*.json                   # versioned role bindings
-  workflows/*.json               # custom declarative workflow versions
+  cli-teams.json                 # schema version and optional preferences
 .agents/skills/codeflow/SKILL.md  # Codex project skill
 .codex/config.toml               # merge Code Flow MCP entry
 .claude/skills/codeflow/SKILL.md  # Claude project skill
 .mcp.json                       # merge Claude MCP entry
 ```
 
-Use a new `cli-teams.json` namespace rather than repurposing the existing `.codeflow/config.json` without migration. Built-in workflows ship with the package and need not be copied into every repository. Portable project references select a workflow ID/version supported by the installed package.
+Use the new `cli-teams.json` namespace without repurposing the existing `.codeflow/config.json`. Run-local participant/process definitions are generated from the task and stored privately with the accepted run. No built-in workflow library or saved definitions need to be copied into the repository.
 
-Runtime endpoint discovery, acceptance receipts, provider sessions, local overrides, and artifacts live under private application state, not the repository. Personal presets may live in the existing private library with explicit scope. Project definitions override personal defaults only where explicitly referenced; no ambiguous same-name lookup during a run.
+Runtime endpoint discovery, acceptance receipts, provider sessions, generated definitions, and artifacts live under private application state. Explicit participant/task settings override project preferences, personal preferences, and provider defaults in that order. Accepted definitions cannot change when preferences change.
 
 Generated MCP configurations use the installed executable and portable arguments, with verified project-root resolution. No credentials, captured absolute home paths, or unpinned runtime package downloads are committed. A shared repository does not install its executable dependency automatically; `doctor` explains missing or incompatible package versions.
 
@@ -70,7 +63,7 @@ Uninstall removes only managed entries that still match the recorded ownership/c
 Claude Code example:
 
 ```text
-/codeflow Use the feature team to add password reset.
+/codeflow Use Claude to plan password reset and Codex to implement it, then have a fresh Claude reviewer inspect the change. Run the project tests.
 ```
 
 Codex example:
@@ -84,7 +77,7 @@ The exact skill invocation behavior must be checked against the supported host v
 Example preview:
 
 ```text
-Feature team — proposal 2
+Task-generated process — proposal 2
 Planner: Codex / resolved model / high
 Plan reviewer: Claude / resolved model / high
 Builder: managed Claude / resolved model / medium
@@ -97,7 +90,7 @@ Time/call ceilings: shown explicitly
 Host role: conversation and decisions; no assumed control of its model
 ```
 
-Users can request changes naturally. The host invokes `propose_team` again against the current revision. Inline overrides affect only the new proposal. Saving is a separate explicit operation.
+Users can request changes naturally. The host invokes `propose_run` again against the current proposal revision before start. Material changes to active work create an accepted continuation from a preserved snapshot after active turns settle. Saved-team management is deferred.
 
 ## Skill responsibilities
 
