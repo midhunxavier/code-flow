@@ -161,6 +161,7 @@ test("an exhausted lead preserves the pending request until a larger total allow
     await assert.rejects(f.act("send", { message: "Continue this discussion" }), /allowance is used/);
     const blocked = await f.read();
     assert.match(blocked.turn!.error!, /allowance is used/);
+    assert.equal((await f.chats.list(f.project.id)).find(chat => chat.id === f.chatId)!.status, "Needs attention");
     assert.equal(f.leadCalls(), 12);
     await f.act("allowance", { maxCalls: 24, maxMinutes: 60 });
     const done = await f.settle();
@@ -232,6 +233,24 @@ test("queued messages freeze their settings and provider switches retain prior A
         assert.equal(done.chat.events.filter(event => event.kind === "answer").length, 2);
     } finally { release(); }
 });
+test("a failed Agent turn preserves queued text without replaying writes and needs attention", async () => {
+    const f = await chatFixture("agent");
+    let release!: () => void, entered!: () => void;
+    const held = new Promise<void>(resolve => release = resolve), started = new Promise<void>(resolve => entered = resolve);
+    adapters.claude.run = async () => { entered(); await held; return { ok: false, finalText: "", error: "Sign in to the provider", errorKind: "auth" }; };
+    try {
+        await f.act("send", { message: "Make a change" }); await started;
+        await f.act("send", { message: "Then make a second change" });
+        release(); const state = await f.settle();
+        assert.equal(state.chat.agentRuns.length, 1);
+        assert.equal(state.chat.queue!.length, 0);
+        assert.equal(state.chat.events.filter(event => event.kind === "user").length, 2);
+        assert.ok(state.chat.events.some(event => event.kind === "receipt" && /explicitly/.test(event.body!)));
+        assert.equal((await f.chats.list(f.project.id)).find(chat => chat.id === f.chatId)!.status, "Needs attention");
+        assert.match(readFileSync(join(f.repo, "app.mjs"), "utf8"), /1/);
+    } finally { release(); }
+});
+
 async function fixture(candidate = plan()) {
     const dir = mkdtempSync(join(tmpdir(), "codeflow-web-repo-"));
     directories.push(dir);

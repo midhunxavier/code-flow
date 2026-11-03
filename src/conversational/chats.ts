@@ -60,11 +60,17 @@ export class Conversations {
     await mkdir(RUNS_DIR, { recursive: true });
     const file = join(RUNS_DIR, `${META}.journal.jsonl`), handle = await open(file, "a", 0o600); await handle.close(); await chmod(file, 0o600);
     const journal = await loadJournal(META, { strict: true });
+    const eventsByChat = new Map<string, ChatEvent[]>();
+    for (const [key, value] of journal) {
+      if (!key.startsWith("event:")) continue;
+      const id = key.slice(6, key.lastIndexOf(":")), events = eventsByChat.get(id) ?? [];
+      events.push(value as ChatEvent); eventsByChat.set(id, events);
+    }
     for (const [key, raw] of journal) {
       if (!key.startsWith("chat:")) continue;
       const chat = raw as ChatRecord;
       const count = (raw as ChatRecord & { eventCount?: number }).eventCount;
-      if (count !== undefined) chat.events = [...journal].filter(([key]) => key.startsWith(`event:${chat.id}:`)).map(([, value]) => value as ChatEvent).filter(event => event.sequence <= count).sort((a, b) => a.sequence - b.sequence);
+      if (count !== undefined) chat.events = (eventsByChat.get(chat.id) ?? []).filter(event => event.sequence <= count).sort((a, b) => a.sequence - b.sequence);
       if (chat.id !== key.slice(5) || !Array.isArray(chat.events) || !chat.receipts) fail("storage_unavailable", "Conversation storage needs repair");
       if (count !== undefined && (chat.events.length !== count || chat.events.some((event, i) => event.sequence !== i + 1))) fail("storage_unavailable", "Conversation event storage needs repair");
       this.persistedEvents.set(chat.id, count ?? 0);
@@ -197,7 +203,7 @@ export class Conversations {
     }
   }
   private async dispatch(chat: ChatRecord) {
-    if (this.closing) fail("conflict", "Code Flow is closing. This submitted message is preserved for the next startup.");
+    if (this.closing) return; // Leave a submitted, undispatched turn available after restart.
     const pending = chat.pending!;
     if (pending.runId) return;
     const event = chat.events.find(e => e.id === pending.eventId)!, state = pending.targetTask ? await this.tasks.get(pending.targetTask) : await this.taskState(chat);
@@ -351,7 +357,16 @@ export class Conversations {
         chat.taskIds.forEach(id => owned.add(id));
         const taskStates = chat.taskIds.map(id => this.tasks.historySummary(id, chat.project, chat.repo)), active = taskStates.find(t => t.status === "running" || t.preparing), latest = taskStates.at(-1);
         const pendingRun = chat.pending?.runId ? this.manager.get(chat.pending.runId) : undefined;
-        out.push({ id: chat.id, title: chat.title, project: chat.project, updatedAt: Math.max(chat.updatedAt, ...taskStates.map(t => t.updatedAt)), status: chat.pending && pendingRun?.status !== "done" ? pendingRun?.status === "failed" ? "Needs attention" : "Responding" : active ? active.paused ? "Paused" : "Working" : latest?.outcome ? CHAT_OUTCOMES[latest.outcome] ?? "Work preserved" : latest?.ready ? "Approach ready" : "Chat", runIds: [...chat.agentRuns, ...chat.leadRuns, ...taskStates.flatMap(t => t.runIds)] });
+        const agent = chat.agentRuns.length ? this.manager.get(chat.agentRuns.at(-1)!) : undefined;
+        const waiting = active?.runId ? Object.values(this.manager.get(active.runId)?.cliTeam?.questions ?? {}).some(question => !question.answer) : false;
+        const agentNeedsAttention = agent && agent.status !== "done" && (!latest || agent.createdAt > latest.updatedAt);
+        const status = chat.pending?.error || pendingRun?.status === "interrupted" ? "Needs attention"
+          : chat.pending ? pendingRun?.status === "failed" ? "Needs attention" : pendingRun?.pauseRequested ? "Paused" : "Responding"
+          : latest?.ready ? "Approach ready"
+          : active ? waiting ? "Needs attention" : active.paused ? "Paused" : "Working"
+          : agentNeedsAttention ? "Needs attention"
+          : latest?.outcome ? CHAT_OUTCOMES[latest.outcome] ?? "Work preserved" : "Chat";
+        out.push({ id: chat.id, title: chat.title, project: chat.project, updatedAt: Math.max(chat.updatedAt, ...taskStates.map(t => t.updatedAt)), status, runIds: [...chat.agentRuns, ...chat.leadRuns, ...taskStates.flatMap(t => t.runIds)] });
       } catch { /* A removed membership cannot reveal another project's history. */ }
     }
     const projects = project ? [project] : this.manager.projects?.list().map(p => p.id) ?? [];
