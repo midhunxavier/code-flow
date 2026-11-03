@@ -305,7 +305,7 @@ export function Rail() {
     <span class="proj-actions">
       <Menu label={`Project actions for ${p.name}`} icon="more" class="proj-more">{close => <><MenuItem onClick={() => { close(); route.value = { view: "project", id: p.id, section: "settings" }; }}>Project settings</MenuItem><MenuItem onClick={() => { close(); route.value = { view: "project", id: p.id, section: "runs" }; }}>History</MenuItem><MenuItem onClick={() => { close(); editProject(p.id); }}>Rename or edit project</MenuItem></>}</Menu>
       <button type="button" class="icon-btn" disabled={!draftsReady.value || composerLoading.value} aria-label={`New chat in ${p.name}`} title={`New chat in ${p.name}`} onClick={() => newRunIn(p)}>
-        <Icon name="plus" />
+        <Icon name="compose" />
       </button>
     </span>
   );
@@ -475,7 +475,7 @@ export function Rail() {
         </button>
       </div>
       <button class="btn primary new-run" disabled={!draftsReady.value || composerLoading.value} aria-label="New chat" title="New chat (n)" onClick={() => openChat()}>
-        <Icon name="plus" /> <span>New chat</span>
+        <Icon name="compose" /> <span>New chat</span>
       </button>
       <div class="rail-destinations" role="group" aria-label="Work navigation">
         <a class="nav-item" href="#/projects" title="Projects" aria-current={r.view === "projects" ? "page" : undefined}><Icon name="project" /><span class="nav-label">Projects</span></a>

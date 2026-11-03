@@ -52,7 +52,7 @@ export function ProjectView({ id, section, repository, tool, kind }: { id: strin
   const selectedRepository = repository ?? (p.repos.length === 1 ? p.repos[0] : undefined);
   return <div class="project-page">
     <header class="page-head"><div class="page-head-text pp-title"><h1>{p.name}</h1><p class="project-computer-label"><Icon name="terminal" />Computer: {computerLabel()}</p></div>
-      <div class="page-head-actions"><ProjectShare key={id} project={p} /><button class="btn primary" disabled={!draftsReady.value || composerLoading.value} onClick={() => openChat(id)}><Icon name="plus" />New chat</button>
+      <div class="page-head-actions"><ProjectShare key={id} project={p} /><button class="btn primary" disabled={!draftsReady.value || composerLoading.value} onClick={() => openChat(id)}><Icon name="compose" />New chat</button>
         <Menu label="Project actions" icon="more">{close => <>
           <MenuItem onClick={() => { close(); editProject(id); }}>Edit project</MenuItem>
           <MenuItem onClick={() => { close(); route.value = { view: "project", id, section: "settings" }; }}>Project settings</MenuItem>
