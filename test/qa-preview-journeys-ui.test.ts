@@ -29,7 +29,9 @@ const nodeCommand = (program: string) => `node -e '${program.replaceAll("'", "'\
 async function isolatedChromeEnvironment(): Promise<NodeJS.ProcessEnv> {
   if (process.platform !== "darwin" || process.env.CODEFLOW_CHROME) return {};
   const wrapper = join(dir, "qa-chrome");
-  const executable = "'" + findChrome().replaceAll("'", "'\\''") + "'";
+  const chrome = findChrome();
+  assert.ok(chrome, "Chrome is required for preview browser acceptance");
+  const executable = "'" + chrome.replaceAll("'", "'\\''") + "'";
   await writeFile(wrapper, `#!/bin/sh\nexec ${executable} --use-mock-keychain "$@"\n`, { mode: 0o700 });
   return { CODEFLOW_CHROME: wrapper };
 }
