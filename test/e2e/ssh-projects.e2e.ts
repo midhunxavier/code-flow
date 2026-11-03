@@ -68,6 +68,8 @@ test("connect from the app, browse a remote folder, run there, reconnect and ret
     await page.getByRole("button", { name: /^SSH connections:/ }).filter({ visible: true }).click();
     await page.getByRole("menuitem", { name: /^This computer/ }).click();
     await page.waitForURL(url => url.pathname === "/");
+    await page.locator(".chat-project-context").getByRole("button", { name: /^SSH connections:/ }).waitFor();
+    assert.equal(await page.locator(".topbar .host-switcher").count(), 0, "new chat has one mounted computer selector");
     await page.getByRole("button", { name: /^SSH connections:/ }).filter({ visible: true }).filter({ hasText: "This computer" }).waitFor();
     assert.equal(new URL(page.url()).origin, base);
     assert.deepEqual((await page.evaluate(async () => (await fetch("/api/projects")).json())).map((p: any) => p.id).sort(), [localProject.id, secondLocalProject.id].sort(), "remote projects never enter local project storage");

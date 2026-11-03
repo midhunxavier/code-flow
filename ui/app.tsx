@@ -220,12 +220,15 @@ const MOD_KEY = typeof navigator !== "undefined" && /Mac|iPhone|iPad|iPod/.test(
 /** Above the page, beside the sidebar: where you are, live updates, commands, then the theme and the side panel. */
 function TopBar() {
   const dark = theme.value === "dark";
+  const current = route.value;
+  const hostInComposer = !onPhone && ownerOnLocalListener.value && executionHost.value.kind === "local" &&
+    (current.view === "chat" && current.id === "new" || current.view === "composer" && !current.legacy && current.project === undefined);
   return (
     <header class="topbar">
       <button class="icon-btn menu-btn" aria-label="Show sidebar" aria-expanded={railOpen.value} onClick={() => (railOpen.value = !railOpen.value)}>
         <Icon name="menu" />
       </button>
-      <HostControl />
+      {!hostInComposer ? <HostControl /> : null}
       <Crumbs />
       {connection.value.state !== "connected" ? <span class={`connection-status ${connection.value.state}`} role="status" title={connection.value.detail ?? "Live updates are unavailable; displayed run information may be out of date"}>
         <span class="cs-dot" aria-hidden="true" />
