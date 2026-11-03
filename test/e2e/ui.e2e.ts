@@ -1009,7 +1009,7 @@ test("simple composer supports reusable teams, parameterized tasks, readiness an
     await fresh.getByLabel("Workflow name", { exact: true }).fill("E2E saved team");
     await fresh.getByRole("button", { name: "Save current workflow", exact: true }).click();
     await fresh.getByLabel("Revision to apply").waitFor();
-    await fresh.evaluate(() => { location.hash = "/"; });
+    await fresh.evaluate(() => { location.hash = "/workflows"; });
     await openAdvanced(fresh); await fresh.getByLabel("Workflow", { exact: true }).selectOption("solo");
     await openLibrary();
     await fresh.getByLabel("Saved workflow", { exact: true }).selectOption({ label: "E2E saved team · r1" });
@@ -1018,7 +1018,7 @@ test("simple composer supports reusable teams, parameterized tasks, readiness an
     await fresh.getByRole("button", { name: "Apply workflow", exact: true }).click();
     await fresh.getByLabel("Template name", { exact: true }).fill("E2E parameterized task");
     await fresh.getByRole("button", { name: "Save current task as template", exact: true }).click();
-    await fresh.evaluate(() => { location.hash = "/"; });
+    await fresh.evaluate(() => { location.hash = "/workflows"; });
     assert.equal(await fresh.getByLabel("Workflow", { exact: true }).inputValue(), "pipeline", "a previous team revision restores the original workflow");
     await fresh.getByLabel("Task", { exact: true }).fill("temporary draft");
     await fresh.locator(".composer-options > summary").click();
@@ -1037,7 +1037,7 @@ test("simple composer supports reusable teams, parameterized tasks, readiness an
     await fresh.locator(".readiness > summary").click();
     await fresh.getByRole("button", { name: "Inspect readiness", exact: true }).click();
     await fresh.locator(".readiness-results").getByText("Repository and base", { exact: true }).waitFor({ timeout: 30_000 });
-    await fresh.evaluate(() => { location.hash = "/"; });
+    await fresh.evaluate(() => { location.hash = "/workflows"; });
     await fresh.getByLabel("Task", { exact: true }).press("Meta+Enter");
     await fresh.waitForURL(/#\/run\//);
     const id = decodeURIComponent(fresh.url().split("#/run/")[1]!);
@@ -1228,7 +1228,7 @@ test("project defaults stay repository-scoped and a run creates its worktree fro
     await fresh.getByLabel("Project", { exact: true }).selectOption(project.id);
     assert.equal(await fresh.getByLabel("Default verification profile").inputValue(), "standard");
     assert.equal(await fresh.getByLabel("Default container image").inputValue(), "fixture-image:latest");
-    await fresh.evaluate(() => { location.hash = "/"; });
+    await fresh.evaluate(() => { location.hash = "/workflows"; });
     await fresh.getByRole("switch", { name: "AI team", exact: true }).waitFor();
     assert.equal(await fresh.locator(".composer-options").getAttribute("open"), null);
     assert.equal(await fresh.locator('.composer-library, [aria-label="Default check command"], [aria-label="Default verification profile"]').count(), 0, "project-wide default editors and library management stay in settings");
