@@ -611,6 +611,12 @@ test("CLI proposals appear in one durable chat; browser edits fence stale CLI ap
     assert.equal(f.manager.list().length, 1);
     const state = await waitCliTask(f, s => s.execution?.status !== "running");
     assert.equal(state.execution?.id, repeated.runId); assert.equal(state.execution?.outcome, "plan_ready");
+    const beforeNoop = (await f.chats.get(f.chatId)).chat.events.length;
+    const noopArgs = { runId: repeated.runId, action: "resume", operationId: `completed-noop-${++sequence}` };
+    assert.equal((await f.call("control_run", noopArgs)).accepted, false);
+    assert.equal((await f.call("control_run", noopArgs)).accepted, false);
+    await f.core.reconcileWorkspace();
+    assert.equal((await f.chats.get(f.chatId)).chat.events.length, beforeNoop, "a declined control and its replay must not claim work resumed in chat");
     const result = Object.values(f.manager.get(repeated.runId)!.cliTeam!.artifacts).find(a => a.kind === "result")!;
     const references = [{ runId: repeated.runId, artifactId: result.id, sha256: result.sha256 }];
     const continuation = await f.call("propose_run", { task: "Implement the agreed plan", context: { chatId: f.chatId, artifacts: references }, candidate: build() });

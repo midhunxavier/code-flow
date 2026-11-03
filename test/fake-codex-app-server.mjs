@@ -110,6 +110,7 @@ export async function serve(args) {
       notify("item/completed", { ...base, item: it, completedAtMs: Date.now() });
     };
     notify("turn/started", { threadId: thread.id, turn: { ...turn, status: "inProgress" } });
+    notify("remoteControl/status/changed", { status: "disabled" });
     item({ type: "userMessage", id: randomUUID(), clientId: null, content: params.input });
     try {
       const write = thread.params.sandbox === "workspace-write" || thread.params.sandbox === "danger-full-access";

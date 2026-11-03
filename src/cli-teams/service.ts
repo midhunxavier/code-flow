@@ -214,7 +214,7 @@ export class CliTeamsService {
       if (prior) { if (prior.hash !== hash) fail("idempotency_conflict", "Operation ID was used with different arguments"); return structuredClone(prior.value); }
       const value = await this.mutate(c, name, args);
       // Claim secrets are private control receipts, never copied into run projections.
-      const p = c.surface !== "web" && ["codeflow_steer_run", "codeflow_control_run"].includes(name) ? this.workspaceProposal(c, value.proposalId ?? value.runId) : undefined;
+      const p = c.surface !== "web" && value.accepted !== false && ["codeflow_steer_run", "codeflow_control_run"].includes(name) ? this.workspaceProposal(c, value.proposalId ?? value.runId) : undefined;
       const workspaceEvent = p?.chatId ? { proposalId: p.id, id: `cli-${digest([c.repo, name, args.operationId])}`, body: name === "codeflow_steer_run" ? args.message : `${args.action === "pause" ? "Pause requested" : args.action === "resume" ? "Resume requested" : "Cancel requested"} from CLI.`, runId: args.runId, noteId: value.noteId } : undefined;
       await this.save(key, { hash, value, ...(workspaceEvent ? { workspaceEvent } : {}) }); return value;
     });
