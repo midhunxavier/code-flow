@@ -6,6 +6,13 @@ import type { Run, RunSummary } from "../ui/types.js";
 
 const run = (patch: Partial<RunSummary> = {}) => ({ status: "done", loop: { check: "npm test" }, artifacts: [{ branch: "result", stat: "1 file changed" }], worktrees: [{ branch: "result" }], ...patch }) as RunSummary;
 
+test("private lead replies describe preparation rather than an agreed or verified task", () => {
+  for (const [kind, label] of [["proposal", "Approach ready"], ["clarify", "Needs input"], ["answer", "Reply ready"]]) {
+    assert.equal(executionLabel(run({ pattern: "chat-lead", patternSummary: JSON.stringify({ kind, body: "A lead reply" }) })), label);
+  }
+  assert.equal(executionLabel(run({ pattern: "chat-lead", status: "failed" })), "Stopped");
+});
+
 test("task progress uses four plain states and results distinguish empty from unknown changes", () => {
   assert.equal(executionLabel(run({ status: "running" })), "Working");
   assert.equal(executionLabel(run({ status: "running", awaiting: {} as RunSummary["awaiting"] })), "Waiting for you");

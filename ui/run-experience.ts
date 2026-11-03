@@ -4,6 +4,7 @@ import { checksLabel, integrityFor, runState } from "../src/run-status.js";
 export { checksLabel, integrityFor } from "../src/run-status.js";
 import type { AgentId, Run, RunSummary, Step } from "./types.js";
 import { teamAwaitingAnswer, teamNeedsResume } from "./team-state.js";
+import { chatLeadReplyLabel } from "./chat-lead-reply.js";
 
 /**
  * An Agent chat's provider, which every turn of its own thread goes to (replies, review comments, fixes);
@@ -54,6 +55,9 @@ export function declinedUnasked(text: string): boolean {
  * `approvalPending`: a tool approval or question of this run waits in the inbox.
  */
 export function executionLabel(run: RunSummary, approvalPending = false, steps?: Step[]): string {
+  if (run.pattern === "chat-lead" && run.status === "done") {
+    return chatLeadReplyLabel(run.patternSummary ?? run.summary ?? "");
+  }
   if (run.cliTeam?.outcome && run.status !== "running") {
     const label = ({ plan_ready: "Plan ready", agreed_plan: "Plan agreed", verified_changes: "Changes verified", review_complete: "Review completed", stopped_limit: "Stopped with partial work", blocked: "Needs attention" } as Record<string, string>)[run.cliTeam.outcome];
     if (label) return label;

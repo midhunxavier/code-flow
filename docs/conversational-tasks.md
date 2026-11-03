@@ -5,8 +5,8 @@ Select **New chat**, choose a project and Git repository, and describe what you 
 ## Start simply
 
 1. Choose **New chat** from the sidebar or a project. Create a project and add its repository if needed.
-2. Choose **Agent** or **Team**, the provider, model and supported effort beside the composer. Mobile layouts put these choices in **Message settings**.
-3. Send a question, an idea or a concrete task. Enter sends; Shift + Enter adds a line. Attach supporting files with the file button.
+2. Choose **Agent** or **Team** beside the composer. Open **Message settings** (the model button) to choose the provider, model and supported effort. In Team mode these settings select the lead; each proposed approach shows the worker settings separately.
+3. Send a question, an idea or a concrete task. Enter sends; Shift + Enter adds a line. Attach supporting files with **+ → Attach files**. The project’s sidebar **+** opens a new chat in that project.
 4. In Team mode, discuss the idea first or review the proposed approach. Workers start only after **Start task**.
 5. Keep working in the same chat. A chat can hold a plan, its implementation, a later review and further tasks, each with its own approved execution.
 
@@ -19,6 +19,38 @@ Then:
 > Implement the agreed plan. Have Claude build and Codex review. Run the focused tests and finish only when the check passes and Codex approves the same code.
 
 You can name exact models and supported efforts or let the lead propose them. Unsupported explicit choices require correction; Code Flow does not silently substitute them. Only the providers used by the task need to be available and signed in.
+
+## Try Haiku and Luna from plan agreement to verified code
+
+This small demo uses Node's built-in test runner, with no framework or dependencies. Install and sign in to both provider CLIs before starting. Use the explicit models only when they are available in your installed CLI catalogs; an unavailable choice should be corrected rather than silently substituted.
+
+1. Create a disposable Git repository in a terminal:
+
+   ```sh
+   TEAM_CHAT_DEMO="$(mktemp -d "$HOME/codeflow-team-demo.XXXXXX")"
+   cd "$TEAM_CHAT_DEMO"
+   git init -q
+   printf '%s\n' '# Team chat demo' > README.md
+   git add README.md
+   git -c user.name="Team Demo" -c user.email="demo@code-flow.invalid" commit -qm "Initialize demo"
+   pwd
+   ```
+
+2. In Code Flow, create a project named **Team chat demo**, add the repository path printed above, and choose **New chat → Team**. Open **Message settings** and choose Claude Haiku at **high** effort for the lead. This does not set the worker efforts: inspect those in the approach too.
+
+3. Send this plan-only request:
+
+   > Plan a tiny JavaScript slug utility. Use Claude claude-haiku-5-5 and Codex gpt-6-luna, both at high effort. Haiku drafts the plan, Luna reviews it, and Haiku addresses corrections. Require explicit approval of the same final plan from both agents, with at most two review passes. The planned implementation is slugify.mjs plus slugify.test.mjs: lowercase ASCII letters, trim separators, replace runs of non-ASCII-alphanumeric characters with one hyphen, return an empty string for empty or separator-only input, and throw TypeError for non-string input. Include tests for all those cases. Plan only; do not implement yet.
+
+4. Review the approach card before choosing **Start task**. Confirm both participant model IDs and **high** effort, plan-only scope, explicit agreement reviews, and the limits. Use **Adjust approach** for model/effort or limit corrections. For this small demo, 12 calls and 30 minutes is a reasonable starting allowance. Start it and wait for **Plan agreed**, then read the final plan. If agreement is not reached within the limits, inspect the remaining findings before authorizing more work.
+
+5. Stay in the same chat, choose **New work** if the composer is targeting an earlier task, and send:
+
+   > Implement the agreed slug utility plan. Claude claude-haiku-5-5 is the builder and Codex gpt-6-luna is the independent reviewer; both use high effort. Haiku creates slugify.mjs and slugify.test.mjs and fixes review findings. Run node --test slugify.test.mjs. Allow up to two build-review passes. Finish only when this check passes and Luna approves the same final code snapshot. Preserve the agreed behavior. Do not merge, push or deploy.
+
+6. Review this second approach: it should authorize implementation, name both workers at **high**, contain the exact check command, and retain the earlier task context. Choose **Start task** again. The first approval covered planning; this approval covers implementation.
+
+7. Expect **Changes verified** when the check and review gate pass. Open **Task details** and verify actual completed assignments and native CLI session receipts for Haiku and Luna. Open **Inspect execution and changes** to read the diff, test output and review evidence. The chat should retain both **Plan agreed** and **Changes verified** results. Code stays in the preserved worktree until you explicitly apply it to your checkout.
 
 ## Agent mode
 
@@ -58,7 +90,7 @@ Reloading restores messages, approaches, executions and results. Closing the win
 
 Results appear in order beside their tasks: **Plan ready**, **Plan agreed**, **Changes verified**, **Review completed**, or **Stopped with partial work**. The main result is the final deliverable; evidence opens separately. Agreement applies to a specific artifact, and checks apply to a recorded code snapshot.
 
-**Task details** contains actual participant assignment statuses and CLI session receipts, worktrees and earlier executions. A worker saying that another agent reviewed something is not participation evidence. Code Flow starts managed participants itself, and workers perform their own assignments without nesting another team.
+**Task details** contains actual participant assignment statuses and CLI session receipts, worktrees and earlier executions. Inspecting a lead turn shows its readable response, proposed participants and workflow, with protocol JSON collapsed under **Technical response (JSON)**. A proposed participant has not run yet. A worker saying that another agent reviewed something is not participation evidence. Code Flow starts managed participants itself, and workers perform their own assignments without nesting another team.
 
 **Inspect execution and changes** opens the existing run workspace. Applying changes, opening a PR, merging, pushing and deploying remain explicit actions.
 

@@ -304,7 +304,7 @@ export function Rail() {
       <button type="button" class="icon-btn" disabled={!draftsReady.value || composerLoading.value} aria-label={`New chat in ${p.name}`} title={`New chat in ${p.name}`} onClick={() => newRunIn(p)}>
         <Icon name="plus" />
       </button>
-      <button type="button" class="icon-btn" aria-label={`Edit ${p.name}`} title="Rename, repositories, delete" onClick={() => editProject(p.id)}>
+      <button type="button" class="icon-btn proj-more" aria-label={`Edit ${p.name}`} title="Rename, repositories, delete" onClick={() => editProject(p.id)}>
         <Icon name="more" />
       </button>
     </span>
@@ -329,7 +329,7 @@ export function Rail() {
           <div class={`proj-head ${page && page === g.project?.id ? "here" : ""}`}>
             {g.project ? (
               <button type="button" class="proj-name" title={`Open ${g.name}: ${g.project.repos.join(", ")}`} aria-current={page === g.project.id ? "page" : undefined} onClick={() => go({ view: "project", id: g.project!.id })}>
-                <span class="pn">{g.name}</span>
+                <Icon name="folder" /><span class="pn">{g.name}</span>
                 {g.archived ? <span class="pc">{g.archived} loaded archived</span> : null}
               </button>
             ) : (

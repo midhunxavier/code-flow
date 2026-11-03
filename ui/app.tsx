@@ -1,6 +1,7 @@
 import { quotaReason } from "../src/quota-status.js";
 import { RunNavigation } from "./keyboard-navigation.js";
 import { runTitle } from "../src/run-title.js";
+import { chatLeadReplyLabel } from "./chat-lead-reply.js";
 import { checksLabel } from "../src/run-status.js";
 const ActivityView = lazyView(() => import("./activity.js").then(module => module.ActivityView));
 import { ConfirmationHost } from "./confirm-dialog.js";
@@ -340,7 +341,7 @@ function Crumbs() {
       </span>
     );
   } else {
-    const page = r.view === "composer" ? "New run" : r.view === "projects" ? "Projects" : "";
+    const page = r.view === "chat" ? r.id === "new" ? "New chat" : "Chat" : r.view === "composer" ? !r.legacy && r.project === undefined && !onPhone && ownerOnLocalListener.value && executionHost.value.kind === "local" ? "New chat" : "New run" : r.view === "projects" ? "Projects" : "";
     trail = page ? (
       <span class="crumb here" aria-current="page">
         {page}
@@ -365,23 +366,26 @@ export function notifyFinished(run: RunSummary) {
     interrupted: "was interrupted",
   };
   const watch = run.status !== "running" && !run.awaiting ? watchNeedingYou(run) : undefined;
-  const title = run.awaiting
+  const leadTurn = run.pattern === "chat-lead";
+  const leadChat = leadTurn ? run.conversationId ?? run.cliTeam?.taskConversation?.chatId ?? run.cliTeam?.taskConversation?.id : undefined;
+  const title = leadTurn ? `code-flow: ${run.status === "done" ? chatLeadReplyLabel(run.patternSummary ?? run.summary ?? "").toLowerCase() : `conversation lead ${verbs[run.status] ?? run.status}`}` : run.awaiting
     ? `code-flow: ${run.awaiting.title.toLowerCase()}`
     : teamAwaitingAnswer(run) ? "code-flow: your team needs an answer" : watch
       ? `code-flow: PR needs you — ${watch.detail}`
       : `code-flow: run ${verbs[run.status] ?? run.status}`;
-  announcement.value = `${title.replace(/^code-flow: /, "")}: ${run.task.split("\n")[0]!.slice(0, 120)}`;
+  const body = leadTurn ? "Continue in chat to review the reply." : run.task.split("\n")[0]!;
+  announcement.value = `${title.replace(/^code-flow: /, "")}: ${body.slice(0, 120)}`;
   if (!canNotify() || (viewing && !document.hidden)) return;
   let n: Notification;
   try {
-    n = new Notification(title, { body: run.task.split("\n")[0], tag: run.id });
+    n = new Notification(title, { body, tag: run.id });
   } catch {
     // Android Chrome (the phone link) only shows notifications from a service worker: a toast instead.
     return showToast(title.replace(/^code-flow: /, ""), 5000);
   }
   n.onclick = () => {
     window.focus();
-    navigate({ view: "run", id: run.id });
+    navigate(leadChat ? { view: "chat", id: leadChat } : { view: "run", id: run.id });
     n.close();
   };
 }
