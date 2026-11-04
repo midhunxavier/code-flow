@@ -194,7 +194,7 @@ test("packed conversational teams install, bootstrap one owner, execute through 
       assert.equal(result.isError, false, JSON.stringify(result)); return result.structuredContent.data;
     };
     assert.equal((await rpc("initialize", { protocolVersion: "2025-11-25", capabilities: { elicitation: { form: {} } }, clientInfo: { name: "package-test", version: "1" } })).serverInfo.name, "code-flow");
-    assert.equal((await rpc("tools/list", {})).tools.length, 12);
+    assert.equal((await rpc("tools/list", {})).tools.length, 14);
     ownerPid = JSON.parse(await readFile(join(home, "server.lock"), "utf8")).pid;
     const candidate = { scope: "plan", participants: [{ id: "author", provider: "claude" }, { id: "reviewer", provider: "codex" }], completion: ["The plan has independent review"], steps: [
       { id: "draft", type: "task", operation: "propose", participant: "author", instructions: "Draft the login plan" },

@@ -5,6 +5,8 @@ import { randomBytes } from "node:crypto";
 import { CLI_MESSAGE_BYTES } from "./limits.js";
 import { readFile, realpath } from "node:fs/promises";
 import { repoRoot } from "../git.js";
+import { formatToolResult } from "./presentation.js";
+import { installProject } from "./install.js";
 
 export async function serveMcp(projectRoot: string) {
   projectRoot = await realpath(await repoRoot(projectRoot));
@@ -24,22 +26,22 @@ export async function serveMcp(projectRoot: string) {
   let initialized = false, nativeForm = false, inflight = 0;
   const send = (value: unknown) => process.stdout.write(`${JSON.stringify(value)}\n`);
   const rpcError = (id: unknown, code: number, message: string) => send({ jsonrpc: "2.0", id, error: { code, message } });
-  const approveInHost = async (parent: string | number, args: any) => {
-    const preview = await runtimeRequest(client.runtime, "/preview", { projectRoot, proposalId: args.proposalId, revision: args.expectedRevision });
-    if (preview.hash !== args.proposalHash) throw new CliTeamError("acceptance_stale", "Proposal changed; review its current revision before starting");
+  const approveInHost = async (parent: string | number, args: any, handoff = false) => {
+    const preview = await runtimeRequest(client.runtime, handoff ? "/handoff-preview" : "/preview", { projectRoot, runId: args.runId, proposalId: args.proposalId, revision: args.expectedRevision });
+    if ((handoff ? preview.previewHash : preview.hash) !== (handoff ? args.previewHash : args.proposalHash)) throw new CliTeamError("acceptance_stale", "The preview changed; inspect it again before confirming.");
     const result = await new Promise<any>((resolve, reject) => {
       const id = `codeflow-approval-${randomBytes(16).toString("hex")}`;
       const timer = setTimeout(() => { prompts.delete(id); reject(new CliTeamError("acceptance_cancelled", "This confirmation timed out without starting work. Check the shared task before requesting start again.")); }, 5 * 60_000);
       prompts.set(id, { parent, resolve, reject, timer });
       send({ jsonrpc: "2.0", id, method: "elicitation/create", params: {
-        mode: "form", message: `Review this Code Flow proposal before starting.\n\n${preview.preview}`,
-        requestedSchema: { type: "object", properties: { approve: { type: "boolean", title: "Approve and start this exact proposal", description: `Proposal ${args.proposalId}, revision ${args.expectedRevision}. Declining starts no work.`, default: false } }, required: ["approve"] },
+        mode: "form", message: handoff ? `Review application of these exact task changes.\n\n${preview.summary}\nPreview hash: ${preview.previewHash}` : `Review this Code Flow proposal before starting.\n\n${preview.preview}`,
+        requestedSchema: { type: "object", properties: { approve: { type: "boolean", title: handoff ? "Apply and stage these exact changes" : "Approve and start this exact proposal", description: handoff ? `Run ${args.runId}. This changes the checkout and index; no commit or push.` : `Proposal ${args.proposalId}, revision ${args.expectedRevision}. Declining starts no work.`, default: false } }, required: ["approve"] },
       } });
     });
-    if (result?.action !== "accept" || result.content?.approve !== true) throw new CliTeamError(result?.action === "cancel" ? "acceptance_cancelled" : "acceptance_declined", "This confirmation did not approve or start work. Check the shared task if it was started elsewhere; otherwise revise it or request start again when ready.");
+    if (result?.action !== "accept" || result.content?.approve !== true) throw new CliTeamError(result?.action === "cancel" ? "acceptance_cancelled" : "acceptance_declined", handoff ? "Application was not approved; the checkout was not changed by this request." : "This confirmation did not approve or start work. Check the shared task if it was started elsewhere; otherwise revise it or request start again when ready.");
     // The reply is a server-request response from the native host, never a tool argument
     // supplied by the model. The owner rechecks the exact revision/hash atomically.
-    await runtimeRequest(client.runtime, "/confirm", { projectRoot, proposalId: args.proposalId, revision: args.expectedRevision, hash: preview.hash });
+    await runtimeRequest(client.runtime, handoff ? "/handoff-confirm" : "/confirm", { projectRoot, runId: args.runId, previewHash: args.previewHash, proposalId: args.proposalId, revision: args.expectedRevision, hash: preview.hash });
   };
   const request = async (m: any) => {
     const validId = (v: unknown) => typeof v === "string" || typeof v === "number" && Number.isFinite(v);
@@ -66,15 +68,26 @@ export async function serveMcp(projectRoot: string) {
           let data: any;
           try { data = await client.call(name, args); }
           catch (e) {
-            if (name !== "codeflow_start_run" || !nativeForm || !(e instanceof CliTeamError) || e.code !== "acceptance_required") throw e;
-            await approveInHost(m.id, args); data = await client.call(name, args);
+            if (!["codeflow_start_run", "codeflow_apply_handoff"].includes(name) || !nativeForm || !(e instanceof CliTeamError) || e.code !== "acceptance_required") throw e;
+            await approveInHost(m.id, args, name === "codeflow_apply_handoff"); data = await client.call(name, args);
           }
           if (name === "codeflow_propose_run") data = { ...data, approvalMethod: nativeForm ? "native_form" : data.workspace ? "browser" : "terminal", ...(nativeForm ? { nextAction: "Review this proposal, then call codeflow_start_run with its ID, revision, and hash. Code Flow will ask the user to approve and start inside this session; no separate terminal is needed." } : data.workspace ? { nextAction: "Review and start the approach in Code Flow using workspace.url or codeflow_open_task. Then call codeflow_start_run with the same proposal revision and hash to recover the existing run. Terminal approval remains available." } : {}) };
-          if (name === "codeflow_list_providers") data = { ...data, approvalMethod: nativeForm ? "native_form" : "terminal" };
+          if (name === "codeflow_list_providers") {
+            // Inspect host-side files here, not in the owner (which may be a bundled remote host).
+            let configuration: { state: string; message: string; pendingFiles?: string[] };
+            try {
+              const setup = await installProject(projectRoot, data.providers.filter((p: any) => p.installed).map((p: any) => p.id), true);
+              configuration = { state: setup.changes.length ? "update_available" : "current", pendingFiles: setup.changes.map(e => e.path), message: setup.changes.length ? "Project setup differs from this runtime. Run codeflow init, then reconnect Code Flow in the host to load the updated tools and skill." : "Project configuration matches this runtime." };
+            } catch (e) { configuration = { state: "needs_attention", message: `Configuration check: ${e instanceof Error ? e.message : "unavailable"}. Existing configuration was preserved.` }; }
+            const compatible = CLI_TOOLS.every(t => data.connection?.tools?.includes(t.name));
+            data = { ...data, connection: { ...data.connection, compatible, configuration,
+              ...(!compatible ? { message: "The owner does not advertise this integration's current tools. Let active work settle, restart Code Flow with this version, then reconnect the host." } : {}) }, approvalMethod: nativeForm ? "native_form" : "terminal" };
+          }
+          if (name === "codeflow_preview_handoff") data = { ...data, approvalMethod: nativeForm ? "native_form" : "terminal", nextAction: nativeForm ? "Read all diff pages, then call codeflow_apply_handoff with the exact previewHash to show native confirmation." : `Review and apply in your interactive terminal: codeflow apply ${data.runId}` };
           value = { protocolVersion: 1, ok: true, data };
         }
         catch (e) { error = true; value = { protocolVersion: 1, ok: false, error: { code: e instanceof CliTeamError ? e.code : "runtime_unavailable", message: e instanceof Error ? e.message : "CLI request failed", details: e instanceof CliTeamError ? e.details : undefined } }; }
-        result = { content: [{ type: "text", text: JSON.stringify(value) }], structuredContent: value, isError: error };
+        result = { content: [{ type: "text", text: formatToolResult(m.params?.name, value) }], structuredContent: value, isError: error };
       } else { rpcError(m.id, -32601, "Method not found"); return; }
       send({ jsonrpc: "2.0", id: m.id, result });
     } finally { inflight--; }

@@ -147,7 +147,7 @@ test("a sweep configures single agents, team patterns and saved templates withou
     assert.equal(await dialog.getByRole("button", { name: "Start 1 run", exact: true }).isEnabled(), false);
     await workflow.selectOption("pipeline");
     await mkdir(join(root, "output/playwright"), { recursive: true });
-    for (const width of [1414, 390]) {
+    for (const width of [1414, 390, 320]) {
       await sweepPage.setViewportSize({ width, height: 785 });
       await dialog.getByRole("combobox", { name: "Planner", exact: true }).scrollIntoViewIfNeeded();
       await sweepPage.addScriptTag({ content: axe.source });
@@ -256,7 +256,7 @@ test("issue repairs use the focused workflow and keep partial failures visible f
     assert.equal(await dialog.getByRole("checkbox", { name: /#24/ }).isDisabled(), true);
     assert.equal(await dialog.getByRole("checkbox", { name: /#23/ }).isChecked(), false);
     await dialog.getByRole("button", { name: "Needs work 2", exact: true }).click();
-    for (const width of [1414, 390]) {
+    for (const width of [1414, 390, 320]) {
       await repairPage.setViewportSize({ width, height: 823 });
       await repairPage.addScriptTag({ content: axe.source });
       const violations = await repairPage.evaluate(async () => (window as unknown as { axe: typeof axe }).axe.run(document, { runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"] } }).then(result => result.violations));

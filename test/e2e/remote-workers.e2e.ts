@@ -39,7 +39,15 @@ test("composer selects a remote worker, stages references, imports its result an
   await page.locator("button.tl-step").filter({hasText:step.title}).click();
   const panel = page.getByLabel("Remote execution receipt", { exact: true }); await panel.getByRole("button", { name: "Inspect remote receipt", exact: true }).click(); await panel.getByText("Receipt: completed", { exact: true }).waitFor(); assert.equal(await panel.getByRole("button", { name: "Cancel remote execution", exact: true }).count(), 0);
   const invalid = await fetch(base + "/api/runs", { method: "POST", headers, body: JSON.stringify({ repo: fixture.source, task: "WRITE", pattern: "solo", roles: { agent: ["claude"] }, approvals: { tools: true }, loop: { remoteWorker: { workerId: "fixture", repoMapping: "project" } } }) }); assert.equal(invalid.status, 400);
-  await page.goto(base + "/#/settings/connections/execution"); const worker = page.getByLabel("Worker Fixture worker", { exact: true }); await worker.getByRole("button", { name: "Check worker connection", exact: true }).click(); await worker.getByText("claude: CLI installed", { exact: true }).waitFor(); assert.deepEqual(errors, []);
+  await page.goto(base + "/#/settings/connections/execution"); const worker = page.getByLabel("Worker Fixture worker", { exact: true }); await worker.getByRole("button", { name: "Check worker connection", exact: true }).click(); await worker.getByText("claude: CLI installed", { exact: true }).waitFor();
+  const desktopText = await worker.innerText();
+  await page.setViewportSize({ width: 320, height: 568 });
+  await worker.scrollIntoViewIfNeeded();
+  await page.screenshot({ path: join(root, "output/playwright/remote-worker-mobile.png"), animations: "disabled" });
+  assert.equal(await worker.innerText(), desktopText, "mobile keeps the worker status and actions");
+  const overflow = await worker.evaluate(root => [...root.querySelectorAll<HTMLElement>("*")].filter(el => { const r = el.getBoundingClientRect(), s = getComputedStyle(el); return r.width > 0 && r.height > 0 && s.visibility === "visible" && (r.left < -1 || r.right > innerWidth + 1); }).map(el => `${el.tagName}.${el.className} ${Math.round(el.getBoundingClientRect().right)}`));
+  assert.deepEqual(overflow, [], "worker details fit a narrow phone");
+  assert.deepEqual(errors, []);
 });
 
 async function selectAgentConversation(page: import("playwright-core").Page) {

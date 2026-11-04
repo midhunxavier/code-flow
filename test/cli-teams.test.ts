@@ -102,6 +102,132 @@ function stub(fn?: typeof adapters.claude.run) {
   const worker: typeof adapters.claude.run = fn ?? (async opts => ({ ok: true, finalText: opts.jsonSchema ? JSON.stringify({ body: "Reviewed with evidence", verdict: "approve", findings: [] }) : "Plan: accessible labels, validation, keyboard focus, and tests." }));
   adapters.claude.run = worker; adapters.codex.run = worker;
 }
+async function cliOutput(repo: string, args: string[]) {
+  const child = spawn(process.execPath, ["--import", import.meta.resolve("tsx"), fileURLToPath(new URL("../src/cli-teams/cli.ts", import.meta.url)), ...args, "--project-root", repo], { env: process.env, stdio: ["ignore", "pipe", "pipe"] });
+  let out = "", err = ""; child.stdout.on("data", c => out += c); child.stderr.on("data", c => err += c);
+  const timer = setTimeout(() => child.kill("SIGKILL"), 15000);
+  try { const code = await new Promise<number | null>((resolve, reject) => { child.on("error", reject); child.on("exit", resolve); }); assert.equal(code, 0, err); return out; }
+  finally { clearTimeout(timer); }
+}
+
+test("CLI UX e2e: MCP connection, native planning approval, continuation, result and confirmed checkout handoff", async () => {
+  const f = await setup();
+  stub(async opts => {
+    if (opts.mode === "write") writeFileSync(join(opts.cwd, "app.mjs"), "export const value = 2;\n");
+    return { ok: true, finalText: opts.jsonSchema ? JSON.stringify({ body: "Exact target reviewed", verdict: "approve", findings: [] }) : "Plan: set value to 2 and run the unchanged test." };
+  });
+  const transport = await startCliTeamsTransport(f.service), peer = await mcpPeer(f, { elicitation: { form: {} } });
+  const call = async (name: string, args: object = {}) => {
+    const reply = await peer.call(name, args).result;
+    assert.equal(reply.structuredContent.ok, true, JSON.stringify(reply.structuredContent));
+    assert.equal(reply.content[0].text.startsWith('{"protocolVersion"'), false, "human text is not a duplicated protocol object");
+    return reply.structuredContent.data;
+  };
+  const approve = async (name: string, args: object, accepted = true) => {
+    const requested = peer.call(name, args), form = await peer.prompt();
+    assert.equal(form.params.requestedSchema.properties.approve.default, false);
+    peer.send({ id: form.id, result: { action: "accept", content: { approve: accepted } } });
+    return requested.result;
+  };
+  try {
+    const connection = await call("list_providers"); assert.equal(connection.connection.live, true); assert.equal(connection.connection.compatible, true);
+    assert.equal(connection.connection.configuration.state, "update_available");
+    const p = await call("propose_run", { operationId: "ux-plan", task: "Plan the value fix", candidate: planning() });
+    assert.match(p.summary, /Deliverable:/);
+    const started = await approve("start_run", { operationId: "ux-start", proposalId: p.proposalId, expectedRevision: p.revision, proposalHash: p.proposalHash });
+    const plan = f.manager.get(started.structuredContent.data.runId)!; await finished(plan);
+    const planStatus = await call("get_run", { runId: plan.id });
+    assert.equal(planStatus.progress.phase, "completed"); assert.equal(planStatus.continuation.context.reuseRunId, plan.id);
+    const proposed = await call("propose_run", { operationId: "ux-build", task: "Implement that plan", candidate: building(), context: planStatus.continuation.context });
+    const built = await approve("start_run", { operationId: "ux-build-start", proposalId: proposed.proposalId, expectedRevision: proposed.revision, proposalHash: proposed.proposalHash });
+    const run = f.manager.get(built.structuredContent.data.runId)!; await finished(run);
+    const status = await call("get_run", { runId: run.id });
+    assert.equal(status.outcome, "verified_changes", run.error); assert.equal(status.handoff.check.passed, true); assert.equal(status.handoff.reviewCount, 1);
+    const result = await call("get_artifact", { runId: run.id, artifactId: status.result.id, sha256: status.result.sha256 }); assert.match(result.body, /Required checks passed/);
+    const preview = await call("preview_handoff", { runId: run.id, maxBytes: 256 });
+    assert.equal(preview.ready, true, preview.reason);
+    let diff = preview.diff, cursor = preview.nextCursor;
+    while (cursor !== undefined) { const page = await call("preview_handoff", { runId: run.id, cursor, previewHash: preview.previewHash, maxBytes: 256 }); diff += page.diff; cursor = page.nextCursor; }
+    assert.match(diff, /\+export const value = 2/);
+    const terminal = JSON.parse(await cliOutput(f.repo, ["diff", run.id, "--json"]));
+    assert.equal(terminal.diff, diff); assert.equal(terminal.previewHash, preview.previewHash);
+    assert.match(await cliOutput(f.repo, ["result", run.id]), /Check: passed/);
+    assert.equal(JSON.parse(await cliOutput(f.repo, ["doctor", "--json"])).connection.live, true);
+    const before = execFileSync("git", ["rev-parse", "HEAD"], { cwd: f.repo, encoding: "utf8" });
+    const args = { operationId: "ux-apply", runId: run.id, previewHash: preview.previewHash };
+    const declined = await approve("apply_handoff", args, false); assert.equal(declined.structuredContent.error.code, "acceptance_declined");
+    assert.equal(readFileSync(join(f.repo, "app.mjs"), "utf8"), "export const value = 1;\n");
+    const applied = await approve("apply_handoff", args); assert.equal(applied.structuredContent.data.applied, true, JSON.stringify(applied));
+    assert.equal((await call("apply_handoff", args)).applied, true, "same operation reconciles without another confirmation");
+    assert.equal((await call("apply_handoff", { ...args, operationId: "ux-apply-again" })).applied, true, "same exact effect is not applied twice under a new operation");
+    assert.equal(peer.prompts.length, 0);
+    assert.equal(execFileSync("git", ["rev-parse", "HEAD"], { cwd: f.repo, encoding: "utf8" }), before);
+    assert.equal(execFileSync("git", ["diff", "--cached", "--name-only"], { cwd: f.repo, encoding: "utf8" }).trim(), "app.mjs");
+    const checkEnv = { ...process.env }; delete checkEnv.NODE_TEST_CONTEXT;
+    assert.match(execFileSync(process.execPath, ["--test", "--test-reporter=tap", "app.test.mjs"], { cwd: f.repo, encoding: "utf8", env: checkEnv }), /pass 1/);
+  } finally { await peer.close(); await transport.close(); }
+});
+
+test("CLI UX: task delta excludes prior user changes and application receipts survive restart", async () => {
+  const f = await setup();
+  writeFileSync(join(f.repo, "notes.txt"), "original\n"); execFileSync("git", ["add", "."], { cwd: f.repo }); execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "notes"], { cwd: f.repo });
+  writeFileSync(join(f.repo, "notes.txt"), "user baseline change\n");
+  stub(async opts => { if (opts.mode === "write") writeFileSync(join(opts.cwd, "app.mjs"), "export const value = 2;\n"); return { ok: true, finalText: opts.jsonSchema ? JSON.stringify({ body: "Reviewed", verdict: "approve", findings: [] }) : "Implemented" }; });
+  const candidate = building(); candidate.source = "working_changes";
+  const run = await start(f, candidate); await finished(run);
+  const continuation = await f.call("propose_run", { task: "Review these changes", candidate: { scope: "review", participants: [{ id: "reviewer", provider: "claude" }], completion: ["Review the preserved changes"], steps: [{ id: "snapshot", type: "task", operation: "capture_snapshot" }, { id: "review", type: "task", operation: "review_code", participant: "reviewer", instructions: "Review", inputs: ["snapshot"] }, { id: "result", type: "finish", outcome: "review_complete", inputs: ["review"] }] }, context: { reuseRunId: run.id } });
+  assert.equal(f.service.workspaceProposals().find(p => p.id === continuation.proposalId)!.context.continueRunId, run.id);
+  writeFileSync(join(f.repo, "notes.txt"), "original\n");
+  const p = await f.call("preview_handoff", { runId: run.id }); assert.equal(p.ready, true, p.reason); assert.doesNotMatch(p.diff, /notes.txt|user baseline/);
+  await f.service.acceptHandoff(f.connection, run.id, p.previewHash);
+  const args = { operationId: "durable-apply", runId: run.id, previewHash: p.previewHash };
+  const applied = await f.service.call(f.connection, "codeflow_apply_handoff", args) as any; assert.equal(applied.applied, true);
+  const recovered = new CliTeamsService(f.manager); await recovered.load(); const connection = await recovered.connect(f.repo);
+  assert.equal((await recovered.call(connection, "codeflow_apply_handoff", { ...args, operationId: "recovered-apply" }) as any).applied, true);
+  assert.equal(execFileSync("git", ["diff", "--cached", "--name-only"], { cwd: f.repo, encoding: "utf8" }).trim(), "app.mjs");
+  assert.equal(readFileSync(join(f.repo, "notes.txt"), "utf8"), "original\n");
+});
+
+test("CLI UX: interrupted application is fenced before any duplicate checkout write", async () => {
+  const f = await setup(); stub(async opts => { if (opts.mode === "write") writeFileSync(join(opts.cwd, "app.mjs"), "export const value = 2;\n"); return { ok: true, finalText: opts.jsonSchema ? JSON.stringify({ body: "Reviewed", verdict: "approve", findings: [] }) : "Implemented" }; });
+  const run = await start(f, building()); await finished(run);
+  const p = await f.call("preview_handoff", { runId: run.id });
+  await journalEntry("cli-teams-control", `handoff-effect:${f.connection.repo}:${run.id}:${p.previewHash}`, { state: "applying", previewHash: p.previewHash });
+  const recovered = new CliTeamsService(f.manager); await recovered.load(); const connection = await recovered.connect(f.repo);
+  await assert.rejects(recovered.call(connection, "codeflow_apply_handoff", { operationId: "recover-uncertain", runId: run.id, previewHash: p.previewHash }), /will not be replayed/);
+  assert.equal(readFileSync(join(f.repo, "app.mjs"), "utf8"), "export const value = 1;\n");
+});
+
+test("CLI UX: continuation resolves pinned settings and rejects changed or foreign plan sources", async () => {
+  const f = await setup(); stub(); const run = await start(f); await finished(run);
+  const candidate = planning(); delete candidate.participants[0]!.model; delete candidate.participants[0]!.effort;
+  const p = await f.call("propose_run", { task: "Refine that plan", candidate, context: { reuseRunId: run.id } });
+  assert.equal(p.definition.participants[0].model, run.cliTeam!.definition.participants[0]!.model);
+  assert.equal(p.definition.participants[0].effort, "high");
+  const saved = f.service.workspaceProposals().find(x => x.id === p.proposalId)!;
+  assert.equal(saved.context.artifacts?.length, 1); assert.equal(saved.context.artifacts?.[0]?.runId, run.id);
+  const other = await f.service.connect(repo());
+  await assert.rejects(f.service.call(other, "codeflow_propose_run", { operationId: "foreign-reuse", task: "Continue", candidate, context: { reuseRunId: run.id } }), /unavailable in this project/);
+  writeFileSync(join(f.repo, "new.txt"), "changed source"); execFileSync("git", ["add", "."], { cwd: f.repo }); execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "change"], { cwd: f.repo });
+  await assert.rejects(f.call("propose_run", { task: "Implement old plan", candidate: building(), context: { reuseRunId: run.id } }), /context changed since this plan/);
+});
+
+test("CLI UX: handoff fences dirty checkout, stale preview, conflicts and missing confirmation", async () => {
+  const f = await setup(); stub(async opts => { if (opts.mode === "write") writeFileSync(join(opts.cwd, "app.mjs"), "export const value = 2;\n"); return { ok: true, finalText: opts.jsonSchema ? JSON.stringify({ body: "Reviewed", verdict: "approve", findings: [] }) : "Implemented" }; });
+  const run = await start(f, building()); await finished(run);
+  const preview = await f.call("preview_handoff", { runId: run.id }); assert.equal(preview.ready, true, preview.reason);
+  await assert.rejects(f.call("apply_handoff", { runId: run.id, previewHash: preview.previewHash }), /confirm application/);
+  await f.service.acceptHandoff(f.connection, run.id, preview.previewHash);
+  writeFileSync(join(f.repo, "app.mjs"), "local changes\n");
+  assert.equal((await f.call("preview_handoff", { runId: run.id })).ready, false);
+  await assert.rejects(f.call("apply_handoff", { runId: run.id, previewHash: preview.previewHash }), /changed since preview/);
+  await assert.rejects(f.call("preview_handoff", { runId: run.id, previewHash: preview.previewHash, cursor: 0 }), /changed while reading/);
+  assert.equal(readFileSync(join(f.repo, "app.mjs"), "utf8"), "local changes\n");
+  execFileSync("git", ["add", "."], { cwd: f.repo }); execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "conflicting change"], { cwd: f.repo });
+  const conflict = await f.call("preview_handoff", { runId: run.id }); assert.equal(conflict.ready, false); assert.match(conflict.reason, /do not apply cleanly/);
+  assert.equal(execFileSync("git", ["status", "--porcelain"], { cwd: f.repo, encoding: "utf8" }), "", "preflight never leaves conflict files");
+  const other = await f.service.connect(repo()); await assert.rejects(f.service.call(other, "codeflow_preview_handoff", { runId: run.id }), /unavailable in this project/);
+});
 
 test("CLI UX: engine steps need no invented instructions and attempt limits fit the run", async () => {
   const c = building() as any;
@@ -185,8 +311,8 @@ test("CLI UX: missing provider fails preflight before any worker spends allowanc
   } finally { adapters.codex.available = available; }
 });
 
-test("UX01/02/14: strict task-generated contracts expose twelve tools and leave the web picker unchanged", () => {
-  assert.equal(CLI_TOOLS.length, 12); assert.equal(new Set(CLI_TOOLS.map(t => t.name)).size, 12);
+test("UX01/02/14: strict task-generated contracts expose fourteen tools and leave the web picker unchanged", () => {
+  assert.equal(CLI_TOOLS.length, 14); assert.equal(new Set(CLI_TOOLS.map(t => t.name)).size, 14);
   assert.ok(!CLI_TOOLS.some(t => /team|preset/.test(t.name)));
   assert.ok(!patterns.some(p => p.id === "cli-team")); assert.ok(findPattern("cli-team"));
   assert.deepEqual(validateCandidate(planning()), planning());
@@ -424,7 +550,7 @@ test("project-scoped loopback and stdio MCP negotiate and deny owner-tool expans
     assert.match(stdout, /2025-03-26/, stderr);
     child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" }) + "\n");
     for (let i = 0; i < 200 && !stdout.includes('"id":2'); i++) await pause();
-    const response = stdout.trim().split("\n").map(s => JSON.parse(s)).find(r => r.id === 2); assert.equal(response.result.tools.length, 12);
+    const response = stdout.trim().split("\n").map(s => JSON.parse(s)).find(r => r.id === 2); assert.equal(response.result.tools.length, 14);
     const denied = await fetch(`${bridge.descriptor.endpoint}/call`, { method: "POST", headers: { "content-type": "application/json", origin: "https://evil.invalid", authorization: `Bearer ${bridge.descriptor.bootstrap}` }, body: "{}" }); assert.equal(denied.status, 403);
   } finally { child.stdin.end(); await new Promise<void>(resolve => { child.once("exit", () => resolve()); setTimeout(() => { child.kill(); resolve(); }, 3000).unref(); }); await bridge.close(); }
 });
@@ -503,6 +629,11 @@ test("material steering continues from preserved changes rather than the origina
   const { runId } = await f.call("start_run", { proposalId: proposal.proposalId, expectedRevision: proposal.revision, proposalHash: proposal.proposalHash });
   const child = f.manager.get(runId)!; await finished(child); assert.equal(child.status, "done", child.error); assert.ok(retained); assert.equal(childCalls, 1); assert.equal(child.parentRunId, parent.id);
   assert.match(readFileSync(join(f.repo, "app.mjs"), "utf8"), /1/);
+  const handoff = await f.call("preview_handoff", { runId: child.id });
+  assert.equal(handoff.ready, true, handoff.reason); assert.match(handoff.diff, /\+export const value = 2/, "verification continuations retain the earlier implementation in their handoff");
+  delete child.cliTeam!.source.handoffBase;
+  const legacy = await f.call("preview_handoff", { runId: child.id });
+  assert.equal(legacy.previewHash, handoff.previewHash, "older continuations resolve the original baseline from their owned history");
 });
 
 test("failed checks and mutations during a check cannot be overruled by approving reviewers", async () => {
@@ -540,6 +671,36 @@ test("user decisions wait without an agent slot and retain typed answers", async
 
 test("noninteractive approval fails without starting another local owner", () => {
   assert.throws(() => execFileSync(process.execPath, [fileURLToPath(new URL("../bin/codeflow.mjs", import.meta.url)), "approve", "fixture", "--revision", "1"], { cwd: repo(), env: process.env, stdio: "pipe" }), /interactive terminal/);
+});
+
+test("cancelled task questions remain in history without requesting or accepting answers", async () => {
+  const f = await setup(); stub(); const c = planning();
+  c.steps.unshift({ id: "choice", type: "user_decision", question: "Proceed?", options: ["Yes", "No"] });
+  const run = await start(f, c);
+  for (let i = 0; i < 300 && !Object.keys(run.cliTeam!.questions).length; i++) await pause();
+  const waiting = await f.call("get_run", { runId: run.id }); const questionId = waiting.questions[0].id;
+  await f.call("control_run", { runId: run.id, action: "cancel" }); await finished(run);
+  const stopped = await f.call("get_run", { runId: run.id });
+  assert.equal(stopped.progress.phase, "cancelled"); assert.deepEqual(stopped.questions, []); assert.deepEqual(stopped.assignments, []);
+  assert.equal(stopped.progress.recent.at(-1).status, "interrupted");
+  assert.ok(run.cliTeam!.questions[questionId], "Keep historical evidence");
+  await assert.rejects(f.call("steer_run", { runId: run.id, questionId, message: "Yes" }), /no longer need answers/);
+  assert.equal(run.cliTeam!.questions[questionId].answer, undefined);
+});
+
+test("cancelled host assignments do not ask a reconnected CLI to attach", async () => {
+  const f = await setup();
+  const run = await start(f, { scope: "plan", participants: [{ id: "host", provider: "codex", binding: "current_session" }], completion: ["Return a plan"], steps: [
+    { id: "draft", type: "task", operation: "propose", participant: "host", instructions: "Write a plan" },
+    { id: "result", type: "finish", outcome: "plan_ready", inputs: ["draft"] },
+  ] });
+  for (let i = 0; i < 300 && !Object.keys(run.cliTeam!.pending).length; i++) await pause();
+  assert.equal((await f.call("get_run", { runId: run.id })).assignments.length, 1);
+  await f.call("control_run", { runId: run.id, action: "cancel" }); await finished(run);
+  assert.deepEqual((await f.call("get_run", { runId: run.id })).assignments, []);
+  const reconnected = await f.service.connect(f.repo, "mcp");
+  const status = await f.service.call(reconnected, "codeflow_get_run", { runId: run.id }) as any;
+  assert.equal(status.progress.phase, "cancelled"); assert.equal(status.host.attachCommand, undefined);
 });
 
 test("a simple plan uses one participant and never claims unrequested agreement", async () => {
@@ -701,7 +862,7 @@ test("desktop configs launch the same scoped MCP bridge from an unrelated cwd wi
         assert.ok(peer.initialized.instructions.includes(JSON.stringify(await (await import("node:fs/promises")).realpath(f.repo))));
         assert.match(peer.initialized.instructions, /Candidate contract/);
         assert.match(peer.initialized.instructions, /Managed workers must never|do not invoke provider CLIs/);
-        assert.equal((await peer.request("tools/list", {}).result).tools.length, 12);
+        assert.equal((await peer.request("tools/list", {}).result).tools.length, 14);
         const p = (await peer.call("propose_run", { operationId: `desktop-proposal-${connection.host}`, task: "Plan a login form", candidate: planning() }).result).structuredContent.data;
         const args = { operationId: `desktop-start-${connection.host}`, proposalId: p.proposalId, expectedRevision: p.revision, proposalHash: p.proposalHash };
         if (!native) {

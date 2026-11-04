@@ -276,3 +276,8 @@ export const agentName = (id?: string) => id ? SHORT[id as AgentId] ?? id : unde
 
 /** Complete a server message before appending UI guidance. */
 export const completeSentence = (message: string) => message.trim() + (/[.!?]$/.test(message.trim()) || !message.trim() ? "" : ".");
+
+// On touch-sized layouts, Enter on the software keyboard inserts a line break.
+export function sendOnEnter(): boolean {
+  return !window.matchMedia("(max-width: 760px) and (pointer: coarse)").matches;
+}

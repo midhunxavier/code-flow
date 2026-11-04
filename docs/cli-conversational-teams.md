@@ -2,7 +2,7 @@
 
 The conversational CLI integration builds a team and process from your task. You can choose Claude Code, Codex, individual models, and supported effort values in the same instruction. Existing web workflows and saved web teams are unchanged.
 
-This integration is experimental. Automated tests exercise the project installer, public MCP protocol, worktrees, checks, agreement loops, host participation, and recovery with fixture providers. Native discovery was also checked on Claude Code 2.1.316 and Codex CLI 0.165.0: both found the skill and the then-current ten tools without inference. Workspace opening and task discovery bring the surface to twelve; its current validation uses protocol and browser fixtures. These checks do not establish that a model will follow every instruction correctly or certify other CLI versions.
+This integration is experimental. Automated tests exercise the project installer, public MCP protocol, worktrees, checks, agreement loops, host participation, and recovery with fixture providers. The current surface has fourteen tools, including exact diff preview and checkout handoff. Native-host compatibility and real-provider evidence are recorded separately in the QA reports; fixture checks do not certify model behavior or every CLI version.
 
 For Claude Desktop and the Codex app, use the [desktop MCP setup](desktop-mcp.md). It reuses this bridge and supplies the workflow instructions without requiring project skill discovery.
 
@@ -149,6 +149,12 @@ After upgrading, rebuild/restart the Code Flow owner once existing work has sett
 
 ## CLI usability and recovery
 
+The first skill invocation checks the live owner connection and project configuration. A connection check performs no agent inference. `doctor` reports whether the owner bridge is reachable; the discovery response inside Claude/Codex confirms that host's connection. If configuration differs, rerun `init` and reconnect Code Flow in the host. Provider authentication remains separate.
+
+MCP tool cards now contain readable summaries while preserving machine-readable structured results. Status distinguishes working, queued for a worker, waiting for a task answer, waiting for the CLI, pause settling, paused, completed and interrupted work. Guidance is shown as queued, delivered or undelivered; a queued message is not represented as already received.
+
+For “implement that plan” or “continue that task,” the host can pass `context.reuseRunId` from the status response into the next proposal. Code Flow resolves the previous result and chat, preserves code for write-task continuations, and inherits matching participant model/effort settings unless explicitly overridden. Changed source requires revalidation. Every new proposal still needs acceptance.
+
 `codeflow init` now prints a short setup summary. Use `--json` for scripts or a detailed dry-run. `codeflow doctor --catalog` checks model discovery without agent inference; it does **not** certify authentication or repository permissions.
 
 Use `codeflow status` to find recent tasks, `codeflow status --unfinished` to narrow the list, and `codeflow status RUN_ID` for readable progress and recorded participation. `--json` retains structured output. `codeflow result RUN_ID --json` includes the complete result body plus status and evidence. Completed runs return “Already completed” when resumed; further work needs a new approach.
@@ -158,3 +164,17 @@ The MCP `codeflow_list_runs` tool supplies repository-scoped discovery. `get_run
 Attachment limits remain 1 MiB per file and 4 MiB total. The MCP and local HTTP envelopes now allow 8 MiB, with a 7 MiB proposal limit. Valid-sized requests that fail validation return correlated errors. A frame exceeding the hard transport cap may close MCP; reconnect and reduce the payload. No attachment is silently dropped.
 
 For current-session participation, request status from the persistent MCP session before using its attachment command. Terminal status never suggests attaching to its temporary connection. Expired and terminal connections cannot claim the host role.
+
+## Inspect and bring changes into your checkout
+
+After a verified implementation, ask “show me the diff” or “bring these changes into my branch.” The host previews the exact task delta and requests native confirmation to apply it. Terminal equivalents:
+
+```sh
+codeflow diff RUN_ID
+codeflow diff RUN_ID --json
+codeflow apply RUN_ID
+```
+
+Application requires a clean checkout on a branch and a diff that applies cleanly. It stages only the task's changes, excluding pre-existing changes captured as source context. It creates no commit or push. The preview is bound to the exact result, destination commit and branch; changed previews must be inspected again. Terminal application shows the diff and requires typing `apply`; there is no unattended approval flag.
+
+Inspect `git diff --cached` afterward and rerun checks in the destination checkout. Recorded check/review evidence still belongs to the original result snapshot, even if the destination has moved. Repeating a successful application request returns its receipt; an interrupted application requires checkout inspection and is never blindly replayed. Partial or unverified runs can be inspected and continued, but cannot use this application path.

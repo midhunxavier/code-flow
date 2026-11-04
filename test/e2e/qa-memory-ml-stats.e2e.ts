@@ -74,6 +74,12 @@ test("ML missing package is actionable and wrong Python setup reports version wi
   rmSync(join(appRoot, "dist/training-worker.json")); try { const response = p.waitForResponse(r => r.url().endsWith("/api/ml/targets/local/probe") && r.request().method() === "POST"); await p.getByRole("button", { name: "Check computer", exact: true }).click(); assert.equal((await response).status(), 503); await p.getByRole("alert").getByText(/npm run build:training-worker/).waitFor(); } finally { writeFileSync(join(appRoot, "dist/training-worker.json"), originalBundle); }
   const python = join(dir, "python39"); writeFileSync(python, "#!/bin/sh\nprintf '3.9.6\\n'\n", { mode: 0o700 }); await p.getByText("Python settings", { exact: true }).click(); await p.getByLabel("Python executable", { exact: true }).fill(python); await p.getByRole("button", { name: "Save Python settings", exact: true }).click(); await p.getByText(/Python settings saved/).waitFor(); await p.getByRole("button", { name: "Check computer", exact: true }).click(); await p.getByText(/reports Python 3.9.6; this recipe needs Python 3.12/).waitFor();
   await p.getByRole("button", { name: "Install training environment", exact: true }).click(); await until(() => api(`/api/ml?project=${project}&repo=${encodeURIComponent(repo)}`), data => data.experiments.some((j: any) => j.status.state === "failed")); assert.doesNotMatch(await p.locator("body").innerText(), /AssertionError|Traceback|Command failed/);
+  const desktop = await p.getByRole("button", { name: "Check computer", exact: true }).innerText();
+  await p.setViewportSize({ width: 320, height: 568 });
+  const ml = p.locator(".ml-workspace");
+  assert.equal(await p.getByRole("button", { name: "Check computer", exact: true }).innerText(), desktop);
+  const overflow = await ml.evaluate(root => [...root.querySelectorAll<HTMLElement>("*")].filter(el => { const r = el.getBoundingClientRect(), s = getComputedStyle(el); return r.width > 0 && r.height > 0 && s.visibility === "visible" && (r.left < -1 || r.right > innerWidth + 1); }).map(el => `${el.tagName}.${el.className} ${Math.round(el.getBoundingClientRect().right)}`));
+  assert.deepEqual(overflow, [], "populated training and error controls fit the phone");
 });
 
 test("policy errors are complete sentences and stale restore describes restore without draft warning", async () => {
