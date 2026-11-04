@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { git, type GitCwd } from "../git.js";
 import { digest, fail } from "./model.js";
 
-export interface SourceSnapshot { base: string; commit: string; fingerprint: string; source: "head" | "working_changes"; untracked: string[]; unborn?: true }
+export interface SourceSnapshot { base: string; commit: string; fingerprint: string; source: "head" | "working_changes"; untracked: string[]; unborn?: true; /** Original user snapshot before any retained task implementation. */ handoffBase?: string }
 const snapshotIdentity = { GIT_AUTHOR_NAME: "Code Flow", GIT_AUTHOR_EMAIL: "codeflow@localhost", GIT_COMMITTER_NAME: "Code Flow", GIT_COMMITTER_EMAIL: "codeflow@localhost", GIT_AUTHOR_DATE: "2000-01-01T00:00:00Z", GIT_COMMITTER_DATE: "2000-01-01T00:00:00Z" };
 async function checked(repo: GitCwd, args: string[], env?: NodeJS.ProcessEnv) {
   const r = await git(args, repo, { env });

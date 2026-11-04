@@ -13,7 +13,7 @@ Implemented components:
 - A deterministic executor using the existing journal, provider adapters, worktrees, shared agent/check slots, command evidence, and run controls.
 - Exact-target agreement, fresh final reviewers, bounded revision loops, serialized managed writes, and verification tied to the delivered snapshot.
 - Plain-plan completion without false agreement, checks-only completion when no independent review was requested, and verification-only continuations that retain completed code without launching another writer. These remain explicit outcomes rather than presets.
-- Twelve project-scoped public MCP tools, stdio protocol negotiation, separate loopback session capabilities, bounded reads, heartbeats, host claim fencing, and artifact pagination.
+- Fourteen project-scoped public MCP tools, stdio protocol negotiation, separate loopback session capabilities, bounded reads, heartbeats, host claim fencing, and artifact pagination.
 - Reuse of the web owner or headless bootstrap of the same server; existing state-directory locking arbitrates competing startups.
 - Transactional project configuration/skill installation, doctor, explicit preferences, interactive host attachment, terminal status/result/control commands, and ownership-aware uninstall.
 - Lifetime launch/time accounting, shared transport/schema attempt ceilings per assignment, conservative accounting of unsettled invocation time, and worktree-preserving accepted continuations.
@@ -27,7 +27,7 @@ The chat adapter adds per-chat serialized mutations, durable idempotent receipts
 
 The fixed composer and independent reading area preserve reader position. Task details contains settings, allowances, queued messages, file context, actual participant/session receipts, guidance delivery, prior executions and worktrees. The primary result contains the final deliverable, with evidence fetched separately.
 
-The ten public MCP tools remain unchanged in number. The private lead/preparation patterns are excluded from the workflow picker. Legacy workflows, templates, saved drafts, other providers, remote/container execution, automation, project missions and human collaboration retain their compatibility paths. See the [chat guide](../conversational-tasks.md).
+The public MCP surface now has fourteen tools, including explicit diff preview and checkout handoff. The private lead/preparation patterns are excluded from the workflow picker. Legacy workflows, templates, saved drafts, other providers, remote/container execution, automation, project missions and human collaboration retain their compatibility paths. See the [chat guide](../conversational-tasks.md).
 
 A bounded real-provider acceptance run `2611022351-02ef53a8` completed with `verified_changes`: Claude `claude-haiku-5-5` at high effort implemented a small fix, the unchanged test passed, and Codex `gpt-6-luna` at high effort independently approved the same code. Both assignments recorded native CLI session receipts. The original checkout and staging index remained unchanged. This proves the local managed-provider path on the installed versions; it does not certify every CLI version or native-host interaction.
 
@@ -89,7 +89,7 @@ Do not label the integration as release-certified from fake-provider tests alone
 
 ## CLI visual workspace stages 1–3
 
-Implemented: stable task links; explicit `codeflow open` / `codeflow_open_task`; durable project/chat/task association; native or browser acceptance of the same exact revision; shared progress, questions, guidance, controls and recovery; startup reconciliation; visible disconnected CLI assignments. The public MCP surface now has twelve tools. The existing web workflow engine is preserved. Embedded MCP Apps UI and mirroring a native host's full transcript remain deferred.
+Implemented: stable task links; explicit `codeflow open` / `codeflow_open_task`; durable project/chat/task association; native or browser acceptance of the same exact revision; shared progress, questions, guidance, controls and recovery; startup reconciliation; visible disconnected CLI assignments. The public MCP surface now has fourteen tools, including exact diff preview and confirmed checkout application. The existing web workflow engine is preserved. Embedded MCP Apps UI and mirroring a native host's full transcript remain deferred.
 
 Validation covers both form-capable and tool-only MCP hosts, a real browser with isolated fixture providers, exact-revision fencing, duplicate starts, continuation approvals, both providers participating, journal recovery, cross-repository isolation and expiring browser handoffs. Fixture checks do not claim live vendor inference certification.
 
@@ -100,3 +100,11 @@ Attachment transport now accommodates the supported file limits and returns corr
 Setup/status output is readable by default with `--json` for scripts. Deterministic snapshot/check nodes no longer require host-authored instructions. Attempt timeouts are capped by the run's execution allowance. Completed work returns an explicit no-op on resume. Start preflight checks every managed provider's availability before dispatch, while doctor distinguishes model discovery from authentication and execution permissions.
 
 The 2026-11-03 native read-only probe passed with Codex CLI 0.165.0 and Claude Code 2.1.317: both discovered all twelve tools and the skill, and both declared form support. Codex's confirmation was safely declined without creating a run. This probe used zero inference calls and does not certify live worker behaviour or Claude's interactive approval dialog.
+
+## CLI conversation UX (2026-11-04)
+
+MCP text now uses readable summaries alongside structured data. Progress distinguishes worker queues, host/user waits, pause settling and interrupted work; guidance receipts describe actual delivery. A compact proposal summary precedes full exact-revision confirmation. Host-side discovery checks live connection and project configuration without inference.
+
+`context.reuseRunId` resolves the prior deliverable, chat, source and matching participant settings while retaining source freshness checks. Verified results include check/review evidence and a handoff action. `codeflow diff` and `codeflow apply` preview and stage the exact task delta in a clean checkout after native/terminal confirmation. Retained implementation remains included across continuations; pre-existing user source changes are excluded. Durable effect receipts prevent duplicate application and fence interrupted writes.
+
+See [implementation plan](17-cli-ux-implementation.md) and the [2026-11-04 validation report](../qa-dogfood/cli-ux-2026-11-04.md).

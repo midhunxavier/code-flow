@@ -46,7 +46,7 @@ export interface RuntimeState {
   leadReplyKind?: "answer" | "clarify" | "guidance" | "proposal";
   taskConversation?: { id: string; phase: "preparation" | "execution"; chatId?: string };
   waitingForSlot?: boolean;
-  activity?: { path: string; nodeId: string; title: string; participant?: string; type: Node["type"]; status: "working" | "completed" | "changes_requested" | "failed"; startedAt: number; endedAt?: number }[];
+  activity?: { path: string; nodeId: string; title: string; participant?: string; type: Node["type"]; status: "working" | "completed" | "changes_requested" | "interrupted" | "failed"; startedAt: number; endedAt?: number }[];
   version: 1; proposalId: string; proposalHash: string; definition: Definition;
   source: import("./snapshots.js").SourceSnapshot;
   hostConnection: string; artifacts: Record<string, Artifact>; pending: Record<string, PendingAssignment>;

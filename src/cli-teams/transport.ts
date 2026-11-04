@@ -34,10 +34,12 @@ export async function startCliTeamsTransport(service: CliTeamsService) {
       } else if (req.url === "/call" && connection) data = await service.call(connection, body.name, body.arguments ?? {});
       else if (req.url === "/heartbeat" && connection) { service.heartbeat(connection); data = {}; }
       else if (req.url === "/disconnect" && connection) { service.disconnect(connection); capabilities.delete(bearer); data = {}; }
-      else if (["/preview", "/confirm", "/attach"].includes(req.url ?? "") && privileged) {
+      else if (["/preview", "/confirm", "/attach", "/handoff-preview", "/handoff-confirm"].includes(req.url ?? "") && privileged) {
         const c = await service.connect(body.projectRoot, "terminal");
         try {
-          data = req.url === "/preview" ? await service.acceptancePreview(c, body.proposalId, body.revision)
+          data = req.url === "/handoff-preview" ? await service.handoffPreview(c, body.runId)
+            : req.url === "/handoff-confirm" ? await service.acceptHandoff(c, body.runId, body.previewHash)
+            : req.url === "/preview" ? await service.acceptancePreview(c, body.proposalId, body.revision)
             : req.url === "/confirm" ? await service.accept(c, body.proposalId, body.revision, body.hash)
             : await service.attach(c, body.runId, body.connectionId);
         } finally { service.disconnect(c); }
