@@ -1,4 +1,6 @@
 import { runEvidence } from "./evidence.js";
+import { runProgress } from "./progress.js";
+import { prepareHandoff, handoffPage, handoffBase } from "./handoff.js";
 import { captureAgentSource } from "../conversational/agent-source.js";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { readFile, realpath, mkdir, open, chmod, lstat, stat } from "node:fs/promises";
@@ -7,17 +9,17 @@ import type { Run, RunManager, TeamContext } from "../engine.js";
 import { DEFAULT_LOOP } from "../run-projection.js";
 import { CODEFLOW_HOME, STEP_TIMEOUT_MS } from "../config.js";
 import { getAdapter } from "../adapters/index.js";
-import { repoRoot, assertWorktree } from "../git.js";
+import { repoRoot, assertWorktree, git } from "../git.js";
 import { flushWrites, journalEntry, loadJournal, RUNS_DIR } from "../store.js";
 import { cliTeamPattern } from "./pattern.js";
 import { catalog, resolveParticipant } from "./providers.js";
 import { captureSource, type SourceSnapshot } from "./snapshots.js";
 import { canonical, digest, fail, validateCandidate, validateWebCandidate, validatePreferences, type Definition, type PendingAssignment, type Preferences } from "./model.js";
-import { validateTool } from "./tools.js";
+import { validateTool, CLI_TOOLS } from "./tools.js";
 import { registerHostHandlers } from "./host.js";
 import { recoverCliAccounting } from "./accounting.js";
 
-export interface Proposal { origin?: "cli"; chatId?: string; project?: string; taskId?: string; id: string; repo: string; revision: number; hash: string; task: string; context: { chatId?: string; projectId?: string; sourceRunId?: string; attachments?: { name: string; data: string }[]; notes?: string; continueRunId?: string; untracked?: string[]; artifacts?: { runId: string; artifactId: string; sha256: string }[] }; definition: Definition; source: SourceSnapshot; accepted?: { hash: string; at: number }; runId?: string; hostConnection: string }
+export interface Proposal { origin?: "cli"; chatId?: string; project?: string; taskId?: string; id: string; repo: string; revision: number; hash: string; task: string; context: { reuseRunId?: string; chatId?: string; projectId?: string; sourceRunId?: string; attachments?: { name: string; data: string }[]; notes?: string; continueRunId?: string; untracked?: string[]; artifacts?: { runId: string; artifactId: string; sha256: string }[] }; definition: Definition; source: SourceSnapshot; accepted?: { hash: string; at: number }; runId?: string; hostConnection: string }
 export interface ConversationScope { chatId?: string; repo: string; project?: string; taskId?: string; surface?: "web"; id?: string }
 export interface Connection extends ConversationScope { id: string; expiresAt: number; active: boolean; kind: "mcp" | "terminal" }
 const META = "cli-teams-control";
@@ -128,7 +130,7 @@ export class CliTeamsService {
     const wt = prior.worktrees.find(w => w.name === "team");
     if (!wt) fail("recovery_required", "No preserved team worktree is available for continuation");
     const captured = await captureSource(await assertWorktree(c.repo, { path: wt.path }), "working_changes", context.untracked);
-    return { ...captured, base: prior.cliTeam!.source.base };
+    return { ...captured, base: prior.cliTeam!.source.base, handoffBase: handoffBase(prior, id => this.manager.get(id)) };
   }
   preview(p: Proposal, compact = false) {
     const labels = new Map<string, string>();
@@ -159,10 +161,33 @@ export class CliTeamsService {
     ].join("\n\n");
     return compact && Buffer.byteLength(preview) > 24000 ? preview.slice(0, 7500) + "\n\n[Compact preview abbreviated. Read the complete configuration in interactive confirmation.]" : preview;
   }
+  proposalSummary(p: Proposal) {
+    return [`Task: ${p.task.slice(0, 600)}`, `Deliverable: ${p.definition.completion.map(s => s.slice(0, 200)).join("; ")}`,
+      `Source: ${p.source.source} · ${p.source.commit}${p.context.continueRunId ? " · preserved task changes" : ""}`,
+      ...p.definition.participants.map(a => `${a.id}: ${a.provider} / ${a.model ?? "provider default"} / ${a.effort ?? "default"} effort${a.binding === "current_session" ? " (current CLI; settings unverified)" : ""}`),
+      `Scope: ${p.definition.scope}${p.definition.scope === "write" ? " in an isolated worktree" : " only"}. Setup: ${p.definition.setup || "none"}. Check: ${p.definition.check || "none"}.`,
+      `Limits: ${p.definition.limits.maxInvocations} managed calls · ${p.definition.limits.maxMinutes} execution minutes.`,
+      "Review the full work sequence and permissions in the exact-revision confirmation."].join("\n");
+  }
   async acceptancePreview(c: Connection, proposalId: string, revision: number) {
     const p = this.proposal(c, proposalId);
     if (p.revision !== revision || p.runId) fail("revision_conflict", "Proposal changed or already started; retrieve the current proposal");
-    return { preview: this.preview(p), hash: p.hash };
+    return { preview: `${this.proposalSummary(p)}\n\nFull proposal\n${this.preview(p)}`, hash: p.hash };
+  }
+  async handoffPreview(c: Connection, runId: string) {
+    await this.manager.assertExecutionAllowed(c.repo, undefined, "Inspect task changes");
+    const { diff: _diff, ...preview } = await prepareHandoff(this.run(c, runId), id => this.manager.get(id));
+    return preview; // Native confirmation needs the identity/summary; diffs use the bounded public pages.
+  }
+  /** Only the native form/interactive terminal transport can record this acceptance. */
+  async acceptHandoff(c: Connection, runId: string, previewHash: string) {
+    return this.serialized(async () => {
+      const p = await this.handoffPreview(c, runId);
+      if (p.previewHash !== previewHash) fail("acceptance_stale", "The handoff changed; inspect the current diff again.");
+      if (!p.ready) fail("handoff_unavailable", p.reason!);
+      await this.save(`handoff-accept:${c.repo}:${runId}:${previewHash}`, { at: Date.now() });
+      return { accepted: true, runId, previewHash };
+    });
   }
   /** Called only by the local interactive terminal path, never exposed as an MCP tool. */
   async accept(c: Connection, proposalId: string, revision: number, hash: string) {
@@ -251,6 +276,23 @@ export class CliTeamsService {
   private async propose(c: ConversationScope, a: any) {
     const old = a.proposalId ? this.proposal(c, a.proposalId) : undefined;
     const candidate = validateCandidate(a.candidate);
+    const context: Proposal["context"] = structuredClone(a.context ?? {});
+    if (context.reuseRunId) {
+      const prior = this.run(c, context.reuseRunId), previous = this.proposal({ ...c, taskId: prior.cliTeam!.taskConversation?.id }, prior.cliTeam!.proposalId);
+      if (context.continueRunId && context.continueRunId !== prior.id || context.sourceRunId && context.sourceRunId !== prior.id || context.chatId && previous.chatId && context.chatId !== previous.chatId || context.projectId && previous.project && context.projectId !== previous.project) fail("scope_denied", "Continue this task in its original project and chat with one source run.");
+      context.chatId ??= previous.chatId; context.projectId ??= previous.project;
+      // Plan/review results follow the original source. Write results retain the owned worktree.
+      if (prior.cliTeam!.definition.scope === "write") context.continueRunId ??= prior.id;
+      else { candidate.source ??= prior.cliTeam!.source.source; context.untracked ??= prior.cliTeam!.source.untracked; }
+      const result = Object.values(prior.cliTeam!.artifacts).filter(x => x.kind === "result").at(-1);
+      if (result && !(context.artifacts ?? []).some(x => x.runId === prior.id && x.artifactId === result.id)) context.artifacts = [...context.artifacts ?? [], { runId: prior.id, artifactId: result.id, sha256: result.sha256 }];
+      if (!result && !context.continueRunId) fail("recovery_required", "This task has no completed deliverable yet. Inspect or finish it before reusing its plan.");
+      if (context.artifacts && context.artifacts.length > 8) fail("validation_failed", "Continuation would exceed eight context artifacts; select fewer references.");
+      candidate.participants = candidate.participants.map(p => {
+        const match = prior.cliTeam!.definition.participants.find(x => x.id === p.id && x.provider === p.provider && x.binding !== "current_session");
+        return match && p.binding !== "current_session" ? { ...p, model: p.model ?? match.model, effort: p.effort ?? match.effort } : p;
+      });
+    }
     if (c.surface === "web") {
       // The browser may preserve a CLI-bound reviewer, but cannot invent a host binding.
       for (const participant of candidate.participants.filter(p => p.binding === "current_session")) {
@@ -264,7 +306,6 @@ export class CliTeamsService {
     const limits = { maxInvocations: Math.min(DEFAULT_LOOP.maxInvocations ?? DEFAULT_LOOP.maxSteps, 256), maxMinutes: Math.min(DEFAULT_LOOP.maxMinutes, 720), concurrency: 2, maxAttempts: 2, ...candidate.limits, attemptTimeoutMs: STEP_TIMEOUT_MS };
     const definition: Definition = { ...candidate, participants, limits };
     limits.attemptTimeoutMs = Math.min(limits.attemptTimeoutMs, limits.maxMinutes * 60_000);
-    const context = a.context ?? {};
     if (old?.chatId && context.chatId && context.chatId !== old.chatId || old?.project && context.projectId && context.projectId !== old.project) fail("scope_denied", "Revise this proposal in its original project and chat");
     if (context.attachments) (await import("../conversational/attachments.js")).chatAttachments(context.attachments);
     const source = await this.source(c, candidate.source ?? (candidate.scope === "review" ? "working_changes" : "head"), context);
@@ -281,7 +322,7 @@ export class CliTeamsService {
     p.hash = digest({ ...p, hash: undefined });
     await this.save(`proposal-history:${p.id}:${p.revision}`, p);
     await this.save(`proposal:${p.id}`, p);
-    return { proposalId: p.id, revision: p.revision, proposalHash: p.hash, preview: this.preview(p, true), definition: { participants, limits, scope: definition.scope }, nextAction: `codeflow approve ${p.id} --revision ${p.revision}` };
+    return { proposalId: p.id, revision: p.revision, proposalHash: p.hash, summary: this.proposalSummary(p), preview: this.preview(p, true), definition: { participants, limits, scope: definition.scope }, nextAction: `codeflow approve ${p.id} --revision ${p.revision}` };
   }
   private async startProposal(c: ConversationScope, a: any, trigger?: Run["trigger"], untrustedText = false): Promise<any> {
     const p = this.proposal(c, a.proposalId);
@@ -310,6 +351,24 @@ export class CliTeamsService {
     if (name === "codeflow_propose_run") return this.propose(c, a);
     if (name === "codeflow_start_run") return this.startProposal(c, a);
     const run = this.run(c, a.runId), state = run.cliTeam!;
+    if (name === "codeflow_apply_handoff") {
+      const key = `handoff-effect:${c.repo}:${run.id}:${a.previewHash}`;
+      const previous = this.journal.get(key) as { state: string; result?: unknown } | undefined;
+      if (previous?.state === "applied") return previous.result;
+      if (previous) fail("recovery_required", "Application was interrupted. Inspect the checkout and staged diff before doing anything else; this patch will not be replayed automatically.");
+      return this.manager.withIdleRepository(c.repo, async () => {
+        const p = await prepareHandoff(run, id => this.manager.get(id));
+        if (p.previewHash !== a.previewHash) fail("acceptance_stale", "Checkout or result changed since preview. Inspect the current diff before applying.");
+        if (!p.ready) fail("handoff_unavailable", p.reason!);
+        const accepted = this.journal.get(`handoff-accept:${c.repo}:${run.id}:${a.previewHash}`) as { at: number } | undefined;
+        if (!accepted || Date.now() - accepted.at > 15 * 60_000) fail("acceptance_required", `Review and confirm application in this host, or run codeflow apply ${run.id} in your terminal.`);
+        await this.save(key, { state: "applying", previewHash: a.previewHash });
+        const applied = await git(["apply", "--index"], c.repo, { input: p.diff });
+        if (applied.code) fail("recovery_required", "Git could not finish application. Inspect the checkout and staged diff; the preserved task is unchanged and application will not replay automatically.");
+        const result = { runId: run.id, applied: true, previewHash: a.previewHash, branch: p.branch, recordedAt: Date.now(), message: `Application recorded: task changes were staged on ${p.branch}. No commit or push was created. This receipt does not replay the patch. Inspect the current git diff --cached and rerun your checks in this checkout.` };
+        await this.save(key, { state: "applied", result }); return result;
+      }, { kind: "cli-handoff" });
+    }
     if (name === "codeflow_control_run") {
       let pending = false, accepted = true;
       if (a.action === "cancel") { accepted = this.manager.cancel(run.id); pending = accepted && run.status === "running"; }
@@ -331,6 +390,7 @@ export class CliTeamsService {
         return this.propose(c, { task: previous.task, candidate: a.candidate, context: { notes: a.message, continueRunId: run.id, ...(previous.chatId ? { chatId: previous.chatId } : {}) } });
       }
       if (a.questionId) {
+        if (run.status !== "running") fail("validation_failed", "This run has stopped; its task questions no longer need answers. Create a continuation for further work.");
         const q = state.questions[a.questionId];
         if (!q || q.answer !== undefined || !q.options.includes(a.message)) fail("validation_failed", "Answer a pending question using one of its options");
         await journalEntry(run.id, `cli-answer:${a.questionId}`, a.message); q.answer = a.message; this.notify(`${run.id}:${a.questionId}`);
@@ -364,7 +424,8 @@ export class CliTeamsService {
   private async read(c: ConversationScope, name: string, a: any): Promise<any> {
     if (name === "codeflow_list_providers") {
       const project = await preferences(join(c.repo, ".codeflow", "cli-teams.json"), c.repo), personal = await preferences(join(this.home, "cli-teams-preferences.json"));
-      return { preferredProvider: project.preferredProvider ?? personal.preferredProvider, providers: await Promise.all((["claude", "codex"] as const).map(async provider => ({ id: provider, installed: await getAdapter(provider).available(), authentication: "unverified; catalog discovery does not prove execution permissions", preferences: { ...personal.providers?.[provider], ...project.providers?.[provider] } }))) };
+      const providers = await Promise.all((["claude", "codex"] as const).map(async provider => ({ id: provider, installed: await getAdapter(provider).available(), authentication: "unverified; catalog discovery does not prove execution permissions", preferences: { ...personal.providers?.[provider], ...project.providers?.[provider] } })));
+      return { connection: { live: true, kind: this.connections.get(c.id ?? "")?.kind ?? "web", tools: CLI_TOOLS.map(t => t.name), message: "Code Flow is connected to this repository and its running owner." }, preferredProvider: project.preferredProvider ?? personal.preferredProvider, providers };
     }
     if (name === "codeflow_list_models") { const models = await catalog(a.providerId, a.refresh); const offset = a.cursor ?? 0, end = offset + (a.limit ?? 50); return { ...models, models: models.models.slice(offset, end), nextCursor: end < models.models.length ? end : undefined }; }
     if (name === "codeflow_list_runs") {
@@ -375,6 +436,11 @@ export class CliTeamsService {
       return { runs: runs.slice(offset, end).map(r => { const run = this.run(c, r.id); return { runId: run.id, task: run.task.slice(0, 300), status: run.status, outcome: run.cliTeam!.outcome, createdAt: run.createdAt, chatId: run.cliTeam!.taskConversation?.chatId }; }), total: runs.length, nextCursor: end < runs.length ? end : undefined };
     }
     const run = this.run(c, a.runId), state = run.cliTeam!;
+    if (name === "codeflow_preview_handoff") {
+      const preview = await prepareHandoff(run, id => this.manager.get(id));
+      if (a.previewHash && a.previewHash !== preview.previewHash) fail("acceptance_stale", "Checkout or result changed while reading the diff; restart from the first page.");
+      return handoffPage(preview, a.cursor, a.maxBytes);
+    }
     if (name === "codeflow_get_artifact") {
       const artifact = state.artifacts[a.artifactId];
       if (!artifact || artifact.sha256 !== a.sha256) fail("artifact_stale", "Choose the exact artifact ID/hash returned by get_run");
@@ -402,11 +468,11 @@ export class CliTeamsService {
     const status = run.status === "running" && Object.values(state.pending).some(p => !p.output) ? "waiting_host" : run.status === "running" && Object.values(state.questions).some(q => !q.answer) ? "waiting_user" : run.status;
     const artifacts = Object.values(state.artifacts), artifactCursor = a.artifactCursor ?? 0, artifactEnd = artifactCursor + (a.artifactLimit ?? 50);
     const persistent = this.connections.get(c.id ?? "")?.kind === "mcp";
-    const needsHost = state.definition.participants.some(p => p.binding === "current_session");
-    return { ...runEvidence(run), runId: run.id, status, runtimeStatus: run.status, paused: !!run.pauseRequested, outcome: state.outcome, error: run.error?.slice(0, 1000), detail: state.detail?.slice(0, 1000), summary: run.summary?.slice(0, 4000), events: latest, afterCursor: latest.at(-1)?.seq ?? cursor,
+    const needsHost = run.status === "running" && state.definition.participants.some(p => p.binding === "current_session");
+    return { ...runEvidence(run), task: this.proposal({ ...c, taskId: state.taskConversation?.id }, state.proposalId).task.slice(0, 600), progress: runProgress(run), continuation: { context: { reuseRunId: run.id }, requiresNewApproval: true, message: "Use this context in propose_run to reuse the deliverable, matching worker settings and original chat. Source changes are revalidated; write tasks retain preserved code." }, runId: run.id, status, runtimeStatus: run.status, paused: !!run.pauseRequested, outcome: state.outcome, error: run.error?.slice(0, 1000), detail: state.detail?.slice(0, 1000), summary: run.summary?.slice(0, 4000), events: latest, afterCursor: latest.at(-1)?.seq ?? cursor,
       artifacts: artifacts.slice(artifactCursor, artifactEnd).map(({ id, kind, sha256, participant }) => ({ id, kind, sha256, participant })), artifactCount: artifacts.length, nextArtifactCursor: artifactEnd < artifacts.length ? artifactEnd : undefined,
-      assignments: state.hostConnection === c.id ? Object.values(state.pending).filter(p => !p.output).map(p => ({ id: p.id, participant: p.participant, attemptId: p.attemptId, claimed: !!p.claimHash })) : [],
-      questions: Object.entries(state.questions).filter(([, q]) => !q.answer).map(([id, q]) => ({ id, ...q })),
+      assignments: run.status === "running" && state.hostConnection === c.id ? Object.values(state.pending).filter(p => !p.output).map(p => ({ id: p.id, participant: p.participant, attemptId: p.attemptId, claimed: !!p.claimHash })) : [],
+      questions: run.status === "running" ? Object.entries(state.questions).filter(([, q]) => !q.answer).map(([id, q]) => ({ id, ...q })) : [],
       host: { connected: this.connections.get(state.hostConnection)?.active === true && this.connections.get(state.hostConnection)!.expiresAt > Date.now(), thisSession: state.hostConnection === c.id, ...(needsHost && state.hostConnection !== c.id ? persistent ? { attachCommand: `codeflow attach ${run.id} --connection ${c.id}` } : { reconnect: "Ask your Claude or Codex MCP session to inspect this run, then use the attachment command it returns. Terminal status connections are temporary." } : {}) },
       limits: state.definition.limits, usage: { managedInvocations: state.managedInvocations ?? 0, accountedExecutionMs: Math.max(run.clockUsedMs ?? 0, state.accountedExecutionMs ?? 0), recoveryTimeChargeMs: state.recoveryTimeChargeMs, providerReported: run.usage, host: "unobserved", cost: "Provider usage may be incomplete or API-equivalent; this is not a billing total" },
     };

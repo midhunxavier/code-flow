@@ -7,9 +7,16 @@ export function runEvidence(run: Run) {
   const result = artifacts.filter(a => a.kind === "result").at(-1);
   const decision = artifacts.filter(a => a.kind === "decision" && typeof a.data.approved === "boolean").at(-1);
   const reviews = decision && Array.isArray(decision.data.reviews) ? decision.data.reviews.map(id => state.artifacts[String(id)]).filter(a => !!a) : [];
+  const verification = decision && typeof decision.data.verification === "string" ? state.artifacts[decision.data.verification] : undefined;
+  const worktree = run.worktrees.find(w => w.name === "team");
   const ref = (a: typeof artifacts[number]) => ({ id: a.id, kind: a.kind, sha256: a.sha256 });
   return {
     result: result ? ref(result) : undefined,
+    handoff: { worktree: worktree?.path, branch: worktree?.branch,
+      check: verification ? { passed: verification.data.passed, command: verification.data.command, target: verification.data.targetHash } : undefined,
+      reviewCount: reviews.length,
+      nextAction: state.outcome === "verified_changes" ? `Inspect with codeflow diff ${run.id}; bring the task changes into your clean checkout with codeflow apply ${run.id}.` : "Read the result, then describe any follow-up work.",
+    },
     evidence: {
       source: state.source,
       lastDecision: decision ? { ...ref(decision), approved: decision.data.approved, target: decision.data.target,

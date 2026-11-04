@@ -122,7 +122,9 @@ test("under a saved restriction the server opens no terminal, runs no model disc
       for (const cwd of [repo, other]) for (const pty of [false, true]) assert.equal((await call(`${prefix}/shell`, { cwd, pty })).status, 409, `${prefix}/shell in ${cwd === repo ? "the restricted" : "another"} repository (pty ${pty})`);
       assert.equal((await call(`${prefix}/shell`)).status, 403);
       const input = await call(`${prefix}/shell/sh-any/input`, { text: `echo bypass > ${marker}` }); assert.equal(input.status, 409);
-      assert.equal((await call(`${prefix}/shell/sh-any`, undefined, "DELETE")).status, 404, "closing stays allowed; this terminal just doesn't exist");
+      const closed = await call(`${prefix}/shell/sh-any`, undefined, "DELETE");
+      assert.equal(closed.status, 200, "idempotent closing stays allowed under a restriction");
+      assert.deepEqual(await closed.json(), { closed: false }, "no terminal was opened or executed");
       const catalog = await call(`${prefix}/model-catalog`); assert.equal(catalog.status, 403); assert.match((await catalog.json()).error, /“Restricted project”.*Settings → Projects/s);
       for (const body of [{}, { allowResearch: true }]) assert.equal((await call(`${prefix}/model-catalog`, body)).status, 409);
       assert.equal((await call(`${prefix}/frame-policy`, { url: "http://127.0.0.1:1/" })).status, 409, "an unclassified route is refused");

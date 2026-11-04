@@ -16,7 +16,7 @@ import { activeChatContext, chatDetailsTarget } from "./chat-context.js";
 import { chatDraftFiles } from "./chat-files.js";
 import { PolicyPauseNotice } from "./policy-pause.js";
 import { useEffect, useRef, useState } from "preact/hooks";
-import { api, post, enc, baseName, store, workspaceKey, onPhone, ownerOnLocalListener } from "./lib.js";
+import { api, post, enc, baseName, store, workspaceKey, onPhone, ownerOnLocalListener, sendOnEnter } from "./lib.js";
 import { projects, composerProject, repo, route, openComposer, agents, catalogs, projectsOpen, projectEdit, projectPickerPurpose, defaultPattern, providerDefaults, draftsReady, composerLoading, executionPaused, ghPicker, sideTab, openSide, closeSide } from "./state.js";
 import { addRepositoryToProject } from "./projects.js";
 import { executionHost, HostControl } from "./ssh-projects.js";
@@ -271,7 +271,7 @@ export function ChatPage({ id, project: initialProject, automation = false }: { 
       <div class="task-composer-box">
       {selectedTask ? <div class="chat-target"><span>Replying to: {selectedTask.task.request.slice(0, 70)} · Team lead</span><button type="button" class="btn ghost small" aria-label="Switch to new work" onClick={() => { setTarget(null); update({ targetTask: null }); }}>New work</button></div> : null}
       {draft.attachments.length ? <div class="chat-files">{draft.attachments.map((file, i) => <button type="button" class="btn small" key={i} aria-label={`Remove ${file.name}`} onClick={() => update({ attachments: draft.attachments.filter((_, j) => i !== j) })}><Icon name={/^GitHub (?:PR|issue) #\d+\.md$/.test(file.name) ? "pull" : "files"} />{file.name.replace(/^(GitHub (?:PR|issue) #\d+)\.md$/, "$1")}<Icon name="close" /></button>)}</div> : null}
-      <label class="sr-only" for="chat-message">Message</label><textarea class="field" id="chat-message" ref={input} value={draft.message} maxLength={12000} placeholder={readyTask ? "Reply go ahead, ask a question or describe changes…" : selectedTask ? "Ask about this task or add guidance…" : "Ask a question or describe what you want to do…"} onInput={e => update({ message: e.currentTarget.value, messageId: uuid() })} onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); if (!busy) send(); } }}/>
+      <label class="sr-only" for="chat-message">Message</label><textarea class="field" id="chat-message" ref={input} value={draft.message} maxLength={12000} placeholder={readyTask ? "Reply go ahead, ask a question or describe changes…" : selectedTask ? "Ask about this task or add guidance…" : "Ask a question or describe what you want to do…"} onInput={e => update({ message: e.currentTarget.value, messageId: uuid() })} onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing && sendOnEnter()) { e.preventDefault(); if (!busy) send(); } }}/>
       <div class="chat-composer-controls">
         <Menu above label="Add files or context" icon="plus" class="chat-add">{close => <>
           <MenuItem disabled={!repository || busy || executionPaused.value} onClick={() => { close(); chooseGitHub(); }}><Icon name="pull" />GitHub issues and PRs</MenuItem>

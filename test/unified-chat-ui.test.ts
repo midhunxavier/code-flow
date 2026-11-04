@@ -387,6 +387,13 @@ test("project settings owns shared defaults and advanced saved workflows", { tim
         assert.equal(await p.getByRole("button",{name:"Saved workflows",exact:true}).isVisible(),false);
         await p.getByText("Advanced · saved workflows and repository configuration",{exact:true}).click();
         assert.equal(await p.getByRole("button",{name:"Saved workflows",exact:true}).isVisible(),true);
+        await p.setViewportSize({ width: 320, height: 568 });
+        const defaults = p.getByRole("region", { name: "Project run defaults" });
+        const check = defaults.getByRole("textbox", { name: "Default check command" });
+        await check.waitFor();
+        const bounds = await check.boundingBox();
+        assert.ok(bounds && bounds.x >= 0 && bounds.x + bounds.width <= 320, "repository defaults fit a narrow phone");
+        assert.equal(await defaults.evaluate(element => element.scrollWidth <= element.clientWidth + 1), true);
     } finally { await context.close(); }
 });
 
@@ -624,4 +631,26 @@ test("CLI workspace: tool-only host gets browser approval and the same chat surv
         await startTask(p, workspace.chatId, workspace.taskId);
         await p.getByRole("heading", { name: "Plan ready", exact: true }).waitFor();
     } finally { await context.close(); }
+});
+
+test("touch phone composers keep Enter as a line break", { timeout: 60000 }, async () => {
+  const context = await browser.newContext({ viewport: { width: 320, height: 568 }, isMobile: true, hasTouch: true });
+  const p = await context.newPage();
+  try {
+    await p.addInitScript(() => localStorage.setItem("sideOpen", "0"));
+    await p.goto(`${base}/?token=${token}#/project/${project.id}/chat`);
+    const message = p.getByRole("textbox", { name: "Message", exact: true });
+    await message.fill("First line");
+    await message.press("Enter");
+    await message.pressSequentially("Second line");
+    assert.equal(await message.inputValue(), "First line\nSecond line");
+    await p.getByRole("button", { name: "Side panel", exact: true }).click();
+    const sideMessage = p.locator(".side").getByRole("textbox", { name: "Message", exact: true });
+    await sideMessage.fill("First line");
+    await sideMessage.press("Enter");
+    await sideMessage.pressSequentially("Second line");
+    assert.equal(await sideMessage.inputValue(), "First line\nSecond line");
+    assert.equal(await p.locator(".side").getByRole("button", { name: "Send", exact: true }).getAttribute("title"), "Send message");
+    assert.ok(await p.locator(".side-tab").first().evaluate(element => element.getBoundingClientRect().height >= 44));
+  } finally { await context.close(); }
 });

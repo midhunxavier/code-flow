@@ -5,7 +5,7 @@ description: Use when the user asks Code Flow to coordinate an agent team on a r
 
 # Code Flow conversational teams
 
-Stay in this conversation. The user describes a task; you propose the smallest adequate team and process. There are no named presets or saved teams to select. Use the twelve `codeflow_*` MCP tools; do not invoke provider CLIs yourself to duplicate a managed assignment.
+Stay in this conversation. The user describes a task; you propose the smallest adequate team and process. There are no named presets or saved teams to select. Use the fourteen `codeflow_*` MCP tools; do not invoke provider CLIs yourself to duplicate a managed assignment.
 
 ## Prepare
 
@@ -84,3 +84,19 @@ When a user asks to continue previous work without an ID, call `codeflow_list_ru
 `codeflow_get_run` exposes the final `result` reference independently of the artifact list. Follow `nextArtifactCursor` with `artifactCursor` to discover all artifacts. Read result and evidence artifacts with `get_artifact`; body pagination uses `nextCursor`, while changed-file metadata uses `data.nextFileCursor` and `fileCursor` (with body cursor zero). Participant settings are recorded dispatch settings, not independent provider attestation. Current-session model and effort remain unverified.
 
 Engine-managed `capture_snapshot` and `verify` steps may omit instructions; agent steps still require them. Terminal `status` connections cannot be attached. For host participation, inspect the run from this persistent MCP session and use its returned attach command only when needed.
+
+## Connection, progress and follow-ups
+
+On the first invocation, call `codeflow_list_providers`. Report connection/configuration problems and the exact next action; a live response proves the bridge is connected, not provider authentication. For a connection-check request, stop after reporting discovery; never create a proposal.
+
+Use the compact proposal `summary` in the conversation. The native form contains the full exact configuration; do not add a separate conversational approval. Present provider/model/effort, commands and limits without reading the full process twice.
+
+Use `progress.phase`, `progress.message`, active work and recent activity in status updates. A pause may still be settling. Report guidance as saved/queued until the receipt or current status says delivered. If work ends before delivery, say so. Give updates only on meaningful changes. Keep using bounded cursor waits; do not promise background host notifications.
+
+For “implement that plan” or “continue that task,” resolve the task with `list_runs` when needed, inspect it, then pass the returned `continuation.context` (`reuseRunId`) to `propose_run`. The service resolves the previous result, original chat, preserved code for write tasks, and matching participant settings. Explicit settings override inherited settings. On stale-source errors, inspect what changed and prepare a revised plan; do not silently remove artifact references and implement an obsolete plan. New scope still needs exact-revision acceptance.
+
+## Bring completed changes into the checkout
+
+Include the substantive result, changed-file summary, check and review evidence, worktree/branch and a concrete next action. Checks refer to their recorded snapshot; “completed” alone never means verified.
+
+Only when the user requests inspection/application, call `codeflow_preview_handoff`. Read all diff pages using its exact `previewHash` and `nextCursor`. Explain that application stages only the task delta into the clean current checkout without committing or pushing. When application is requested and the preview is ready, call `codeflow_apply_handoff` with `runId`, `previewHash`, and a stable `operationId`; a supported host shows native human confirmation. On hosts without native forms, direct the user to the returned interactive `codeflow apply RUN_ID` command. Never answer the confirmation yourself. Dirty checkouts, conflicts, stale previews and interrupted application require inspection; do not reset, stash, force application or replay uncertain writes automatically. After application, show the staged-diff next action and distinguish prior snapshot evidence from checks rerun in the destination checkout.

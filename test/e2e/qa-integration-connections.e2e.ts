@@ -46,6 +46,50 @@ before(async () => {
 afterEach(async t => { if ((t as { error?: unknown }).error) { await page.screenshot({ animations: "disabled", path: join(shots, `failed-${t.name.slice(0, 35).replace(/[^a-z0-9]/gi, "-")}.png`), fullPage: true }); writeFileSync(join(shots, "failed-page.txt"), await page.locator("body").innerText()); } });
 after(async () => { await browser?.close(); await stop(); writeFileSync(join(shots, "browser.json"), JSON.stringify({ errors, expected, restartDiagnostics }, null, 2)); writeFileSync(join(shots, "server.log"), logs.join("")); if (existsSync(join(home, "server.log"))) writeFileSync(join(shots, "application.log"), readFileSync(join(home, "server.log"))); rmSync(scratch, { recursive: true, force: true }); });
 
+test("populated integrations remain usable on a narrow phone", async () => {
+  writeFileSync(fixtureState, JSON.stringify({ count: 12 }));
+  await open();
+  const desktopServices = await Promise.all(["GitHub", "GitLab", "Linear", "Jira"].map(name => card(name).innerText()));
+  await page.setViewportSize({ width: 320, height: 568 });
+  try {
+    for (const [index, name] of ["GitHub", "GitLab", "Linear", "Jira"].entries()) assert.equal(await card(name).innerText(), desktopServices[index], `${name} retains the same information on mobile`);
+    await page.screenshot({ path: join(shots, "mobile-connections.png"), animations: "disabled", fullPage: true });
+    const work = await actions();
+    await work.getByRole("button", { name: "Choose issue", exact: true }).first().waitFor();
+    await page.screenshot({ path: join(shots, "mobile-issues.png"), animations: "disabled", fullPage: true });
+    const overflow = await work.evaluate(root => [...root.querySelectorAll<HTMLElement>("*")].filter(el => {
+      const rect = el.getBoundingClientRect(), style = getComputedStyle(el);
+      return rect.width > 0 && rect.height > 0 && style.visibility === "visible" && (rect.left < -1 || rect.right > innerWidth + 1);
+    }).map(el => `${el.tagName}.${el.className} ${Math.round(el.getBoundingClientRect().right)}`));
+    assert.deepEqual(overflow, [], "issue selection fits the viewport");
+    assert.equal(await work.locator(".integration-actions").evaluate(el => [...el.querySelectorAll("button")].every(button => button.getBoundingClientRect().right <= el.getBoundingClientRect().right + 1)), true, "action buttons stay inside the card");
+    await work.getByRole("button", { name: "Choose issue", exact: true }).first().click();
+    const preview = work.getByRole("article", { name: "Source preview" });
+    await preview.waitFor();
+    await until(() => preview.evaluate(el => el === document.activeElement), Boolean);
+    const previewPosition = await preview.boundingBox();
+    assert.ok(previewPosition && previewPosition.y >= 0 && previewPosition.y < 568, "the loaded preview is brought into view");
+    await page.screenshot({ path: join(shots, "mobile-preview.png"), animations: "disabled", fullPage: true });
+    const bounds = await preview.boundingBox();
+    assert.ok(bounds && bounds.x >= 0 && bounds.x + bounds.width <= 321, "source preview fits the viewport");
+    await work.getByRole("button", { name: "Review pull request", exact: true }).click();
+    await work.getByRole("button", { name: "Load PR preview", exact: true }).first().waitFor();
+    await work.getByRole("button", { name: "Create pull request from completed work", exact: true }).click();
+    const publish = work.getByRole("region", { name: "Publish completed work" });
+    await publish.waitFor();
+    await until(() => publish.evaluate(el => el.parentElement === document.activeElement), Boolean);
+    const publishPosition = await publish.boundingBox();
+    assert.ok(publishPosition && publishPosition.y >= 0 && publishPosition.y < 568, "completed work is brought into view");
+    await page.goto(`${base}/#/settings/integrations`);
+    await card("Jira").getByRole("button", { name: "Connect another", exact: true }).click();
+    const dialog = page.getByRole("dialog"); await dialog.waitFor();
+    await page.screenshot({ path: join(shots, "mobile-connect-dialog.png"), animations: "disabled" });
+    const dialogBounds = await dialog.boundingBox();
+    assert.ok(dialogBounds && dialogBounds.x >= 0 && dialogBounds.x + dialogBounds.width <= 321, "connection setup fits the viewport");
+    await page.keyboard.press("Escape");
+  } finally { writeFileSync(fixtureState, JSON.stringify({ count: 1 })); await page.setViewportSize({ width: 1366, height: 768 }); }
+});
+
 test("disconnect previews every project and Cancel preserves the encrypted connection", async () => {
   await api(`/api/integration-connections/projects/${other}`, { connectionId: connection, repository: repo }, "PUT"); await open(other);
   const before = readFileSync(join(home, "integration-secrets/connections.enc"));

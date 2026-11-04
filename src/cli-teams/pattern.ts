@@ -31,7 +31,7 @@ export const cliTeamPattern: Pattern = {
       const a = { ...record, id: `a-${digest({ path, ...record }).slice(0, 32)}`, sha256: digest(record) };
       return ctx.remember("cli-artifact", path, async () => a);
     };
-    const codeTarget = async (path: string, producer?: ProducerReceipt) => {
+    const codeTarget = async (path: string, producer?: ProducerReceipt, summary?: string) => {
       const head = await resolveCommit(wt.path);
       const snap = await snapshot(ctx.run.repo, wt.path);
       const diff = await git(["diff", "--no-renames", "--name-status", "-z", state.source.base, head, "--"], wt.path);
@@ -39,7 +39,7 @@ export const cliTeamPattern: Pattern = {
       const parts = diff.stdout.split("\0"), changedFiles: { status: string; path: string }[] = [];
       for (let i = 0; i + 1 < parts.length; i += 2) changedFiles.push({ status: parts[i]!, path: parts[i + 1]! });
       // commit IDs, not provider descriptions, identify delivered code; write nodes commit first.
-      return save(path, "code_snapshot", `Code snapshot ${head}\nBranch: ${wt.branch}\nWorktree: ${wt.path}\nReview diff: git diff ${state.source.base}..${head}`, { head, changedFiles, changedFileCount: changedFiles.length, snapshot: digest(snap), branch: wt.branch, base: state.source.base, ...(producer ? { producer } : {}) }, producer?.participant);
+      return save(path, "code_snapshot", `${summary ? `Worker change summary:\n${summary.slice(0, 4000)}\n\n` : ""}Code snapshot ${head}\nBranch: ${wt.branch}\nWorktree: ${wt.path}\nReview diff: git diff ${state.source.base}..${head}\nChanged files: ${changedFiles.slice(0, 30).map(f => f.path).join(", ") || "none"}${changedFiles.length > 30 ? " (read the snapshot artifact for remaining files)" : ""}`, { head, changedFiles, changedFileCount: changedFiles.length, snapshot: digest(snap), branch: wt.branch, base: state.source.base, ...(producer ? { producer } : {}) }, producer?.participant);
     };
     const task = async (node: TaskNode, path: string): Promise<Artifact> => {
       const inputs = (node.inputs ?? []).map(read);
@@ -87,7 +87,7 @@ export const cliTeamPattern: Pattern = {
       });
       if (mode === "write") {
         await ctx.commit(wt, `${p.provider}: ${node.instructions.slice(0, 100)}`);
-        return codeTarget(path, output.producer);
+        return codeTarget(path, output.producer, output.body);
       }
       return save(path, review ? "review" : "plan", output.body, { ...(review ? { target: target!.id, targetHash: target!.sha256, verdict: output.verdict, findings: output.findings ?? [] } : {}), ...(output.producer ? { producer: output.producer } : {}) }, p.id);
     };
@@ -166,7 +166,7 @@ export const cliTeamPattern: Pattern = {
           state.outcome = node.outcome;
         }
         entry.status = "completed";
-        } catch (error) { entry.status = error instanceof ChangesRequested ? "changes_requested" : "failed"; throw error; }
+        } catch (error) { entry.status = ctx.signal.aborted ? "interrupted" : error instanceof ChangesRequested ? "changes_requested" : "failed"; throw error; }
         finally { entry.endedAt = Date.now(); ctx.publish(); }
       }
     };

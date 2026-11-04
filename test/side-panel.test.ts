@@ -165,7 +165,11 @@ test("/api/shell: a shell stays open between commands, streams output, reports e
   assert.equal((await api(`/api/shell/${id}/input`, { text: "echo more" })).status, 409, "an exited shell takes no more input");
 
   assert.deepEqual((await api(`/api/shell/${id}`, undefined, "DELETE")).body, { closed: true });
+  const closedAgain = await api(`/api/shell/${id}`, undefined, "DELETE");
+  assert.equal(closedAgain.status, 200, "a restart or concurrent close may already have removed the shell");
+  assert.deepEqual(closedAgain.body, { closed: false });
   assert.equal((await api(`/api/shell/${id}`)).status, 404);
+  assert.equal((await api(`/api/shell/${id}/input`, { text: "echo stale" })).status, 404);
 });
 
 test("/api/shell: a failing command reports its exit code, and the shell lives on", async () => {

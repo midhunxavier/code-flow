@@ -1,4 +1,4 @@
-import { scrollBehavior } from "./lib.js";
+import { scrollBehavior, sendOnEnter } from "./lib.js";
 import { useMessageDraft } from "./message-draft.js";
 import { appendDraftText, conversationAnswer, recoveryMessage, setupRecovery, replySignInIssue } from "./conversation-feedback.js";
 import { runTitle } from "../src/run-title.js";
@@ -2044,7 +2044,7 @@ export function ConversationBar({ run, steps, chat, onOpenChat }: { run: RunSumm
             value={parseBrowserMessage(text).text}
             onInput={(e) => setText(editBrowserText(text, e.currentTarget.value))}
             onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+              if (e.key === "Enter" && !e.shiftKey && !e.isComposing && sendOnEnter()) {
                 e.preventDefault();
                 void send();
               }
@@ -2107,7 +2107,7 @@ export function ConversationBar({ run, steps, chat, onOpenChat }: { run: RunSumm
             <span class="chatbox-hint" title={hint}>
               {hint}
             </span>
-            <button class="send" aria-label="Send" title="Send (↵ — ⇧↵ for a new line)" disabled={!draftReady || busy || !text.trim() || !running && !budgetValid} onClick={send}>
+            <button class="send" aria-label="Send" title="Send message" disabled={!draftReady || busy || !text.trim() || !running && !budgetValid} onClick={send}>
               <Icon name="send" />
             </button>
           </div>
