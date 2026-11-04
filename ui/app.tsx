@@ -1,4 +1,5 @@
 import { chatAutomationAttention } from "../src/conversational/attention.js";
+import { activeChatContext } from "./chat-context.js";
 import { quotaReason } from "../src/quota-status.js";
 import { RunNavigation } from "./keyboard-navigation.js";
 import { runTitle } from "../src/run-title.js";
@@ -246,8 +247,8 @@ function TopBar() {
         class="icon-btn side-btn"
         aria-pressed={sideOpen.value}
         aria-label="Side panel"
-        title="Side panel: chat, files, terminal, browser, notes (\\)"
-        onClick={() => (sideOpen.value ? closeSide() : openSide())}
+        title="Side panel: task details, chat, files, terminal, browser, notes (\\)"
+        onClick={() => (sideOpen.value ? closeSide() : openSide(activeChatContext.value ? "task" : undefined))}
       >
         <Icon name="panel" />
       </button>
@@ -400,7 +401,7 @@ export function notifyFinished(run: RunSummary) {
 const SHORTCUTS: [string, string][] = [
   ["⌘, / Ctrl+,", "Settings"],
   ["⌘K / Ctrl+K", "Commands, projects and chats"],
-  ["/", "Search chats and runs"],
+  ["/", "Search chats"],
   ["j / k", "Next / previous run in the list"],
   ["[ / ]", "Previous / next step or agent turn"],
   ["n", "New chat"],

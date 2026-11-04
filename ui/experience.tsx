@@ -14,13 +14,13 @@ import { ResultNextStep } from "./result-next-step.js";
 
 export { intentDraft } from "./composer-draft-fields.js";
 type Experience = { metrics: ReturnType<typeof outcomeMetrics>; recommendations: ReturnType<typeof workflowRecommendations> };
-export function OutcomeMetrics({ repository, project }: { repository?: string; project?: string }) {
+export function OutcomeMetrics({ repository, project, compact = false }: { repository?: string; project?: string; compact?: boolean }) {
   const [data, setData] = useState<Experience>(), [error, setError] = useState("");
   usePoll(current => api<Experience>(`/api/experience?${new URLSearchParams({ ...(repository ? { repo: repository } : {}), ...(project ? { project } : {}) })}`).then(value => current() && (setData(value), setError("")), error => current() && setError(error.message)), 15000, [repository, project]);
   if (error) return <p class="help" role="status">Outcome metrics unavailable: {error}</p>;
   if (!data) return null;
   const m = data.metrics;
-  return <section class="outcome-metrics" aria-label="Useful outcomes"><h3>Useful outcomes</h3><dl class="experience-metrics"><div><dt>Accepted by you</dt><dd>{m.rated ? `${m.accepted} / ${m.rated} rated` : "Not rated yet"}</dd></div><div><dt>Time to verified result</dt><dd>{m.medianVerifiedMs === undefined ? "No verified results" : `${duration(m.medianVerifiedMs)} median`}</dd></div><div><dt>Recorded correction time</dt><dd>{m.reworkSamples ? `${m.medianReworkMinutes} min median` : "Not recorded"}</dd></div><div><dt>Shipped</dt><dd>{m.shipped} runs</dd></div></dl><p class="help">All recorded history in this scope. Time includes waits; corrections use {m.reworkSamples} recorded samples. {m.completed - m.rated} finished runs are unrated. Shipped means a recorded merge.</p></section>;
+  return <section class="outcome-metrics" aria-label="Useful outcomes"><h3 title="All recorded history in this scope. Time includes waits; shipped means a recorded merge.">Useful outcomes</h3><dl class="experience-metrics"><div><dt>Accepted by you</dt><dd>{m.rated ? `${m.accepted} / ${m.rated} rated` : "Not rated yet"}</dd></div><div><dt>Time to verified result</dt><dd>{m.medianVerifiedMs === undefined ? "No verified results" : `${duration(m.medianVerifiedMs)} median`}</dd></div><div><dt>Recorded correction time</dt><dd>{m.reworkSamples ? `${m.medianReworkMinutes} min median` : "Not recorded"}</dd></div><div><dt>Shipped</dt><dd>{m.shipped} runs</dd></div></dl>{!compact ? <p class="help">All recorded history in this scope. Time includes waits; corrections use {m.reworkSamples} recorded samples. {m.completed - m.rated} finished runs are unrated. Shipped means a recorded merge.</p> : null}</section>;
 }
 export function WorkflowRecommendation({ repository, intent }: { repository: string; intent?: TaskIntent }) {
   const [data, setData] = useState<Experience>(), [error, setError] = useState("");

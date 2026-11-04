@@ -14,7 +14,7 @@ export interface Automation {
   name: string;
   enabled: boolean;
   revision?: number;
-  run: { repo: string; project?: string; pattern: string; task: string; roles: Record<string, string[]>; chatRecipe?: { chatId: string } };
+  run: { repo: string; project?: string; pattern: string; task: string; roles: Record<string, string[]>; chatRecipe?: { chatId: string; mode?: "agent" | "team" } };
   onceAt?: number;
   missedPolicy?: "run_once" | "skip";
   lastTest?: { runId?: string; revision: number; state: string; error?: string };

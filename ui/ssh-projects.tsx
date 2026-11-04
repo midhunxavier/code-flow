@@ -97,9 +97,8 @@ export function SshConnections() {
   });
   return <div class="ssh-connections" aria-busy={!!busy || loading}>
       {!managesConnections(context) ? <p>SSH connections are managed in CodeFlow on your computer.</p> : <>
-        <div class="ssh-local"><strong>This computer</strong><span class="badge ok">Local workspace</span></div>
-        <div class="ssh-saved-heading"><h3>Saved connections</h3><button class="btn small" disabled={!!busy || loading} onClick={() => void act("Refreshing…", refresh)}>Refresh connections</button></div>
-        {loading ? <p role="status">Loading connections…</p> : !hosts.length ? <p class="help">No remote machines yet. Connect your first VM below.</p> : null}
+        <div class="ssh-saved-heading"><h3>Remote computers</h3><button class="btn small" disabled={!!busy || loading} onClick={() => void act("Refreshing…", refresh)}>Refresh</button></div>
+        {loading ? <p role="status">Loading connections…</p> : !hosts.length ? <p class="help">No saved connections.</p> : null}
         {hosts.map((host) => <article class="section" key={host.id}>
           <p><strong>{host.name}</strong> <span class="help">{host.sshHost}{host.port ? `:${host.port}` : ""} · {host.state}</span></p>
           {host.identityFile ? <p class="help">Key: <code>{host.identityFile}</code></p> : null}
@@ -114,23 +113,26 @@ export function SshConnections() {
           </div>
         </article>)}
         <form class="ssh-new" onSubmit={(event) => { event.preventDefault(); const submitter = (event as SubmitEvent).submitter as HTMLButtonElement | null; void save(submitter?.value !== "save"); }}>
-          <h3>Add a remote machine</h3>
-          <p class="help">Your repository, agents, terminal, builds and tests run on the VM.</p>
+          <h3>Add computer</h3>
+          <div class="ssh-address-fields">
           <label>SSH host<input class="field" list="ssh-aliases" value={sshHost} onInput={(event) => setSshHost(event.currentTarget.value)} placeholder="devbox or user@server" maxLength={200} required disabled={!!busy} /></label>
           <datalist id="ssh-aliases">{aliases.map((alias) => <option key={alias} value={alias} />)}</datalist>
-          <label>Display name<input class="field" value={name} onInput={(event) => setName(event.currentTarget.value)} placeholder="Development server" maxLength={80} disabled={!!busy} /></label>
-          <div class="settings-grid">
+          <label>Display name<input class="field" value={name} onInput={(event) => setName(event.currentTarget.value)} placeholder="Optional name" maxLength={80} disabled={!!busy} /></label>
+          </div>
+          <details class="ssh-options"><summary>SSH options</summary><div class="settings-grid">
             <label>SSH port<input class="field" type="number" min={1} max={65535} step={1} value={port} onInput={(event) => setPort(event.currentTarget.value)} placeholder="From SSH config (usually 22)" disabled={!!busy} /></label>
             <label>Identity file<input class="field" value={identityFile} onInput={(event) => setIdentityFile(event.currentTarget.value)} placeholder="~/.ssh/id_ed25519 (optional)" maxLength={4096} disabled={!!busy} /></label>
           </div>
+          </details>
+          <details class="ssh-help"><summary>Setup help</summary><div>
           <p class="help">Leave port and key blank to use your SSH config and agent. Jump hosts are read from ~/.ssh/config. Only the key path is saved; key contents stay on this computer.</p>
           <p class="help">Use a Linux or macOS server with Node.js 22.13+ and Git. Install and sign in to your agent CLIs there. Python 3 enables interactive terminals.</p>
           <p class="help">Uses your SSH config and keys. First verify the host with SSH in a terminal; unlock protected keys in your SSH agent. Connecting installs the backend under ~/.codeflow/ssh-host on the server.</p>
+          <p class="help">Disconnecting or removing a connection leaves remote work running.</p></div></details>
           <div class="ssh-actions"><button class="btn" type="submit" value="save" disabled={!!busy || loading || !sshHost.trim()}>Save connection</button><button class="btn primary" type="submit" value="connect" disabled={!!busy || loading || !sshHost.trim()}>Connect and open</button></div>
         </form>
       </>}
       {busy ? <p role="status">{busy}{busy.startsWith("Connecting") ? " Initial setup can take a minute." : ""}</p> : null}
       {error ? <p class="msg err" role="alert">{error}</p> : null}
-    <p class="help">Disconnecting or removing a connection leaves remote work running.</p>
   </div>;
 }

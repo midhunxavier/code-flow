@@ -10,12 +10,12 @@ import { useDialog } from "./app.js";
 import { AgentTag, CantRunNote } from "./bits.js";
 import { Icon } from "./icons.js";
 import { ago, api, ApiError, sharedGet, baseName, copy, post, showToast, showError, STATUS_TEXT } from "./lib.js";
-import { activeProject, projectCounts, filterActive, setRunFilter, historyNextCursor, historyLoadingMore, loadOlderRuns, ALL, currentProject, inScope, NONE, patterns, projectFor, projects, route, runs, runState, selectProject } from "./state.js";
+import { activeProject, projectCounts, filterActive, setRunFilter, historyNextCursor, historyLoadingMore, loadOlderRuns, ALL, currentProject, inScope, NONE, patterns, projectFor, projects, route, runs, selectProject } from "./state.js";
 import type { Project, RunSummary } from "./types.js";
 import { ProjectButton } from "./projects.js";
 import { SCHEDULED_TEAM_NOTICE, usesTaskTeam } from "./deferred-runs.js";
 import { teamAwaitingAnswer } from "./team-state.js";
-import { prioritizedReviewRuns, groupReviewRuns, reviewReason, REVIEW_REASON_LABELS, type ReviewReason } from "../src/review-inbox.js";
+import { canMarkReviewRead, prioritizedReviewRuns, groupReviewRuns, reviewReason, REVIEW_REASON_LABELS, type ReviewReason } from "../src/review-inbox.js";
 import type { AutomationEvent, AutomationPreview } from "../src/automation.js";
 import { MAX_EVERY_MINUTES, MIN_EVERY_MINUTES, type Schedule } from "../src/schedule-rules.js";
 import { draftProblem, draftSchedule, formatNextRun, localTimezone, sameSchedule, scheduleDraft, type ScheduleDraft } from "./schedule-draft.js";
@@ -147,6 +147,18 @@ export function AutomationsView({ mode = "all", category, projectId, showScope =
   const pendingTotal = projectCounts.value?.[scope]?.inboxRuns ?? pending.length;
   const allPendingTotal = projectCounts.value?.[ALL]?.inboxRuns ?? allPending.length;
   const filtered = prioritizedReviewRuns(pending, { query, reason: filter ? filter as ReviewReason : undefined });
+  const [markingRead, setMarkingRead] = useState(false);
+  const readable = filtered.filter(canMarkReviewRead);
+  const markRead = async (items: RunSummary[]) => {
+    if (markingRead) return;
+    setMarkingRead(true);
+    try {
+      const results = await Promise.allSettled(items.map(run => post(`/api/runs/${run.id}/seen`)));
+      const failed = results.filter(result => result.status === "rejected").length;
+      if (failed) showError(`Could not mark ${failed} ${failed === 1 ? "item" : "items"} as read. Please try again.`);
+      else showToast(items.length === 1 ? "Marked as read" : `${items.length} items marked as read`);
+    } finally { setMarkingRead(false); }
+  };
   const groups = groupReviewRuns(filtered, (run) => {
     if (grouping === "reason") { const reason = reviewReason(run)!; return { id: reason, label: REVIEW_REASON_LABELS[reason] }; }
     if (grouping === "repo") return { id: run.repo, label: run.repo };
@@ -172,15 +184,16 @@ export function AutomationsView({ mode = "all", category, projectId, showScope =
       </div> : null}
 
       {/* Each section is a card: its title, then its items as rows. */}
-      {mode !== "automations" ? <section class="section auto-card" aria-labelledby="inbox-title">
-        <h2 class="section-title" id="inbox-title">
+      {mode !== "automations" ? <section class="section auto-card review-inbox" aria-labelledby="inbox-title">
+        <div class="inbox-heading"><h2 class="section-title" id="inbox-title">
           Review inbox {pendingTotal ? <span class="count">{pendingTotal}</span> : null}
-        </h2>
+        </h2>{readable.length ? <button type="button" class="btn small" disabled={markingRead} onClick={() => void markRead(readable)}><Icon name="check"/>{markingRead ? "Marking as read…" : "Mark shown as read"}</button> : null}</div>
+        <p class="inbox-read-help">Opening a result marks it as read. Questions and approval requests stay until you respond.</p>
         <Elsewhere count={allPendingTotal - pendingTotal} what={(n) => `${n} in other projects need${n === 1 ? "s" : ""} you`} />
         {!projectCounts.value ? <p class="help" role="status">Counts currently show loaded review items.</p> : null}
         {pendingTotal > pending.length ? <p class="help" role="status">Showing {pending.length} of {pendingTotal} review items in this scope. Older items are still in history.{filterActive.value ? <> <button class="btn small" onClick={() => setRunFilter({ q: "", status: "all", pattern: "", agent: "", repo: "" })}>Clear sidebar filters to load older items</button></> : historyNextCursor.value ? <> <button class="btn small" disabled={historyLoadingMore.value} onClick={() => void loadOlderRuns()}>{historyLoadingMore.value ? "Loading…" : "Load older review items"}</button></> : null}</p> : null}
         <details class="inbox-tools"><summary><Icon name="sliders"/>Filters{query || filter ? <span class="count">Active</span> : null}</summary><div class="wb-row inbox-filters"><label>Group by<select class="field" aria-label="Group review inbox" value={grouping} onChange={(event) => setGrouping(event.currentTarget.value)}><option value="project">Project</option><option value="repo">Repository</option><option value="reason">Attention needed</option><option value="none">No grouping</option></select></label><label>Show<select class="field" aria-label="Filter review inbox" value={filter} onChange={(event) => setFilter(event.currentTarget.value)}><option value="">All attention items</option>{Object.entries(REVIEW_REASON_LABELS).map(([id, label]) => <option value={id}>{label}</option>)}</select></label><label>Search<input class="field" aria-label="Search review inbox" value={query} onInput={(event) => setQuery(event.currentTarget.value)} placeholder="Task, repository or run ID" /></label></div><p class="help">Sorted by priority, then oldest first.</p></details>
-        {filtered.length ? groups.map((group) => <section key={group.id} class="inbox-group" aria-label={`Review group ${group.label}`}><h3>{group.label} <span class="count">{group.runs.length}</span></h3>{group.runs.map((r) => <InboxItem key={r.id} run={r} scoped={scoped} />)}</section>) : <div class="inbox-empty"><Icon name={pendingTotal ? "search" : "check"}/><h3>{pendingTotal ? "No matching items" : "You’re all caught up"}</h3><p>{pendingTotal ? "Try a different search or filter." : `Nothing needs your attention${here}. Questions and results will appear here.`}</p></div>}
+        {filtered.length ? groups.map((group) => <section key={group.id} class="inbox-group" aria-label={`Review group ${group.label}`}><h3>{group.label} <span class="count">{group.runs.length}</span></h3>{group.runs.map((r) => <InboxItem key={r.id} run={r} scoped={scoped} markingRead={markingRead} onRead={() => void markRead([r])} />)}</section>) : <div class="inbox-empty"><Icon name={pendingTotal ? "search" : "check"}/><h3>{pendingTotal ? "No matching items" : "You’re all caught up"}</h3><p>{pendingTotal ? "Try a different search or filter." : `No unread results or pending decisions${here}. Past results are still in project history.`}</p></div>}
       </section> : null}
 
       {mode !== "inbox" ? <section class="section auto-card" aria-labelledby="automations-title">
@@ -222,38 +235,46 @@ function Elsewhere({ count, what }: { count: number; what: (n: number) => string
   );
 }
 
-function InboxItem({ run, scoped }: { run: RunSummary; scoped: boolean }) {
+function InboxItem({ run, scoped, markingRead, onRead }: { run: RunSummary; scoped: boolean; markingRead: boolean; onRead: () => void }) {
   const changed = run.artifacts.filter((a) => a.stat?.trim());
   const project = projectLabel(projectFor(run), run.repo, scoped);
+  const reason = reviewReason(run)!;
+  const question = teamAwaitingAnswer(run) ? run.team?.messages.find(message => message.id === run.team!.awaitingRequestId)?.body : undefined;
+  const explanation = question || run.awaiting?.title || run.team?.gaps?.[0] || run.checkCantRun?.reason || run.error ||
+    ({ answer: "A question or approval needs your response.", blocked: "Work stopped before completion. Open the chat to continue.", failed: "The latest checks or execution failed. Open the chat to inspect the result.", review: "A result is ready for you to review." })[reason];
+  const action = run.awaiting ? "Review approval" : reason === "answer" ? "Respond" : run.triage?.state === "pending" ? "Review result" : "Open chat";
   return (
-    <div class="inbox-item">
-      <div class="ih">
-        <span class="badge">{REVIEW_REASON_LABELS[reviewReason(run)!]}</span>{run.priority ? <span class="badge">Priority {run.priority > 0 ? "+" : ""}{run.priority}</span> : null}
-        <span class={`dot ${runState(run)}`} />
-        <a href={`#/run/${run.id}`} class="t">
-          {runTitle(run)}
-        </a>
-        <span class="help">
-          {run.trigger ? <><Icon name={run.trigger.via === "sweep" ? "layers" : run.trigger.via === "webhook" ? "globe" : "clock"} class="inline-icon" /> {run.trigger.name} · </> : null}{STATUS_TEXT[run.status] ?? run.status}
-          {` · checks: ${checksLabel(run).toLowerCase()}`} · {baseName(run.repo)}
-          {project ? <> · <Icon name="project" class="inline-icon" /> {project.name}</> : null} · {ago(run.createdAt)}
-        </span>
+    <article class="inbox-item" aria-label={runTitle(run)}>
+      <div class="inbox-item-top">
+        <span class={`badge inbox-reason ${reason}`}>{REVIEW_REASON_LABELS[reason]}</span>{run.priority ? <span class="badge">Priority {run.priority > 0 ? "+" : ""}{run.priority}</span> : null}
+        <span class="inbox-age">{ago(run.endedAt ?? run.createdAt)}</span>
       </div>
-      {run.awaiting ? <a class="btn small primary" href={`#/run/${run.id}`}>Open pending approval</a> : null}
-      {run.checkCantRun ? <CantRunNote cantRun={run.checkCantRun} /> : null}
-      {run.team ? <div class="help">Team: {run.team.members.length} members · {run.team.tasks.filter((task) => task.status === "completed").length}/{run.team.tasks.length} tasks completed · {run.team.metrics.invocations} calls</div> : null}
-      {teamAwaitingAnswer(run) ? <div class="at-notice"><b>The team needs your answer</b><p>{run.team?.messages.find((message) => message.id === run.team!.awaitingRequestId)?.body}</p><a class="btn small primary" href={`#/run/${run.id}`}>Answer team question</a></div> : run.team?.status === "blocked" ? <div class="at-notice"><p>{run.team.gaps.join(" ")}</p><a class="btn small" href={`#/run/${run.id}`}>Continue team work</a></div> : null}
-      {run.review ? <div class="help">Review: {run.review.verdict === "approve" ? "approve" : `${run.review.findings.length} findings`}</div> : null}
-      {changed.map((a) => (
+      <h4 class="inbox-item-title"><a href={`#/run/${run.id}`}>{runTitle(run)}</a></h4>
+      <p class="inbox-meta">{project ? `${project.name} · ` : ""}{baseName(run.repo)}{run.trigger ? ` · ${run.trigger.name}` : ""} · Checks: {checksLabel(run).toLowerCase()}</p>
+      <p class="inbox-explanation">{explanation.split("\n")[0]}</p>
+      <div class="inbox-item-actions"><a class={`btn small ${reason === "answer" ? "primary" : ""}`} href={`#/run/${run.id}`}>{action}</a>
+        {canMarkReviewRead(run) ? <button type="button" class="btn small inbox-mark-read" disabled={markingRead} onClick={onRead}><Icon name="check"/>Mark as read</button> : null}
+      </div>
+      <details class="inbox-details"><summary>View details{changed.length ? ` · ${changed.length} ${changed.length === 1 ? "branch" : "branches"}` : ""}<Icon name="chevron" class="caret"/></summary>
+        <div class="inbox-detail-body">
+        <p class="help">{STATUS_TEXT[run.status] ?? run.status} · {run.id}</p>
+        <p class="inbox-full-explanation">{explanation}</p>
+        {run.team?.gaps?.slice(1).map((gap, index) => <p key={index} class="inbox-full-explanation">{gap}</p>)}
+        {run.error && ![explanation, ...(run.team?.gaps ?? [])].join(" ").replace(/[^a-z0-9]/gi, "").includes(run.error.replace(/[^a-z0-9]/gi, "")) ? <p class="msg err">{run.error}</p> : null}
+        {run.checkCantRun ? <CantRunNote cantRun={run.checkCantRun} /> : null}
+        {run.team ? <p class="help">Team: {run.team.members.length} members · {run.team.tasks.filter(task => task.status === "completed").length}/{run.team.tasks.length} tasks completed · {run.team.metrics.invocations} calls</p> : null}
+        {run.review ? <p class="help">Review: {run.review.verdict === "approve" ? "approve" : `${run.review.findings.length} findings`}</p> : null}
+        {changed.map((a) => (
         <pre key={a.branch} class="stat" tabIndex={0} aria-label={`Changed files on ${a.branch}`}>
           {a.label} · {a.branch}
           {"\n"}
           {a.stat}
         </pre>
       ))}
-      {run.error ? <div class="msg err">{run.error}</div> : null}
+        </div>
+      </details>
       {run.triage?.state === "pending" ? <TriageActions run={run} /> : null}
-    </div>
+    </article>
   );
 }
 

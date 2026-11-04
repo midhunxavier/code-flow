@@ -59,24 +59,24 @@ export function TeamBoardView({ project, shared = false, embedded = false, navig
     </section>;
   };
   const link = teamLink.value;
-  return <div class="team-page team-board-page">
+  return <div class={`team-page team-board-page${embedded ? " board-compact" : ""}`}>
     {boardError.value ? <p class="msg err" role="alert">{boardError.value}</p> : null}
     <div class="page-head team-board-head">
-      <div class="page-head-text"><div class="collaboration-eyebrow"><Icon name="layers" /> Collaboration</div>{embedded ? <h2>Board</h2> : <h1>Board</h1>}<p>{ssh ? `Tasks, ownership and reviews on ${ssh.name}.` : chosen ? `${b.projects.find((entry) => entry.id === chosen)?.name ?? "This project"} · Tasks, ownership, and reviews in one place.` : "Shared tasks, ownership, and reviews in one place."}</p></div>
+      {!embedded ? <div class="page-head-text"><div class="collaboration-eyebrow"><Icon name="layers" /> Collaboration</div>{embedded ? <h2>Board</h2> : <h1>Board</h1>}<p>{ssh ? `Tasks, ownership and reviews on ${ssh.name}.` : chosen ? `${b.projects.find((entry) => entry.id === chosen)?.name ?? "This project"} · Tasks, ownership, and reviews in one place.` : "Shared tasks, ownership, and reviews in one place."}</p></div> : null}
       <div class="page-head-actions"><button class="btn" onClick={() => navigate({ view: "team-people", ...(chosen ? { project: chosen } : {}) })}><Icon name="people" /> People</button>{canCreate && !shared && ownerOnLocalListener.value ? <button type="button" class="btn" disabled={!!creating} onClick={() => setCreating("agent")}><Icon name="sparkle" /> Draft with agent</button> : null}{canCreate ? <button type="button" class="btn primary" aria-expanded={!!creating} aria-controls={creating ? "team-new" : undefined} disabled={!!creating} onClick={() => setCreating("manual")}><Icon name="plus" /> New task</button> : null}</div>
     </div>
     {!shared && !ssh && !embedded ? <TeamConnectionPicker compact /> : null}
     {ssh && !embedded ? <><SshTeamServerCard key={ssh.id} host={ssh} /><div class="team-board-context"><strong>Viewing this computer’s board · {ssh.name}</strong><p>Tasks below belong to this computer. To use the shared team board, connect your computer with the team address and account from team server setup.</p></div></> : null}
     {shared && chosen ? <section class="settings-card project-welcome" aria-label="Project access"><strong>You’re in {b.projects.find(p => p.id === chosen)?.name}</strong><p class="help">Your project access is ready. {canCreate ? "Create tasks, discuss work, and review results. Coding on your computer is optional." : "You can view results" + (b.projects.find(p => p.id === chosen)?.role === "reviewer" ? ", comment, and review work. No computer setup needed." : ". No computer setup needed.")}</p>{canCreate ? <ConnectComputer project={b.projects.find(p => p.id === chosen)!} /> : null}</section> : null}
     {shared ? <TeamTerminalPanel board={b} project={chosen} /> : null}
-    {!ssh && (shared || link && !link.linked) ? <HostQueue board={b} project={chosen} /> : null}
-    {!shared && !ssh && link && !link.linked && !b.tasks.length ? <div class="settings-callout team-callout"><Icon name="people" /><div><strong>Not connected to a team server</strong><p>Connect this computer in Connections → Share access to work on a shared board, or create tasks here to use this computer as the team server.</p><a href="#/settings/connections/sharing">Open Connections → Share access <span aria-hidden="true">→</span></a></div></div> : null}
+    {!ssh && (shared || link && !link.linked) ? <HostQueue board={b} project={chosen} compact={embedded} /> : null}
+    {!embedded && !shared && !ssh && link && !link.linked && !b.tasks.length ? <div class="settings-callout team-callout"><Icon name="people" /><div><strong>Not connected to a team server</strong><p>Connect this computer in Connections → Share access to work on a shared board, or create tasks here to use this computer as the team server.</p><a href="#/settings/connections/sharing">Open Connections → Share access <span aria-hidden="true">→</span></a></div></div> : null}
     {b.projects.length > 1 || chosen ? <div class="team-chips" role="group" aria-label="Project">
       <button type="button" class="chip-tpl" aria-pressed={!chosen} onClick={() => navigate({ view: "team" })}>All projects</button>
       {b.projects.map((entry) => <button key={entry.id} type="button" class="chip-tpl" aria-pressed={chosen === entry.id} onClick={() => navigate({ view: "team", project: entry.id })}>{entry.name}</button>)}
     </div> : null}
     {creating && canCreate ? <NewTaskForm key={chosen ?? ""} b={b} projectId={chosen} shared={shared} draftWithAgent={creating === "agent"} onDone={(task) => { const open = creating === "agent"; setCreating(false); void loadBoard(); if (open) navigate({ view: "team-task", id: task.id }); }} onCancel={() => setCreating(false)} /> : null}
-    <div class="team-toolbar">
+    {!embedded || b.projects.length ? <div class="team-toolbar">
       <div class="segmented small" role="group" aria-label="Whose tasks">
         <button type="button" class={mine ? "" : "on"} aria-pressed={!mine} onClick={() => setMine(false)}>All</button>
         <button type="button" class={mine ? "on" : ""} aria-pressed={mine} onClick={() => setMine(true)}>Mine</button>
@@ -84,9 +84,9 @@ export function TeamBoardView({ project, shared = false, embedded = false, navig
       <label class="team-filter">Status<select class="field" value={status} onChange={(event) => setStatus(event.currentTarget.value as TaskStatus | "")}><option value="">All statuses</option>{TASK_STATUSES.map((state) => <option key={state} value={state}>{STATUS_LABEL[state]}</option>)}</select></label>
       <span class="help team-task-count" role="status">{mine || status ? `${tasks.length} of ${projectTasks.length} tasks${mine ? " involve you" : ""}` : `${tasks.length} ${tasks.length === 1 ? "task" : "tasks"}`}</span>
       {tasks.length && !status ? <span class="team-board-hint">Scroll to see all stages <Icon name="chevron" /></span> : null}
-    </div>
-    {!b.projects.length ? <p class="team-empty">{shared ? "You have no role in a shared project yet. Ask the owner for one." : "Create a project first: the board's tasks belong to projects, and teammates see the projects their accounts have a role in."}</p> : null}
-    <div class="team-board">
+    </div> : null}
+    {!embedded && !b.projects.length ? <p class="team-empty">{shared ? "You have no role in a shared project yet. Ask the owner for one." : "Create a project first: the board's tasks belong to projects, and teammates see the projects their accounts have a role in."}</p> : null}
+    {embedded && !b.projects.length ? <section class="board-first-project"><Icon name="folder"/><h3>Create a project to get started</h3><a class="btn primary" href="#/projects">Create project</a><a class="btn small ghost" href="#/settings/connections/sharing">Connect a team</a></section> : <div class="team-board">
       {tasks.length ? <div class={`team-columns ${columns.length === 1 ? "single" : ""}`} role="region" aria-label="Task board" tabIndex={0}>{columns.map(column)}</div> : <section class="team-board-empty" aria-label="Task board">
         <div class="team-workflow" aria-label="Task workflow">{TASK_STATUSES.map(state => <span key={state}>{STATUS_LABEL[state]}<span class="team-count">{projectTasks.filter(task => task.status === state).length}</span></span>)}</div>
         <div class="team-board-empty-body"><Icon name="people" /><h2>{projectTasks.length ? "No tasks match these filters" : "Your board is ready for its first task"}</h2>
@@ -95,8 +95,8 @@ export function TeamBoardView({ project, shared = false, embedded = false, navig
         </div>
       </section>}
 
-      <InboxPanel shared={shared} navigate={navigate} />
-    </div>
+      {embedded ? <details class="board-activity"><summary>Activity inbox</summary><InboxPanel shared={shared} navigate={navigate} /></details> : <InboxPanel shared={shared} navigate={navigate} />}
+    </div>}
   </div>;
 }
 

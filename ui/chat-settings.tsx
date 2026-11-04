@@ -11,10 +11,10 @@ export function MessageSettings({ summary, title, children }: { summary: Compone
     if (!open) return;
     const position = () => {
       const anchor = trigger.current?.getBoundingClientRect(); if (!anchor || !panel.current) return;
-      const width = Math.min(320, window.innerWidth - 24);
+      const width = Math.min(280, window.innerWidth - 24);
       Object.assign(panel.current.style, { width: `${width}px`, left: `${Math.max(12, Math.min(anchor.right - width, window.innerWidth - width - 12))}px`, bottom: `${window.innerHeight - anchor.top + 8}px`, maxHeight: `${Math.max(120, anchor.top - 20)}px` });
     };
-    position(); panel.current?.querySelector<HTMLButtonElement>("button")?.focus();
+    position(); panel.current?.querySelector<HTMLButtonElement>(".chat-controls button")?.focus();
     const away = (e: PointerEvent) => { if (!root.current?.contains(e.target as Node)) close(false); };
     const blur = (e: FocusEvent) => { if (e.relatedTarget && !root.current?.contains(e.relatedTarget as Node)) close(false); };
     document.addEventListener("pointerdown", away); root.current?.addEventListener("focusout", blur); window.addEventListener("resize", position);

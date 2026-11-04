@@ -1,6 +1,6 @@
 import { settingsSection, type SettingsSection } from "./settings-sections.js";
-export type SideTab = "chat" | "changes" | "files" | "terminal" | "browser" | "notes";
-export const SIDE_TABS: SideTab[] = ["chat", "changes", "files", "terminal", "browser", "notes"];
+export type SideTab = "task" | "chat" | "changes" | "files" | "terminal" | "browser" | "notes";
+export const SIDE_TABS: SideTab[] = ["task", "chat", "changes", "files", "terminal", "browser", "notes"];
 export const PROJECT_SECTIONS = ["runs", "repositories", "connections", "board", "people", "automation", "ml", "settings"] as const;
 export type ProjectSection = typeof PROJECT_SECTIONS[number];
 export const REPOSITORY_TOOLS = ["verification", "code", "context", "history", "services", "coordination", "filtered-tasks"] as const;
@@ -41,7 +41,7 @@ export function parseRouteHash(hash: string): Route {
   if (view === "task" && id && !rest.length) return { view: "task", id };
   if (view === "run" && id) return { view: "run", id };
   if (view === "review" && id && rest.length) return { view: "review", id, branch: rest.join("/") };
-  if (view === "settings" && (id === "workspace" || id === "insights")) return { view: id, ...(id === "insights" && rest[0] ? { group: rest[0] } : {}) };
+  if (view === "settings" && id === "workspace") return { view: "workspace" };
   if (view === "settings" && ["ssh", "remote-access", "team"].includes(id ?? "")) return { view: "settings", section: "connections", group: id === "ssh" ? "workspace" : id === "remote-access" ? "devices" : "manage" };
   if (view === "settings") return { view: "settings", ...(id ? { section: settingsSection(id) } : {}), ...((id === "insights" || id === "connections") && rest[0] ? { group: rest[0] } : {}) };
   // Everyday work has standalone destinations; old Settings bookmarks remain valid.

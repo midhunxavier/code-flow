@@ -1,4 +1,5 @@
 import { modelIdProblem } from "../src/model-id.js";
+import type { ComponentChildren } from "preact";
 import { providerProblem } from "./provider-readiness.js";
 import { runProviderProblem } from "../src/run-permissions.js";
 import { ModelSelect } from "./model-select.js";
@@ -14,13 +15,14 @@ export type ChatSettings = { model?: string; effort?: string };
 export type ChatPermissions = { trust: Trust; tools: boolean };
 
 /** Choices belong to the next message; changing them never changes an in-flight turn. */
-export function ChatControls({ agent, onAgent, settings, onSettings, permissions, onPermissions, restricted = false, approvalsAvailable = true, approvalsUnavailableReason, providers, showPermissions = true, resetPermissionsOnAgentChange = true, unrestricted = false }: {
+export function ChatControls({ agent, onAgent, settings, onSettings, permissions, onPermissions, restricted = false, approvalsAvailable = true, approvalsUnavailableReason, providers, showPermissions = true, resetPermissionsOnAgentChange = true, unrestricted = false, labeled = false }: {
   agent: AgentId; onAgent?: (id: AgentId) => void;
   settings: ChatSettings; onSettings: (settings: ChatSettings) => void;
   permissions: ChatPermissions; onPermissions: (permissions: ChatPermissions) => void;
   restricted?: boolean; approvalsAvailable?: boolean; approvalsUnavailableReason?: string; providers?: AgentInfo[]; showPermissions?: boolean; resetPermissionsOnAgentChange?: boolean;
   /** Unrestricted Antigravity (agy-native-v1): the trust choice doesn't sandbox it. */
   unrestricted?: boolean;
+  labeled?: boolean;
 }) {
   const [custom, setCustom] = useState(false);
   const choices = providers ?? agents.value;
@@ -41,24 +43,25 @@ export function ChatControls({ agent, onAgent, settings, onSettings, permissions
   };
   const pick = (selected: boolean, text: string) => <><span>{text}</span>{selected ? <span class="chat-choice-check" aria-label="Selected">✓</span> : null}</>;
   const trigger = (text: string) => <><span>{text}</span><Icon name="chevron" /></>;
-  return <div class="chat-controls">
-    {onAgent ? <Menu above label="Provider" icon="layers" class="chat-choice" trigger={trigger(provider?.displayName ?? agent)}>
+  const field = (name: string, control: ComponentChildren) => labeled ? <div class="chat-setting-row"><span class="chat-setting-label" aria-hidden="true">{name}</span>{control}</div> : control;
+  return <div class={`chat-controls${labeled ? " chat-controls-labeled" : ""}`}>
+    {field("Provider", onAgent ? <Menu above label="Provider" icon="layers" class="chat-choice" trigger={trigger(provider?.displayName ?? agent)}>
       {(close) => <><MenuTitle>Provider</MenuTitle>{choices.map((entry) => <MenuItem key={entry.id} on={entry.id === agent} disabled={!!providerProblem(entry, providers ? null : health.value)} sub={providerProblem(entry, providers ? null : health.value) || undefined} onClick={() => { onAgent(entry.id); if (permissions.tools && resetPermissionsOnAgentChange) onPermissions({ trust: "standard", tools: entry.id === "codex" || entry.id === "claude" }); setCustom(false); close(); }}>{pick(entry.id === agent, entry.displayName)}</MenuItem>)}</>}
-    </Menu> : <span class="chat-provider-fixed" title="Provider stays fixed for this conversation. Start a new run to use another provider.">{provider?.displayName ?? agent}</span>}
-    <ModelSelect compact label="Model" title={`Model · ${provider?.displayName ?? agent}`} value={showCustom ? "__custom" : settings.model ?? ""} placeholder={modelName} note={listError ? `Couldn't list models: ${listError}` : undefined}
+    </Menu> : <span class="chat-provider-fixed" title="Provider stays fixed for this conversation. Start a new run to use another provider.">{provider?.displayName ?? agent}</span>)}
+    {field("Model", <ModelSelect compact label="Model" title={`Model · ${provider?.displayName ?? agent}`} value={showCustom ? "__custom" : settings.model ?? ""} placeholder={modelName} note={listError ? `Couldn't list models: ${listError}` : undefined}
       options={[
         { id: "", label: "Default model", description: listError ? "Models unavailable — use the provider's default" : catalog?.defaultModel ?? "Use the provider's default" },
         ...(catalog ? freeModelsFirst(catalog.models) : []),
         ...(catalog?.allowCustom || listError && ["claude", "codex", "agy"].includes(agent) ? [{ id: "__custom", label: "Other model…" }] : []),
       ]}
-      onChange={value => { if (value === "__custom") setCustom(true); else { chooseModel(value); setCustom(false); } }} />
-    <Menu above label="Effort" icon="sparkle" class="chat-choice" title={`Effort: ${effortName}`} trigger={trigger(effortName)}>
+      onChange={value => { if (value === "__custom") setCustom(true); else { chooseModel(value); setCustom(false); } }} />)}
+    {field("Effort", <Menu above label="Effort" icon="sparkle" class="chat-choice" title={`Effort: ${effortName}`} trigger={trigger(effortName)}>
       {(close) => <><MenuTitle>Reasoning effort</MenuTitle>
         <MenuItem on={!settings.effort} sub={model?.defaultEffort ?? catalog?.defaultEffort ?? "Use the provider's default"} onClick={() => { onSettings({ ...settings, effort: "" }); close(); }}>{pick(!settings.effort, "Default effort")}</MenuItem>
         {efforts.map((effort) => <MenuItem key={effort} on={settings.effort === effort} onClick={() => { onSettings({ ...settings, effort }); close(); }}>{pick(settings.effort === effort, effort)}</MenuItem>)}
         {!efforts.length ? <MenuTitle>{listError ? "Effort choices unavailable — models could not be listed" : "This model offers no effort choices"}</MenuTitle> : null}
       </>}
-    </Menu>
+    </Menu>)}
     {showPermissions ? <PermissionMenu agent={agent} permissions={permissions} onPermissions={onPermissions} restricted={restricted} approvalsAvailable={approvalsAvailable} approvalsUnavailableReason={approvalsUnavailableReason} unrestricted={unrestricted} /> : null}
     {showCustom ? <><input class="field chat-custom-model" aria-label="Custom model" aria-invalid={!!modelError} aria-describedby={modelError ? errorId : undefined} placeholder="Model ID" value={settings.model ?? ""} onInput={(event) => chooseModel(event.currentTarget.value)} onBlur={(event) => chooseModel(event.currentTarget.value.trim())} />{modelError ? <span id={errorId} class="help" role="status">{modelError}</span> : null}</> : null}
   </div>;

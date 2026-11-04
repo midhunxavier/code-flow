@@ -140,8 +140,11 @@ export function RunView({ id }: { id: string }) {
     return () => clearTimeout(timer);
   }, [run?.providerLimit?.resetsAt, providerTime]);
   useEffect(() => {
-    if (run && run.status !== "running" && !run.seen && !document.hidden) void markSeen(run.id);
-  }, [run?.status, run?.seen]);
+    const read = () => { if (run && run.status !== "running" && !run.seen && !document.hidden) void markSeen(run.id); };
+    read();
+    document.addEventListener("visibilitychange", read);
+    return () => document.removeEventListener("visibilitychange", read);
+  }, [run?.id, run?.status, run?.seen]);
   useEffect(() => {
     if (!run) return;
     if (run.pattern === "solo") rememberAgentTab(run);

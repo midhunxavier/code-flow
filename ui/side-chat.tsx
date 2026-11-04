@@ -404,8 +404,11 @@ function ChatView({ id }: { id: string }) {
   const scroll = useFollow([version, run?.status, run?.followUps?.length]);
   // A reply you watch arrive here is seen, as in the run's own view; not behind another tab or a closed panel.
   useEffect(() => {
-    if (watched && run && run.status !== "running" && !run.seen && !document.hidden) void markSeen(run.id);
-  }, [watched, run?.status, run?.seen]);
+    const read = () => { if (watched && run && run.status !== "running" && !run.seen && !document.hidden) void markSeen(run.id); };
+    read();
+    document.addEventListener("visibilitychange", read);
+    return () => document.removeEventListener("visibilitychange", read);
+  }, [watched, run?.id, run?.status, run?.seen]);
   if (problem) {
     return (
       <div class="side-empty">

@@ -344,7 +344,7 @@ export function ApproachEditor({ value, onChange, catalogUrl }: {
 }
 export function TaskResult({ taskId, execution, preferredId, label = "Task result" }: {
     taskId: string;
-    execution: NonNullable<TaskSnapshot["execution"]>;
+    execution: { id: string; artifacts: { id: string; kind: string; sha256: string }[] };
     preferredId?: string;
     label?: string;
 }) {

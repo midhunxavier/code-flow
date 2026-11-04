@@ -63,6 +63,11 @@ async function sendMessage(p: Page, message: string) {
     const state = await until(() => api(`/api/chats/${id}`), s => !s.turn && s.chat.events.some((e: any) => e.id === operationId), "conversation turn settled");
     return { id, state };
 }
+async function openTaskDetails(p: Page) {
+    if (!await p.getByRole("tab", { name: "Task", exact: true }).isVisible()) await p.getByRole("button", { name: "Side panel", exact: true }).click();
+    await p.getByRole("tab", { name: "Task", exact: true }).click();
+    return p.getByRole("tabpanel", { name: "Task", exact: true });
+}
 async function startTask(p: Page, id: string, taskId: string) {
     const start = p.getByRole("button", { name: /^Start (planning|implementation|review)$/ });
     await until(() => start.isEnabled(), Boolean, "reviewed task can start");
@@ -114,17 +119,19 @@ test("Team discussion stays lightweight, then one chat plans, implements and ret
         assert.equal(await p.locator(".lead-raw pre").isVisible(), false, "protocol JSON stays collapsed");
         await p.getByRole("link", { name: "Review approach in chat", exact: true }).click();
         await p.waitForURL(new RegExp(`#/chat/${ready.id}$`));
+        await openTaskDetails(p);
         await p.getByRole("button", { name: "Adjust approach", exact: true }).click();
-        const drawer = p.getByRole("dialog", { name: "Task details", exact: true });
+        const drawer = p.getByRole("tabpanel", { name: "Task", exact: true });
         await drawer.locator("fieldset").filter({ hasText: "planner · independent participant" }).getByLabel("Effort", { exact: true }).selectOption("low");
         await drawer.getByRole("button", { name: "Save revised approach" }).click();
         await until(() => api(`/api/chats/${ready.id}`), s => s.tasks[0].proposal.definition.participants[0].effort === "low", "model effort saved");
-        await drawer.getByRole("button", { name: "Close task details" }).click();
+        await p.getByRole("button", { name: "Close side panel", exact: true }).click();
         const planned = await startTask(p, ready.id, taskId);
         assert.equal(planned.tasks[0].task.executions.length, 1);
         assert.equal(planned.tasks[0].execution.outcome, "agreed_plan");
         await p.getByRole("heading", { name: "Plan agreed", exact: true }).waitFor();
-        await p.locator(".chat-deliverable").getByRole("button", { name: "View plan", exact: true }).click();
+        await p.locator(".chat-deliverable").getByRole("region", { name: "Final result", exact: true }).getByText(/Fixture login plan/).waitFor();
+        await p.locator(".chat-deliverable").getByRole("button", { name: "Evidence and changes", exact: true }).click();
         await p.getByLabel("Task output", { exact: true }).getByText(/Fixture login plan/).waitFor();
         await p.getByRole("button", { name: "Approach", exact: true }).click();
         await p.getByLabel("Task output", { exact: true }).getByText("Accepted for this execution", { exact: false }).waitFor();
@@ -144,7 +151,7 @@ test("Team discussion stays lightweight, then one chat plans, implements and ret
         assert.equal(await p.locator(`button[data-chat="${ready.id}"]`).count(), 1);
         assert.equal(await p.locator(`button[data-task="${built.tasks[1].execution.id}"]`).count(), 0);
         await p.getByRole("button", { name: "Agent", exact: true }).click();
-        await p.locator(".chat-deliverable").last().getByRole("button", { name: "View changes", exact: true }).click();
+        await p.locator(".chat-deliverable").last().getByRole("button", { name: "Evidence and changes", exact: true }).click();
         await p.getByRole("button", { name: "Reviews", exact: true }).click();
         await p.getByLabel("Task output", { exact: true }).getByLabel("Task result", { exact: true }).waitFor();
         // Read both rectangles in one frame after the responsive layout settles.
@@ -164,10 +171,10 @@ test("Team discussion stays lightweight, then one chat plans, implements and ret
         await p.setViewportSize({ width: 360, height: 844 });
         assert.ok(await p.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 2));
         const mobile = await reply.boundingBox(); assert.ok(mobile && mobile.y >= 0 && mobile.y + mobile.height <= 844);
-        await p.getByRole("button", { name: "Task details", exact: true }).click();
+        await openTaskDetails(p);
         await drawer.getByText("Advanced · execution history and receipts", { exact: true }).first().waitFor();
-        await drawer.getByText(/codex ·/).first().waitFor();
-        await drawer.getByRole("button", { name: "Close task details" }).click();
+        await drawer.getByRole("heading", { name: "Agents", exact: true }).waitFor();
+        await p.getByRole("button", { name: "Close side panel", exact: true }).click();
         await p.screenshot({ path: join(root, "output/playwright/unified-chat-mobile.png"), fullPage: true });
     } finally { await context.close(); }
 });
@@ -180,7 +187,9 @@ test("stale source cannot start and refreshing the approach preserves the chat",
         await p.getByRole("button", { name: /^Start (planning|implementation|review)$/ }).click();
         await p.getByRole("alert").filter({ hasText: /Repository changed/ }).waitFor();
         assert.equal((await api(`/api/chats/${ready.id}`)).tasks[0].execution, undefined);
+        await openTaskDetails(p);
         await p.getByRole("button", { name: "Refresh source", exact: true }).click();
+        await p.getByRole("button", { name: "Close side panel", exact: true }).click();
         await until(() => api(`/api/chats/${ready.id}`), s => s.tasks[0].proposal.revision === 2, "source refreshed");
         const done = await startTask(p, ready.id, ready.state.chat.taskIds[0]);
         assert.equal(done.tasks[0].execution.outcome, "agreed_plan");
@@ -216,8 +225,8 @@ test("attachment bytes and explicit task targets survive draft reloads", { timeo
         const sent = await sendMessage(p, "CHAT_AGENT Use the attached context");
         assert.equal(sent.state.chat.files[0].bytes, bytes.length);
         await p.goto(`${base}/#/chat/${completedTask}`);
-        await p.getByRole("button", { name: "Task details", exact: true }).click();
-        await p.getByRole("dialog", { name: "Task details", exact: true }).getByRole("button", { name: "Ask about this task", exact: true }).click();
+        await openTaskDetails(p);
+        await p.getByRole("tabpanel", { name: "Task", exact: true }).getByRole("button", { name: "Ask in chat", exact: true }).click();
         await p.getByRole("textbox", { name: "Message", exact: true }).fill("A question about this task");
         await p.reload();
         await p.getByText(/^Replying to:/).waitFor();
@@ -236,7 +245,7 @@ test("message settings are anchored, keyboard accessible and distinguish lead fr
     await picker.getByText("Team lead", { exact: true }).waitFor();
     assert.doesNotMatch(await picker.innerText(), /Changes apply to new messages|The lead prepares approaches/);
     assert.ok((await picker.boundingBox())!.height < 200);
-    assert.equal(await p.getByRole("dialog", { name: "Task details", exact: true }).isVisible(), false);
+    assert.equal(await p.getByRole("tabpanel", { name: "Task", exact: true }).isVisible(), false);
     await picker.getByRole("button", { name: /Default effort/ }).click(); await p.getByRole("menuitem", { name: "high", exact: true }).click();
     assert.match(await trigger.innerText(), /high/i); await p.keyboard.press("Escape"); assert.equal(await trigger.evaluate(el => el === document.activeElement), true);
     await p.setViewportSize({ width: 360, height: 844 }); await trigger.click();
@@ -257,7 +266,8 @@ test("project context has an explicit scope and new turns pin the saved revision
     await p.getByRole("button", { name: "Team", exact: true }).click(); const ready = await sendMessage(p, "WEB_TASK_PLAN Plan an accessible form.");
     assert.equal(ready.state.chat.events.find((e: any) => e.kind === "user").projectContext.revision, 1);
     assert.match(ready.state.tasks[0].proposal.context.notes, /keyboard navigation/);
-    await p.getByRole("button", { name: "View approach", exact: true }).click();
+    await openTaskDetails(p);
+    await p.getByRole("button", { name: "View full approach", exact: true }).click();
     await p.getByLabel("Task output", { exact: true }).getByText("Awaiting your authorization", { exact: false }).waitFor();
     await p.screenshot({ path: join(root, "output/playwright/workspace-output-desktop.png"), fullPage: true });
     await p.setViewportSize({ width: 360, height: 844 }); assert.ok(await p.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 2));
@@ -313,8 +323,8 @@ test("start without a repository, then attach one in the same chat", { timeout: 
     await p.getByLabel("Project", { exact: true }).selectOption("");
     const discussed = await sendMessage(p, "Discuss login accessibility without inspecting code.");
     assert.equal(discussed.state.chat.repo, ""); assert.equal(discussed.state.tasks.length, 0);
-    await p.getByRole("button", { name: "Task details", exact: true }).click();
-    const drawer = p.getByRole("dialog", { name: "Task details", exact: true }); await drawer.getByLabel("Project", { exact: true }).selectOption(project.id); await drawer.getByLabel("Repository", { exact: true }).selectOption(repo);
+    await openTaskDetails(p);
+    const drawer = p.getByRole("tabpanel", { name: "Task", exact: true }); await drawer.getByLabel("Project", { exact: true }).selectOption(project.id); await drawer.getByLabel("Repository", { exact: true }).selectOption(repo);
     await until(() => drawer.getByRole("button", { name: "Attach repository", exact: true }).isEnabled(), Boolean, "repository is ready");
     await drawer.getByRole("button", { name: "Attach repository", exact: true }).click();
     await until(() => api(`/api/chats/${discussed.id}`), state => state.chat.repo === repo, "repository attached");
@@ -328,24 +338,22 @@ test("task-first automation reviews, tests and enables the exact team without ap
         assert.equal(await p.getByRole("button", { name: "Task details", exact: true }).count(), 0, "empty chats have no task inspector");
         assert.equal(await p.getByRole("button", { name: "Existing workflows", exact: true }).count(), 0);
         await p.goto(`${base}/#/project/${project.id}/automation`);
-        await p.getByRole("heading", { name: "What would you like to automate?" }).waitFor();
-        assert.equal(await p.getByLabel("Automation project", { exact: true }).inputValue(), project.id);
-        assert.equal(await p.getByLabel("Automation repository", { exact: true }).count(), 0);
-        await p.getByRole("button", { name: /Daily review/ }).click();
-        assert.equal(await p.getByRole("textbox", { name: "Automation task" }).inputValue(), "Review repository changes every morning");
+        await p.getByRole("textbox", { name: "Message", exact: true }).waitFor();
+        await p.getByRole("button", { name: "Team", exact: true }).click();
+        assert.equal(await p.getByRole("button", { name: "Schedule task", exact: true }).getAttribute("aria-pressed"), "true");
+        assert.equal(await p.getByLabel("Project", { exact: true }).inputValue(), project.id);
+        assert.equal(await p.getByRole("button", { name: /Daily review|Event checks|Issue queue/ }).count(), 0);
         await p.screenshot({path:join(root,"output/playwright/automation-home-refined.png")});
         await p.setViewportSize({width:390,height:844});
         assert.equal(await p.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
         await p.screenshot({path:join(root,"output/playwright/automation-home-refined-mobile.png")});
         await p.setViewportSize({width:1400,height:1000});
-        await p.getByRole("textbox", { name: "Automation task" }).fill("WEB_TASK_PLAN Plan the repository improvements every weekday. Plan only. Use Claude and Codex at high effort.");
-        await p.getByRole("button", { name: "Create automation", exact: true }).click();
+        await p.getByRole("textbox", { name: "Message", exact: true }).fill("WEB_TASK_PLAN Plan the repository improvements every weekday. Plan only. Use Claude and Codex at high effort.");
+        await p.getByRole("button", { name: "Send", exact: true }).click();
         await p.waitForURL(/#\/chat\/[a-f0-9]+$/);
         const id = p.url().split("#/chat/")[1]!;
         const ready = await until(() => api(`/api/chats/${id}`), s => !s.turn && s.tasks.length > 0, "automation approach prepared");
-        await p.getByRole("button", { name: "Task details", exact: true }).click();
-        await p.getByRole("dialog", { name: "Task details", exact: true }).getByRole("button", { name: "Automate this", exact: true }).click();
-        const setup = p.getByRole("dialog", { name: "Do this again", exact: true });
+        const setup = p.getByRole("dialog", { name: "Schedule task", exact: true });
         await setup.getByText("Fresh committed HEAD for each occurrence", { exact: true }).waitFor();
         await setup.getByRole("button", { name: "Test now", exact: true }).click();
         await setup.getByRole("region", { name: "Automation test evidence" }).waitFor();

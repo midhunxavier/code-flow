@@ -56,17 +56,17 @@ export function runState(run: Evidence): string {
 }
 
 export function needsYou(run: RunSummary): boolean {
+  if (run.archived) return false;
   if (chatAutomationAttention(run) === "quiet") return false;
   if (run.cliTeam?.taskConversation?.phase === "preparation") return false;
   if (run.cliTeam?.taskConversation && run.status === "running" && Object.values(run.cliTeam.questions).some(q => !q.answer)) return true;
-  if (run.archived) return false;
   const question = run.status === "running" && (!!run.team?.awaitingRequestId || run.approvalPending === true);
   if (run.awaiting || question) return true;
   if (run.projectTeam || run.taskExecution) return false;
-  const latestTeam = run.teamTurns?.at(-1);
-  if (latestTeam?.executionStatus && latestTeam.executionStatus !== "done" && run.status !== "running" || latestTeam?.reconciliation || latestTeam?.resolutionCheck?.ok === false || latestTeam?.teamEvidence?.check?.ok === false || latestTeam?.reviewStale || latestTeam?.resolutionReview?.approved === false) return true;
-  return run.team?.status === "blocked" || run.triage?.state === "pending" || Object.values(run.watches ?? {}).some(watch => watch.state === "needs-you") ||
-    run.status !== "running" && (run.status === "interrupted" || !run.seen);
+  // Reading acknowledges a result, not its correctness. Historical failures remain
+  // on the run, but only an outstanding decision keeps a read result in attention.
+  return run.triage?.state === "pending" || !run.seen &&
+    (run.status !== "running" || Object.values(run.watches ?? {}).some(watch => watch.state === "needs-you"));
 }
 
 /**

@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { groupReviewRuns, prioritizedReviewRuns, reviewReason } from "../src/review-inbox.js";
+import { canMarkReviewRead, groupReviewRuns, prioritizedReviewRuns, reviewReason } from "../src/review-inbox.js";
+import { needsYou, checksLabel } from "../src/run-status.js";
 import type { RunSummary } from "../src/engine.js";
 
 const run = (id: string, patch: Partial<RunSummary> = {}): RunSummary => ({ id, repo: "/repo", task: `Task ${id}`, status: "done", createdAt: 1, seen: false, archived: false, ...patch } as RunSummary);
@@ -30,4 +31,45 @@ test("search/reason filters and grouping preserve the priority order without dup
   assert.deepEqual(groups.map((group) => group.id), ["/b", "/a"]);
   assert.deepEqual(groups.flatMap((group) => group.runs.map((item) => item.id)), ["high", "low"]);
   assert.equal(prioritizedReviewRuns(items, { query: "low /a" }).length, 1);
+});
+
+test("reading a blocked result clears attention without changing failed evidence; a new result notifies again", () => {
+  const blocked = run("blocked", { status: "stopped", verdict: "failing", team: { status: "blocked" } as RunSummary["team"] });
+  assert.equal(reviewReason(blocked), "blocked");
+  assert.equal(needsYou(blocked), true);
+  assert.equal(canMarkReviewRead(blocked), true);
+  const read = { ...blocked, seen: true };
+  assert.equal(reviewReason(read), undefined);
+  assert.equal(needsYou(read), false);
+  assert.equal(checksLabel(read), "Failed");
+  assert.equal(reviewReason({ ...read, status: "running", seen: false }), undefined);
+  assert.equal(needsYou({ ...read, status: "running", seen: false }), false);
+  assert.equal(reviewReason({ ...read, seen: false }), "blocked");
+  assert.equal(needsYou({ ...read, seen: false }), true);
+  assert.equal(needsYou(run("interrupted", { status: "interrupted", seen: true })), false);
+});
+
+test("read state never hides unanswered questions, approvals or a pending review decision", () => {
+  const decisions = [
+    run("plan", { seen: true, awaiting: {} as RunSummary["awaiting"] }),
+    run("tool", { seen: true, status: "running", approvalPending: true }),
+    run("team", { seen: true, status: "running", team: { awaitingRequestId: "q" } as RunSummary["team"] }),
+    run("triage", { seen: true, triage: { state: "pending" } as RunSummary["triage"] }),
+  ];
+  for (const item of decisions) {
+    assert.ok(reviewReason(item), item.id);
+    assert.equal(needsYou(item), true, item.id);
+    assert.equal(canMarkReviewRead({ ...item, seen: false }), false, item.id);
+  }
+  assert.equal(reviewReason({ ...decisions[1]!, approvalPending: false }), undefined);
+  assert.equal(needsYou({ ...decisions[1]!, approvalPending: false }), false);
+});
+
+test("historical team failures do not reclassify a follow-up as waiting for input", () => {
+  const history = run("follow-up", { verdict: "failing", teamTurns: [{ executionStatus: "stopped", reviewStale: true, teamEvidence: { check: { ok: false } } }] as RunSummary["teamTurns"] });
+  assert.equal(needsYou({ ...history, status: "running" }), false);
+  assert.equal(needsYou({ ...history, seen: true }), false);
+  assert.equal(reviewReason({ ...history, seen: true }), undefined);
+  assert.equal(needsYou(history), true);
+  assert.equal(reviewReason(history), "failed");
 });
