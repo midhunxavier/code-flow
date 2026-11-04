@@ -71,7 +71,7 @@ test("documentation preview supports an ephemeral port and explains invalid or o
 
 test("project-team evaluation writes synthetic results outside a Git checkout", { timeout: 120_000 }, async t => {
   const directory = await scratch(t), copy = join(directory, "source"); await mkdir(copy);
-  for (const name of ["src", "scripts", "test/fake-bin", "test/fake-agent.mjs", "test/fake-work.mjs", "test/fake-team-tools.mjs"]) await cp(join(root, name), join(copy, name), { recursive: true });
+  for (const name of ["src", "bin", "scripts", "test/fake-bin", "test/fake-agent.mjs", "test/fake-work.mjs", "test/fake-team-tools.mjs"]) await cp(join(root, name), join(copy, name), { recursive: true });
   await cp(join(root, "package.json"), join(copy, "package.json")); await symlink(join(root, "node_modules"), join(copy, "node_modules"));
   const out = join(directory, "out"), r = await command("--import", ["tsx", "scripts/evaluate-project-teams.ts", "--fake", "--cycles", "1", "--out", out], { CODEFLOW_HOME: join(directory, "outer") }, copy).result;
   assert.equal(r.code, 0, r.stderr); const report = JSON.parse(await readFile(join(out, "report.json"), "utf8")); assert.equal(report.applicationRevision, "unknown"); assert.equal(report.applicationDirty, null); assert.equal(report.cycles.length, 1); assert.equal(report.mode, "fake"); assert.match(r.stderr, /unknown provenance/);

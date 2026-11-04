@@ -508,3 +508,30 @@ test("managed native controls apply to new and resumed thread config, not only p
   assert.equal(records.length,2);
   for(const record of records){assert.equal(record.thread.config['agents.enabled'],false);assert.equal(record.thread.config['features.multi_agent'],false);assert.equal(record.thread.config['features.multi_agent_v2.enabled'],false);assert.equal(record.thread.config['features.hooks'],false);assert.equal(record.thread.config['sandbox_workspace_write.network_access'],false);assert.equal(record.thread.approvalPolicy,'never')}
 });
+
+
+test("managed Codex workers disable every desktop owner connection in exec and app-server", async () => {
+  for (const transport of ["exec", "app-server"]) {
+    const dir = mkdtempSync(join(tmpdir(), "codeflow-owner-mcp-"));
+    await withEnv({ FAKE_RECORD_DIR: dir, CODEFLOW_CODEX_TRANSPORT: transport, FAKE_MCP_LIST: JSON.stringify([{ name: "codeflow" }, { name: "codeflow-project-123" }, { name: "unrelated" }]) }, async () => {
+      const result = await turn("Return a short result", { excludeCodeflowMcp: true });
+      assert.equal(result.result.ok, true, result.result.error);
+    });
+    const records = readdirSync(dir).map(f => JSON.parse(readFileSync(join(dir, f), "utf8")));
+    assert.ok(records.length);
+    for (const record of records) {
+      if (transport === "app-server") {
+        assert.equal(record.thread.config["mcp_servers.codeflow.enabled"], false);
+        assert.equal(record.thread.config["mcp_servers.codeflow-project-123.enabled"], false);
+        assert.equal(record.thread.config["mcp_servers.unrelated.enabled"], undefined);
+      } else {
+        assert.ok(record.args.includes("mcp_servers.codeflow.enabled=false"));
+        assert.ok(record.args.includes("mcp_servers.codeflow-project-123.enabled=false"));
+        assert.ok(!record.args.some((a: string) => a.includes("mcp_servers.unrelated")));
+      }
+    }
+  }
+  await withEnv({ FAKE_MCP_LIST: "{}" }, async () => {
+    await assert.rejects(turn("Do not start", { excludeCodeflowMcp: true }), /Cannot verify the Code Flow MCP boundary/);
+  });
+});

@@ -3443,11 +3443,16 @@ export class RunManager {
     if (run) { assertExtensionBindings(run); assertAcpBindings(run); if (run.projectTeam) { if (!this.projectTeamGuard) throw new Error("Project team service is unavailable"); await this.projectTeamGuard(run); } }
     return structuredClone(fresh);
   }
-  async withIdleExecution<T>(operation: () => T): Promise<Awaited<T>> {
+  private assertIdleExecution() {
     // A crash may precede the public receipt snapshot, after the private request claim.
     // Resume reconciles that journaled identity; absence of metadata is not proof of exit.
     const unresolvedRemote = [...this.runs.values()].some((run) => run.steps.some((step) => step.remote ? step.remote.ambiguous || ["accepted", "running", "unknown"].includes(step.remote.state) : run.loop.remoteWorker && (step.kind ?? "agent") === "agent" && ["failed", "stopped", "interrupted"].includes(step.status)));
-    if (this.shuttingDown || this.executionPolicyLease || this.startingRepositories.size || this.starting.size || this.active.size || this.mergeValidating.size || this.repositoryLeases.size || this.readOnlyExecutionLeases.size || unresolvedRemote || [...this.runs.values()].some((run) => this.busyRun(run))) throw new RunConflictError("Wait for every run, start, validation, read-only execution, workspace edit and unresolved remote receipt before activating filesystem policy");
+    if (this.shuttingDown || this.executionPolicyLease || this.startingRepositories.size || this.starting.size || this.active.size || this.mergeValidating.size || this.repositoryLeases.size || this.readOnlyExecutionLeases.size || this.taskReruns.size || this.taskReviewRequests.size || this.triageClaims.size || this.coldMutations.size || unresolvedRemote || [...this.runs.values()].some((run) => this.busyRun(run))) throw new RunConflictError("Wait for every run, start, validation, read-only execution, workspace edit and unresolved remote receipt before changing global execution state");
+  }
+  /** Atomically refuse new admissions only after the live execution state is idle. */
+  beginIdleShutdown() { this.assertIdleExecution(); this.shuttingDown = true; }
+  async withIdleExecution<T>(operation: () => T): Promise<Awaited<T>> {
+    this.assertIdleExecution();
     const lease = { id: `policy-${randomBytes(8).toString("hex")}`, at: Date.now() }; this.executionPolicyLease = lease;
     const work = Promise.resolve().then(operation); this.repositoryLeaseWork.set(lease.id, work);
     try { return await work; } finally { this.repositoryLeaseWork.delete(lease.id); if (this.executionPolicyLease === lease) this.executionPolicyLease = undefined; }

@@ -44,6 +44,10 @@ if (unknownFlag && args.includes(unknownFlag)) {
   process.stderr.write(vendor === "codex" ? `error: unexpected argument '${unknownFlag}' found\n\nUsage: codex exec [OPTIONS] [PROMPT]\n` : `error: unknown option '${unknownFlag}'\n`);
   process.exit(vendor === "codex" ? 2 : 1);
 }
+if (vendor === "codex" && args[0] === "mcp" && args[1] === "list") {
+  process.stdout.write(process.env.FAKE_MCP_LIST ?? JSON.stringify([{ name: "codeflow" }]));
+  process.exit(0);
+}
 if (vendor === "codex" && args[0] === "mcp" && args[1] === "get") {
   process.stdout.write(JSON.stringify({ name: args[2], transport: { type: "stdio", command: "node", args: [] }, enabled_tools: ["read_inbox"] }));
   process.exit(0);

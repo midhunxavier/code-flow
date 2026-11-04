@@ -4,6 +4,10 @@ The conversational CLI integration builds a team and process from your task. You
 
 This integration is experimental. Automated tests exercise the project installer, public MCP protocol, worktrees, checks, agreement loops, host participation, and recovery with fixture providers. The current surface has fourteen tools, including exact diff preview and checkout handoff. Native-host compatibility and real-provider evidence are recorded separately in the QA reports; fixture checks do not certify model behavior or every CLI version.
 
+For Claude Desktop and the Codex app, use the [desktop MCP setup](desktop-mcp.md). It reuses this bridge and supplies the workflow instructions without requiring project skill discovery.
+
+Claude Code and Codex CLI also support [automatic shared runtime updates](desktop-mcp.md#automatic-shared-updates). Enable updates from a built release, then rerun `init` once to move their MCP entries to the stable launcher. Active sessions and runs keep their original release until safe handover.
+
 ## Install and connect
 
 Use Node.js 22.13+, Git 2.38+, and at least one installed and signed-in Claude Code or Codex CLI. Use the installed Code Flow launcher on PATH. For a source build, run `npm ci`, `npm run package:npm`, then install the resulting `dist/npm` package using your normal local/global package installation method.

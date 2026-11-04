@@ -36,6 +36,7 @@
   ],
   "Connect and collaborate": [
     "project-integrations",
+    "desktop-mcp",
     "team-collaboration",
     "shared-projects",
     "ssh-projects",
