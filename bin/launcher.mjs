@@ -4,14 +4,16 @@ import { homedir, release } from "node:os";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { enableUpdates, configureUpdates, checkUpdates, updateStatus, managedLauncher, runManaged } from "./managed.mjs";
 
 const root = new URL("../", import.meta.url);
 const usage = `Code Flow preview — your coding agents, one workspace.
 
 Usage: codeflow [start] [--port NUMBER] [--no-open]
        codeflow client <command> [arguments]
-       codeflow init|doctor|mcp|approve|open|status|result|pause|resume|cancel|attach|preferences|uninstall [arguments]
+       codeflow init|desktop|terminal|doctor|mcp|approve|open|status|result|pause|resume|cancel|attach|preferences|uninstall [arguments]
        codeflow --version
+       codeflow updates enable|disable|status|check [--channel preview|latest] [--json]
 
 Starts a local server and opens your browser. Keep this terminal open;
 press Ctrl+C to stop. Settings and history live in ~/.codeflow.
@@ -67,12 +69,32 @@ export async function launch(args = process.argv.slice(2)) {
     return;
   }
   if (process.platform === "win32") throw new Error("This preview runs on macOS and Linux. On Windows, use WSL2 and install Node, Git and your agent CLIs inside WSL.");
+  const managedHome = resolve(process.env.CODEFLOW_HOME || `${homedir()}/.codeflow`);
+  if (args[0] === "updates") {
+    const action = args[1];
+    if (!["enable", "disable", "status", "check"].includes(action)) throw new Error("Use updates enable, disable, status, or check");
+    const rest = args.slice(2); let channel = "preview";
+    for (let i = 0; i < rest.length; i++) {
+      if (rest[i] === "--json") continue;
+      if (rest[i] === "--channel" && action === "enable") { channel = rest[++i]; continue; }
+      throw new Error(`Unknown updates option: ${rest[i]}`);
+    }
+    if (action === "enable") await enableUpdates(managedHome, fileURLToPath(root), channel);
+    if (action === "disable") await configureUpdates(managedHome, false);
+    if (action === "check") await checkUpdates(managedHome, true);
+    const status = await updateStatus(managedHome);
+    console.log(args.includes("--json") ? JSON.stringify(status, null, 2) : `Shared Code Flow updates: ${status.enabled ? "enabled" : "disabled"}${status.channel ? ` (${status.channel})` : ""}\n${status.installed ? `Selected release: ${status.current}\nActive MCP sessions: ${status.activeSessions}\n${status.pending ? "Update pending: existing sessions and backend keep their current release." : "New sessions use the selected release."}` : "Run updates enable from a built release to install the shared launcher."}${status.error ? `\nLast check: ${status.error}` : ""}${action === "enable" ? "\nRun desktop setup and/or init once to migrate host connections. Existing runs are not stopped." : ""}`);
+    return;
+  }
+  if (args[0] === "mcp" && process.env.CODEFLOW_MANAGED_CHILD !== "1" && await managedLauncher(managedHome)) {
+    await runManaged(args, managedHome); return;
+  }
   if (args[0] === "client") {
     const client = spawn(process.execPath, [fileURLToPath(new URL("scripts/codeflow.mjs", root)), ...args.slice(1)], { stdio: "inherit" });
     await supervise(client);
     return;
   }
-  if (["init", "doctor", "mcp", "approve", "open", "status", "result", "pause", "resume", "cancel", "attach", "preferences", "uninstall"].includes(args[0])) {
+  if (["desktop", "terminal", "init", "doctor", "mcp", "approve", "open", "status", "result", "pause", "resume", "cancel", "attach", "preferences", "uninstall"].includes(args[0])) {
     const compiled = fileURLToPath(new URL("src/cli-teams/cli.js", root));
     const source = fileURLToPath(new URL("src/cli-teams/cli.ts", root));
     const compiledExists = await access(compiled).then(() => true, () => false);

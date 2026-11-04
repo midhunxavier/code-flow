@@ -77,13 +77,22 @@ export const codexAdapter: AgentAdapter = {
     const nativeTools = [...(teamTools?.codexConfig ?? []), ...(agentTools?.codexConfig ?? [])];
     let ownerMcpDisabled: Record<string, unknown> = {};
     if (opts.excludeCodeflowMcp) {
-      const configured = await captureOutput("codex", ["mcp", "get", "codeflow", "--json"], 5000, opts.cwd).then(text => !!JSON.parse(text)).catch(error => {
-        if (/no mcp server|mcp server.*not found|not found.*mcp server/i.test(String(error.message))) return false;
+      const configured: string[] = await captureOutput("codex", ["mcp", "list", "--json"], 5000, opts.cwd).then(text => {
+        const servers = JSON.parse(text);
+        if (!Array.isArray(servers) || servers.some(server => typeof server?.name !== "string")) throw new Error("Invalid MCP inventory");
+        return servers.map(server => server.name).filter((name: string) => /^codeflow(?:$|-[A-Za-z0-9_-]+$)/.test(name));
+      }).catch(() => {
         throw new Error("Cannot verify the Code Flow MCP boundary in this workspace; repair the CLI configuration before running managed workers");
       });
       const disabled = { command: process.execPath, args: [], enabled: false };
-      ownerMcpDisabled = configured ? { "mcp_servers.codeflow.enabled": false } : { "mcp_servers.codeflow": disabled };
-      nativeTools.push("-c", configured ? "mcp_servers.codeflow.enabled=false" : `mcp_servers.codeflow={command=${JSON.stringify(process.execPath)},args=[],enabled=false}`);
+      if (!configured.includes("codeflow")) {
+        ownerMcpDisabled["mcp_servers.codeflow"] = disabled;
+        nativeTools.push("-c", `mcp_servers.codeflow={command=${JSON.stringify(process.execPath)},args=[],enabled=false}`);
+      }
+      for (const name of configured) {
+        ownerMcpDisabled[`mcp_servers.${name}.enabled`] = false;
+        nativeTools.push("-c", `mcp_servers.${name}.enabled=false`);
+      }
     }
     const teamConfig = [...nativeTools, ...(opts.questionProtocol === "structured" || opts.permissions?.nativeDelegation === false ? ["-c", "agents.enabled=false", "-c", "features.multi_agent=false", "-c", "features.multi_agent_v2.enabled=false", "-c", "features.hooks=false"] : [])];
     const transport = codexTransport();

@@ -3,8 +3,13 @@ import { CliTeamError } from "./model.js";
 import { connectRuntime, runtimeRequest } from "./client.js";
 import { randomBytes } from "node:crypto";
 import { CLI_MESSAGE_BYTES } from "./limits.js";
+import { readFile, realpath } from "node:fs/promises";
+import { repoRoot } from "../git.js";
 
 export async function serveMcp(projectRoot: string) {
+  projectRoot = await realpath(await repoRoot(projectRoot));
+  // Desktop chat hosts do not discover project skills. Share the same workflow contract.
+  const workflow = (await readFile(new URL("../../integrations/cli-teams/SKILL.md", import.meta.url), "utf8")).replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/, "").trim();
   const client = await connectRuntime(projectRoot, true, "mcp");
   const heartbeat = setInterval(() => { void runtimeRequest(client.runtime, "/heartbeat", {}, client.token).catch(() => undefined); }, 10000).unref();
   const prompts = new Map<string, { parent: string | number; resolve: (value: any) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
@@ -50,7 +55,7 @@ export async function serveMcp(projectRoot: string) {
         const elicitation = m.params?.capabilities?.elicitation;
         nativeForm = !!elicitation && typeof elicitation === "object" && !Array.isArray(elicitation) && (Object.hasOwn(elicitation, "form") || Object.keys(elicitation).length === 0);
         const versions = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
-        result = { protocolVersion: versions.includes(m.params?.protocolVersion) ? m.params.protocolVersion : "2025-03-26", capabilities: { tools: {} }, serverInfo: { name: "code-flow", version: "1.0.0" }, instructions: `Generate a task-specific team and process. Present a readable proposal; ${nativeForm ? "call start_run to show the native approval form in this session; do not send the user to another terminal" : "this host has no form elicitation; use the Code Flow workspace or terminal confirmation returned by propose_run"}. No presets or saved teams. Preserve explicit model/effort pins. Show workspace.url as Open in Code Flow. Call codeflow_open_task only when asked to open the UI. For continuation pass context.chatId from the workspace. Browser approval/start and steering are authoritative; reconcile conversation.latestProposal and taskMessages before acting. Poll with bounded waits; retrieve the actual result artifact.` };
+        result = { protocolVersion: versions.includes(m.params?.protocolVersion) ? m.params.protocolVersion : "2025-03-26", capabilities: { tools: {} }, serverInfo: { name: "code-flow", version: "1.0.0" }, instructions: `This connection is bound exclusively to repository ${JSON.stringify(projectRoot)}. Show this repository when proposing work; never assume it is the current chat's working directory. Tools cannot switch repositories. ${nativeForm ? "Call codeflow_start_run to show native approval in this session." : "This host has no form elicitation; use the Code Flow workspace or terminal confirmation returned by codeflow_propose_run."}\n\n${workflow}` };
       } else if (m.method === "ping") result = {};
       else if (!initialized) { rpcError(m.id, -32000, "Initialize first"); return; }
       else if (m.method === "tools/list") result = { tools: CLI_TOOLS };

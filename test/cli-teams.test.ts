@@ -71,8 +71,8 @@ async function start(f: Awaited<ReturnType<typeof setup>>, candidate = planning(
   return f.manager.get(runId)!;
 }
 async function finished(run: Run) { for (let i = 0; i < 1500 && run.status === "running"; i++) await pause(); assert.notEqual(run.status, "running", run.error); }
-async function mcpPeer(f: Awaited<ReturnType<typeof setup>>, capabilities: object) {
-  const child = spawn(process.execPath, ["--import", import.meta.resolve("tsx"), fileURLToPath(new URL("../src/cli-teams/cli.ts", import.meta.url)), "mcp", "--project-root", f.repo], { env: process.env, stdio: ["pipe", "pipe", "pipe"] });
+async function mcpPeer(f: Awaited<ReturnType<typeof setup>>, capabilities: object, launch?: { command: string; args: string[]; env: Record<string, string> }) {
+  const child = spawn(launch?.command ?? process.execPath, launch?.args ?? ["--import", import.meta.resolve("tsx"), fileURLToPath(new URL("../src/cli-teams/cli.ts", import.meta.url)), "mcp", "--project-root", f.repo], { cwd: "/", env: { ...process.env, ...launch?.env }, stdio: ["pipe", "pipe", "pipe"] });
   const pending = new Map<number, { resolve: (value: any) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>(), prompts: any[] = [];
   let sequence = 0, buffered = "";
   const send = (message: object) => child.stdin.write(JSON.stringify({ jsonrpc: "2.0", ...message }) + "\n");
@@ -89,9 +89,10 @@ async function mcpPeer(f: Awaited<ReturnType<typeof setup>>, capabilities: objec
     const id = ++sequence;
     return { id, result: new Promise<any>((resolve, reject) => { const timer = setTimeout(() => { pending.delete(id); reject(new Error(`MCP ${method} timed out`)); }, 15000); pending.set(id, { resolve, reject, timer }); send({ id, method, params }); }) };
   };
-  await request("initialize", { protocolVersion: "2025-11-25", capabilities }).result;
+  const initialized = await request("initialize", { protocolVersion: "2025-11-25", capabilities }).result;
+  send({ method: "notifications/initialized" });
   return {
-    child, send, prompts,
+    child, send, prompts, initialized, request,
     call: (name: string, args: object = {}) => request("tools/call", { name: `codeflow_${name}`, arguments: args }),
     async prompt() { for (let i = 0; i < 1000 && !prompts.length; i++) await pause(); assert.ok(prompts.length, "expected native confirmation"); return prompts.shift(); },
     async close() { child.stdin.end(); for (let i = 0; i < 500 && child.exitCode === null; i++) await pause(); if (child.exitCode === null) child.kill("SIGTERM"); for (const waiter of pending.values()) { clearTimeout(waiter.timer); waiter.reject(new Error("MCP fixture closed")); } pending.clear(); },
@@ -674,6 +675,51 @@ test("unsupported native hosts keep the terminal fallback; closing a pending for
         if (native) { await peer.prompt(); peer.child.stdin.end(); assert.equal((await start.result).structuredContent.error.code, "acceptance_cancelled"); }
         else { assert.equal((await start.result).structuredContent.error.code, "acceptance_required"); assert.equal(peer.prompts.length, 0); }
         assert.equal(f.manager.list().length, 0);
+      } finally { await peer.close(); }
+    }
+  } finally { await bridge.close(); }
+});
+
+
+test("desktop configs launch the same scoped MCP bridge from an unrelated cwd without project skills", async () => {
+  const { configureDesktop, inspectDesktop } = await import("../src/cli-teams/desktop.js");
+  const f = await setup(); stub();
+  const userHome = await (await import("node:fs/promises")).realpath(mkdtempSync(join(tmpdir(), "codeflow-desktop-hosts-"))); repos.push(userHome);
+  const options = { userHome, home, platform: "darwin" as const, codexHome: join(userHome, ".codex") };
+  const bridge = await startCliTeamsTransport(f.service);
+  try {
+    await configureDesktop(f.repo, ["claude-desktop", "codex-app"], "setup", false, options);
+    const connections = (await inspectDesktop(f.repo, ["claude-desktop", "codex-app"], options)).connections;
+    assert.equal(existsSync(join(f.repo, ".agents")), false);
+    assert.equal(existsSync(join(f.repo, ".claude")), false);
+    for (const connection of connections) {
+      assert.equal(connection.state, "configured");
+      const native = connection.host === "codex-app";
+      const peer = await mcpPeer(f, native ? { elicitation: { form: {} } } : {}, connection.command);
+      try {
+        assert.match(peer.initialized.instructions, /bound exclusively to repository/);
+        assert.ok(peer.initialized.instructions.includes(JSON.stringify(await (await import("node:fs/promises")).realpath(f.repo))));
+        assert.match(peer.initialized.instructions, /Candidate contract/);
+        assert.match(peer.initialized.instructions, /Managed workers must never|do not invoke provider CLIs/);
+        assert.equal((await peer.request("tools/list", {}).result).tools.length, 12);
+        const p = (await peer.call("propose_run", { operationId: `desktop-proposal-${connection.host}`, task: "Plan a login form", candidate: planning() }).result).structuredContent.data;
+        const args = { operationId: `desktop-start-${connection.host}`, proposalId: p.proposalId, expectedRevision: p.revision, proposalHash: p.proposalHash };
+        if (!native) {
+          assert.equal((await peer.call("start_run", args).result).structuredContent.error.code, "acceptance_required");
+          // The shared owner's human approval boundary, also used by browser acceptance.
+          await f.service.accept(f.connection, p.proposalId, p.revision, p.proposalHash);
+        }
+        const started = peer.call("start_run", args);
+        if (native) { const prompt = await peer.prompt(); peer.send({ id: prompt.id, result: { action: "accept", content: { approve: true } } }); }
+        const result = await started.result; assert.equal(result.isError, false, JSON.stringify(result));
+        const run = f.manager.get(result.structuredContent.data.runId)!; await finished(run);
+        assert.equal(run.status, "done", run.error);
+        const status = (await peer.call("get_run", { runId: run.id }).result).structuredContent.data;
+        const artifact = (await peer.call("get_artifact", { runId: run.id, artifactId: status.result.id, sha256: status.result.sha256 }).result).structuredContent.data;
+        assert.match(artifact.body, /Plan/);
+        const other = await setup();
+        const foreign = await start(other); await finished(foreign);
+        assert.equal((await peer.call("get_run", { runId: foreign.id }).result).isError, true, "desktop connection cannot read another repository");
       } finally { await peer.close(); }
     }
   } finally { await bridge.close(); }

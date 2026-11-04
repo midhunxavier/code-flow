@@ -26,7 +26,7 @@ async function sources(directory) {
 }
 await build({ entryPoints: await sources(join(root, "src")), outbase: join(root, "src"), outdir: join(output, "src"), platform: "node", format: "esm", target: "node22.13", logLevel: "warning" });
 const banner = { js: 'import { createRequire as __createRequire } from "node:module"; import { fileURLToPath as __fileURLToPath } from "node:url"; import { dirname as __dirnameOf } from "node:path"; const __filename = __fileURLToPath(import.meta.url); const __dirname = __dirnameOf(__filename); const require = __createRequire(import.meta.url);' };
-for (const [source, target] of [["src/architecture.ts", "src/architecture.js"], ["src/code-intelligence-worker.mjs", "src/code-intelligence-worker.mjs"], ["src/cli-teams/install.ts", "src/cli-teams/install.js"]])
+for (const [source, target] of [["src/architecture.ts", "src/architecture.js"], ["src/code-intelligence-worker.mjs", "src/code-intelligence-worker.mjs"], ["src/cli-teams/install.ts", "src/cli-teams/install.js"], ["src/cli-teams/desktop.ts", "src/cli-teams/desktop.js"]])
   await build({ entryPoints: [join(root, source)], outfile: join(output, target), bundle: true,
     plugins: [{ name: "preserve-local-modules", setup(builder) {
       builder.onResolve({ filter: /^\.\.?\// }, (args) => resolve(args.importer).startsWith(join(root, "src") + sep) ? { path: args.path, external: true } : undefined);
@@ -42,6 +42,7 @@ for (const [name, source] of [["typescript.txt", "node_modules/typescript/LICENS
 await writeFile(join(output, "package.json"), JSON.stringify({
   name: pkg.name, version: pkg.version, description: pkg.description, license: pkg.license,
   type: "module", bin: { codeflow: "bin/codeflow.mjs", "code-flow": "bin/codeflow.mjs" },
+  codeflow: { managedRuntime: 1 },
   engines: pkg.engines, os: ["darwin", "linux"],
   repository: { type: "git", url: "git+https://github.com/midhunxavier/code-flow.git" },
   homepage: "https://midhunxavier.github.io/code-flow/", bugs: "https://github.com/midhunxavier/code-flow/issues",
