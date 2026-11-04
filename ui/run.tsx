@@ -2104,7 +2104,7 @@ export function ConversationBar({ run, steps, chat, onOpenChat }: { run: RunSumm
             <span class="chatbox-hint" title={hint}>
               {hint}
             </span>
-            <button class="send" aria-label="Send" title="Send (↵ — ⇧↵ for a new line)" disabled={!draftReady || busy || !text.trim() || !running && !budgetValid} onClick={send}>
+            <button class="send" aria-label="Send" title="Send message" disabled={!draftReady || busy || !text.trim() || !running && !budgetValid} onClick={send}>
               <Icon name="send" />
             </button>
           </div>

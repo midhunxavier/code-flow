@@ -642,6 +642,7 @@ test("touch phone composers keep Enter as a line break", { timeout: 60000 }, asy
     await sideMessage.press("Enter");
     await sideMessage.pressSequentially("Second line");
     assert.equal(await sideMessage.inputValue(), "First line\nSecond line");
+    assert.equal(await p.locator(".side").getByRole("button", { name: "Send", exact: true }).getAttribute("title"), "Send message");
     assert.ok(await p.locator(".side-tab").first().evaluate(element => element.getBoundingClientRect().height >= 44));
   } finally { await context.close(); }
 });

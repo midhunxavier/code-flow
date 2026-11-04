@@ -363,7 +363,7 @@ function SideComposer({ run, chat }: { run: RunSummary; chat?: SideChat }) {
             </Menu> : null}
             <ChatControls showPermissions={run.pattern !== "solo" || !!chat} providers={run.pattern === "solo" && !chat ? agents.value.filter(item => item.id === "claude" || item.id === "codex" || item.id === "agy") : undefined} agent={agent} onAgent={(id) => { setAgent(id); store.set("sideAgent", id); }} settings={selectedSettings} onSettings={(value) => setSettings({ ...settings, [agent]: value })} permissions={permissions} onPermissions={setPermissions} restricted={!!run.lockdown || !!run.trigger} approvalsAvailable={!run.loop.remoteWorker && !run.loop.agentContainer} />
             <span class="chatbox-hint" />
-            <button class="send" aria-label="Send" title="Send (↵ — ⇧↵ for a new line)" disabled={!draftReady || busy || !text.trim() || !wt} onClick={send}>
+            <button class="send" aria-label="Send" title="Send message" disabled={!draftReady || busy || !text.trim() || !wt} onClick={send}>
               <Icon name="send" />
             </button>
           </div>
@@ -557,7 +557,7 @@ function NewChat({ scope }: { scope: SideScope }) {
                 </label>
               ) : null}
               <span class="chatbox-hint" />
-              <button class="send" aria-label="Send" title="Send (↵ — ⇧↵ for a new line)" disabled={busy || !text.trim() || !solo} onClick={send}>
+              <button class="send" aria-label="Send" title="Send message" disabled={busy || !text.trim() || !solo} onClick={send}>
                 <Icon name="send" />
               </button>
             </div>
