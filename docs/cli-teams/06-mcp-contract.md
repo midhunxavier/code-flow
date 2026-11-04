@@ -1,6 +1,6 @@
 # Public MCP interface
 
-Status: revised for the twelve-tool CLI/workspace implementation. [Index](README.md). Authoritative argument schemas: `src/cli-teams/tools.ts`. See [16](16-implementation-status.md) for contract differences from the original design.
+Status: revised for the fourteen-tool CLI/workspace implementation. [Index](README.md). Authoritative argument schemas: `src/cli-teams/tools.ts`. See [16](16-implementation-status.md) for contract differences from the original design.
 
 ## Connection and authority
 
@@ -29,6 +29,8 @@ Errors use `ok: false`, a stable `error.code`, readable `message`, `retryable`, 
 
 | Tool | Arguments beyond common fields | Result and behavior |
 | --- | --- | --- |
+| `codeflow_preview_handoff` | `runId`, optional `previewHash`, byte `cursor`, `maxBytes` | Exact task delta, target checkout, readiness, compact summary and next diff page; no checkout edits |
+| `codeflow_apply_handoff` | `runId`, `previewHash` | Requires native/interactive acceptance; applies and stages the pinned delta into a clean checkout, with durable effect receipts and interrupted-effect fencing |
 | `codeflow_open_task` | `id` (proposal or run), optional `open` (default true) | Stable workspace link and current context; explicitly opens the UI without starting work |
 | `codeflow_list_providers` | optional `refresh` | Bounded readiness/capability records; no paid inference |
 | `codeflow_list_models` | `providerId`, optional `cursor`, `limit`, `refresh` | Available models, supported efforts, defaults/provenance, next cursor |
@@ -43,6 +45,10 @@ Errors use `ok: false`, a stable `error.code`, readable `message`, `retryable`, 
 | `codeflow_control_run` | `runId`, `action: pause|resume|cancel` | Durable control receipt, effective state, active/uncertain work, and next action |
 
 For `propose_run`, an existing `proposalId` requires `expectedRevision`; a new proposal does not. A candidate contains run-local participants, ordered typed steps, scope, completion criteria, commands where authorized, and bounded limits. Optional context can include notes, selected untracked paths, immutable artifacts from the same project, and an explicit continuation run. Changed source invalidates acceptance or stale artifact reuse. List/save team tools are deferred.
+
+`context.reuseRunId` resolves the prior canonical result, chat, preserved source for write tasks and model/effort settings for matching participants. Explicit settings win. Conflicting source/chat/project references are rejected; source freshness and a new exact-revision acceptance remain required. `get_run.continuation.context` supplies this input directly. `progress` and `handoff` provide human state and result evidence independently from event/artifact paging.
+
+MCP text blocks are readable summaries; `structuredContent` retains the complete protocol object. Consumers must use structured fields for exact references, private claim tokens and pagination. Handoff pages pin `previewHash`; changing the checkout while paging requires a fresh preview. Application is separately confirmed through native elicitation or the privileged interactive terminal channel. It uses the task source commit to result commit delta, not all changes since the original branch base. Checkout application does not claim verification on a different destination snapshot.
 
 A claim token binds the accepted step and attempt, so `submit_step` need not require the latest global run revision. This avoids unrelated parallel completions invalidating an otherwise correct submission. Relevant configuration/input changes revoke the token.
 

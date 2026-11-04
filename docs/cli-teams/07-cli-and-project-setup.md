@@ -16,6 +16,8 @@ codeflow pause RUN_ID
 codeflow resume RUN_ID
 codeflow cancel RUN_ID
 codeflow result RUN_ID
+codeflow diff RUN_ID
+codeflow apply RUN_ID
 codeflow preferences --provider claude --model MODEL_ID --effort high
 codeflow mcp --project-root .
 codeflow uninstall --project
