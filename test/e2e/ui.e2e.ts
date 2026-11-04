@@ -1,3 +1,4 @@
+import { setArchivedHistory } from "../browser-navigation.js";
 import axe from "axe-core";
 import { parseBrowserMessage } from "../../ui/browser-context.js";
 // End-to-end: the real UI in Chrome against a real server with fake agents.
@@ -351,10 +352,11 @@ test("a check that can't run here: the result is still reviewed, and the inbox a
   await page.goto(`${BASE}/#/inbox`);
   const item = page.locator(".inbox-item", { hasText: "E2E: check can't run" });
   await item.waitFor({ timeout: 30_000 });
+  await item.locator(".inbox-details > summary").click();
   await item.locator(".cant-run", { hasText: "nosuchtool-e2e" }).waitFor();
-  assert.match(await item.locator(".ih .help").innerText(), /checks: blocked/);
+  assert.match(await item.locator(".inbox-meta").innerText(), /checks: blocked/i);
 
-  await item.locator("a.t").click();
+  await item.locator(".inbox-item-title a").click();
   await page.locator(".result-details > summary").click();
   await page.getByText("⚠ Finished — but the check couldn't run, so nothing was tested").waitFor();
   await page.locator(".result .cant-run", { hasText: ".codeflow/config.json" }).waitFor();
@@ -901,7 +903,7 @@ test("projects: the Automations page and its inbox follow the project you're in;
   await page.locator(".project-btn").click();
   await page.locator(".project-row", { hasText: "E2E scoped" }).locator(".pr-main").click();
   await page.locator(".project-btn", { hasText: "E2E scoped" }).waitFor();
-  assert.deepEqual(await page.locator(".inbox-item a.t").allInnerTexts(), ["E2E: side chore"], "only this project's results");
+  assert.deepEqual(await page.locator(".inbox-item-title a").allInnerTexts(), ["E2E: side chore"], "only this project's results");
   await page.locator(".automations .rail-hint", { hasText: `${pending - 1} in other projects need${pending === 2 ? "s" : ""} you` }).waitFor();
   assert.equal(await page.locator(".rail-menu-count").innerText(), String(pending), "the sidebar still counts every project's results");
 
@@ -1424,26 +1426,26 @@ test("sidebar archives, hides and deletes runs with confirmation across tabs", a
     const rail = fresh.getByRole("navigation", { name: "Workspace navigation", exact: true });
     const row = rail.locator(".rail-run-row").filter({ has: fresh.locator(".run-item", { hasText: task }) }).first();
     await row.hover();
-    await row.getByRole("button", { name: "Run actions", exact: true }).click();
+    await row.getByRole("button", { name: "Chat actions", exact: true }).click();
     await row.getByRole("menuitem", { name: "Archive", exact: true }).click();
     await row.waitFor({ state: "detached" });
     const search = rail.getByRole("searchbox");
     await search.fill(task);
     assert.equal(await row.count(), 0, "search respects hidden archives");
-    await rail.getByRole("button", { name: /^Show archived runs(?: \d+)?$/ }).click();
+    await setArchivedHistory(rail, true);
     await row.waitFor();
     await row.hover();
-    await row.getByRole("button", { name: "Run actions", exact: true }).click();
+    await row.getByRole("button", { name: "Chat actions", exact: true }).click();
     await row.getByRole("menuitem", { name: "Unarchive", exact: true }).click();
     await fresh.getByRole("main").getByRole("button", { name: /^Provider:/ }).waitFor();
     await row.hover();
-    await row.getByRole("button", { name: "Run actions", exact: true }).click();
+    await row.getByRole("button", { name: "Chat actions", exact: true }).click();
     await row.getByRole("menuitem", { name: "Delete…", exact: true }).click();
     const dialog = fresh.getByRole("dialog", { name: "Delete this run?", exact: true });
     await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
     assert.equal((await fetch(`${BASE}/api/runs/${created.id}`, { headers: bearer })).status, 200);
     await row.hover();
-    await row.getByRole("button", { name: "Run actions", exact: true }).click();
+    await row.getByRole("button", { name: "Chat actions", exact: true }).click();
     await fresh.getByRole("menuitem", { name: "Delete…", exact: true }).click();
     const runUrl = `${BASE}/api/runs/${created.id}`;
     await fresh.route(runUrl, async route => {
@@ -1463,53 +1465,12 @@ test("sidebar archives, hides and deletes runs with confirmation across tabs", a
   } finally { await fresh.close(); await other.close(); }
 });
 
-test("bulk run selection archives and deletes with partial failure recovery", async () => {
-  const ids: string[] = [];
-  for (const task of ["Bulk history fixture one", "Bulk history fixture two"]) {
-    const created = await fetch(`${BASE}/api/runs`, { method: "POST", headers: { ...bearer, "content-type": "application/json" }, body: JSON.stringify({ repo, task, pattern: "solo", roles: { agent: ["claude"] }, options: {} }) }).then(r => r.json());
-    assert.ok(created.id); ids.push(created.id);
-  }
-  for (const id of ids) for (let i = 0; i < 150; i++) {
-    const run = await fetch(`${BASE}/api/runs/${id}`, { headers: bearer }).then(r => r.json());
-    if (run.status !== "running") break;
-    await new Promise(resolve => setTimeout(resolve, 100));
-  }
-  const fresh = await browser.newPage({ viewport: { width: 1267, height: 1042 } });
-  try {
-    await fresh.goto(`${BASE}/?token=${TOKEN}#/workflows`);
-    const rail = fresh.getByRole("navigation", { name: "Workspace navigation", exact: true });
-    await rail.getByRole("searchbox").fill("Bulk history fixture");
-    await rail.locator(".rail-run-row").filter({ hasText: "Bulk history fixture two" }).waitFor();
-    await rail.getByRole("button", { name: "Select runs", exact: true }).click();
-    await rail.getByRole("button", { name: "Select loaded", exact: true }).click();
-    await rail.getByRole("status").filter({ hasText: /^2 selected$/ }).waitFor();
-    await rail.getByRole("button", { name: "Archive", exact: true }).click();
-    await rail.getByRole("status").filter({ hasText: /^0 selected$/ }).waitFor();
-    assert.equal(await rail.locator(".rail-run-row").count(), 0);
-    await rail.getByRole("button", { name: /^Show archived runs(?: \d+)?$/ }).click();
-    await rail.getByRole("button", { name: "Select loaded", exact: true }).click();
-    await rail.getByRole("button", { name: "Delete…", exact: true }).click();
-    const dialog = fresh.getByRole("dialog", { name: "Delete 2 runs?", exact: true });
-    await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
-    assert.equal((await fetch(`${BASE}/api/runs/${ids[0]}`, { headers: bearer })).status, 200);
-    await rail.getByRole("button", { name: "Delete…", exact: true }).click();
-    const failedUrl = `${BASE}/api/runs/${ids[1]}`;
-    await fresh.route(failedUrl, async route => {
-      if (route.request().method() === "DELETE") await route.fulfill({ status: 409, json: { error: "Run is busy" } });
-      else await route.continue();
-    });
-    await dialog.getByRole("button", { name: "Delete 2 runs", exact: true }).click();
-    const retry = fresh.getByRole("dialog", { name: "Delete 1 run?", exact: true });
-    await retry.getByRole("alert").filter({ hasText: "Run is busy" }).waitFor();
-    assert.equal((await fetch(`${BASE}/api/runs/${ids[0]}`, { headers: bearer })).status, 404);
-    assert.equal((await fetch(failedUrl, { headers: bearer })).status, 200);
-    await rail.getByRole("status").filter({ hasText: /^1 selected$/ }).waitFor();
-    await fresh.unroute(failedUrl);
-    await retry.getByRole("button", { name: "Delete 1 run", exact: true }).click();
-    await retry.waitFor({ state: "detached" });
-    assert.equal((await fetch(failedUrl, { headers: bearer })).status, 404);
-    await rail.getByRole("status").filter({ hasText: /^0 selected$/ }).waitFor();
-  } finally { await fresh.close(); }
+test("sidebar keeps row actions without a bulk selection toolbar", async () => {
+  const p = await browser.newPage(); await p.goto(`${BASE}/?token=${TOKEN}#/workflows`);
+  await p.getByRole("navigation", { name: "Workspace navigation", exact: true }).waitFor();
+  assert.equal(await p.locator(".rail-selection, .rail-bulk-actions").count(), 0);
+  assert.equal(await p.getByRole("button", { name: /^Select (runs|chats)$/ }).count(), 0);
+  await p.close();
 });
 
 test("searchable model picker filters names and IDs, supports keyboard, resets and fits mobile", async () => {

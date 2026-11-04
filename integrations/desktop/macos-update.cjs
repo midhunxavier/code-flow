@@ -143,7 +143,9 @@ class MacUpdateInstaller {
       const failed = error => finish(error);
       const exited = () => finish(new Error('The update helper could not start.'));
       const ready = message => { if (message === 'ready') finish(); };
-      const timer = setTimeout(() => finish(new Error('The update helper did not respond.')), 10000);
+      // A newly copied Intel runtime can need more than 10 seconds for macOS
+      // validation and Rosetta translation before it can open its IPC channel.
+      const timer = setTimeout(() => finish(new Error('The update helper did not respond.')), 30000);
       child.once('error', failed); child.once('exit', exited); child.on('message', ready);
     });
     child.disconnect(); child.unref();

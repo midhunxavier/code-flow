@@ -92,7 +92,7 @@ test("another tab's deletion preserves the unsent text and image and replaces th
   }, { id: run.id, data: png.toString("base64"), size: png.length });
   await b.reload(); await b.locator('.draft-images img[alt="draft.png"]').waitFor();
   const historyBefore = await b.evaluate(() => history.length);
-  const row = a.locator(".rail-run-row", { has: a.locator(".run-item", { hasText: run.task }) }).first(); await row.hover(); await row.getByRole("button", { name: "Run actions", exact: true }).click(); await row.getByRole("menuitem", { name: "Delete…", exact: true }).click(); await a.getByRole("dialog").getByRole("button", { name: "Delete run", exact: true }).click();
+  const row = a.locator(".rail-run-row", { has: a.locator(".run-item", { hasText: run.task }) }).first(); await row.hover(); await row.getByRole("button", { name: "Chat actions", exact: true }).click(); await row.getByRole("menuitem", { name: "Delete…", exact: true }).click(); await a.getByRole("dialog").getByRole("button", { name: "Delete run", exact: true }).click();
   const notice = b.getByRole("alert", { name: "Deleted run", exact: true }); await notice.getByText("This run was deleted in another window or by another user", { exact: true }).waitFor();
   assert.equal(await notice.getByLabel("Unsent reply", { exact: true }).inputValue(), "Keep this half-written follow-up"); assert.match((await notice.getByRole("link", { name: "Save draft.png", exact: true }).getAttribute("href"))!, /^data:image\/png;base64,/); assert.equal(new URL(b.url()).hash, "#/");
   assert.equal(await b.evaluate(() => history.length), historyBefore, "deletion replaces the stale route instead of adding a Back destination");

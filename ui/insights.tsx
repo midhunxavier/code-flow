@@ -61,13 +61,10 @@ export function InsightsView({ group }: { group?: string }) {
 
   const groups = stats ? [...stats.groups].sort((a, b) => (a.id === group ? -1 : b.id === group ? 1 : 0)) : [];
   return (
-    <div class="insights">
-      <details class="settings"><summary>Experiments</summary><div class="settings-body"><p class="help">Compare workflows against your current New run draft. Each selected setup starts a separate run and uses provider capacity.</p>{draft ? <p>{draft.task.split("\n")[0] || "No task in the current draft"}</p> : null}<button class="btn" disabled={!!comparisonProblem} title={comparisonProblem} onClick={() => setComparing(true)}>Compare setups…</button>{comparisonProblem ? <p class="help">{comparisonProblem} <a href="#/">Configure task</a></p> : null}</div></details>
+    <div class="insights insights-compact">
+
       {comparing && draft ? <CompareDialog base={{ ...draft, approvals: {} }} onClose={() => setComparing(false)} onStarted={group => { setComparing(false); route.value = { view: "insights", group }; }} /> : null}
       <div class="page-head ins-head">
-        <div class="page-head-text">
-          <p>What runs cost and how they went, per agent and per pattern.</p>
-        </div>
         <div class="page-head-actions">
           <ProjectButton />
           <div class="segmented" role="group" aria-label="Which runs">
@@ -94,13 +91,12 @@ export function InsightsView({ group }: { group?: string }) {
           </div>
         </div>
       </div>
-      <OutcomeMetrics project={scope === "project" ? currentProject.value : undefined} repository={scope === "repo" ? repo.value : undefined} />
+      <OutcomeMetrics compact project={scope === "project" ? currentProject.value : undefined} repository={scope === "repo" ? repo.value : undefined} />
       {error ? <div class="msg err">{error}</div> : null}
       {!stats ? <div class="help">Loading…</div> : null}
       {stats && !stats.runs ? (
         <div class="ins-empty">
           <h2>No runs in this period</h2>
-          <p>Start a run, or compare setups under Experiments above.</p>
         </div>
       ) : null}
       {stats && stats.runs ? (
@@ -293,8 +289,9 @@ export function InsightsView({ group }: { group?: string }) {
           </section>
         </>
       ) : null}
-      <TeamEvaluations />
-      <DiskPanel scope={scopeQuery()} />
+      <details class="settings"><summary>Experiments</summary><div class="settings-body"><p class="help">Compare workflows against your current New run draft. Each selected setup starts a separate run and uses provider capacity.</p>{draft ? <p>{draft.task.split("\n")[0] || "No task in the current draft"}</p> : null}<button class="btn" disabled={!!comparisonProblem} title={comparisonProblem} onClick={() => setComparing(true)}>Compare setups…</button>{comparisonProblem ? <p class="help">{comparisonProblem} <a href="#/">Configure task</a></p> : null}</div></details>
+      <details class="ins-advanced"><summary>Team evaluation</summary><TeamEvaluations /></details>
+      <details class="ins-advanced"><summary>Storage</summary><DiskPanel scope={scopeQuery()} /></details>
     </div>
   );
 }

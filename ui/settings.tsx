@@ -1,4 +1,6 @@
 import { AutomationManagement } from "./scheduling.js";
+import { ActivityView } from "./activity.js";
+import { TeamBoardView } from "./collab-board.js";
 import { browserPerformance } from "./performance.js";
 import { DesktopUpdatesCard } from "./desktop-updates.js";
 import { MlSettingsCard } from "./ml/settings.js";
@@ -8,7 +10,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import { Icon } from "./icons.js";
 import { api, enc, showToast, showError } from "./lib.js";
 import { MAX_EXECUTION_BUDGET, DEFAULT_EXECUTION_BUDGET } from "../src/execution-budget.js";
-import { ModelRow, TRUST } from "./composer.js";
+import { TRUST } from "./composer.js";
 import { SETTINGS_SECTIONS, searchSettings, type SettingsSection } from "./settings-sections.js";
 import { notificationPermission, canNotify, setDesktopNotifications } from "./preferences.js";
 import { themeChoice, setTheme, type ThemeChoice } from "./theme.js";
@@ -17,17 +19,16 @@ import { NotificationsView } from "./notifications.js";
 import { IntegrationsScreen } from "./integration-connections.js";
 import { ConventionsPanel } from "./conventions.js";
 import { FilePolicyPanel } from "./filesystem-policy.js";
-import { POLICY_PAUSED, PolicyPauseNotice } from "./policy-pause.js";
+import { PolicyPauseNotice } from "./policy-pause.js";
 import { ExtensionsPanel } from "./extensions.js";
 import { ProjectRunSettings } from "./project-run-settings.js";
-import { DependencyDiscovery, unrestrictedOnly } from "./dependency-health.js";
+import { DependencyDiscovery } from "./dependency-health.js";
 import { PromptImprovementSettings } from "./prompt-improvement.js";
-import { AcpConnectionsPanel } from "./acp-connections.js";
 import { WorkbenchRetentionPanel } from "./retention.js";
 import { downloadArtifact } from "./workbench.js";
 import {
-  agents, executionPaused, health, healthError, healthOpen, refreshProviders, providersRefreshing, loadHealth, loadModels, loadAgents, limitPreference, setLimits, type Limits, trust, setTrust, settingsProject,
-  patterns, defaultPattern, setPattern, CHECKPOINTS, planApprovalFor, setApprovePlan,
+  executionPaused, healthError, healthOpen, refreshProviders, providersRefreshing, loadHealth, loadModels, loadAgents, limitPreference, setLimits, type Limits, trust, setTrust, settingsProject,
+  patterns, defaultPattern, setPattern,
   railView, setRailView, shortcutsOpen, projectsOpen, projects, repo, route,
   externalSource, source, setTask, type Trust,
 } from "./state.js";
@@ -49,14 +50,14 @@ export function SettingsView({ section = "general", group, connection }: { secti
   const item = SETTINGS_SECTIONS.find((item) => item.id === section)!;
   const matches = searchSettings(query);
   const host = executionHost.value;
-  const go = (section: SettingsSection) => { setQuery(""); route.value = section === "workspace" || section === "insights" ? { view: section } : { view: "settings", section }; };
+  const go = (section: SettingsSection) => { setQuery(""); route.value = { view: "settings", section }; };
   return <div class="settings-page">
     <header class="settings-header"><div><h1>Settings</h1></div><span class="settings-scope"><Icon name={host.kind === "local" ? "panel" : "terminal"} />{host.kind === "ssh" ? host.name : host.kind === "host" ? "Remote server" : "This computer"}</span></header>
     <div class="settings-layout">
       <aside class="settings-sidebar">
         <div class="settings-search"><Icon name="search" /><input class="field" type="search" aria-label="Search settings" placeholder="Search settings…" value={query} onInput={(e) => setQuery(e.currentTarget.value)} /></div>
         <nav ref={navigation} aria-label="Settings categories">
-          {["Preferences", "Connections", "Management"].map((group) => <div key={group} class="settings-nav-group"><div class="settings-nav-label">{group}</div>{SETTINGS_SECTIONS.filter((entry) => entry.group === group && !["workspace", "insights"].includes(entry.id)).map((entry) => <a key={entry.id} class={`settings-nav-item ${section === entry.id && !query.trim() ? "active" : ""}`} href={`#/settings/${entry.id}`} aria-current={section === entry.id && !query.trim() ? "page" : undefined} onClick={() => setQuery("")}><Icon name={entry.icon} />{entry.label}</a>)}</div>)}
+          {["Preferences", "Connections", "Tools & activity", "Management"].map((group) => <div key={group} class="settings-nav-group"><div class="settings-nav-label">{group}</div>{SETTINGS_SECTIONS.filter((entry) => entry.group === group).map((entry) => <a key={entry.id} class={`settings-nav-item ${section === entry.id && !query.trim() ? "active" : ""}`} href={`#/settings/${entry.id}`} aria-current={section === entry.id && !query.trim() ? "page" : undefined} onClick={() => setQuery("")}><Icon name={entry.icon} />{entry.label}</a>)}</div>)}
         </nav>
       </aside>
       <div class="settings-content">
@@ -67,11 +68,12 @@ export function SettingsView({ section = "general", group, connection }: { secti
             {section === "agents" ? <AgentSettings /> : null}
             {section === "runs" ? <RunSettings /> : null}
             {section === "connections" ? <ConnectionsView purpose={group} connection={connection} /> : null}
-            {section === "notifications" ? <><SettingsCard title="Desktop notifications"><SettingsRow title="Run updates" description="Notify when a run finishes or needs your attention, while you’re away from it."><button class="settings-switch" role="switch" aria-label="Desktop notifications" aria-checked={canNotify()} onClick={() => void setDesktopNotifications(!canNotify())}><span /></button></SettingsRow><p class="help">{"Notification" in window ? notificationPermission.value === "denied" ? "Notifications are blocked. Allow them in your browser’s site permissions to enable this setting." : "This preference is saved in this browser for the current workspace." : "This browser doesn’t support desktop notifications."}</p></SettingsCard><NotificationsView /></> : null}
+            {section === "notifications" ? <><section class="settings-card settings-compact" aria-label="Desktop notifications"><div class="settings-inline-row"><strong>Desktop notifications</strong><button class="settings-switch" role="switch" aria-label="Desktop notifications" title="Notify when work finishes or needs your attention. Saved for this browser and workspace." aria-checked={canNotify()} onClick={() => void setDesktopNotifications(!canNotify())}><span /></button></div>{"Notification" in window ? notificationPermission.value === "denied" ? <p class="help">Blocked by your browser. Allow notifications in site permissions.</p> : null : <p class="help">This browser doesn’t support desktop notifications.</p>}</section><NotificationsView /></> : null}
             {section === "integrations" ? <IntegrationsScreen /> : null}
             {section === "projects" ? <ProjectSettings /> : null}
-            {section === "extensions" ? <ExtensionsPanel /> : null}
             {section === "automations" ? <AutomationManagement /> : null}
+            {section === "board" ? <TeamBoardView embedded navigate={to => { route.value = to; }} /> : null}
+            {section === "inbox" || section === "insights" ? <ActivityView current={{ view: section, ...(section === "insights" && group ? { group } : {}) }} /> : null}
             {section === "data" ? <WorkbenchRetentionPanel /> : null}
             {section === "advanced" ? <AdvancedSettings /> : null}
           </div>
@@ -96,8 +98,8 @@ function GeneralSettings() {
       </div>
     </SettingsCard>
     <SettingsCard title="Workspace preferences">
-      <SettingsRow title="Group runs by" description="Choose how runs are organized in the sidebar."><select class="field" aria-label="Group runs by" value={railView.value.group} onChange={(e) => setRailView({ group: e.currentTarget.value as "project" | "status" })}><option value="project">Project</option><option value="status">Status</option></select></SettingsRow>
-      <SettingsRow title="Show archived runs" description="Include archived work in your run list."><button class="settings-switch" role="switch" aria-label="Show archived runs" aria-checked={railView.value.archived} onClick={() => setRailView({ archived: !railView.value.archived })}><span /></button></SettingsRow>
+      <SettingsRow title="Group chats by" description="Choose how chats are organized in the sidebar."><select class="field" aria-label="Group chats by" value={railView.value.group} onChange={(e) => setRailView({ group: e.currentTarget.value as "project" | "status" })}><option value="project">Project</option><option value="status">Status</option></select></SettingsRow>
+      <SettingsRow title="Show archived chats" description="Include archived work in your chat list."><button class="settings-switch" role="switch" aria-label="Show archived chats" aria-checked={railView.value.archived} onClick={() => setRailView({ archived: !railView.value.archived })}><span /></button></SettingsRow>
       <SettingsRow title="Keyboard shortcuts" description="Move around your workspace without leaving the keyboard."><button class="btn small" onClick={() => { shortcutsOpen.value = true; }}>View shortcuts</button></SettingsRow>
     </SettingsCard>
     <MlSettingsCard />
@@ -108,26 +110,17 @@ function AgentSettings() {
   const paused = executionPaused.value;
   return <>
     <PolicyPauseNotice what="Provider checks and agent runs are paused" />
-    <p class="help">Connect providers on this computer and choose defaults for new work. Each task shows its resolved models before starting.</p>
-    <div class="settings-actions"><button class="btn" disabled={busy || providersRefreshing.value} onClick={async () => { setBusy(true); try { await refreshProviders(); } finally { setBusy(false); } }}>{busy || providersRefreshing.value ? "Checking…" : "Refresh providers"}</button><button class="btn" onClick={() => { healthOpen.value = true; }}>Health & usage</button></div>
+    <p class="help">Choose prompt improvement settings and manage provider connections. Open Health to check installation and sign-in status.</p>
+    <div class="settings-actions"><button class="btn" disabled={busy || providersRefreshing.value} onClick={async () => { setBusy(true); try { await refreshProviders(); } finally { setBusy(false); } }}>{busy || providersRefreshing.value ? "Checking…" : "Refresh providers"}</button><button class="btn" onClick={() => { healthOpen.value = true; }}>Health</button></div>
     {healthError.value && !paused ? <p class="msg err" role="alert">{healthError.value}</p> : null}
-    {agents.value.map((agent) => {
-      const status = health.value?.find((item) => item.id === agent.id);
-      // Paused, the server checks no CLI: say so rather than "Checking health…" and "Install this CLI".
-      const policyPaused = paused || agent.unavailableReason === "filesystem-policy";
-      // The doctor's warnings (such as Antigravity that can't run isolated, the default for runs) belong beside the login state.
-      const checked = !policyPaused && status?.installed ? status : undefined;
-      return <SettingsCard key={agent.id} title={agent.displayName}><div class="settings-provider-status"><span class={`badge ${status?.installed && status.signedIn !== false ? "ok" : ""}`}>{policyPaused ? POLICY_PAUSED : status ? !status.installed ? "Not installed" : status.signedIn === false ? "Signed out" : status.signedIn ? "Signed in" : "Installed · login unknown" : healthError.value ? "Health unavailable" : "Checking health…"}</span>{checked && unrestrictedOnly(checked) ? <span class="badge warn">Unrestricted only</span> : null}<span class="help">{status?.version}</span></div>{agent.available ? <ModelRow agent={agent} used /> : policyPaused ? <p class="help">Models can be configured again once no project restricts file access.</p> : <p class="help">Install this CLI on the current machine to configure its models.</p>}{checked?.warnings?.map((warning) => <p class="msg warn" key={warning}>{warning}</p>)}{status?.fix ? <p class="msg warn">{status.fix}</p> : null}</SettingsCard>;
-    })}
     <PromptImprovementSettings />
-    <AcpConnectionsPanel />
     <details class="settings"><summary>Check this computer</summary><div class="settings-body"><DependencyDiscovery /></div></details>
   </>;
 }
-function NumberSetting({ label, value, min = 1, max, step = 1, optional = false, save }: { label: string; value?: number; min?: number; max?: number; step?: number; optional?: boolean; save: (value: number | undefined) => void }) {
+function NumberSetting({ label, hint, value, min = 1, max, step = 1, optional = false, save }: { label: string; hint?: string; value?: number; min?: number; max?: number; step?: number; optional?: boolean; save: (value: number | undefined) => void }) {
   const [draft, setDraft] = useState(value === undefined ? "" : String(value));
   useEffect(() => setDraft(value === undefined ? "" : String(value)), [value]);
-  return <label>{label}<input class="field" type="number" min={min} max={max} step={step} required={!optional} placeholder={optional ? "No ceiling" : undefined} value={draft} onInput={(e) => setDraft(e.currentTarget.value)} onBlur={(e) => {
+  return <label title={hint}>{label}<input title={hint} class="field" type="number" min={min} max={max} step={step} required={!optional} placeholder={optional ? "No ceiling" : undefined} value={draft} onInput={(e) => setDraft(e.currentTarget.value)} onBlur={(e) => {
     if (e.currentTarget.validity.valid && (draft || optional)) save(draft ? Number(draft) : undefined);
     else { setDraft(value === undefined ? "" : String(value)); showError(`Enter a valid value for ${label.toLowerCase()}`); }
   }} /></label>;
@@ -135,25 +128,22 @@ function NumberSetting({ label, value, min = 1, max, step = 1, optional = false,
 function RunSettings() {
   // Until you save limits here, a repository's .codeflow/config.json supplies its own.
   const savedLimits: Limits = limitPreference.value ?? DEFAULT_EXECUTION_BUDGET;
-  const workflow = defaultPattern.value;
-  const remembering = projects.value.filter((project) => project.defaults && patterns.value.some((pattern) => pattern.id === project.defaults!.pattern));
+  const mode = defaultPattern.value === "solo" ? "solo" : "auto-team";
   return <>
-    <p class="help">These are the composer’s remembered choices for this browser and workspace. Changes also update your current draft; running work keeps its existing settings.</p>
-    <SettingsCard title="Workflow">
-      <SettingsRow title="Default workflow" description="The team pattern a new task starts with, in projects that don’t remember a team of their own."><select class="field" aria-label="Default workflow" aria-describedby={remembering.length ? "default-workflow-projects" : undefined} value={workflow} onChange={(e) => setPattern(e.currentTarget.value)}>{patterns.value.map((pattern) => <option key={pattern.id} value={pattern.id}>{pattern.name}</option>)}</select></SettingsRow>
-      {remembering.length ? <p class="help" id="default-workflow-projects">A project remembers the workflow and team of the last run started from its composer, and its new drafts start from that instead: {remembering.slice(0, 5).map((project) => `${project.name} (${patterns.value.find((pattern) => pattern.id === project.defaults!.pattern)!.name})`).join(", ")}{remembering.length > 5 ? ` and ${remembering.length - 5} more` : ""}.</p> : null}
-      {CHECKPOINTS[workflow] ? <SettingsRow title="Approve before building" description={`Pause so you can review ${CHECKPOINTS[workflow]}. This choice is remembered per workflow.`}><button class="settings-switch" role="switch" aria-label="Approve before building" aria-checked={planApprovalFor(workflow)} onClick={() => setApprovePlan(!planApprovalFor(workflow), workflow)}><span /></button></SettingsRow> : null}
+    <p class="help">Choose defaults for new chats. You can change Agent or Team in each chat.</p>
+    <SettingsCard title="New chats">
+      <SettingsRow title="Default mode" description="Use one agent or let a team work together."><select class="field" aria-label="Default chat mode" value={mode} onChange={event => setPattern(event.currentTarget.value)}><option value="solo">Agent</option><option value="auto-team">Team</option></select></SettingsRow>
     </SettingsCard>
     <SettingsCard title="Agent permissions">
       <label class="sr-only" for="settings-trust">Agent permissions</label><select class="field" id="settings-trust" value={trust.value} onChange={(e) => setTrust(e.currentTarget.value as Trust)}>{(Object.keys(TRUST) as Trust[]).map((value) => <option key={value} value={value}>{TRUST[value].label}</option>)}</select>
       <p class={trust.value === "full" ? "full-warn" : "help"}>{TRUST[trust.value].help}</p>
     </SettingsCard>
-    <SettingsCard title="Run limits"><p class="help">Stop when a limit is reached. Changes save when you leave a field.</p><div class="settings-grid">
-      <NumberSetting label="Minutes per run" value={savedLimits.maxMinutes} max={MAX_EXECUTION_BUDGET.maxMinutes} save={(value) => setLimits({ maxMinutes: value! })} />
-      <NumberSetting label="Agent steps per run" value={savedLimits.maxSteps} max={MAX_EXECUTION_BUDGET.maxSteps} save={(value) => setLimits({ maxSteps: value! })} />
-      <NumberSetting label="Reported token ceiling" value={savedLimits.maxTokens} optional save={(value) => setLimits({ maxTokens: value })} />
-      <NumberSetting label="API-equivalent cost ceiling ($)" value={savedLimits.maxCostUsd} optional min={0.01} step={0.01} save={(value) => setLimits({ maxCostUsd: value })} />
-    </div><p class="help">Usage ceilings depend on provider reports and are checked between operations. API-equivalent cost is not your subscription bill.</p></SettingsCard>
+    <section class="settings-card settings-compact" aria-label="Run limits"><h3 title="Work stops when a limit is reached. Changes save when you leave a field.">Run limits</h3><div class="settings-limit-fields">
+      <NumberSetting label="Time (min)" hint="Maximum execution minutes per run." value={savedLimits.maxMinutes} max={MAX_EXECUTION_BUDGET.maxMinutes} save={(value) => setLimits({ maxMinutes: value! })} />
+      <NumberSetting label="Agent steps" hint="Maximum agent steps per run." value={savedLimits.maxSteps} max={MAX_EXECUTION_BUDGET.maxSteps} save={(value) => setLimits({ maxSteps: value! })} />
+      <NumberSetting label="Token limit" hint="Reported token ceiling; checked between operations. Empty means unlimited." value={savedLimits.maxTokens} optional save={(value) => setLimits({ maxTokens: value })} />
+      <NumberSetting label="Cost limit ($)" hint="API-equivalent cost ceiling, based on provider reports. This is not your subscription bill. Empty means unlimited." value={savedLimits.maxCostUsd} optional min={0.01} step={0.01} save={(value) => setLimits({ maxCostUsd: value })} />
+    </div></section>
     <p class="help">Repository setup, checks, branch names, team roles and per-run isolation are available in <a href="#/workflows">Saved workflows → Advanced agent settings</a>.</p>
   </>;
 }
@@ -172,7 +162,8 @@ function AdvancedSettings() {
   const [diagnostics, setDiagnostics] = useState<unknown>();
   const [busy, setBusy] = useState(false), [error, setError] = useState("");
   return <>
-    <SettingsCard title="Diagnostics"><p class="help">Collect versions, connection health, resource queues and recent logs for the current machine. Credential-like values are redacted before export.</p><div class="settings-actions"><button class="btn" disabled={busy} onClick={async () => { setBusy(true); setError(""); setDiagnostics(undefined); try { setDiagnostics({ ...await api(`/api/diagnostics${repo.value ? `?repo=${enc(repo.value)}` : ""}`), browserPerformance: browserPerformance(), runtime: await api("/api/health") }); } catch (err) { setError((err as Error).message); } finally { setBusy(false); } }}>{busy ? "Collecting…" : "Collect diagnostics"}</button>{diagnostics ? <button class="btn" onClick={() => downloadArtifact("codeflow-diagnostics.json", JSON.stringify(diagnostics, null, 2))}>Export diagnostics</button> : null}</div>{diagnostics ? <details><summary>Collected diagnostics</summary><pre>{JSON.stringify(diagnostics, null, 2)}</pre></details> : null}{error ? <p role="alert" class="msg err">{error}</p> : null}</SettingsCard>
-    <SettingsCard title="Server configuration"><p class="help">Process settings such as the server port, data directory, concurrency, CLI paths and integration credentials are configured through environment variables when starting code-flow. Changes require a server restart.</p><p class="help">Repository defaults live in <code>.codeflow/config.json</code>. Browser preferences are separate for each SSH workspace.</p><a href="https://github.com/midhunxavier/code-flow/blob/main/docs/configuration.md" target="_blank" rel="noreferrer">Configuration reference ↗</a></SettingsCard>
+    <section class="settings-card settings-compact" aria-label="Diagnostics"><div class="settings-inline-row"><strong title="Collect versions, connection health and recent logs. Credentials are redacted before export.">Diagnostics</strong><div class="settings-actions"><button class="btn" disabled={busy} onClick={async () => { setBusy(true); setError(""); setDiagnostics(undefined); try { setDiagnostics({ ...await api(`/api/diagnostics${repo.value ? `?repo=${enc(repo.value)}` : ""}`), browserPerformance: browserPerformance(), runtime: await api("/api/health") }); } catch (err) { setError((err as Error).message); } finally { setBusy(false); } }}>{busy ? "Collecting…" : "Collect diagnostics"}</button>{diagnostics ? <button class="btn" onClick={() => downloadArtifact("codeflow-diagnostics.json", JSON.stringify(diagnostics, null, 2))}>Export diagnostics</button> : null}</div></div>{diagnostics ? <details><summary>Collected diagnostics</summary><pre>{JSON.stringify(diagnostics, null, 2)}</pre></details> : null}{error ? <p role="alert" class="msg err">{error}</p> : null}</section>
+    <section class="settings-card settings-compact"><div class="settings-inline-row"><strong title="Port, data directory and CLI paths are configured on the server. Changes require a restart.">Server configuration</strong><a class="btn small" href="/docs/configuration.html" target="_blank" rel="noreferrer">Reference ↗</a></div></section>
+    <details class="settings advanced-extensions"><summary>Extensions</summary><ExtensionsPanel /></details>
   </>;
 }

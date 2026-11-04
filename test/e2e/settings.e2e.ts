@@ -82,7 +82,8 @@ test("Kilo and Cline presets connect through ACP, preserve edited invocations, a
     await page.goto(`${base}/#/settings/general`);
     await page.getByRole("heading", { name: "General", exact: true }).waitFor();
     await page.getByLabel("Search settings").fill(name);
-    await page.getByRole("region", { name: "Settings search results" }).getByRole("button", { name: /Providers/ }).click();
+    await page.getByRole("region", { name: "Settings search results" }).getByRole("button", { name: /Connections/ }).click();
+    await page.getByRole("link", { name: "Coding agents", exact: true }).click();
     const panel = page.getByRole("region", { name: "ACP connections", exact: true });
     await panel.getByRole("button", { name: `Connect ${name}`, exact: true }).click();
     assert.equal(await panel.getByLabel("ACP connection ID").inputValue(), command);
@@ -98,12 +99,8 @@ test("Kilo and Cline presets connect through ACP, preserve edited invocations, a
     await panel.getByText(`${name}: connected`, { exact: true }).waitFor();
     await panel.getByText(/2 models/).waitFor();
     await panel.getByRole("button", { name: "Save connection", exact: true }).click();
-    await page.getByRole("button", { name: new RegExp("^" + `${name} model` + ":") }).click();
-    await page.getByRole("combobox", { name: /^Search / }).fill("fixture/model-b");
-    await page.getByRole("listbox").getByRole("option").click();
     await page.reload();
-    assert.match(await page.getByRole("button", { name: new RegExp("^" + `${name} model` + ":") }).textContent() ?? "", /Model B/i);
-    await panel.getByRole("button", { name: `Connect ${name}`, exact: true }).click();
+    await panel.getByRole("button", { name: `Edit ${name}`, exact: true }).click();
     assert.equal(await panel.getByLabel("ACP connection ID").getAttribute("readonly"), "");
     assert.equal(await panel.getByLabel("ACP executable").inputValue(), process.execPath);
     assert.equal(await panel.getByLabel("ACP arguments").inputValue(), fixtureArgs);
@@ -112,9 +109,9 @@ test("Kilo and Cline presets connect through ACP, preserve edited invocations, a
     await panel.getByRole("button", { name: "Save connection", exact: true }).click();
     assert.equal(await panel.getByRole("button", { name: `Edit ${name}`, exact: true }).count(), 1);
     await panel.getByRole("button", { name: `Disable ${name}`, exact: true }).click();
-    await page.getByRole("button", { name: new RegExp("^" + `${name} model` + ":") }).waitFor({ state: "detached" });
+    await panel.getByRole("button", { name: `Enable ${name}`, exact: true }).waitFor();
     await panel.getByRole("button", { name: `Enable ${name}`, exact: true }).click();
-    await page.getByRole("button", { name: new RegExp("^" + `${name} model` + ":") }).waitFor();
+    await panel.getByRole("button", { name: `Disable ${name}`, exact: true }).waitFor();
     await panel.getByRole("button", { name: `Remove ${name}`, exact: true }).click();
     await page.getByRole("dialog", { name: "Remove ACP connection?", exact: true }).getByRole("button", { name: "Remove connection", exact: true }).click();
     await panel.getByRole("button", { name: `Edit ${name}`, exact: true }).waitFor({ state: "detached" });
@@ -124,7 +121,7 @@ test("Kilo and Cline presets connect through ACP, preserve edited invocations, a
 });
 
 test("ACP settings connect, discover models, persist, edit, disable and remove a compatible CLI", async () => {
-  await page.goto(`${base}/#/settings/agents`);
+  await page.goto(`${base}/#/settings/connections/agents`);
   const panel = page.getByRole("region", { name: "ACP connections", exact: true });
   await panel.getByRole("button", { name: "Connect OpenCode", exact: true }).click();
   assert.equal(await panel.getByLabel("ACP executable").inputValue(), "opencode");
@@ -139,20 +136,16 @@ test("ACP settings connect, discover models, persist, edit, disable and remove a
   await panel.getByText("Fixture ACP: connected", { exact: true }).waitFor();
   await panel.getByText(/2 models/).waitFor();
   await panel.getByRole("button", { name: "Save connection", exact: true }).click();
-  await page.getByRole("button", { name: /^Fixture ACP model:/ }).click();
-  await page.getByRole("combobox", { name: /^Search / }).fill("fixture/model-b");
-  await page.getByRole("listbox").getByRole("option").click();
   await page.reload();
-  assert.match(await page.getByRole("button", { name: /^Fixture ACP model:/ }).textContent() ?? "", /Model B/i);
   await panel.getByRole("button", { name: "Edit Fixture ACP", exact: true }).click();
   assert.equal(await panel.getByLabel("ACP connection ID").getAttribute("readonly"), "");
   await panel.getByLabel("ACP connection name").fill("Renamed ACP");
   await panel.getByRole("button", { name: "Save connection", exact: true }).click();
-  await page.getByRole("button", { name: /^Renamed ACP model:/ }).waitFor();
+  await panel.getByRole("button", { name: "Disable Renamed ACP", exact: true }).waitFor();
   await panel.getByRole("button", { name: "Disable Renamed ACP", exact: true }).click();
-  await page.getByRole("button", { name: /^Renamed ACP model:/ }).waitFor({ state: "detached" });
+  await panel.getByRole("button", { name: "Enable Renamed ACP", exact: true }).waitFor();
   await panel.getByRole("button", { name: "Enable Renamed ACP", exact: true }).click();
-  await page.getByRole("button", { name: /^Renamed ACP model:/ }).waitFor();
+  await panel.getByRole("button", { name: "Disable Renamed ACP", exact: true }).waitFor();
   await page.setViewportSize({ width: 390, height: 844 });
   await panel.getByRole("button", { name: "Edit Renamed ACP", exact: true }).click();
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
@@ -195,17 +188,17 @@ test("settings navigation, search, appearance, and run defaults persist and driv
   await page.getByText("No matching settings").waitFor();
   await page.getByRole("button", { name: "Clear search" }).click();
   await category("Run defaults");
-  await page.getByLabel("Default workflow").selectOption("pipeline");
+  await page.getByLabel("Default chat mode").selectOption("auto-team");
   await page.getByLabel("Agent permissions", { exact: true }).selectOption("safe");
-  await page.getByLabel("Minutes per run").fill("37");
-  await page.getByLabel("Agent steps per run").fill("18");
-  await page.getByLabel("Agent steps per run").blur();
+  await page.getByLabel("Time (min)", { exact: true }).fill("37");
+  await page.getByLabel("Agent steps", { exact: true }).fill("18");
+  await page.getByLabel("Agent steps", { exact: true }).blur();
   await page.reload();
-  assert.equal(await page.getByLabel("Minutes per run").inputValue(), "37");
-  assert.equal(await page.getByLabel("Agent steps per run").inputValue(), "18");
-  await page.getByLabel("Minutes per run").fill("9000");
-  await page.getByLabel("Minutes per run").blur();
-  assert.equal(await page.getByLabel("Minutes per run").inputValue(), "37");
+  assert.equal(await page.getByLabel("Time (min)", { exact: true }).inputValue(), "37");
+  assert.equal(await page.getByLabel("Agent steps", { exact: true }).inputValue(), "18");
+  await page.getByLabel("Time (min)", { exact: true }).fill("9000");
+  await page.getByLabel("Time (min)", { exact: true }).blur();
+  assert.equal(await page.getByLabel("Time (min)", { exact: true }).inputValue(), "37");
   await page.getByRole("button", { name: "New chat", exact: true }).click();
   await page.evaluate(() => { location.hash = "#/workflows"; });
   await page.locator(".composer-options > summary").click();
@@ -228,8 +221,8 @@ test("desktop notification preferences are reachable from the app menu and survi
   const toggle = page.getByRole("switch", { name: "Desktop notifications", exact: true });
   assert.equal(await toggle.getAttribute("aria-checked"), "true");
   await toggle.click();
-  await page.getByRole("button", { name: /^Application menu:/ }).click();
-  await page.getByRole("menuitem", { name: "Notifications", exact: true }).click();
+  await page.reload();
+  await category("Notifications");
   assert.equal(await toggle.getAttribute("aria-checked"), "false");
   await toggle.click();
   assert.equal(await toggle.getAttribute("aria-checked"), "true");
@@ -241,6 +234,7 @@ test("saved SSH connections survive reload, reject invalid ports, and retain a c
   await page.goto(`${base}/#/settings/ssh`);
   await page.getByLabel("SSH host", { exact: true }).fill("developer@vm.invalid");
   await page.getByLabel("Display name").fill("Development VM");
+  await page.getByText("SSH options", { exact: true }).click();
   await page.getByLabel("SSH port", { exact: true }).fill("70000");
   await page.getByRole("button", { name: "Save connection", exact: true }).click();
   assert.equal(await page.getByLabel("SSH port", { exact: true }).evaluate((input: HTMLInputElement) => input.validity.valid), false);
@@ -276,7 +270,7 @@ test("saved SSH connections survive reload, reject invalid ports, and retain a c
 
 test("all settings categories render; desktop and mobile preferences are accessible", async () => {
   await page.goto(`${base}/#/settings`);
-  for (const name of ["Providers", "Notifications", "Connections", "Integrations", "Projects", "Extensions", "Data & storage", "Advanced"]) {
+  for (const name of ["Agents", "Notifications", "Connections", "Integrations", "Projects", "Data & storage", "Advanced"]) {
     await category(name);
     await page.getByRole("heading", { name, exact: true }).first().waitFor();
   }
@@ -299,7 +293,7 @@ test("operational tools are direct destinations and old Settings links still wor
   await page.setViewportSize({ width: 1440, height: 1000 });
   for (const [path, name] of [["workspace", "Repository tools"], ["automations", "Scheduling"], ["inbox", "Inbox"], ["insights", "Insights"]] as const) {
     await page.goto(`${base}/#/${path}`);
-    await page.getByRole("heading", { name: path === "automations" ? "What would you like to automate?" : name, exact: true }).first().waitFor();
+    await page.getByRole("heading", { name: path === "automations" ? "What would you like to build?" : name, exact: true }).first().waitFor();
     assert.ok(page.url().endsWith(`#/${path}`));
     assert.equal(await page.getByRole("navigation", { name: "Settings categories" }).count(), 0);
     await page.getByRole("button", { name: /^Open command palette/ }).click();
@@ -313,12 +307,12 @@ test("operational tools are direct destinations and old Settings links still wor
   await page.getByRole("navigation", { name: "Repository tools" }).waitFor();
   await page.locator("#main-content").focus();
   await page.keyboard.press("a");
-  await page.getByRole("heading", { name: "What would you like to automate?", exact: true }).waitFor();
+  await page.getByRole("heading", { name: "What would you like to build?", exact: true }).waitFor();
   assert.ok(page.url().endsWith("#/automations"));
   await page.goBack();
   await page.getByRole("navigation", { name: "Repository tools" }).waitFor();
   await page.goForward();
-  await page.getByRole("heading", { name: "What would you like to automate?", exact: true }).waitFor();
+  await page.getByRole("heading", { name: "What would you like to build?", exact: true }).waitFor();
   await page.locator("#main-content").focus();
   await page.keyboard.press("i");
   await page.getByRole("heading", { name: "Insights", exact: true }).first().waitFor();
@@ -326,7 +320,7 @@ test("operational tools are direct destinations and old Settings links still wor
   await page.setViewportSize({ width: 390, height: 844 });
   for (const path of ["automations", "inbox", "workspace"]) {
     await page.goto(`${base}/#/${path}`);
-    await page.locator(".activity-page").waitFor();
+    await page.locator("#main-content").waitFor();
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
   }
 });

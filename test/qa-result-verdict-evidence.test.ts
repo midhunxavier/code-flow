@@ -70,12 +70,12 @@ test("a cleanly applied team result shows the team's check and review; without t
   const failing = run({ pattern: "solo", ...solo, verdict: "failing", lastCheck: { ok: false, command: "echo nope; false", worktree: "solo", at: 1 }, teamTurns: [turn({ executionStatus: "stopped", teamEvidence: { tree: "t", check: { ok: false, command: "echo nope; false", at: 1 }, review: { approved: false } } })] });
   assert.equal(checksLabel(failing, false, "cf/chat/solo"), "Failed");
   assert.equal(agentReviewLabel(failing, "cf/chat/solo"), "Changes requested");
-  assert.equal(executionLabel(failing), "Waiting for you");
+  assert.equal(executionLabel(failing), "Finished");
   assert.match(localDeliveryProblem(failing, "cf/chat/solo") ?? "", /checks need attention/);
-  // A done execution with a failing check needs you too, not only a stopped one.
+  // Failed evidence stays visible after reading, without inventing an unanswered request.
   const doneFailing = run({ ...failing, teamTurns: [turn({ teamEvidence: { tree: "t", check: { ok: false, command: "false", at: 1 } } })] });
-  assert.equal(executionLabel(doneFailing), "Waiting for you");
-  assert.equal(needsYou({ ...doneFailing, seen: true, notes: [], watches: {} } as RunSummary), true);
+  assert.equal(executionLabel(doneFailing), "Finished");
+  assert.equal(needsYou({ ...doneFailing, seen: true, notes: [], watches: {} } as RunSummary), false);
   assert.match(localDeliveryProblem(run({ ...verified, teamTurns: [turn({ teamEvidence: { tree: "t", review: { approved: false } } })] }), "cf/chat/solo") ?? "", /review needs attention/);
   // Without evidence (expired, or a plain chat) nothing is borrowed.
   const plain = run({ pattern: "solo", ...solo, teamTurns: [turn({})] });

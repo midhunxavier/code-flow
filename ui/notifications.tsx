@@ -38,14 +38,12 @@ export function NotificationsView({ destinationIds, projectId }: { destinationId
     finally { setBusy(""); }
   };
   return <section class="wb-card notifications-panel" aria-label="Outbound notifications">
-    <h2>Notifications</h2>
-    <p>Choose a destination, the events to send and the projects it covers. Notifications include task titles, run IDs, workflow and result status.</p>
+    <h2 title="Send task titles, run IDs and result status to your configured destinations.">External notifications</h2>
     {loadError ? <p class="msg err" role="alert">{loadError} <button class="btn small" onClick={() => void reload().catch(() => {})}>Retry loading notifications</button></p> : null}
     {!loaded && !loadError ? <p role="status">Loading notification settings and history…</p> : null}
     {loaded && !unavailable ? <>
-    {!destinations.length && !loadError ? <p class="help">Connect Slack or a webhook in Integrations. New destinations start off; choose projects and events before enabling delivery.</p> : <div class="wb-list">{destinations.map((target) => <DestinationSettings key={target.id} destination={target} refresh={reload} projectId={projectId} />)}</div>}
-    <h3>Delivery history</h3>
-    <p class="help">Keeps 200 deliveries. Temporary failures retry up to three times. A delivery interrupted by restart needs an explicit retry; the recipient may already have received it.</p>
+    {!destinations.length && !loadError ? <a class="btn small" href="#/settings/integrations">Connect a destination</a> : <div class="wb-list">{destinations.map((target) => <DestinationSettings key={target.id} destination={target} refresh={reload} projectId={projectId} />)}</div>}
+    <details class="notification-history"><summary title="Keeps 200 deliveries. Temporary failures retry up to three times. Interrupted deliveries need an explicit retry and may already have been received.">Delivery history{deliveries.length ? ` · ${deliveries.length}` : ""}</summary>
     {/* data-label names each cell's column where phones stack a delivery's cells (styles.css, workspace) */}
     {deliveries.length ? <div class="table-wrap delivery-history"><table class="ins-table"><thead><tr><th>Created</th><th>Destination</th><th>Event</th><th>Run</th><th>Status</th><th>Attempts</th><th>Action</th></tr></thead><tbody>{deliveries.map((delivery) => <tr key={delivery.id}>
       <td data-label="Created">{new Date(delivery.createdAt).toLocaleString()}</td><td data-label="Destination">{destinations.find((target) => target.id === delivery.target)?.name ?? delivery.target}</td><td data-label="Event">{delivery.manual ? "Manual test" : EVENTS.find((event) => event.id === delivery.event)?.label ?? delivery.event}</td>
@@ -54,6 +52,7 @@ export function NotificationsView({ destinationIds, projectId }: { destinationId
       <td data-label="Attempts">{delivery.totalAttempts ?? delivery.attempts}{delivery.retryCount ? <div class="help">{delivery.retryCount} manual {delivery.retryCount === 1 ? "retry" : "retries"}</div> : null}</td>
       <td data-label="Action">{delivery.state === "failed" ? <button class="btn small" disabled={!!busy} onClick={() => retry(delivery)}>{busy === delivery.id ? "Queuing…" : "Retry delivery"}</button> : "–"}</td>
     </tr>)}</tbody></table></div> : !loadError ? <p class="help">No notifications have been queued.</p> : null}
+    </details>
     </> : null}
     {error ? <p class="msg err" role="alert">{error}</p> : null}
   </section>;

@@ -49,21 +49,19 @@ export function IntegrationsScreen({ projectId }: { projectId?: string }) {
   };
   const selected = data.connections.find(c => c.id === active && connected(c));
   const notificationIds = data.connections.filter(c => notification(c.provider) && connected(c)).map(c => c.id.replace(/^notification:/, ""));
-  return <section class="integrations-screen" aria-label={projectId ? "Project connections" : "Integrations"}>
+  return <section class="integrations-screen integrations-compact" aria-label={projectId ? "Project connections" : "Integrations"}>
     <header class="connections-heading">
-      <div><div class="collaboration-eyebrow">{projectId ? "Project services" : "Your services"}</div><h2>{projectId ? "Connections" : "Integrations"}</h2><p class="help">Bring issues, pull requests and updates into your work.</p></div>
+      <div><h2>{projectId ? "Connections" : "Integrations"}</h2></div>
       {project ? <label class="connection-repository">Repository<select class="field" value={repository} onChange={e => setRepository(e.currentTarget.value)}>{project.repos.map(repo => <option value={repo} key={repo}>{repo.split("/").pop()}</option>)}</select></label> : null}
     </header>
-    {!project ? <p class="help">Add services here, then use a project’s Connections page to choose its repository and start work. Coding-agent accounts stay under <a href="#/settings/agents">Agents</a>.</p> : null}
     {project && !repository ? <p class="msg warn">Add a repository to this project before connecting services.</p> : null}
     {data.suggestion?.provider && !data.connections.some(c => c.provider === data.suggestion?.provider && c.configured && connected(c)) ? <p class="connection-suggestion">Suggested for this repository: <b>{SERVICE_NAMES[data.suggestion.provider]}</b> · {data.suggestion.scope}</p> : null}
     {error ? <p class="msg err" role="alert">{error} <button class="btn small" onClick={() => void reload().then(() => setError(""), error => setError(error.message))}>Retry</button></p> : null}
     {data.warnings?.map(warning => <p key={warning} class="msg warn" role="status">{warning}</p>)}
     <div class="integration-grid">{(Object.keys(SERVICE_NAMES) as ConnectionProvider[]).map(provider => {
       const connections = data.connections.filter(c => c.provider === provider);
-      return <article class={`settings-card integration-card${connections.some(c => c.configured && !c.unavailable && connected(c)) ? " is-connected" : ""}`} key={provider} aria-label={`${SERVICE_NAMES[provider]} connections`}>
-        <header class="integration-card-heading"><span class="integration-service-icon"><Icon name={SERVICE_ICONS[provider]} /></span><h3>{SERVICE_NAMES[provider]}</h3></header>
-        <p class="help integration-description">{SERVICE_ACTIONS[provider]}</p>
+      return <article class={`settings-card integration-card${connections.length ? " has-accounts" : ""}${connections.some(c => c.configured && !c.unavailable && connected(c)) ? " is-connected" : ""}`} key={provider} aria-label={`${SERVICE_NAMES[provider]} connections`}>
+        <header class="integration-card-heading" title={SERVICE_ACTIONS[provider]}><span class="integration-service-icon"><Icon name={SERVICE_ICONS[provider]} /></span><h3>{SERVICE_NAMES[provider]}</h3></header>
         <div class="integration-accounts">{!connections.length ? <p class="integration-empty"><span />Not connected</p> : connections.map(c => <div class="integration-connection" key={c.id}>
           <div class="integration-connection-heading">
             <span class={`badge${c.configured && !c.unavailable && connected(c) ? " ok" : ""}`}>{c.unavailable ? "Unavailable" : !c.configured ? "Credentials unavailable" : connected(c) ? "Connected" : "Available to connect"}</span>
@@ -90,7 +88,7 @@ export function IntegrationsScreen({ projectId }: { projectId?: string }) {
     })}</div>
     {selected && project && repository ? <ProjectConnectionActions key={`${selected.id}:${repository}`} connection={selected} projectId={project.id} repository={repository} /> : null}
     {notificationIds.length || !projectId ? <NotificationsView key={`notifications:${revision}`} destinationIds={projectId ? notificationIds : undefined} projectId={projectId} /> : null}
-    <details class="integration-advanced"><summary>Advanced · server configuration</summary><p class="help">Existing CODEFLOW_INTEGRATIONS_FILE / CODEFLOW_INTEGRATIONS_JSON and CODEFLOW_NOTIFICATIONS_FILE / CODEFLOW_NOTIFICATIONS_JSON configurations remain administrator-managed. Update or remove them on the server, then restart. App-managed connections can be reconnected or disconnected here without restarting.</p><a href="/docs/configuration.html" target="_blank" rel="noreferrer">Server configuration reference</a></details>
+    <details class="integration-advanced"><summary>Advanced · server configuration</summary><a href="/docs/configuration.html" target="_blank" rel="noreferrer">Server configuration reference</a></details>
     {setup ? <ConnectionSetup key={`${setup.provider}:${setup.existing?.id ?? "new"}`} {...setup} projectId={projectId} repository={repository || undefined} suggestion={data.suggestion} close={() => setSetup(undefined)} connected={reload} /> : null}
   </section>;
 }

@@ -1,4 +1,5 @@
 import { editableCandidate } from "../cli-teams/editable.js";
+import { approvesProposal } from "./proposal-reply.js";
 import { assertDiscussionProvider, discussionPattern } from "./discussion.js";
 import { EventEmitter } from "node:events";
 import { cursorSeq } from "../stream.js";
@@ -238,6 +239,7 @@ export class Conversations {
   private usage(chat: ChatRecord) { return chat.leadRuns.reduce((sum, id) => { const run = this.manager.get(id); return { calls: sum.calls + (run?.cliTeam?.managedInvocations ?? 0), ms: sum.ms + Math.max(run?.clockUsedMs ?? 0, run?.cliTeam?.accountedExecutionMs ?? 0) }; }, { calls: 0, ms: 0 }); }
   private async taskState(chat: ChatRecord) { return chat.activeTask ? this.tasks.read(chat.activeTask) : undefined; }
   private async preparationSource(chat: ChatRecord, pending: NonNullable<ChatRecord["pending"]>) {
+    if (pending.automation || chat.purpose === "automation") return captureSource(chat.repo, "head", []);
     if (pending.sourceRunId) return captureAgentSource(this.manager, { project: chat.project, repo: chat.repo, chatId: chat.id }, pending.sourceRunId);
     if (pending.continueRunId) {
       const run = this.manager.get(pending.continueRunId), workspace = run?.worktrees.find(w => w.name === "team");
@@ -260,20 +262,24 @@ export class Conversations {
       }
       if (run && !["running", "interrupted"].includes(run.status)) {
         const source = chat.events.find(e => e.id === pending.eventId)!;
-        if (pending.mode === "team" && run.pattern !== discussionPattern.id) {
+        if ((pending.mode === "team" || pending.automation) && run.pattern !== discussionPattern.id) {
           if (run.status === "done") {
             const artifact = Object.values(run.cliTeam!.artifacts).find(a => a.kind === "result"), reply = artifact && JSON.parse(artifact.body) as LeadReply;
             if (!reply || leadProblem(reply)) fail("validation_failed", "The lead reply is invalid; inspect the preserved turn");
+            let proposedTask: TaskSnapshot | undefined;
+            if (pending.automation && reply.kind === "clarify") chat.automationDraft ??= { request: source.body! };
             if (reply.kind === "proposal") {
               const currentSource = await this.preparationSource(chat, pending);
               if (currentSource.fingerprint !== run.cliTeam!.source.fingerprint) fail("snapshot_stale", "Source changed while preparing the approach. Your request and prepared reply are preserved; cancel this turn and prepare again from the current source.");
-              let taskId = reply.target === "current" ? pending.targetTask ?? chat.activeTask : undefined;
+              const scheduled = pending.automation || chat.purpose === "automation";
+              if (scheduled && pending.mode === "agent") this.assertAgentAutomation(reply.candidate!, pending.defaults);
+              let taskId = !scheduled && reply.target === "current" ? pending.targetTask ?? chat.activeTask : undefined;
               if (!taskId) {
                 const previous = await this.taskState(chat), previousRun = previous?.execution ? this.manager.get(previous.execution.id) : undefined;
                 const priorResult = Object.values(previousRun?.cliTeam?.artifacts ?? {}).filter(a => a.kind === "result").at(-1);
                 const historyNotes = [...chat.events.filter(e => ["answer", "user"].includes(e.kind) && (e.kind !== "user" || e.sequence <= source.sequence)).slice(-8).map(e => `${e.kind}: ${e.body}`), ...(priorResult ? [`Previous delivered result:\n${priorResult.body}`] : [])].join("\n\n").slice(-2000);
                 const contextNotes = [historyNotes, this.projectNotes(pending)].filter(Boolean).join("\n\n");
-                const created = await this.tasks.create({ operationId: `chat-${chat.id}-${pending.operationId}`, project: chat.project, repo: chat.repo, request: source.body, source: chat.source, untracked: chat.untracked,
+                const created = await this.tasks.create({ operationId: `chat-${chat.id}-${pending.operationId}`, project: chat.project, repo: chat.repo, request: scheduled && chat.automationDraft ? `${chat.automationDraft.request}\n\n${source.body}` : source.body, source: scheduled ? "head" : chat.source, untracked: scheduled ? [] : chat.untracked,
                   coordinator: { provider: pending.defaults.provider, ...(pending.defaults.model ? { model: pending.defaults.model } : {}), ...(pending.defaults.effort ? { effort: pending.defaults.effort } : {}) }, attachments: await loadChatFiles(pending.files ?? source.attachments) },
                   { chatId: chat.id, contextNotes, ...(pending.sourceRunId ? { sourceRunId: pending.sourceRunId } : {}), ...(pending.continueRunId ? { continueRunId: pending.continueRunId } : {}) });
                 taskId = created.id;
@@ -287,22 +293,25 @@ export class Conversations {
               const current = await this.tasks.read(taskId);
               await this.tasks.action(taskId, { operationId: `approach-${pending.operationId}`, expectedVersion: current.task.version, action: "edit", candidate: { ...reply.candidate!, limits: { ...TASK_LIMITS, ...reply.candidate!.limits } } });
               if (!chat.taskIds.includes(taskId)) { chat.taskIds.push(taskId); this.event(chat, { id: `task-${taskId}`, kind: "task", taskId }); }
+              if (scheduled) (chat.scheduledTasks ??= {})[taskId] = { mode: pending.mode, provider: pending.defaults.provider, model: pending.defaults.model, effort: pending.defaults.effort };
+              if (scheduled) delete chat.automationDraft;
               chat.activeTask = taskId;
-            } else if (reply.kind === "guidance" && (pending.targetTask ?? chat.activeTask)) {
+              proposedTask = await this.tasks.read(taskId);
+            } else if (reply.kind === "guidance" && !pending.automation && (pending.targetTask ?? chat.activeTask)) {
               const taskId = (pending.targetTask ?? chat.activeTask)!, state = await this.tasks.read(taskId);
               if (state.execution?.status === "running") {
                 await this.tasks.action(taskId, { operationId: `guidance-${pending.operationId}`, expectedVersion: state.task.version, action: "message", message: source.body });
                 this.event(chat, { id: `guidance-${pending.operationId}`, kind: "receipt", body: "Guidance recorded for the next assignment. Delivery and completion are shown in task details.", taskId });
               } else { this.event(chat, { id: `guidance-${pending.operationId}`, kind: "receipt", body: "No active assignment received this guidance. Ask for a revised approach to continue the preserved work.", taskId }); }
             }
-            this.event(chat, { id: `answer-${pending.operationId}`, kind: "answer", body: reply.body, taskId: pending.targetTask, runId: run.id });
+            this.event(chat, { id: `answer-${pending.operationId}`, kind: "answer", body: reply.body, taskId: proposedTask?.task.id ?? pending.targetTask, ...(proposedTask?.proposal ? { proposal: { id: proposedTask.proposal.id, revision: proposedTask.proposal.revision, hash: proposedTask.proposal.hash } } : {}), runId: run.id });
           } else this.event(chat, { id: `error-${pending.operationId}`, kind: "error", body: run.error || run.stopReason || "The lead stopped. Your request and completed work are preserved.", runId: run.id, errorKind: run.failure?.kind ?? run.steps.at(-1)?.errorKind });
         } else {
           const answer = run.followUps.at(-1)?.result || run.steps.filter(s => s.kind === "agent").at(-1)?.finalText || run.summary;
           this.event(chat, { id: `answer-${pending.operationId}`, kind: run.status === "done" ? "answer" : "error", body: answer || run.error || run.stopReason || "The turn ended without a readable response.", runId: run.id, errorKind: run.failure?.kind ?? run.steps.at(-1)?.errorKind });
         }
         chat.receipts[pending.operationId]!.complete = true; delete chat.pending;
-        if (pending.mode === "agent" && run.status !== "done" && chat.queue?.length) {
+        if (pending.mode === "agent" && !pending.automation && run.status !== "done" && chat.queue?.length) {
           for (const queued of chat.queue) chat.receipts[queued.operationId]!.complete = true;
           chat.queue = [];
           this.event(chat, { id: `queue-preserved-${pending.operationId}`, kind: "receipt", body: "Queued requests remain in the conversation. Inspect the preserved Agent work, then send the next request explicitly." });
@@ -335,7 +344,7 @@ export class Conversations {
       await this.manager.start({ pattern: discussionPattern, unscopedDiscussion: true, conversationId: chat.id, repo: discussionRepo, task: `${history}\n\n${fileContext}\n\n${this.turnMessage(chat, pending)}`, roles: { agent: ["claude"] }, agentSettings: { claude: { model: participant.model, effort: participant.effort } }, options: {}, trust: "safe", permissionRequirements: ["no-external-tools"], approvals: { tools: false }, loop: { maxSteps: 1, maxInvocations: 1, maxMinutes: Math.min(5, pending.defaults.maxMinutes ?? 5) }, context: { attachments: await loadChatFiles(pending.files) }, beforeDispatch: async run => { await flushWrites(); pending.runId = run.id; chat.agentRuns.push(run.id); await this.save(chat); } });
       return;
     }
-    if (pending.mode === "agent") {
+    if (pending.mode === "agent" && !pending.automation) {
       const writer = await this.taskState(chat);
       if (chat.taskIds.some(id => { const task = this.tasks.historySummary(id, chat.project, chat.repo), run = task.runId ? this.manager.get(task.runId) : undefined; return task.scope === "write" && task.status === "running" && (!run?.pauseRequested || run.steps.some(step => step.status === "running")); })) return;
       const prior = chat.agentRuns.at(-1), run = prior ? this.manager.get(prior) : undefined, defaults = pending.defaults;
@@ -362,19 +371,25 @@ export class Conversations {
     const participant = await this.tasks.core.resolveWebCoordinator({ project: chat.project, repo: chat.repo }, coordinator);
     const priorAgent = chat.agentRuns.length ? this.manager.get(chat.agentRuns.at(-1)!) : undefined;
     const priorTaskRun = state?.execution ? this.manager.get(state.execution.id) : undefined;
-    if (!chat.purpose && !pending.targetTask && priorAgent?.pattern === "solo" && priorAgent.repo === chat.repo && priorAgent.status === "done" && (!priorTaskRun || priorAgent.createdAt > priorTaskRun.createdAt)) pending.sourceRunId = priorAgent.id;
-    else if (!chat.purpose && !pending.targetTask && priorTaskRun?.status === "done" && priorTaskRun.cliTeam?.taskConversation?.chatId === chat.id) pending.continueRunId = priorTaskRun.id;
+    if (!chat.purpose && !pending.automation && !pending.targetTask && priorAgent?.pattern === "solo" && priorAgent.repo === chat.repo && priorAgent.status === "done" && (!priorTaskRun || priorAgent.createdAt > priorTaskRun.createdAt)) pending.sourceRunId = priorAgent.id;
+    else if (!chat.purpose && !pending.automation && !pending.targetTask && priorTaskRun?.status === "done" && priorTaskRun.cliTeam?.taskConversation?.chatId === chat.id) pending.continueRunId = priorTaskRun.id;
     const source = await this.preparationSource(chat, pending);
     const discovery = await this.tasks.core.operateWeb({ project: chat.project, repo: chat.repo }, "codeflow_list_providers", {});
     const inventory = await Promise.all(discovery.providers.filter((p: any) => p.installed).map(async (p: any) => ({ provider: p.id, ...await catalog(p.id).catch(() => ({})) })));
     const skill = await (await import("node:fs/promises")).readFile(new URL("../../integrations/cli-teams/SKILL.md", import.meta.url), "utf8");
     const files = await git(["ls-tree", "-r", "--name-only", source.commit], chat.repo), pkg = await git(["show", `${source.commit}:package.json`], chat.repo);
     const currentRun = state?.execution ? this.manager.get(state.execution.id) : undefined, result = Object.values(currentRun?.cliTeam?.artifacts ?? {}).filter(a => a.kind === "result").at(-1);
-    const prompt = `${this.projectNotes(pending)}\n\nCODEFLOW_CHAT_LEAD\nYou are the read-only lead in a persistent Code Flow conversation. Interpret the latest message using context, not keywords. Answer questions with kind=answer. Ask kind=clarify only for material ambiguity or unavailable explicit settings. Use guidance only for an instruction within an active accepted task's existing scope. For actionable work return kind=proposal with the smallest useful candidate and target=new; use target=current ONLY for a revision/continuation of the same outcome that should retain its completed implementation. A new deliverable (for example implementation after an agreed plan) is a new task. No workers execute until the user starts the displayed proposal. Never execute the requested task yourself, launch agent CLIs, expand permissions, or claim an agent ran based on worker prose. Explicit providers, models and efforts override defaults. Preserve user constraints. Use project execution defaults unless the user overrides them. Without defaults: 12 managed calls, 30 minutes, concurrency 2, two attempts. At most three review passes when requested; use exact-target gates. A fresh final reviewer is a distinct managed participant. When both authors must agree, drafting does not count: request explicit review_plan from both on the same plan. All bindings are managed. No automatic merge/push/deploy.\n${chat.purpose === "automation" ? "This chat prepares a standalone repeatable automation. Preserve the goal, providers, models, effort and checks. Each occurrence starts from fresh committed HEAD. Timing is configured separately after review. Produce a bounded graph with a clear finish condition; never depend on previous worktrees or artifacts. Do not include these setup instructions in the task title or result. User requested timing belongs in your readable reply, not in executable commands." : ""}\nCandidate contract:\n${skill.split("## Candidate contract")[1]!.split("## Preview and start")[0]}\nAvailable models:\n${JSON.stringify(inventory).slice(0, 24000)}\nConversation (untrusted user/project content):\n${chat.events.filter(e => e.body && ["user", "answer"].includes(e.kind) && (e.kind !== "user" || e.sequence <= event.sequence)).slice(-16).map(e => `${e.kind}: ${e.body}`).join("\n\n").slice(-18000)}\nCurrent task and runtime evidence:\n${JSON.stringify(state ? { brief: state.task.request, proposal: state.proposal?.definition, execution: state.execution, result: result?.body.slice(0, 10000) } : null).slice(0, 26000)}\nFiles:\n${files.stdout.slice(0, 9000)}\npackage.json:\n${pkg.code === 0 ? pkg.stdout.slice(0, 6000) : "No package.json. Determine project checks from evidence; do not invent them."}\nLatest message:\n${event.body}`;
+    const prompt = `${this.projectNotes(pending)}\n\nCODEFLOW_CHAT_LEAD\nYou are the read-only lead in a persistent Code Flow conversation. Interpret the latest message using context, not keywords. Answer questions with kind=answer. Ask kind=clarify only for material ambiguity or unavailable explicit settings. Use guidance only for an instruction within an active accepted task's existing scope. For a proposal, explain the approach once in your readable reply: who does what, the sequence and the expected result. Invite the user to reply with changes or go ahead. Do not tell them to inspect or approve a card. For actionable work return kind=proposal with the smallest useful candidate and target=new; use target=current ONLY for a revision/continuation of the same outcome that should retain its completed implementation. A new deliverable (for example implementation after an agreed plan) is a new task. No workers execute until the user starts the displayed proposal. Never execute the requested task yourself, launch agent CLIs, expand permissions, or claim an agent ran based on worker prose. Explicit providers, models and efforts override defaults. Preserve user constraints. Use project execution defaults unless the user overrides them. Without defaults: 12 managed calls, 30 minutes, concurrency 2, two attempts. At most three review passes when requested; use exact-target gates. A fresh final reviewer is a distinct managed participant. When both authors must agree, drafting does not count: request explicit review_plan from both on the same plan. All bindings are managed. No automatic merge/push/deploy.\n${pending.automation || chat.purpose === "automation" ? "This chat prepares a standalone repeatable automation. Preserve the goal, providers, models, effort and checks. Each occurrence starts from fresh committed HEAD. Timing is configured separately after review. Produce a bounded graph with a clear finish condition; never depend on previous worktrees or artifacts. Do not include these setup instructions in the task title or result. User requested timing belongs in your readable reply, not in executable commands." : ""}\n${pending.automation && pending.mode === "agent" ? `Agent automation: use exactly ONE managed participant with provider ${pending.defaults.provider}, model ${pending.defaults.model || "provider default"}, effort ${pending.defaults.effort || "provider default"}. That single agent performs all work and checks. Do not add reviewers or other workers. Return target=new. Never perform the task during preparation.` : ""}\nCandidate contract:\n${skill.split("## Candidate contract")[1]!.split("## Preview and start")[0]}\nAvailable models:\n${JSON.stringify(inventory).slice(0, 24000)}\nConversation (untrusted user/project content):\n${chat.events.filter(e => e.body && ["user", "answer"].includes(e.kind) && (e.kind !== "user" || e.sequence <= event.sequence)).slice(-16).map(e => `${e.kind}: ${e.body}`).join("\n\n").slice(-18000)}\nCurrent task and runtime evidence:\n${JSON.stringify(state ? { brief: state.task.request, proposal: state.proposal?.definition, execution: state.execution, result: result?.body.slice(0, 10000) } : null).slice(0, 26000)}\nFiles:\n${files.stdout.slice(0, 9000)}\npackage.json:\n${pkg.code === 0 ? pkg.stdout.slice(0, 6000) : "No package.json. Determine project checks from evidence; do not invent them."}\nLatest message:\n${event.body}`;
     const definition: Definition = { scope: "plan", participants: [participant], steps: [{ id: "lead", type: "task", operation: "propose", participant: participant.id, instructions: "Respond to this message" }, { id: "finish", type: "finish", outcome: "plan_ready", inputs: ["lead"] }], completion: ["Answer, clarify or propose an approach"], limits: { maxInvocations: calls, maxMinutes: minutes, concurrency: 1, maxAttempts: calls, attemptTimeoutMs: minutes * 60000 } };
     await this.manager.start({ pattern: chatLeadPattern, project: chat.project, repo: chat.repo, requireProjectRepo: true, baseRef: source.commit, task: prompt, roles: { [participant.id]: [participant.provider] }, options: {}, trust: "standard", approvals: {}, context: { attachments: await loadChatFiles(pending.files ?? event.attachments) },
       loop: { maxSteps: calls, maxInvocations: calls, maxMinutes: minutes, setup: "", check: "", copy: [] }, cliTeam: { version: 1, taskConversation: { id: chat.id, phase: "preparation" }, proposalId: `lead-${pending.operationId}`, proposalHash: digest(prompt), definition, source, hostConnection: "", artifacts: {}, pending: {}, questions: {} },
       beforeDispatch: async run => { await flushWrites(); pending.runId = run.id; chat.leadRuns.push(run.id); await this.save(chat); } });
+  }
+  private assertAgentAutomation(candidate: import("../cli-teams/model.js").Candidate, defaults: Pick<ChatDefaults, "provider" | "model" | "effort">) {
+    const participant = candidate.participants[0];
+    if (candidate.participants.length !== 1 || participant?.provider !== defaults.provider ||
+      defaults.model && participant.model !== defaults.model || defaults.effort && participant.effort !== defaults.effort)
+      fail("validation_failed", "Agent automation must use exactly the selected provider, model and effort. Ask for a corrected single-agent approach or choose Team.");
   }
   /** Freeze the reviewed graph; scheduling never asks a lead to invent a different team. */
   async automationRecipe(id: string, taskId: string, hash: string) {
@@ -383,8 +398,10 @@ export class Conversations {
     const task = await this.tasks.read(taskId), p = task.proposal ? this.tasks.core.getWebProposal({ repo: chat.repo, project: chat.project, taskId, chatId: id }, task.proposal.id) : undefined;
     if (!p || p.hash !== hash || task.task.preparation.active) fail("acceptance_stale", "Review the current approach before automating it");
     if (p.context.continueRunId || p.context.sourceRunId || p.context.artifacts?.length) fail("validation_failed", "This approach depends on a previous execution. Ask for a standalone repeatable approach first.");
+    const selected = chat.scheduledTasks?.[taskId];
+    if (selected?.mode === "agent") this.assertAgentAutomation(editableCandidate(p.definition), selected);
     const candidate = { ...editableCandidate(p.definition), source: "head" as const }, limits = p.definition.limits;
-    return { repo: chat.repo, project: chat.project, pattern: "cli-team", task: p.task, roles: Object.fromEntries(candidate.participants.map(p => [p.id, [p.provider]])), loop: { maxInvocations: limits.maxInvocations, maxMinutes: limits.maxMinutes, check: candidate.check, setup: candidate.setup }, chatRecipe: { chatId: id, candidate, notes: p.context.notes, attachments: p.context.attachments, proposalHash: hash } };
+    return { repo: chat.repo, project: chat.project, pattern: "cli-team", task: p.task, roles: Object.fromEntries(candidate.participants.map(p => [p.id, [p.provider]])), loop: { maxInvocations: limits.maxInvocations, maxMinutes: limits.maxMinutes, check: candidate.check, setup: candidate.setup }, chatRecipe: { chatId: id, candidate, notes: p.context.notes, attachments: p.context.attachments, proposalHash: hash, mode: selected?.mode ?? "team" } };
   }
   /** Called only by the saved automation dispatcher, after the user authorizes this recipe. */
   async startAutomation(body: any, trigger: NonNullable<Run["trigger"]>, occurrence: string, untrustedText = false) {
@@ -395,6 +412,7 @@ export class Conversations {
       const op = digest([trigger.id, occurrence]);
       const first = recipe.candidate.participants[0];
       const created = await this.tasks.create({ operationId: op, project: chat.project, repo: chat.repo, request: body.task, source: "head", coordinator: JSON.parse(JSON.stringify({ provider: first.provider, model: first.model, effort: first.effort })), attachments: recipe.attachments }, { chatId: chat.id, contextNotes: recipe.notes });
+      (chat.scheduledTasks ??= {})[created.id] = { mode: recipe.mode ?? "team", provider: first.provider, model: first.model, effort: first.effort };
       if (!chat.taskIds.includes(created.id)) { chat.taskIds.push(created.id); if (!chat.pending) chat.activeTask = created.id; this.event(chat, { id: `task-${created.id}`, kind: "task", taskId: created.id }); await this.save(chat); }
       let task = await this.tasks.read(created.id);
       if (!task.proposal) { await this.tasks.action(created.id, { action: "edit", operationId: `${op}:prepare`, expectedVersion: task.task.version, candidate: recipe.candidate }); task = await this.tasks.read(created.id); }
@@ -405,8 +423,14 @@ export class Conversations {
       return this.manager.get(task.execution!.id)!;
     }));
   }
+  private async assertStartAvailable(chat: ChatRecord, taskId: string) {
+    const target = await this.tasks.read(taskId);
+    if (target.proposal?.definition.scope !== "write") return;
+    const otherWriter = await Promise.all(chat.taskIds.filter(id => id !== taskId).map(id => this.tasks.read(id)));
+    if (otherWriter.some(t => t.proposal?.definition.scope === "write" && t.execution?.status === "running" && (!t.execution.paused || t.execution.pausePending)) || chat.agentRuns.some(id => this.manager.get(id)?.status === "running")) fail("conflict", "Pause the current writer and wait for it to settle before starting another writing task in this chat");
+  }
   async action(id: string, a: any) {
-    const allowed: Record<string, string[]> = { send: ["message", "attachments", "targetTask"], defaults: ["defaults"], control: ["control"], allowance: ["maxCalls", "maxMinutes"], task: ["taskId", "input"], remove_file: ["sha256"], cancel_message: ["messageId"], organize: ["title", "pinned", "archived"], repository: ["project", "repo", "source", "untracked"] };
+    const allowed: Record<string, string[]> = { send: ["message", "attachments", "targetTask", "automation", "approval"], defaults: ["defaults"], control: ["control"], allowance: ["maxCalls", "maxMinutes"], task: ["taskId", "input"], remove_file: ["sha256"], cancel_message: ["messageId"], organize: ["title", "pinned", "archived"], repository: ["project", "repo", "source", "untracked"] };
     if (!a || !Object.hasOwn(allowed, a.action)) fail("validation_failed", "Unknown chat action");
     fields(a, ["operationId", "expectedVersion", "action", ...allowed[a.action]!]);
     const operationId = text(a.operationId, "Operation ID", 100), hash = digest({ ...a, expectedVersion: undefined, ...(a.action === "task" ? { input: { ...a.input, expectedVersion: undefined } } : {}) });
@@ -446,15 +470,24 @@ export class Conversations {
         this.event(chat, { id: operationId, kind: "receipt", body: "File removed from future chat context. Accepted tasks keep their pinned attachments." });
       } else if (a.action === "task") {
         if (!chat.taskIds.includes(a.taskId)) fail("scope_denied", "This task belongs to another chat");
-        if (a.input?.action === "start") {
-          const target = await this.tasks.read(a.taskId);
-          if (target.proposal?.definition.scope === "write") {
-            const otherWriter = await Promise.all(chat.taskIds.filter(id => id !== a.taskId).map(id => this.tasks.read(id)));
-            if (otherWriter.some(t => t.proposal?.definition.scope === "write" && t.execution?.status === "running" && (!t.execution.paused || t.execution.pausePending)) || chat.agentRuns.some(id => this.manager.get(id)?.status === "running")) fail("conflict", "Pause the current writer and wait for it to settle before starting another writing task in this chat");
-          }
-        }
+        if (a.input?.action === "start") await this.assertStartAvailable(chat, a.taskId);
         await this.tasks.action(a.taskId, { ...a.input, operationId: `chat-${operationId}` });
         this.event(chat, { id: operationId, kind: "receipt", taskId: a.taskId, body: a.input.action === "start" ? "Started the reviewed approach. Its scope, participants, settings and allowance are fixed for this execution." : `Task ${a.input.action} requested.` });
+      } else if (a.action === "send" && a.approval !== undefined) {
+        fields(a.approval, ["taskId", "proposalId", "revision", "hash"]);
+        const body = text(a.message, "Message"), approval = a.approval;
+        if (!approvesProposal(body) || chatAttachments(a.attachments).length || a.automation) fail("validation_failed", "Send changes or new context as a message before approving the approach.");
+        if (chat.pending || chat.queue?.length) fail("conflict", "Wait for the current reply before approving an approach.");
+        if (approval.taskId !== chat.activeTask || !chat.taskIds.includes(approval.taskId) || a.targetTask && a.targetTask !== approval.taskId) fail("scope_denied", "Approve the current task in this chat.");
+        if (chat.scheduledTasks?.[approval.taskId]) fail("validation_failed", "Review the timing and enable this automation in its schedule setup.");
+        const target = await this.tasks.read(approval.taskId), proposal = target.proposal;
+        if (!proposal || proposal.id !== approval.proposalId || proposal.revision !== approval.revision || proposal.hash !== approval.hash || target.task.preparation.active || proposal.runId && !previous) fail("acceptance_stale", "The approach changed or already started. Review the current proposal before approving it.");
+        if (!approvesProposal(body, proposal.definition.scope)) fail("validation_failed", "Describe the requested scope change in chat before approving the approach.");
+        await this.assertStartAvailable(chat, approval.taskId);
+        this.event(chat, { id: operationId, kind: "user", body, taskId: approval.taskId, mode: "team" });
+        await this.save(chat);
+        await this.tasks.action(approval.taskId, { action: "start", operationId: `chat-${operationId}`, expectedVersion: target.task.version, proposalId: proposal.id, revision: proposal.revision, hash: proposal.hash });
+        this.event(chat, { id: `started-${operationId}`, kind: "receipt", taskId: approval.taskId, body: "Started the reviewed approach." });
       } else if (a.action === "control") {
         if (!["pause", "resume", "cancel"].includes(a.control) || !chat.pending) fail("conflict", "No conversation turn is available for this control");
         const pending = chat.pending, run = pending.runId ? this.manager.get(pending.runId) : undefined;
@@ -462,18 +495,23 @@ export class Conversations {
           if (run?.status === "running") this.manager.cancel(run.id);
           else {
             chat.receipts[pending.operationId]!.complete = true;
-            if (run && pending.mode === "agent") { for (const item of chat.queue ?? []) chat.receipts[item.operationId]!.complete = true; chat.queue = []; }
+            if (run && pending.mode === "agent" && !pending.automation) { for (const item of chat.queue ?? []) chat.receipts[item.operationId]!.complete = true; chat.queue = []; }
             chat.pending = chat.queue?.shift();
           }
         }
         else if (run?.status === "running") this.manager.setPaused(run.id, a.control === "pause");
-        else if (a.control === "resume" && run?.status === "interrupted" && pending.mode === "team") await this.manager.resume(run.id, undefined, true);
+        else if (a.control === "resume" && run?.status === "interrupted" && (pending.mode === "team" || pending.automation)) await this.manager.resume(run.id, undefined, true);
         else fail("recovery_required", "Inspect the preserved conversation turn before continuing an interrupted writer");
       } else {
         if (chat.queue?.some(pending => pending.operationId === operationId)) return { id, version: chat.version };
         if (chat.pending?.operationId !== operationId) {
           if (chat.events.length >= 99000) fail("context_limit", "This chat is near its event limit. Start another chat; submitted work and results remain preserved.");
           if ((chat.queue?.length ?? 0) >= 20) fail("context_limit", "Twenty messages are queued. Wait for a turn to finish; your draft is preserved.");
+          if (a.automation !== undefined && typeof a.automation !== "boolean") fail("validation_failed", "Choose a valid scheduling option");
+          const automation = a.automation ?? !!chat.automationDraft;
+          if (automation && (!chat.repo || !chat.project || a.targetTask)) fail("validation_failed", "Choose a project and repository and prepare a new standalone task to schedule.");
+          if (automation && !["claude", "codex"].includes(chat.defaults.provider)) fail("unsupported_settings", "Scheduled Agent and Team tasks currently require Claude or Codex.");
+          if (!automation) delete chat.automationDraft;
           chat.archived = false;
           const body = text(a.message, "Message"), attachments = await storeChatFiles(chatAttachments(a.attachments));
           if (!chat.repo) await assertDiscussionProvider(chat.defaults.provider);
@@ -486,7 +524,7 @@ export class Conversations {
           if (a.targetTask != null && !chat.taskIds.includes(a.targetTask)) fail("scope_denied", "This task belongs to another chat");
           this.event(chat, { id: operationId, kind: "user", body, mode: chat.defaults.mode, projectContext: { revision: context.revision, files: context.files }, attachments });
           if (chat.title === "New chat") chat.title = body.split("\n")[0]!.slice(0, 90);
-          const pending = { operationId, eventId: operationId, mode: (a.targetTask || chat.defaults.mode === "team" ? "team" : "agent") as "team" | "agent", defaults: { ...chat.defaults }, files: structuredClone(mergedFiles), projectContext: { revision: context.revision, instructions: context.instructions, defaults: context.defaults, files: context.files }, targetTask: a.targetTask || undefined };
+          const pending = { ...(automation ? { automation: true as const } : {}), operationId, eventId: operationId, mode: (a.targetTask || chat.defaults.mode === "team" ? "team" : "agent") as "team" | "agent", defaults: { ...chat.defaults }, files: structuredClone(mergedFiles), projectContext: { revision: context.revision, instructions: context.instructions, defaults: context.defaults, files: context.files }, targetTask: a.targetTask || undefined };
           if (chat.pending) {
             (chat.queue ??= []).push(pending);
             this.event(chat, { id: `queued-${operationId}`, kind: "receipt", body: "Message queued for the next turn with its selected settings." });

@@ -12,6 +12,7 @@ export interface ChatEvent {
   id: string; sequence: number; at: number;
   kind: "user" | "answer" | "receipt" | "task" | "result" | "error";
   body?: string; taskId?: string; runId?: string; mode?: ChatMode;
+  proposal?: { id: string; revision: number; hash: string };
   attachments?: ChatFile[];
   artifact?: { id: string; sha256: string; kind: "result"; data: Record<string, unknown> };
   evidence?: { id: string; sha256: string; kind: import("../cli-teams/model.js").Artifact["kind"]; data?: Record<string, unknown> }[];
@@ -20,6 +21,8 @@ export interface ChatEvent {
 }
 export interface ChatRecord {
   purpose?: "automation";
+  automationDraft?: { request: string };
+  scheduledTasks?: Record<string, { mode: ChatMode; provider: AgentId; model?: string; effort?: string }>;
   id: string; version: number; project: string; repo: string; title: string; createdAt: number; updatedAt: number;
   defaults: ChatDefaults; events: ChatEvent[]; taskIds: string[]; agentRuns: string[]; leadRuns: string[];
   leadAllowance: { maxCalls: number; maxMinutes: number };
@@ -27,7 +30,7 @@ export interface ChatRecord {
   files?: ChatFile[];
   pinned?: boolean; archived?: boolean;
   activeTask?: string;
-  pending?: { operationId: string; eventId: string; mode: ChatMode; defaults: ChatDefaults; files?: ChatFile[]; projectContext?: PinnedProjectContext; sourceRunId?: string; continueRunId?: string; runId?: string; targetTask?: string; followUp?: boolean; error?: string; errorCode?: string };
+  pending?: { automation?: true; operationId: string; eventId: string; mode: ChatMode; defaults: ChatDefaults; files?: ChatFile[]; projectContext?: PinnedProjectContext; sourceRunId?: string; continueRunId?: string; runId?: string; targetTask?: string; followUp?: boolean; error?: string; errorCode?: string };
   queue?: NonNullable<ChatRecord["pending"]>[];
   receipts: Record<string, { hash: string; complete?: boolean }>;
   createHash: string;

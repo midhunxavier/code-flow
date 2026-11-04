@@ -86,11 +86,12 @@ export function HostTaskControl({ task, meId, projectName }: { task: Task; meId?
   </div>;
 }
 
-export function HostQueue({ board, project }: { board: Board; project?: string }) {
+export function HostQueue({ board, project, compact = false }: { board: Board; project?: string; compact?: boolean }) {
   const { data, error: refreshError, load } = useQueue(), [busy, setBusy] = useState(""), [error, setError] = useState("");
   useEffect(() => setError(""), [project]);
   const jobs = (data?.jobs ?? []).filter((j) => (!project || j.projectId === project) && active(j));
   const cancel = async (job: HostJob) => { setBusy(job.id); setError(""); try { await post(`/api/host-execution/jobs/${enc(job.id)}/cancel`, {}); await load(); } catch (err) { setError((err as Error).message); } finally { setBusy(""); } };
+  if (compact && data && !jobs.length && !error && !refreshError) return null;
   return <section class="team-section" aria-label="Host execution queue"><h3>Host queue</h3>
     {error ? <p class="msg err" role="alert">{error}</p> : null}
     {refreshError ? <p class="msg err" role="alert">{refreshError}</p> : null}

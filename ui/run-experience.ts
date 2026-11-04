@@ -65,8 +65,7 @@ export function executionLabel(run: RunSummary, approvalPending = false, steps?:
   }
   if (run.status === "running" && (run.awaiting || teamAwaitingAnswer(run) || approvalPending)) return "Waiting for you";
   if (planRejected(run) || dispatchLabel(run, steps ?? ("steps" in run ? (run as Run).steps : undefined)) === "Dispatch paused") return "Stopped";
-  const turn = run.teamTurns?.at(-1);
-  if (run.status === "done" && (run.triage?.state === "pending" || turn && (turn.executionStatus && turn.executionStatus !== "done" || turn.reconciliation || turn.resolutionCheck?.ok === false || turn.teamEvidence?.check?.ok === false || turn.resolutionReview?.approved === false || turn.reviewStale))) return "Waiting for you";
+  if (run.status === "done" && run.triage?.state === "pending") return "Waiting for you";
   return { running: "Working", done: "Finished", failed: "Stopped", stopped: "Stopped", interrupted: "Stopped", cancelled: "Stopped" }[run.status] ?? run.status;
 }
 

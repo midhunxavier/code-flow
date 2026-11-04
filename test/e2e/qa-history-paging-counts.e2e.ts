@@ -1,3 +1,4 @@
+import { setArchivedHistory } from "../browser-navigation.js";
 import { after, afterEach, before, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
@@ -93,32 +94,28 @@ test("project history uses server archive scope and totals, including archived-o
 
 test("archived totals cover unloaded pages and Retry history repeats its failed cursor", async () => {
   await fresh("project/p-big"); const rail = page.getByRole("navigation", { name: "Workspace navigation", exact: true });
-  await until(() => rail.getByRole("button", { name: /^Show archived runs(?: \d+)?$/ }).innerText(), text => /12$/.test(text));
+  await rail.getByRole("button", { name: /^Application menu:/ }).click();
+  await until(() => rail.getByRole("menuitem", { name: /^Show archived chats/ }).innerText(), text => /12$/.test(text));
+  await page.keyboard.press("Escape");
   const cursors: string[] = []; let fail = true;
   await page.route("**/api/runs?**", async route => { const cursor = new URL(route.request().url()).searchParams.get("cursor"); if (cursor) { cursors.push(cursor); if (fail) { fail = false; injectingFailure = true; await route.fulfill({ status: 500, json: { error: "Fixture older page failure" } }); return; } } await route.continue(); });
   // Initial stream hydration can start a refresh between actionability and click.
   // Wait for an actual older-page request before asserting its injected failure.
-  await until(async () => { if (!cursors.length) { const load = rail.getByRole("button", { name: "Load older runs", exact: true }); if (await load.isEnabled()) await load.click(); } return cursors.length; }, count => count > 0);
+  await until(async () => { if (!cursors.length) { const load = rail.getByRole("button", { name: "Load older chats", exact: true }); if (await load.isEnabled()) await load.click(); } return cursors.length; }, count => count > 0);
   await rail.getByText("Fixture older page failure", { exact: false }).waitFor();
   const retried = page.waitForResponse(response => new URL(response.url()).pathname === "/api/runs" && new URL(response.url()).searchParams.get("cursor") === cursors[0], { timeout: 15000 });
   await rail.getByRole("button", { name: "Retry history", exact: true }).click();
   const response = await retried; assert.equal(response.status(), 200); assert.equal((await response.json()).nextCursor ?? null, null, "the retry reaches the end of this fixture's history");
-  await until(async () => rail.getByRole("button", { name: "Load older runs", exact: true }).count(), count => count === 0);
+  await until(async () => rail.getByRole("button", { name: "Load older chats", exact: true }).count(), count => count === 0);
   injectingFailure = false; assert.equal(cursors.length, 2); assert.equal(cursors[0], cursors[1]); await shot("retry-older-page");
 });
 
-test("saved repository filters load immediately after hello and do not follow composer changes", async () => {
-  await fresh("project/p-big", { thisRepo: true }); const rail = page.getByRole("navigation", { name: "Workspace navigation", exact: true });
+test("saved repository filters still apply while filter controls stay out of the application menu", async () => {
+  await fresh("project/p-big", { thisRepo: true });
   await until(async () => historyReads.filter(read => new URL(read.url).searchParams.get("repo") === repo && read.status === 200 && read.total !== undefined), reads => reads.length > 0);
-  await rail.getByRole("button", { name: /^Application menu:/ }).click(); await page.getByRole("menuitem", { name: /View and filter runs/ }).click();
-  assert.equal(await rail.getByLabel("Repository", { exact: true }).inputValue(), repo);
-  await page.evaluate(() => { location.hash = "#/project/p-old"; });
-  await page.locator(".project-page").getByRole("link", { name: "Project settings", exact: true }).click();
-  await page.getByText("Advanced · saved workflows and repository configuration", { exact: true }).click();
-  await page.getByRole("button", { name: "Saved workflows", exact: true }).click();
-  assert.equal(await rail.getByLabel("Repository", { exact: true }).inputValue(), repo);
-  const filtered = page.waitForResponse(response => new URL(response.url()).pathname === "/api/runs" && new URL(response.url()).searchParams.get("repo") === other);
-  await rail.getByLabel("Repository", { exact: true }).selectOption(other); assert.equal((await (await filtered).json()).total, 6); await until(() => rail.locator(".rail-run-row").count(), count => count === 6); await shot("independent-filter");
+  await page.getByRole("button", { name: /^Application menu:/ }).click();
+  assert.equal(await page.getByRole("menuitem", { name: /View and filter/ }).count(), 0);
+  await page.keyboard.press("Escape");
 });
 
 test("old non-solo deep links restore breadcrumbs and side scope, and destination labels match pages", async () => {
@@ -128,19 +125,13 @@ test("old non-solo deep links restore breadcrumbs and side scope, and destinatio
   await page.goto(base + "/#/workspace"); await crumbs.getByText("Repository tools", { exact: true }).waitFor();
 });
 
-test("bulk selection discloses hidden rows and clears obsolete action errors", async () => {
-  await fresh("project/p-bulk"); const rail = page.getByRole("navigation", { name: "Workspace navigation", exact: true }), group = rail.getByRole("group", { name: "Bulk history", exact: true });
-  await group.getByRole("button", { name: "Show 2 more", exact: true }).waitFor();
-  await rail.getByRole("button", { name: "Select runs", exact: true }).click(); await rail.getByRole("button", { name: "Select loaded", exact: true }).click();
-  assert.match(await rail.locator(".rail-selection-head [role=status]").innerText(), /selected · \d+ not shown/); await group.getByRole("button", { name: "Show 2 more (2 selected)", exact: true }).waitFor();
-  await rail.getByRole("button", { name: "Clear selection", exact: true }).click(); await group.getByRole("checkbox", { name: "Select Bulk item 6", exact: true }).check();
-  injectingFailure = true; await page.route("**/api/runs/bulk-6/archive", route => route.fulfill({ status: 500, json: { error: "Fixture archive failure" } }));
-  await rail.getByRole("button", { name: "Archive", exact: true }).click(); await rail.getByRole("alert").filter({ hasText: "Fixture archive failure" }).waitFor();
-  await group.getByRole("checkbox", { name: "Select Bulk item 6", exact: true }).uncheck(); assert.equal(await rail.getByRole("alert").filter({ hasText: "Fixture archive failure" }).count(), 0);
-  await page.unroute("**/api/runs/bulk-6/archive"); injectingFailure = false; await group.getByRole("checkbox", { name: "Select Bulk item 6", exact: true }).check(); await rail.getByRole("button", { name: "Archive", exact: true }).click();
-  await until(() => api("/api/runs/bulk-6"), run => run.archived); assert.equal(await rail.locator(".rail-selection [role=alert]").count(), 0); await shot("bulk-hidden-selection"); assert.deepEqual(errors, []);
-});
+test("sidebar keeps row actions without a bulk selection toolbar", async () => {
+  await fresh("project/p-bulk"); const p = page;
+  await p.getByRole("navigation", { name: "Workspace navigation", exact: true }).waitFor();
+  assert.equal(await p.locator(".rail-selection, .rail-bulk-actions").count(), 0);
+  assert.equal(await p.getByRole("button", { name: /^Select (runs|chats)$/ }).count(), 0);
 
+});
 
 test("live archive and delete reconcile project rows and totals without discarding loaded pages", async () => {
   await fresh("project/p-big/runs"); const history = page.getByRole("region", { name: "Project run history", exact: true });
@@ -150,6 +141,7 @@ test("live archive and delete reconcile project rows and totals without discardi
   assert.equal(await history.getByRole("link", { name: /Ancient hidden loop/ }).count(), 0);
   assert.equal((await fetch(base + "/api/runs/big-006", { method: "DELETE", headers })).status, 200);
   await history.getByLabel("Include archived runs", { exact: true }).check();
+  await until(() => history.innerText(), text => /100 loaded of 129 matching runs/.test(text));
   await history.getByRole("button", { name: "Load older runs", exact: true }).click();
   await until(() => history.innerText(), text => /129 loaded of 129 matching runs/.test(text));
   assert.equal(await history.getByRole("link", { name: /Ancient hidden loop/ }).count(), 0);
@@ -165,14 +157,14 @@ test("project selection chooses its repository, remembers the draft, and shows e
   const rail = page.getByRole("navigation", { name: "Workspace navigation", exact: true });
   await rail.getByRole("button", { name: "Empty history", exact: true }).waitFor();
   const group = rail.getByRole("group", { name: "Big history", exact: true });
-  await group.getByRole("button", { name: "Hide the runs in Big history", exact: true }).click();
+  await group.getByRole("button", { name: "Hide the chats in Big history", exact: true }).click();
   await page.reload();
-  await group.getByRole("button", { name: "Show the runs in Big history", exact: true }).click();
+  await group.getByRole("button", { name: "Show the chats in Big history", exact: true }).click();
   await group.getByRole("button", { name: /^Show \d+ more$/ }).click();
   await until(() => group.locator(".run-item").count(), count => count > 5);
   await page.reload();
   await until(() => group.locator(".run-item").count(), count => count > 5);
-  await rail.getByRole("button", { name: /^Show archived runs/ }).click();
+  await setArchivedHistory(rail, true);
   await rail.getByRole("region", { name: "Archived runs", exact: true }).waitFor();
   assert.equal(await group.locator(".run-item.archived").count(), 0);
   await page.getByRole("textbox", { name: "Task", exact: true }).fill("Keep my project task");

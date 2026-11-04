@@ -12,9 +12,9 @@ WSL localhost forwarding and real provider authentication still require acceptan
 
 ## Download the preview
 
-- [Windows x64 ZIP](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.9/code-flow-0.1.0-preview.9-windows-x64-unsigned.zip)
-- [Windows ARM64 ZIP](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.9/code-flow-0.1.0-preview.9-windows-arm64-unsigned.zip)
-- [Release notes and SHA-256 checksums](https://github.com/midhunxavier/code-flow/releases/tag/v0.1.0-preview.9)
+- [Windows x64 ZIP](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.11/code-flow-0.1.0-preview.11-windows-x64-unsigned.zip)
+- [Windows ARM64 ZIP](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.11/code-flow-0.1.0-preview.11-windows-arm64-unsigned.zip)
+- [Release notes and SHA-256 checksums](https://github.com/midhunxavier/code-flow/releases/tag/v0.1.0-preview.11)
 
 Extract the entire ZIP before opening **Code Flow.exe**. Set up WSL2 as described below.
 

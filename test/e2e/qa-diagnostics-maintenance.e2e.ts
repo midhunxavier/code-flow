@@ -54,7 +54,7 @@ test("diagnostics export redacts JSON bodies and all authorization schemes from 
 
 test("deleting the selected repository still permits diagnostics, and failed collection cannot export stale data", async () => {
   await rename(repo, repo + "-away");
-  try { await page.getByRole("button", { name: "Collect diagnostics", exact: true }).click(); await until(async () => page.locator(".settings-card").filter({ hasText: "Collect versions" }).textContent().then(text => text ?? ""), text => text.includes('"repository": "missing"')); assert.equal(await page.getByRole("button", { name: "Export diagnostics", exact: true }).count(), 1); await shot("missing-repository"); }
+  try { await page.getByRole("button", { name: "Collect diagnostics", exact: true }).click(); await until(async () => page.getByRole("region", { name: "Diagnostics", exact: true }).textContent().then(text => text ?? ""), text => text.includes('"repository": "missing"')); assert.equal(await page.getByRole("button", { name: "Export diagnostics", exact: true }).count(), 1); await shot("missing-repository"); }
   finally { await rename(repo + "-away", repo); }
   expectedFailure = true; await page.route("**/api/diagnostics?**", route => route.fulfill({ status: 500, json: { error: "Fixture diagnostics failure" } }));
   await page.getByRole("button", { name: "Collect diagnostics", exact: true }).click(); await page.getByRole("alert").filter({ hasText: "Fixture diagnostics failure" }).waitFor(); assert.equal(await page.getByRole("button", { name: "Export diagnostics", exact: true }).count(), 0); await page.unroute("**/api/diagnostics?**"); expectedFailure = false;

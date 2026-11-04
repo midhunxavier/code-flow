@@ -9,6 +9,7 @@ import { projects, repo, type Route } from "./state.js";
 /** Operational tools have their own destinations. A project's repository tools are its Repositories section (ProjectView). */
 export function ActivityView({ current }: { current: Route }) {
   if (current.view !== "inbox" && current.view !== "automations" && current.view !== "workspace" && current.view !== "insights") return null;
+  if (current.view === "automations" && !current.kind) return <SchedulingView />;
   return <div class="activity-page">
     {current.view !== "automations" || current.kind ? <header class="page-head"><div class="page-head-text"><h1>{{ inbox: "Inbox", automations: "Scheduling", workspace: "Repository tools", insights: "Insights" }[current.view]}</h1></div></header> : null}
     {current.view === "inbox" ? <AutomationsView mode="inbox" /> : null}

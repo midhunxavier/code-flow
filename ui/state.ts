@@ -1481,7 +1481,7 @@ export const sweepPicker = signal<Template | null>(null);
 export const source = signal<SourcePick | null>(null);
 export const externalSource = signal<import("../src/integrations.js").ExternalSource | null>(null);
 /** The GitHub picker, and the template waiting for its pick. */
-export const ghPicker = signal<{ kind: "issue" | "pr"; template?: Template } | null>(null);
+export const ghPicker = signal<{ kind: "issue" | "pr"; template?: Template; repository?: string; onPick?: (item: import("../src/conversational/github-context.js").GitHubContextItem) => void } | null>(null);
 
 export const sourceTemplatePicker = signal<Template | null>(null);
 

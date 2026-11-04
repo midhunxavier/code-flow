@@ -1,12 +1,11 @@
 import { subscribe } from "./stream.js";
 import { effect, signal } from "@preact/signals";
 import { api, onPhone, ownerOnLocalListener } from "./lib.js";
-import { route, composerProject, openComposer, executionPaused, agents } from "./state.js";
+import { route, composerProject, openComposer, executionPaused, agents, railView } from "./state.js";
 import { executionHost } from "./ssh-projects.js";
 import type { ChatSummary } from "../src/conversational/chats.js";
 export const chats = signal<ChatSummary[]>([]);
 export const chatQuery = signal("");
-export const archivedChats = signal(false);
 export const chatSearchTarget = signal<{ id: string; sequence: number } | undefined>(undefined);
 export const chatHistoryError = signal("");
 let cursor = "";
@@ -16,8 +15,16 @@ export async function refreshChats() {
   const sequence = ++requestSequence;
   if (onPhone || !ownerOnLocalListener.value || executionHost.value.kind !== "local") { chats.value = []; cursor = ""; return; }
   if (!agents.value.length || executionPaused.value) { cursor = ""; chatHistoryError.value = executionPaused.value ? "Chat history is paused by the filesystem restriction." : ""; return; }
-  const params = new URLSearchParams({ q: chatQuery.value, archived: String(archivedChats.value), ...(cursor ? { after: cursor } : {}) });
-  try { const result = await api<{ items?: ChatSummary[]; cursor: string }>(`/api/chats?${params}`); if (sequence !== requestSequence || executionPaused.value) return; if (result.items) chats.value = result.items; cursor = result.cursor; chatHistoryError.value = ""; }
+  const params = new URLSearchParams({ q: chatQuery.value, archived: "false", ...(cursor ? { after: cursor } : {}) });
+  try {
+    const requests = [api<{ items?: ChatSummary[]; cursor: string }>(`/api/chats?${params}`)];
+    if (railView.value.archived) { const archived = new URLSearchParams(params); archived.set("archived", "true"); requests.push(api<{ items?: ChatSummary[]; cursor: string }>(`/api/chats?${archived}`)); }
+    const results = await Promise.all(requests);
+    if (sequence !== requestSequence || executionPaused.value) return;
+    if (results.every(result => result.items)) chats.value = results.flatMap(result => result.items!).sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned) || b.updatedAt - a.updatedAt);
+    // Archive and live lists have separate cursors. Fetch both in full when archives are shown.
+    cursor = results.length === 1 ? results[0]!.cursor : ""; chatHistoryError.value = "";
+  }
   catch (error) { if (sequence === requestSequence) chatHistoryError.value = (error as Error).message; }
 }
 export function watchChats() {
@@ -25,7 +32,7 @@ export function watchChats() {
   const schedule = () => { clearTimeout(debounce); debounce = setTimeout(() => { if (!stopped) void refreshChats(); }, 100); };
   const off = effect(() => {
     const allowed = !onPhone && ownerOnLocalListener.value && agents.value.length && !executionPaused.value && executionHost.value.kind === "local";
-    chatQuery.value; archivedChats.value; cursor = ""; schedule();
+    chatQuery.value; railView.value.archived; cursor = ""; schedule();
     if (!allowed) return;
     return subscribe("chats:all", data => { if (data.cursor) streamCursor = data.cursor; if (["changed", "hello"].includes(data.type)) schedule(); }, () => streamCursor);
   });

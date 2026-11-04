@@ -3,18 +3,27 @@ import { checksLabel } from "./run-status.js";
 import type { RunSummary } from "./engine.js";
 
 export type ReviewReason = "answer" | "blocked" | "failed" | "review";
+/** Reading a result must never dismiss a live question or an explicit review decision. */
+export function reviewDecisionPending(run: RunSummary): boolean {
+  return !!run.awaiting || run.triage?.state === "pending" || run.status === "running" &&
+    (!!run.team?.awaitingRequestId || run.approvalPending === true ||
+      !!run.cliTeam?.taskConversation && Object.values(run.cliTeam.questions ?? {}).some(question => !question.answer));
+}
+export function canMarkReviewRead(run: RunSummary): boolean {
+  return !run.seen && run.status !== "running" && !reviewDecisionPending(run);
+}
 export function reviewReason(run: RunSummary): ReviewReason | undefined {
   if (!run.archived) { const attention = chatAutomationAttention(run); if (attention === "quiet") return; if (attention === "decision") return "answer"; if (!run.seen && attention) return attention === "failure" ? "failed" : "review"; }
-  const question = run.status === "running" && !!run.team?.awaitingRequestId;
+  const question = run.status === "running" && reviewDecisionPending(run);
   if (run.archived || run.projectTeam && !run.awaiting && !question) return;
   if (run.awaiting || question) return "answer";
-  if (run.team?.status === "blocked") return "blocked";
+  if (run.triage?.state === "pending") return "review";
+  if (!run.seen && run.status !== "running" && run.team?.status === "blocked") return "blocked";
   if (!run.seen && (run.status === "failed" || run.status === "interrupted")) return "failed";
   if (!run.seen && run.status !== "running") {
     if (checksLabel(run) === "Blocked" || run.status === "stopped") return "blocked";
     if (checksLabel(run) === "Failed") return "failed";
   }
-  if (run.triage?.state === "pending") return "review";
   if (!run.seen && run.status === "done" && run.artifacts?.some(artifact => artifact.stat?.trim())) return "review";
 }
 export const REVIEW_REASON_LABELS: Record<ReviewReason, string> = { answer: "Waiting for your answer", blocked: "Blocked work", failed: "Failed checks or execution", review: "Results to review" };

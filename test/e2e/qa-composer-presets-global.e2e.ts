@@ -83,8 +83,9 @@ async function openAdvanced(page: Page) {
 }
 async function settingsModels(page: Page) {
   await page.goto(`${base}/#/settings/agents`);
-  await page.getByLabel("Claude Code effort", { exact: true }).waitFor();
-  return { claude: await page.getByLabel("Claude Code effort", { exact: true }).inputValue(), codex: await page.getByLabel("Codex effort", { exact: true }).inputValue(), stored: await page.evaluate(() => JSON.parse(localStorage.getItem("agentSettings") ?? "null")) };
+  await page.getByRole("region", { name: "Prompt improvement", exact: true }).waitFor();
+  const stored = await page.evaluate(() => JSON.parse(localStorage.getItem("agentSettings") ?? "null"));
+  return { claude: stored?.claude?.effort, codex: stored?.codex?.effort, stored };
 }
 async function useTemplate(page: Page, label: string, values: Record<string, string> = {}) {
   await page.locator(".composer").getByRole("button", { name: "Run actions", exact: true }).click();
@@ -167,8 +168,8 @@ test("a project's remembered team prefills only its own draft and Settings says 
 
     assert.deepEqual(await settingsModels(page), { claude: "high", codex: "low", stored: SAVED_MODELS }, "Settings > Agents & models keeps the saved choices");
     await page.goto(`${base}/#/settings/runs`);
-    assert.equal(await page.getByLabel("Default workflow").inputValue(), "solo", "Settings > Run defaults keeps its default workflow");
-    assert.match(await page.locator("#default-workflow-projects").innerText(), /Remembers a team \(Plan → Build → Review\)/);
+    assert.equal(await page.getByLabel("Default chat mode").inputValue(), "solo", "Settings > Run defaults keeps its default workflow");
+    assert.deepEqual(await page.getByLabel("Default chat mode").locator("option").allTextContents(), ["Agent", "Team"]);
 
     await newRun(page, projectC);
     await page.getByRole("button", { name: "Edit run options", exact: true }).click(); await openAdvanced(page);

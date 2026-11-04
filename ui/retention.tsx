@@ -45,16 +45,15 @@ export function WorkbenchRetentionPanel({ endpoint = "/api/maintenance/retention
   };
   return <section class="wb-card retention-panel" aria-label="Data retention">
     <h2>Data retention</h2>
-    <p class="help">Choose separate retention ages for application data. Blank fields keep that data. Saving settings never deletes anything; review a fixed preview and apply it with the server stopped.</p>
-    <p class="help">Active, resumable, unarchived and pinned work is protected. Project knowledge requires individual review and is never bulk-deleted. Live memory provenance and child/deferred run references preserve their sources.</p>
+    <p class="help">Set how long to keep data. Blank means keep forever. Saving does not delete data.</p>
     {policy ? <>
       <div class="wb-fields">{kinds.map((kind) => <label key={kind}>{labels[kind]} · days<input class="field" aria-label={`Retention days ${kind}`} type="number" min={1} max={36500} placeholder="Keep indefinitely" value={days[kind]} onInput={(event) => { setDays((previous) => ({ ...previous, [kind]: event.currentTarget.value })); setSaved(""); }} /></label>)}</div>
       <div class="wb-fields"><label>Keep these run IDs · one per line<textarea class="field" rows={2} aria-label="Retention protected run IDs" value={keepRuns} onInput={(event) => setKeepRuns(event.currentTarget.value)} /></label>
       <label>Keep these memory IDs · one per line<textarea class="field" rows={2} aria-label="Retention protected memory IDs" value={keepMemory} onInput={(event) => setKeepMemory(event.currentTarget.value)} /></label></div>
       <div class="wb-actions"><button class="btn small primary" disabled={busy} onClick={save}>Save retention settings</button><button class="btn small" disabled={busy} onClick={inspect}>{busy ? "Inspecting…" : "Preview saved retention policy"}</button><button class="btn small" disabled={busy} onClick={() => void load().catch((problem) => setError((problem as Error).message))}>Reload saved settings</button></div>
       {saved ? <p class="help" role="status">{saved}</p> : null}
-    </> : <p class="help">Loading retention settings…</p>}
-    {error ? <p class="msg err" role="alert">{completeSentence(error)} Your draft settings are preserved.</p> : null}
+    </> : !error ? <p class="help">Loading retention settings…</p> : null}
+    {error ? <p class="msg err" role="alert">{completeSentence(error)} No data was deleted. <button class="btn small" disabled={busy} onClick={() => void load().catch(problem => setError((problem as Error).message))}>Retry</button></p> : null}
     {preview ? <section class="wb-subsection" aria-label="Retention preview">
       <p class="help">Policy revision {preview.policyRevision} · preview {new Date(preview.createdAt).toLocaleString()} · expires {new Date(preview.expiresAt).toLocaleString()}. Known file bytes selected: {bytes(preview.summary.bytes)}. Memory bodies are counted separately.</p>
       <ul>{kinds.map((kind) => <li key={kind}>{labels[kind]}: {preview.summary[kind]} selected{preview.cutoffs[kind] === null ? " · disabled" : ` · last updated before ${new Date(preview.cutoffs[kind]!).toLocaleString()}`}</li>)}</ul>

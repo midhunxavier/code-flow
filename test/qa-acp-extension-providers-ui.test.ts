@@ -59,7 +59,7 @@ async function shot(name: string) {
     await page.screenshot({ path: join(evidence, name + '.png'), fullPage: true });
 }
 async function settings() {
-  await page.goto(`${base}/?token=${token}#/settings/agents`);
+  await page.goto(`${base}/?token=${token}#/settings/connections/agents`);
   const panel = page.getByRole('region', { name: 'ACP connections', exact: true });
   await panel.getByRole('button', { name: 'Add compatible CLI', exact: true }).waitFor();
   return panel;
@@ -73,6 +73,7 @@ async function fill(panel: ReturnType<Page['locator']>, id: string, name: string
 }
 async function extensions() {
   await page.goto(`${base}/?token=${token}#/settings/extensions`);
+  await page.locator(".advanced-extensions > summary").click();
   const panel = page.getByRole('region', { name: 'Provider and workflow extensions', exact: true });
   await panel.waitFor();
   return panel;

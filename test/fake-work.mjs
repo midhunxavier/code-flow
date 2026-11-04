@@ -17,6 +17,14 @@ export function work({ vendor, prompt, write, schemaRequested, fail }) {
     if (message.includes("CHAT_CLARIFY")) return { answer: JSON.stringify({ kind: "clarify", body: "Which existing login layout should the plan follow?" }) };
     const prepared = work({ vendor, prompt: `CODEFLOW_WEB_PREPARATION\nTask request:\n${message}\nRecent user conversation:`, write: false, schemaRequested: false, fail });
     const response = { ...JSON.parse(prepared.answer), body: "Review the proposed deliverable, participants and allowance before starting.", target: message.includes("CHAT_REVISE") ? "current" : "new" };
+    if (prompt.includes("Agent automation:") && response.candidate) {
+      const selected = prompt.match(/provider (claude|codex), model ([^,]+), effort ([^.]+)\./);
+      const candidate = response.candidate;
+      candidate.participants = [{ id: "agent", provider: selected?.[1] ?? vendor, ...(selected?.[2] && selected[2] !== "provider default" ? { model: selected[2] } : {}), ...(selected?.[3] && selected[3] !== "provider default" ? { effort: selected[3] } : {}) }];
+      candidate.steps = candidate.steps.filter(step => candidate.scope === "write" ? step.operation !== "review_code" : candidate.scope === "plan" ? step.operation !== "review_plan" && step.type !== "gate" : true);
+      const ids = candidate.steps.map(step => step.id);
+      for (const step of candidate.steps) { if (step.participant) step.participant = "agent"; if (step.reviews) step.reviews = []; if (step.inputs) step.inputs = step.inputs.filter(id => ids.includes(id)); if (step.type === "finish" && candidate.scope === "plan") step.outcome = "plan_ready"; }
+    }
     return { answer: JSON.stringify(response) };
   }
   if (prompt.includes("CODEFLOW_WEB_PREPARATION")) {

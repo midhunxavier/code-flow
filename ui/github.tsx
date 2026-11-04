@@ -10,6 +10,7 @@ import { applyTemplate, sourceTemplatePicker, executionPaused, ghPicker, repo, s
 interface Item {
   number: number;
   title: string;
+  body?: string;
   url: string;
   labels?: string[];
   headRefName?: string;
@@ -29,6 +30,7 @@ export function GitHubPicker() {
   const [truncated, setTruncated] = useState(false);
   const [filter, setFilter] = useState("");
   const template = open?.template;
+  const repository = open?.repository ?? repo.value;
   // `gh` runs with your login in the repository, so a filesystem restriction anywhere refuses the listing.
   const paused = executionPaused.value;
 
@@ -39,23 +41,28 @@ export function GitHubPicker() {
     }
   }, [open]);
   useEffect(() => {
-    if (!open || !repo.value) return;
+    if (!open || !repository) return;
     setItems(null);
     setError("");
     if (paused) return;
     // Only the latest list counts: opening on "Pull requests" first asks for issues (the kind
     // before the switch), and whichever answer came last used to win.
     let current = true;
-    const timer = setTimeout(() => api<Item[] | { items: Item[]; truncated: boolean }>(`/api/github/${kind === "issue" ? "issues" : "prs"}?repo=${enc(repo.value)}&q=${enc(filter.trim())}`).then(
+    const timer = setTimeout(() => api<Item[] | { items: Item[]; truncated: boolean }>(`/api/github/${kind === "issue" ? "issues" : "prs"}?repo=${enc(repository)}&q=${enc(filter.trim())}`).then(
       (list) => { if (current) { setItems(Array.isArray(list) ? list : list.items); setTruncated(!Array.isArray(list) && list.truncated); } },
       (e) => current && setError(e.message),
     ), filter.trim() ? 250 : 0);
     return () => {
       current = false; clearTimeout(timer);
     };
-  }, [open, kind, repo.value, paused, filter]);
+  }, [open, kind, repository, paused, filter]);
 
   const pick = (item: Item) => {
+    if (open?.onPick) {
+      open.onPick({ ...item, kind });
+      ghPicker.value = null;
+      return;
+    }
     const chosen: SourcePick = {
       kind,
       number: item.number,
@@ -82,7 +89,7 @@ export function GitHubPicker() {
       {open ? (
         <div class="picker-inner">
           <div class="picker-head">
-            <h3 id="github-picker-title">{template ? `${template.name}: pick ${kind === "issue" ? "an issue" : "a pull request"}` : "Start from GitHub"}</h3>
+            <h3 id="github-picker-title">{open.onPick ? "Add from GitHub" : template ? `${template.name}: pick ${kind === "issue" ? "an issue" : "a pull request"}` : "Start from GitHub"}</h3>
             {!template?.needs ? (
               <div class="segmented" role="radiogroup" aria-label="Issues or pull requests">
                 <button type="button" role="radio" aria-checked={kind === "issue"} class={kind === "issue" ? "on" : ""} onClick={() => setKind("issue")}>
@@ -103,7 +110,7 @@ export function GitHubPicker() {
             {!items && !error && !paused ? <div class="help pad">Loading from GitHub…</div> : null}
             {items && !shown.length ? <div class="help pad">No open {kind === "issue" ? "issues" : "pull requests"}{q ? " match" : ""}.</div> : null}
             {shown.map((i) => (
-              <div key={i.number} class="dir gh-item" tabIndex={0} onClick={() => pick(i)} onKeyDown={(e) => e.key === "Enter" && pick(i)}>
+              <div key={i.number} class="dir gh-item" role="button" aria-label={`${open.onPick ? "Add" : "Choose"} ${kind === "pr" ? "PR" : "issue"} #${i.number}: ${i.title}`} tabIndex={0} onClick={() => pick(i)} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pick(i); } }}>
                 <span class="di">#{i.number}</span>
                 <span class="dn">
                   {i.title}

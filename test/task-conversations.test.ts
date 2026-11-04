@@ -723,3 +723,136 @@ test("CLI workspace resolves a new repository project once and rejects conflicti
     assert.equal((await f.chats.get(first.workspace.chatId)).chat.taskIds.length, 1);
     await assert.rejects(f.call("propose_run", { task: "Invalid project", candidate: plan(), context: { projectId: "does-not-exist" } }), /containing this repository/);
 });
+
+test("scheduled Agent requests prepare one pinned participant without executing the task", async () => {
+    const f = await chatFixture("agent");
+    await f.act("defaults", { defaults: { mode: "agent", provider: "claude", model: "opus", effort: "high", trust: "standard", tools: false } });
+    await f.act("send", { message: "Plan repository improvements every weekday at 8 am", automation: true });
+    const ready = await f.settle(), task = ready.tasks.at(-1)!;
+    assert.equal(ready.chat.agentRuns.length, 0);
+    assert.equal(f.leadCalls(), 1);
+    assert.equal(task.execution, undefined, "preparation must not execute the requested work");
+    assert.equal(task.proposal!.source.source, "head");
+    assert.equal(task.proposal!.definition.participants.length, 1);
+    assert.deepEqual(ready.chat.scheduledTasks![task.task.id], { mode: "agent", provider: "claude", model: "opus", effort: "high" });
+    const recipe = await f.chats.automationRecipe(f.chatId, task.task.id, task.proposal!.hash);
+    assert.equal(recipe.chatRecipe.mode, "agent");
+    assert.equal(recipe.chatRecipe.candidate.participants[0]!.model, "opus");
+    const run = await f.chats.startAutomation(recipe, { id: "scheduled-agent", name: "Agent review", via: "schedule" }, "first");
+    for (let i = 0; i < 2000 && run.status === "running"; i++) await pause();
+    assert.equal(run.status, "done", run.error);
+    assert.equal(run.cliTeam!.definition.participants.length, 1);
+    const again = await f.chats.startAutomation(recipe, { id: "scheduled-agent", name: "Agent review", via: "schedule" }, "first");
+    assert.equal(again.id, run.id, "an occurrence is idempotent");
+    await flushWrites(); const restored = new Conversations(f.manager, f.service, f.service.authorize); await restored.load();
+    assert.equal((await restored.automationRecipe(f.chatId, task.task.id, task.proposal!.hash)).chatRecipe.mode, "agent");
+});
+
+test("scheduled Team requests keep their reviewed participants and reject malformed scheduling flags", async () => {
+    const candidate = plan(); candidate.participants.push({ id: "other", provider: "codex" });
+    const f = await chatFixture("team", candidate);
+    await assert.rejects(f.act("send", { message: "Review daily", automation: "yes" }), /scheduling option/);
+    await f.act("send", { message: "Review daily at 9 am", automation: true });
+    const ready = await f.settle(), task = ready.tasks.at(-1)!;
+    assert.equal(task.execution, undefined);
+    const recipe = await f.chats.automationRecipe(f.chatId, task.task.id, task.proposal!.hash);
+    assert.equal(recipe.chatRecipe.mode, "team");
+    assert.equal(recipe.chatRecipe.candidate.participants.length, 2);
+});
+
+test("an Agent schedule cannot silently expand into a multi-agent team", async () => {
+    const candidate = plan(); candidate.participants.push({ id: "extra", provider: "codex" });
+    const f = await chatFixture("agent", candidate);
+    await f.act("send", { message: "Plan the work daily", automation: true });
+    let state = await f.read();
+    for (let i = 0; i < 2000 && !state.turn?.error; i++) { await pause(); state = await f.read(); }
+    assert.match(state.turn?.error ?? "", /Agent automation must use exactly/);
+    assert.equal(state.tasks.length, 0);
+    assert.equal(state.chat.agentRuns.length, 0);
+});
+
+test("a scheduled single Agent can implement and verify without adding a reviewer", async () => {
+    const candidate = build(); candidate.participants = [candidate.participants[0]!];
+    candidate.steps = candidate.steps.filter(step => step.id !== "review");
+    const gate = candidate.steps.find(step => step.type === "gate") as Extract<Node, { type: "gate" }>; gate.reviews = [];
+    const finish = candidate.steps.at(-1)! as Extract<Node, { type: "finish" }>; finish.inputs = ["build", "check", "gate"];
+    const f = await chatFixture("agent", candidate);
+    await f.act("defaults", { defaults: { mode: "agent", provider: "codex", trust: "standard", tools: false } });
+    await f.act("send", { message: "Fix the fixture daily and verify it", automation: true });
+    const ready = await f.settle(), task = ready.tasks.at(-1)!;
+    assert.equal(task.execution, undefined);
+    const recipe = await f.chats.automationRecipe(f.chatId, task.task.id, task.proposal!.hash);
+    const run = await f.chats.startAutomation(recipe, { id: "single-writer", name: "Daily fix", via: "schedule" }, "first");
+    for (let i = 0; i < 2000 && run.status === "running"; i++) await pause();
+    assert.equal(run.status, "done", run.error);
+    assert.equal(run.cliTeam!.outcome, "verified_changes");
+    assert.equal(run.cliTeam!.definition.participants.length, 1);
+});
+
+test("scheduled Agent clarification stays in preparation until an approach is reviewed", async () => {
+    const f = await chatFixture("agent");
+    f.setReply({ kind: "clarify", body: "Which checks should run each morning?" });
+    await f.act("send", { message: "Review this repository daily", automation: true });
+    const question = await f.settle();
+    assert.equal(question.chat.automationDraft?.request, "Review this repository daily");
+    assert.equal(question.chat.agentRuns.length, 0);
+    f.setReply({ kind: "proposal", body: "Review this daily approach", candidate: plan(), target: "new" });
+    await f.act("send", { message: "Use the existing checks" });
+    const ready = await f.settle();
+    assert.equal(ready.chat.automationDraft, undefined);
+    assert.match(ready.tasks.at(-1)!.task.request, /Review this repository daily/);
+    assert.equal(ready.chat.agentRuns.length, 0);
+    assert.equal(ready.chat.scheduledTasks![ready.tasks.at(-1)!.task.id]!.mode, "agent");
+    assert.equal(ready.tasks.at(-1)!.execution, undefined);
+});
+
+function approvalFor(task: Awaited<ReturnType<InstanceType<typeof TaskConversations>["get"]>>) {
+    return { taskId: task.task.id, proposalId: task.proposal!.id, revision: task.proposal!.revision, hash: task.proposal!.hash };
+}
+test("go ahead starts the displayed proposal once without another lead call", async () => {
+    const f = await chatFixture();
+    await f.act("send", { message: "Plan the login flow" });
+    const ready = await f.settle(), task = ready.tasks[0]!, approval = approvalFor(task);
+    assert.equal(ready.chat.events.at(-1)!.proposal?.hash, task.proposal!.hash);
+    const args = { action: "send", operationId: "approve-in-chat", expectedVersion: ready.chat.version, message: "go ahead", approval };
+    await Promise.all([f.chats.action(f.chatId, args), f.chats.action(f.chatId, args)]);
+    let done = await f.read();
+    for (let i = 0; i < 2000 && done.tasks[0]!.execution?.status === "running"; i++) { await pause(); done = await f.read(); }
+    assert.equal(done.tasks[0]!.execution?.outcome, "plan_ready");
+    assert.equal(done.tasks[0]!.task.executions.length, 1);
+    assert.equal(done.chat.events.filter(event => event.body === "go ahead").length, 1);
+    assert.equal(f.leadCalls(), 1);
+    await flushWrites(); const restored = new Conversations(f.manager, f.service, f.service.authorize); await restored.load();
+    await restored.action(f.chatId, args);
+    assert.equal((await restored.get(f.chatId)).tasks[0]!.task.executions.length, 1);
+});
+test("chat approval cannot accept revisions, added context, stale proposals or changed source", async () => {
+    const f = await chatFixture();
+    await f.act("send", { message: "Plan the login flow" });
+    const ready = await f.settle(), task = ready.tasks[0]!, approval = approvalFor(task);
+    await assert.rejects(f.act("send", { message: "go ahead but change the model", approval }), /changes or new context/);
+    await assert.rejects(f.act("send", { message: "start implementation", approval }), /scope change/);
+    await assert.rejects(f.act("send", { message: "go ahead", approval, attachments: [{ name: "new.txt", data: Buffer.from("change scope").toString("base64") }] }), /changes or new context/);
+    await assert.rejects(f.act("send", { message: "go ahead", approval: { ...approval, hash: "stale" } }), /changed or already started/);
+    writeFileSync(join(f.repo, "app.mjs"), "export const value = 3;\n");
+    await assert.rejects(f.act("send", { message: "go ahead", approval }), /Repository changed/);
+    assert.equal(f.counts().workers, 0);
+    assert.equal(f.leadCalls(), 1);
+});
+test("questions and requested revisions stay in chat and require fresh approval", async () => {
+    const f = await chatFixture();
+    await f.act("send", { message: "Plan the login flow" });
+    const ready = await f.settle(), task = ready.tasks[0]!, old = approvalFor(task);
+    f.setReply({ kind: "answer", body: "The plan includes keyboard focus checks." });
+    await f.act("send", { message: "Does this include keyboard checks?", targetTask: task.task.id });
+    assert.equal((await f.settle()).tasks[0]!.execution, undefined);
+    const candidate = plan(); candidate.completion = ["Include mobile keyboard checks"];
+    f.setReply({ kind: "proposal", body: "I added mobile keyboard checks to the plan.", target: "current", candidate });
+    await f.act("send", { message: "Also include mobile keyboard checks", targetTask: task.task.id });
+    const revised = await f.settle();
+    assert.equal(revised.chat.taskIds.length, 1);
+    assert.equal(revised.chat.events.at(-1)!.proposal!.revision, 2);
+    await assert.rejects(f.act("send", { message: "go ahead", approval: old }), /changed or already started/);
+    assert.equal(f.counts().workers, 0);
+    assert.notEqual(revised.tasks[0]!.proposal!.hash, old.hash);
+});

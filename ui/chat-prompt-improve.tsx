@@ -9,6 +9,7 @@ import { IMPROVE_NAMES, type ImproveMode } from "../src/improve-settings.js";
 export function ChatPromptImprove({ text, repo, disabled, onApply }: { text: string; repo: string; disabled: boolean; onApply: (text: string) => void }) {
   const [open, setOpen] = useState(false), [busy, setBusy] = useState(false), [error, setError] = useState("");
   const [mode, setMode] = useState<ImproveMode>(improveSettings.value.defaultMode);
+  useEffect(() => setMode(improveSettings.value.defaultMode), [improveSettings.value.defaultMode]);
   const [result, setResult] = useState<{ prompt: string; summary: string }>();
   const [undo, setUndo] = useState<{ before: string; after: string; repo: string }>();
   const request = useRef<AbortController>(), original = useRef({ text, repo });
@@ -30,7 +31,7 @@ export function ChatPromptImprove({ text, repo, disabled, onApply }: { text: str
   }
   const canUndo = undo?.after === text && undo.repo === repo;
   return <>
-    <button type="button" class="btn ghost small chat-improve" aria-label="Improve prompt" title={!text.trim() ? "Write a prompt to improve it" : !repo ? "Choose a repository to use prompt improvement" : "Review a clearer, structured rewrite before sending"} disabled={disabled || !repo || !text.trim()} onClick={() => void improve()}><Icon name="sparkle"/><span>Improve</span></button>
+    <button type="button" class="btn ghost small chat-improve" aria-label="Improve prompt" title={!text.trim() ? "Write a prompt to improve it" : !repo ? "Choose a repository to use prompt improvement" : "Improve prompt"} disabled={disabled || !repo || !text.trim()} onClick={() => void improve()}><Icon name="sparkle"/><span>Improve</span></button>
     {canUndo ? <button type="button" class="btn ghost small" onClick={() => { onApply(undo!.before); setUndo(undefined); }}>Undo rewrite</button> : null}
     <dialog class="chat-improve-dialog" ref={dialog} aria-labelledby="chat-improve-title">
       <header><div><h2 id="chat-improve-title">Improve your prompt</h2><p class="help">Clarify the goal, requirements and completion criteria while preserving your intent.</p></div><button type="button" class="icon-btn" aria-label="Close prompt improvement" onClick={close}><Icon name="close"/></button></header>

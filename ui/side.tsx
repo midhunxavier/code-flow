@@ -1,4 +1,4 @@
-import { activeChatContext } from "./chat-context.js";
+import { activeChatContext, chatDetailsTarget } from "./chat-context.js";
 import { lazyView } from "./lazy-view.js";
 import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 const BrowserTab = lazyView(() => import("./interactive-browser.js").then((module) => module.BrowserTab));
@@ -15,6 +15,7 @@ import {
   openSide,
   pinSide,
   projectKeyOf,
+  projects,
   rememberSide,
   repo,
   restoreSideTab,
@@ -45,6 +46,7 @@ const TerminalTab = lazyView(() => import("./terminal.js").then((module) => modu
  */
 
 const TABS: Record<SideTab, { label: string; icon: IconName; title: string }> = {
+  task: { label: "Task", icon: "sliders", title: "Task details, approach and execution controls" },
   chat: { label: "Chat", icon: "chat", title: "Chat with one agent about this run or repository" },
   changes: { label: "Changes", icon: "diff", title: "What this run changed: the whole branch or its last step, with line comments" },
   files: { label: "Files", icon: "files", title: "The repository's files, or a run's worktree" },
@@ -57,7 +59,7 @@ export function SidePanel({ popped = false }: { popped?: boolean }) {
   const panel = useRef<HTMLElement>(null);
   const run = sideScope.value.run;
   // Changes are a run's: the tab is there while the panel shows one.
-  const tabs = SIDE_TABS.filter((t) => t !== "changes" || run);
+  const tabs = SIDE_TABS.filter(t => (t !== "changes" || run) && (t !== "task" || activeChatContext.value));
   const tab = tabs.includes(sideTab.value) ? sideTab.value : "chat";
   // Tabs you've opened stay mounted: the terminal and the browser keep their state behind another tab.
   const [visited, setVisited] = useState<Set<SideTab>>(() => new Set([tab]));
@@ -89,6 +91,7 @@ export function SidePanel({ popped = false }: { popped?: boolean }) {
     return () => document.removeEventListener("keydown", escape);
   }, [sideOpen.value, sideExpanded.value, popped]);
   const panes: Record<SideTab, () => preact.JSX.Element> = {
+    task: () => <div class="chat-details-host" tabIndex={0} role="region" aria-label="Task details" ref={element => { chatDetailsTarget.value = element; }} />,
     chat: () => <ChatTab />,
     changes: () => (run ? <ChangesTab key={run.id} run={run} /> : <div class="side-empty help">Open a run to see what it changed.</div>),
     files: () => <FilesTab />,
@@ -114,9 +117,9 @@ export function SidePanel({ popped = false }: { popped?: boolean }) {
         ))}
       </div>
       <div class="side-body">
-        {sideScope.value.missing ? (
+        {tab !== "task" && sideScope.value.missing ? (
           <div class="side-empty help">{sideScope.value.kind === "run" ? "This run no longer exists." : "Project not found."}</div>
-        ) : sideScope.value.waiting ? (
+        ) : tab !== "task" && sideScope.value.waiting ? (
           <div class="side-empty help">Loading…</div>
         ) : (
           tabs.filter((t) => visited.has(t) || t === tab).map((t) => (
@@ -133,7 +136,8 @@ export function SidePanel({ popped = false }: { popped?: boolean }) {
 // ---------------------------------------------------------------- what the panel is about
 /** The project and run the panel is showing, and the pin that keeps it there while you open others. */
 function ScopeHeader({ popped }: { popped: boolean }) {
-  const s = sideScope.value;
+  const currentChat = sideTab.value === "task" ? activeChatContext.value : null;
+  const s = currentChat ? { ...sideScope.value, project: projects.value.find(p => p.id === currentChat.project), repo: currentChat.repo, run: undefined, pinned: false } : sideScope.value;
   const browser = sideTab.value === "browser";
   const thing = s.run ? "run" : "project";
   const where = s.project?.name ?? (s.repo ? baseName(s.repo) : "");
@@ -165,7 +169,7 @@ function ScopeHeader({ popped }: { popped: boolean }) {
           </>
         ) : null}
       </span>
-      {popped ? <a class="btn ghost small" href="#/" target="_self">Open code-flow</a> : s.pinned ? (
+      {currentChat ? null : popped ? <a class="btn ghost small" href="#/" target="_self">Open code-flow</a> : s.pinned ? (
         <button type="button" class="btn ghost small" title="Follow what you open again" onClick={() => pinSide(false)}>
           Follow
         </button>

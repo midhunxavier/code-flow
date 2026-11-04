@@ -147,7 +147,7 @@ test("an Agent conversation is archived and cleaned up from the sidebar", { time
   await openRun(id);
   const row = page.getByRole("group", { name: "Chat to clean up", exact: true });
   await row.hover();
-  await row.getByRole("button", { name: "Run actions", exact: true }).click();
+  await row.getByRole("button", { name: "Chat actions", exact: true }).click();
   await page.getByRole("menuitem", { name: "Archive and clean up…", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Archive this conversation", exact: true });
   await dialog.getByRole("checkbox", { name: /Also delete its branches/ }).check();
