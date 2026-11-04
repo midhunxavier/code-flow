@@ -3039,7 +3039,6 @@ certificateRenewalTimer.unref();
 let activeHttpRequests = 0;
 function listener(via: Via) {
   return (req: IncomingMessage, res: ServerResponse) => {
-    if (stopping) { send(res, 503, { error: "Code Flow is stopping; reconnect shortly" }); return; }
     activeHttpRequests++;
     handle(req, res, via).catch((err: Error & { confirm?: string; signIn?: boolean; logged?: boolean }) => {
       const status = err instanceof HttpError ? err.status : 500;
