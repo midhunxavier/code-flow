@@ -177,19 +177,10 @@ test("Check this computer marks Antigravity that can't run isolated", { timeout:
   assert.deepEqual(errors, []);
 });
 
-test("the Antigravity settings card and Health & usage say it can't run isolated, beside its login state", { timeout: 60000 }, async () => {
+test("the Antigravity settings card and Health say it can't run isolated, beside its login state", { timeout: 60000 }, async () => {
   await page.goto(`${base}/#/settings/agents`);
-  const card = page.locator(".settings-card", { has: page.getByRole("heading", { name: "Antigravity CLI", exact: true }) });
-  await card.locator(".settings-provider-status .badge.ok").filter({ hasText: "Signed in" }).waitFor();
-  assert.equal(await card.locator(".settings-provider-status .badge.warn").innerText(), "Unrestricted only");
-  assert.match(await card.locator(".msg.warn").first().innerText(), /isolated Antigravity by default, which isn't available here.*Use unrestricted Antigravity/s);
-  // Providers that can run isolated get neither.
-  const claude = page.locator(".settings-card", { has: page.getByRole("heading", { name: "Claude Code", exact: true }) });
-  await claude.locator(".settings-provider-status .badge.ok").waitFor();
-  assert.equal(await claude.getByText("Unrestricted only", { exact: true }).count(), 0);
-  assert.equal(await claude.getByText(/isolated Antigravity/).count(), 0);
-
-  await page.getByRole("button", { name: "Health & usage", exact: true }).click();
+  assert.equal(await page.locator(".settings-provider-status").count(), 0, "status cards are consolidated in Health");
+  await page.getByRole("button", { name: "Health", exact: true }).click();
   const health = page.locator(".health-row", { has: page.locator(".agent.agy") });
   await health.waitFor();
   assert.match(await health.innerText(), /isolated Antigravity by default, which isn't available here/);

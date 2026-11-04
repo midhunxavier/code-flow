@@ -240,7 +240,7 @@ test("message settings are anchored, keyboard accessible and distinguish lead fr
   const { context, page: p } = await page();
   try {
     await p.getByRole("button", { name: "Team", exact: true }).click();
-    const trigger = p.getByRole("button", { name: "Message settings", exact: true }); await trigger.click();
+    const trigger = p.getByRole("button", { name: /^Message settings:/ }); await trigger.click();
     const picker = p.getByRole("dialog", { name: "Message settings", exact: true }); await picker.waitFor();
     await picker.getByText("Team lead", { exact: true }).waitFor();
     assert.doesNotMatch(await picker.innerText(), /Changes apply to new messages|The lead prepares approaches/);
@@ -285,16 +285,16 @@ test("chat menus rename, pin, archive and restore; search finds message contents
     await p.getByRole("heading", { name: "Architecture notes", exact: true }).waitFor();
     await row().hover(); await options().click(); await p.getByRole("menuitem", { name: "Pin", exact: true }).click();
     await until(() => api(`/api/chats/${sent.id}`), s => s.chat.pinned, "chat pinned");
-    const search = p.getByRole("searchbox", { name: "Search chats and runs (press / to focus)" }); await search.fill("Searchable architecture");
+    const search = p.getByRole("searchbox", { name: "Search chats (press / to focus)" }); await search.fill("Searchable architecture");
     await row().getByText(/Searchable architecture discussion/).waitFor(); await row().getByRole("button", { name: /Architecture notes/ }).first().click();
     await p.getByText("Viewing earlier messages", { exact: false }).waitFor(); await search.fill("");
     await row().hover(); await options().click(); await p.getByRole("menuitem", { name: "Archive chat", exact: true }).click();
     await until(() => p.locator(`button[data-chat="${sent.id}"]`).count(), n => n === 0, "chat hidden from active history");
     await p.getByRole("button", { name: /^Application menu:/ }).click();
-    await p.getByRole("menuitem", { name: "Archived chats", exact: true }).click(); await row().waitFor();
+    await p.getByRole("menuitem", { name: /^Show archived chats/ }).click(); await row().waitFor();
     await row().hover(); await options().click(); await p.getByRole("menuitem", { name: "Restore chat", exact: true }).click();
     await until(() => api(`/api/chats/${sent.id}`), s => !s.chat.archived, "chat restored");
-    await p.getByRole("button", { name: "Back to active chats", exact: true }).click(); await row().waitFor();
+    await p.getByRole("button", { name: /^Application menu:/ }).click(); await p.getByRole("menuitem", { name: /^Hide archived chats/ }).click(); await row().waitFor();
   } finally { await context.close(); }
 });
 test("long history loads in bounded pages, preserves the visible message and searches beyond the latest page", { timeout: 120000 }, async () => {
@@ -312,7 +312,7 @@ test("long history loads in bounded pages, preserves the visible message and sea
     assert.ok(Math.abs((await anchor.boundingBox())!.y - before) < 5, "prepending history preserves the visible message");
     assert.ok(await p.locator(".chat-event").count() <= 150);
     await p.getByRole("button", { name: "Back to latest", exact: true }).click(); await p.getByText("Historical message 2100", { exact: true }).waitFor();
-    await p.getByRole("searchbox", { name: "Search chats and runs (press / to focus)" }).fill("Archived needle");
+    await p.getByRole("searchbox", { name: "Search chats (press / to focus)" }).fill("Archived needle");
     await p.locator(`button[data-chat="${created.id}"]`).click(); await p.getByText("Archived needle: accessible keyboard focus", { exact: true }).waitFor();
     assert.ok(await p.locator(".chat-event").count() <= 150);
   } finally { await context.close(); }
@@ -521,10 +521,9 @@ test("project selection inherits a single repository and preserves explicit mult
         const single=await sendMessage(p,"CHAT_AGENT Use the inherited repository");
         assert.equal(single.state.chat.repo,repo); assert.equal(single.state.chat.project,project.id);
         await p.goto(`${base}/#/automations`);
-        await p.getByRole("link",{name:"Manage automations",exact:true}).waitFor();
+        await p.getByRole("button", { name: "Schedule task", exact: true }).waitFor();
         assert.equal(await p.locator(".automations, .automation-legacy, .automation-list-heading").count(),0);
-        await p.getByRole("link",{name:"Manage automations",exact:true}).click();
-        await p.waitForURL(/#\/settings\/automations$/);
+        await p.goto(`${base}/#/settings/automations`);
         await p.locator(".automations").waitFor();
         await p.getByText("Advanced scheduling tools",{exact:true}).click();
         await p.getByRole("link",{name:"Run once later",exact:true}).waitFor();
@@ -645,6 +644,7 @@ test("touch phone composers keep Enter as a line break", { timeout: 60000 }, asy
     await message.pressSequentially("Second line");
     assert.equal(await message.inputValue(), "First line\nSecond line");
     await p.getByRole("button", { name: "Side panel", exact: true }).click();
+    await p.getByRole("tab", { name: "Chat", exact: true }).click();
     const sideMessage = p.locator(".side").getByRole("textbox", { name: "Message", exact: true });
     await sideMessage.fill("First line");
     await sideMessage.press("Enter");

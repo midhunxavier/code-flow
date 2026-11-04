@@ -22,7 +22,7 @@ export function MessageSettings({ summary, title, children }: { summary: Compone
     return () => { document.removeEventListener("pointerdown", away); element?.removeEventListener("focusout", blur); window.removeEventListener("resize", position); };
   }, [open]);
   return <div class="chat-settings-anchor" ref={root} onKeyDown={e => { if (open && e.key === "Escape") { e.preventDefault(); e.stopPropagation(); close(); } }}>
-    <button ref={trigger} type="button" class="btn ghost small chat-model-summary" aria-label="Message settings" aria-haspopup="dialog" aria-expanded={open} title={title} onClick={() => setOpen(!open)}>{summary}<Icon name="chevron"/></button>
+    <button ref={trigger} type="button" class="btn ghost small chat-model-summary" aria-haspopup="dialog" aria-expanded={open} title={title} onClick={() => setOpen(!open)}><span class="sr-only">Message settings: </span>{summary}<Icon name="chevron"/></button>
     {open ? <div class="chat-settings-popover" ref={panel} role="dialog" aria-label="Message settings"><div class="chat-settings-heading"><b>{title}</b><button type="button" class="icon-btn" aria-label="Close message settings" onClick={() => close()}><Icon name="close"/></button></div>{children}</div> : null}
   </div>;
 }

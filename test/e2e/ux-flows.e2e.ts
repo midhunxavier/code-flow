@@ -79,9 +79,9 @@ test("finished work leads to review, commit-scoped coverage and publishing in on
   result = await until(() => api(`/api/runs/${started.id}`), value => value.status !== "running");
   assert.equal(result.status, "done", result.error);
   await page.goto(base + `/#/project/${result.project}`);
-  await page.locator(".rail").getByRole("link", { name: /^Inbox/ }).click();
-  await page.waitForURL(url => url.hash === "#/inbox");
-  await page.locator(".inbox-item", { hasText: result.task }).locator("a.t").click();
+  await page.goto(base + "/#/settings/inbox");
+  await page.waitForURL(url => url.hash === "#/settings/inbox");
+  await page.locator(".inbox-item", { hasText: result.task }).getByRole("link", { name: "Open chat", exact: true }).click();
   const next = page.getByRole("region", { name: "Next action" });
   await page.locator(".result-compact").waitFor();
   await page.locator(".result-details > summary").click();

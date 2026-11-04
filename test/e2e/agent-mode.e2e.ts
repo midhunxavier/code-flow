@@ -1,3 +1,4 @@
+import { setArchivedHistory } from "../browser-navigation.js";
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, execFileSync, type ChildProcess } from "node:child_process";
@@ -57,7 +58,7 @@ test("Agent UI renders replies, keeps drafts and files across provider tabs, res
   const originalHead=execFileSync("git",["rev-parse","HEAD"],{cwd:run.worktrees[0].path}).toString().trim();
   writeFileSync(join(run.worktrees[0].path,"unsaved.txt"),"Shared unsaved file\n");
   await page.getByRole("textbox", {name:"Message agent",exact:true}).fill("Keep this draft");
-  assert.equal(await page.getByRole("button", {name:"Chat actions",exact:true}).count(), 0);
+  assert.equal(await page.locator(".run-conversation-bar").getByRole("button", {name:"Chat actions",exact:true}).count(), 0);
   await page.getByRole("button", {name:/^Provider:/}).click();
   await page.getByRole("menuitem",{name:"Codex",exact:true}).click();
   const dialog=page.getByRole("dialog",{name:"Fork chat",exact:true});
@@ -225,15 +226,15 @@ test("sidebar task actions archive, restore and delete the whole chat family", {
   assert.equal(family.length, 3);
   const rail = page.getByRole("navigation", {name:"Workspace navigation",exact:true});
   const row = rail.getByRole("group", {name:"Agent UI first message",exact:true});
-  await row.getByRole("button", {name:"Run actions",exact:true}).click();
+  await row.getByRole("button", {name:"Chat actions",exact:true}).click();
   await page.getByRole("menuitem", {name:"Archive",exact:true}).click();
   await row.waitFor({state:"detached"});
   for (const chat of family) assert.equal((await api(`/api/runs/${chat.id}`)).archived, true);
-  await rail.getByRole("button", {name:/^Show archived runs(?: \d+)?$/}).click();
-  await row.getByRole("button", {name:"Run actions",exact:true}).click();
+  await setArchivedHistory(rail, true);
+  await row.getByRole("button", {name:"Chat actions",exact:true}).click();
   await page.getByRole("menuitem", {name:"Unarchive",exact:true}).click();
   // Wait for the action on every member before exercising deletion.
-  await rail.getByRole("button", {name:/^Hide archived runs(?: \d+)?$/}).click();
+  await setArchivedHistory(rail, false);
   await row.waitFor();
   for (let n=0;n<100;n++) {
     const current = await api(`/api/runs/${rootRun.id}/chats`);
@@ -241,7 +242,7 @@ test("sidebar task actions archive, restore and delete the whole chat family", {
     await new Promise(resolve => setTimeout(resolve,50));
   }
   for (const chat of family) assert.equal((await api(`/api/runs/${chat.id}`)).archived, false);
-  await row.getByRole("button", {name:"Run actions",exact:true}).click();
+  await row.getByRole("button", {name:"Chat actions",exact:true}).click();
   await page.getByRole("menuitem", {name:"Delete…",exact:true}).click();
   const dialog = page.getByRole("dialog", {name:"Delete 3 runs?",exact:true});
   await dialog.getByRole("button", {name:"Delete 3 runs",exact:true}).click();

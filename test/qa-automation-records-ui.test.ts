@@ -50,7 +50,7 @@ test("global automation routes reject bad purposes and extra path segments; vali
   for (const suffix of ["bogus", "Once", "repeat/extra", "repeat/"]) { await open(`#/automations/${suffix}`); await page.getByRole("heading", { name: "This link is invalid" }).waitFor(); }
   await shot("01-invalid-route");
   for (const kind of ["once", "repeat", "backlog", "missions"]) { await open(`#/automations/${kind}`); assert.equal(await page.getByRole("navigation", { name: "Scheduling purpose" }).locator('[aria-current="page"]').getAttribute("href"), `#/automations/${kind}`); }
-  await open("#/settings/automations"); await page.getByRole("heading", { name: "Automations", exact: true }).waitFor();
+  await open("#/settings/automations"); await page.getByRole("heading", { name: "Scheduling", exact: true }).waitFor();
 });
 
 test("row editing preserves identity and requires a trigger; concurrent edits keep the draft", { timeout: 60_000 }, async () => {

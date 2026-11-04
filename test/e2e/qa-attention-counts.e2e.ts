@@ -48,25 +48,33 @@ test("fresh loads and reloads never notify an already-waiting old approval", asy
 });
 
 test("authoritative badges and Inbox disclose partial history and stop claiming pagination when complete", async () => {
-  await page.getByRole("link", { name: /^Inbox (?:99\+ · )?101 need attention$/ }).waitFor(); assert.match(await page.title(), /^\(207\)/);
+  await page.locator(".rail-menu-count").waitFor(); assert.match(await page.title(), /^\(207\)/);
   await page.getByRole("status").filter({ hasText: "Showing 100 of 101 review items" }).waitFor(); assert.match(await page.getByRole("region", { name: "Needs you", exact: true }).innerText(), /Needs you\s+207/); await shot("partial-inbox-authoritative-counts");
-  await page.getByRole("button", { name: /^Application menu:/ }).click(); const menu = page.getByRole("menu"); assert.match(await menu.getByRole("menuitem", { name: /Inbox/ }).innerText(), /Inbox\s+101/); assert.equal(await menu.getByRole("menuitem", { name: "Scheduling", exact: true }).locator(".count").count(), 0); await page.keyboard.press("Escape");
-  await page.getByRole("searchbox", { name: "Search chats and runs (press / to focus)", exact: true }).fill("no-such-attention-fixture");
+  await page.getByRole("button", { name: /^Application menu:/ }).click(); const menu = page.getByRole("menu"); assert.equal(await menu.getByRole("menuitem", { name: /Inbox|Scheduling/ }).count(), 0); await page.keyboard.press("Escape");
+  await page.getByRole("searchbox", { name: "Search chats (press / to focus)", exact: true }).fill("no-such-attention-fixture");
   await page.getByRole("button", { name: "Clear sidebar filters to load older items", exact: true }).click(); await page.getByRole("button", { name: "Load older review items", exact: true }).waitFor();
-  for (let i = 0; i < 4 && await page.getByRole("button", { name: "Load older runs", exact: true }).count(); i++) { await page.getByRole("button", { name: "Load older runs", exact: true }).click(); await page.getByRole("navigation", { name: "Workspace navigation", exact: true }).getByRole("button", { name: "Loading…", exact: true }).waitFor({ state: "hidden" }); }
+  for (let i = 0; i < 4 && await page.getByRole("button", { name: "Load older chats", exact: true }).count(); i++) { await page.getByRole("button", { name: "Load older chats", exact: true }).click(); await page.getByRole("navigation", { name: "Workspace navigation", exact: true }).getByRole("button", { name: "Loading…", exact: true }).waitFor({ state: "hidden" }); }
   assert.equal(await page.getByText(/Older attention is paged/).count(), 0); assert.equal(await page.getByText(/Showing 100 of 101/).count(), 0); assert.equal(await page.getByRole("heading", { name: /Review inbox 101/ }).count(), 1); await shot("complete-inbox-pagination-cleared");
 });
 
 test("collapsed badges remain visible, search peek preserves storage and mobile labels remain readable", async () => {
-  await page.getByRole("button", { name: "Collapse sidebar", exact: true }).click(); const inbox = page.getByRole("link", { name: /^Inbox (?:99\+ · )?101 need attention$/ }); assert.ok(await inbox.locator(".count").isVisible()); const railBox = await page.getByRole("navigation", { name: "Workspace navigation", exact: true }).boundingBox(), badgeBox = await inbox.locator(".count").boundingBox(); assert.ok(badgeBox && railBox && badgeBox.x >= railBox.x && badgeBox.x + badgeBox.width <= railBox.x + railBox.width); await shot("collapsed-inbox-badge");
-  await page.keyboard.press("/"); const search = page.getByRole("searchbox", { name: "Search chats and runs (press / to focus)", exact: true }); await search.waitFor(); assert.equal(await search.evaluate(el => document.activeElement === el), true); assert.equal(await page.evaluate(() => localStorage.getItem("railCollapsed")), "1"); await page.keyboard.press("Escape"); await page.getByRole("button", { name: "Expand sidebar", exact: true }).waitFor();
-  await page.getByRole("button", { name: "Search chats and runs", exact: true }).click(); await search.waitFor(); await page.keyboard.press("Escape"); await page.reload(); await page.getByRole("button", { name: "Expand sidebar", exact: true }).waitFor(); assert.equal(await page.evaluate(() => localStorage.getItem("railCollapsed")), "1");
-  await page.getByRole("button", { name: /^Application menu:/ }).click(); await page.getByRole("menuitem", { name: "View and filter runs", exact: true }).click(); await page.locator("#rail-filters").waitFor(); assert.equal(await page.evaluate(() => localStorage.getItem("railCollapsed")), "1"); await page.getByRole("heading", { name: "Inbox", exact: true }).click(); await page.getByRole("button", { name: "Expand sidebar", exact: true }).waitFor();
-  await page.setViewportSize({ width: 390, height: 844 }); await page.getByRole("button", { name: "Show sidebar", exact: true }).click(); await until(() => inbox.locator(".nav-label").boundingBox(), box => !!box && box.x >= 0 && box.x + box.width < 390); assert.ok(await inbox.locator(".nav-label").isVisible()); assert.ok(await page.getByRole("link", { name: "Scheduling", exact: true }).locator(".nav-label").isVisible()); assert.equal(await page.evaluate(() => localStorage.getItem("railCollapsed")), "1"); await shot("mobile-destination-labels"); await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.getByRole("button", { name: "Collapse sidebar", exact: true }).click();
+  assert.ok(await page.locator(".rail-menu-count").isVisible());
+  await shot("collapsed-attention-badge");
+  await page.keyboard.press("/"); const search = page.getByRole("searchbox", { name: "Search chats (press / to focus)", exact: true }); await search.waitFor(); assert.equal(await search.evaluate(el => document.activeElement === el), true); assert.equal(await page.evaluate(() => localStorage.getItem("railCollapsed")), "1"); await page.keyboard.press("Escape"); await page.getByRole("button", { name: "Expand sidebar", exact: true }).waitFor();
+  await page.getByRole("button", { name: "Search chats", exact: true }).click(); await search.waitFor(); await page.keyboard.press("Escape"); await page.reload(); await page.getByRole("button", { name: "Expand sidebar", exact: true }).waitFor(); assert.equal(await page.evaluate(() => localStorage.getItem("railCollapsed")), "1");
+  await page.getByRole("button", { name: /^Application menu:/ }).click();
+  assert.equal(await page.getByRole("menuitem", { name: "View and filter runs", exact: true }).count(), 0);
+  await page.keyboard.press("Escape");
+  await page.setViewportSize({ width: 390, height: 844 }); await page.getByRole("button", { name: "Show sidebar", exact: true }).click();
+  assert.ok(await page.getByRole("link", { name: "Projects", exact: true }).locator(".nav-label").isVisible());
+  assert.equal(await page.getByRole("link", { name: /^(Inbox|Scheduling)$/ }).count(), 0);
+  assert.equal(await page.evaluate(() => localStorage.getItem("railCollapsed")), "1"); await shot("mobile-destination-labels"); await page.setViewportSize({ width: 1440, height: 1000 });
+
 });
 
 test("Settings search opens automation management", async () => {
-  await page.goto(`${base}/#/settings`); await page.getByRole("searchbox", { name: "Search settings", exact: true }).fill("Scheduling"); await page.getByRole("button", { name: /Automations/ }).click(); await page.waitForURL(/#\/settings\/automations$/); await page.goto(`${base}/#/settings/automations`); await page.waitForURL(/#\/settings\/automations$/); assert.equal(await page.locator(".settings-tools").count(), 0);
+  await page.goto(`${base}/#/settings`); await page.getByRole("searchbox", { name: "Search settings", exact: true }).fill("Scheduling"); await page.getByRole("button", { name: /Scheduling/ }).click(); await page.waitForURL(/#\/settings\/automations$/); await page.goto(`${base}/#/settings/automations`); await page.waitForURL(/#\/settings\/automations$/); assert.equal(await page.locator(".settings-tools").count(), 0);
 });
 
 test("sidebar width can be dragged, restored after collapse and reload, and adapted around the side panel", async () => {

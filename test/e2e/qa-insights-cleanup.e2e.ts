@@ -64,6 +64,7 @@ test("Days takes only 0–365, the confirm discloses archiving and what's kept, 
   execFileSync("git", ["clean", "-fdq"], { cwd: clean.worktrees[0].path });
 
   await page.goto(`${base}/?token=${token}#/insights`);
+  await page.getByText("Storage", { exact: true }).click();
   const disk = page.getByRole("region", { name: "Disk", exact: true });
   const days = disk.getByLabel("Days", { exact: true });
   const cleanUp = disk.getByRole("button", { name: "Clean up", exact: true });

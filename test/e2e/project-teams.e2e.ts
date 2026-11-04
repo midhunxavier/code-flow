@@ -203,10 +203,7 @@ test("owner creates a standing team, previews, runs, reviews and approves with o
   await tab.getByRole("main").getByText(/Project mission implementation/).waitFor();
   assert.equal(await tab.getByRole("main").getByRole("button", { name: "Delete…", exact: true }).count(), 0);
   const rail = tab.getByRole("navigation", { name: "Workspace navigation", exact: true });
-  await rail.getByRole("button", { name: "Select runs", exact: true }).click();
-  await rail.getByRole("button", { name: "Select loaded", exact: true }).click();
-  assert.equal(await rail.getByRole("button", { name: "Delete…", exact: true }).isEnabled(), true, "the server checks each selected mission run at deletion time");
-  assert.equal(await rail.getByRole("button", { name: "Archive", exact: true }).isEnabled(), true);
+  assert.equal(await rail.locator(".rail-selection").count(), 0, "bulk selection is absent from the chat sidebar");
   const stale = await api(`/api/project-teams/${team.id}`, { operationId: "stale", revision: 1, status: "paused" }); assert.equal(stale.status, 409);
   const injection = await api("/api/runs", { projectTeam: { teamId: team.id }, pattern: "auto-team", repo, task: "bypass" }); assert.equal(injection.status, 400);
   assert.deepEqual(pageErrors, [], errors.join("\n"));
@@ -348,7 +345,7 @@ test("a stopped, settled mission run is deletable without removing its project",
   const page = await context.newPage();
   await page.goto(`${base}/?token=${token}#/run/${id}`);
   const row = page.locator(".rail-run-row", { has: page.locator(".run-item.active") });
-  await row.getByRole("button", { name: "Run actions", exact: true }).click();
+  await row.getByRole("button", { name: "Chat actions", exact: true }).click();
   assert.equal(await row.getByRole("menuitem", { name: "Delete…", exact: true }).isEnabled(), true);
   await row.getByRole("menuitem", { name: "Delete…", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Delete this run?", exact: true });

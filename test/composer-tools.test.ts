@@ -19,7 +19,7 @@ test("deep links round-trip encoded paths and malformed escapes remain recoverab
   assert.deepEqual(parseRouteHash("#/insights/a%2Fb"), { view: "insights", group: "a/b" });
   assert.deepEqual(parseRouteHash("#/settings/workspace"), { view: "workspace" });
   assert.deepEqual(parseRouteHash("#/settings/automations"), { view: "settings", section: "automations" });
-  assert.deepEqual(parseRouteHash("#/settings/insights/a%2Fb"), { view: "insights", group: "a/b" });
+  assert.deepEqual(parseRouteHash("#/settings/insights/a%2Fb"), { view: "settings", section: "insights", group: "a/b" });
   assert.deepEqual(parseRouteHash("#/run/"), { view: "composer" });
 });
 

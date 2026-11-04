@@ -42,23 +42,23 @@ test("dependency discovery has one visible heading", async () => {
 });
 
 test("health busy feedback and a single request survive repeated close/reopen", async () => {
-  const p = await open(); await p.getByRole("button", { name: "Refresh providers", exact: true }).waitFor(); await until(() => p.locator(".settings-provider-status").allTextContents(), v => v.length >= 3 && v.every(s => !s.includes("Checking")));
+  const p = await open(); await p.getByRole("button", { name: "Refresh providers", exact: true }).waitFor(); await until(() => api("/api/doctor"), v => v.length >= 3);
   let probes = 0, release!: () => void; const gate = new Promise<void>(r => release = r);
   await p.route("**/api/doctor", async route => { probes++; const response = await route.fetch(); await gate; await route.fulfill({ response }); });
-  await p.getByRole("button", { name: "Health & usage", exact: true }).click(); await p.getByRole("dialog").getByRole("status").waitFor();
+  await p.getByRole("button", { name: "Health", exact: true }).click(); await p.getByRole("dialog").getByRole("status").waitFor();
   assert.equal(await p.getByRole("dialog").getByRole("button", { name: "Checking…", exact: true }).isEnabled(), false);
   await p.getByRole("dialog").getByRole("button", { name: "Done", exact: true }).click();
   await p.getByText("Check this computer", { exact: true }).click();
-  await p.getByRole("button", { name: "Health & usage", exact: true }).click(); await p.getByRole("dialog").getByRole("status").waitFor();
+  await p.getByRole("button", { name: "Health", exact: true }).click(); await p.getByRole("dialog").getByRole("status").waitFor();
   assert.equal(probes, 1); await shot("health-checking"); release(); await p.getByRole("dialog").getByRole("button", { name: "Check again", exact: true }).waitFor(); await p.unroute("**/api/doctor");
 });
 
 test("explicit refresh bypasses warm model cache and detects provider sign-out", async () => {
   const p = await open(); await p.getByRole("button", { name: "Refresh providers", exact: true }).waitFor(); await until(() => api("/api/models"), v => !!v.agy?.models); const before = agyCalls();
   mode({ FAKE_AGY_MODELS_FAIL: "signed-out" }); await p.getByRole("button", { name: "Refresh providers", exact: true }).click();
-  await until(() => p.locator(".settings-provider-status").allTextContents(), values => values.some(v => v.includes("Signed out")));
+  await until(() => api("/api/models"), v => !!v.agy?.error);
   assert.ok(agyCalls() > before); assert.match((await api("/api/models")).agy.error, /not signed in/); await shot("provider-signed-out");
-  mode(); await p.getByRole("button", { name: "Health & usage", exact: true }).click(); await p.getByRole("dialog").getByRole("button", { name: "Check again", exact: true }).click();
+  mode(); await p.getByRole("button", { name: "Health", exact: true }).click(); await p.getByRole("dialog").getByRole("button", { name: "Check again", exact: true }).click();
   await until(() => p.getByRole("dialog").locator(".health-row", { hasText: "Antigravity" }).innerText(), text => text.includes("Signed in"));
 });
 
@@ -96,6 +96,6 @@ test("a running provider preserves the shutdown reason in its transcript", async
 
 test("an actual usage rejection shows a limit and reset without an invented percentage", async () => {
   mode({ FAKE_CLAUDE_FAIL: "rejected", FAKE_CLAUDE_RESETS_AT: String(Math.floor(Date.now() / 1000) + 3600), FAKE_NOOP_VENDOR: "claude" }); const run = await done((await start()).id); assert.equal(run.status, "stopped");
-  const p = await open(); await p.getByRole("button", { name: "Health & usage", exact: true }).click(); const row = p.getByRole("dialog").locator(".health-row", { hasText: "Claude Code" }); await row.getByText("Usage limit", { exact: true }).waitFor();
+  const p = await open(); await p.getByRole("button", { name: "Health", exact: true }).click(); const row = p.getByRole("dialog").locator(".health-row", { hasText: "Claude Code" }); await row.getByText("Usage limit", { exact: true }).waitFor();
   assert.match(await row.innerText(), /Hit its usage limit.*Resets/s); assert.match(await row.innerText(), /Utilization not reported/); assert.doesNotMatch(await row.innerText(), /\? used/); assert.equal(await row.locator(".bar").count(), 0); await shot("usage-limited");
 });

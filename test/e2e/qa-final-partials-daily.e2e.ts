@@ -236,7 +236,7 @@ test("SCH-45: older history is silent and its fresh finish sends exactly one cor
     w.Notification=class {static permission="granted";static async requestPermission(){return "granted";}onclick?:()=>void;constructor(public title:string,public options:any){w.dailyNotifications.push(this);}close(){}};
     localStorage.setItem("notify","1");
   });});
-  await p.getByRole("button",{name:"Load older runs",exact:true}).click();
+  await p.getByRole("button",{name:"Load older chats",exact:true}).click();
   await p.locator(`button.run-item[data-task="${target.id}"]`).waitFor();
   assert.equal(await p.evaluate(()=>(window as any).dailyNotifications.length),0);
   await api(`/api/runs/${target.id}/followups`,{kind:"reply",worktree:"solo",agent:"codex",message:"One fresh follow-up on the older run"});
@@ -250,12 +250,12 @@ test("SCH-45: older history is silent and its fresh finish sends exactly one cor
 test("archived rail count preserves the visible button name for assistive technology", async () => {
   const made=await api("/api/runs",runInput("Archive label fixture")); await finished(made.id);
   await api(`/api/runs/${made.id}/archive`,{cleanup:false});
-  const p=await page(); const toggle=p.getByRole("button",{name:/^Show archived runs(?: \d+)?$/}); await toggle.waitFor();
-  await p.addScriptTag({content:axe.source});
-  for(const name of ["Show archived runs","Hide archived runs"]){
-    const button=p.getByRole("button",{name:new RegExp("^"+name+"(?: \\d+)?$")}); await button.waitFor();
-    assert.match(await button.innerText(),/archived runs\s+1/);
-    const result=await p.evaluate(async()=>await (window as any).axe.run(".rail-archive-toggle",{runOnly:{type:"rule",values:["label-content-name-mismatch"]}}));
+  const p=await page(); await p.addScriptTag({content:axe.source});
+  for(const name of ["Show archived chats","Hide archived chats"]){
+    await p.getByRole("button", { name: /^Application menu:/ }).click();
+    const button=p.getByRole("menuitem",{name:new RegExp("^"+name)}); await button.waitFor();
+    assert.match(await button.innerText(),/archived chats\s+1/);
+    const result=await p.evaluate(async()=>await (window as any).axe.run(".rail-menu",{runOnly:{type:"rule",values:["label-content-name-mismatch"]}}));
     assert.deepEqual(result.violations,[]); await button.click();
   }
   await shot(p,"archive-toggle-accessible-name");

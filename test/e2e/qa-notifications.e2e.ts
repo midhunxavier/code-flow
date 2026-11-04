@@ -73,7 +73,7 @@ test("real HTTPS redirects show their status and fail once without following the
     await target(id).getByRole("button", { name: "Send test notification", exact: true }).click();
     await until(deliveries, items => items.some((item: any) => item.target === `fixture-${id}` && item.state === "failed" && item.httpStatus === Number(id)));
   }
-  await page.reload(); const rows = panel().locator("tbody tr"); await until(() => rows.count(), n => n >= 3);
+  await page.reload(); await page.locator(".notification-history > summary").click(); const rows = panel().locator("tbody tr"); await until(() => rows.count(), n => n >= 3);
   for (const id of ["302", "307", "308"]) { const row = rows.filter({ hasText: `Fixture ${id}` }); await row.getByText(/Destination redirected/).waitFor(); assert.equal(await row.getByText(/^Next:/).count(), 0); assert.equal(requests.filter(request => request.path === `/${id}`).length, 1); }
   assert.ok(requests.every(request => !request.path.startsWith("/private-location"))); assert.doesNotMatch(JSON.stringify(await deliveries()), /private-redirect-secret|private-location|private-notification-fixture/); await rows.first().scrollIntoViewIfNeeded(); await shot("redirect-failures");
 });
@@ -81,9 +81,10 @@ test("real HTTPS redirects show their status and fail once without following the
 test("scope cancellation clears next-attempt text and explicit retries use the singular label", async () => {
   mode = 500; const created = await newRun(); await until(deliveries, items => items.some((item: any) => item.runId === created.id && item.state === "pending" && item.attempts === 1));
   await open(); await target().getByLabel("Run finished", { exact: true }).uncheck(); await save(); const cancelled = (await deliveries()).find((item: any) => item.runId === created.id); assert.equal(cancelled.state, "cancelled"); assert.equal(cancelled.nextAttemptAt, undefined);
+  await page.locator(".notification-history > summary").click();
   const row = panel().locator("tbody tr").filter({ hasText: created.id }); await row.getByText("Cancelled", { exact: true }).waitFor(); assert.equal(await row.getByText(/^Next:/).count(), 0);
   mode = 403; await target().getByRole("button", { name: "Send test notification", exact: true }).click(); const failed = await until(deliveries, items => items.find((item: any) => item.target === "fixture-main" && item.manual && item.state === "failed")); const delivery = failed.find((item: any) => item.target === "fixture-main" && item.manual && item.state === "failed");
-  await page.reload(); const manual = panel().locator("tbody tr").filter({ hasText: "Fixture main" }).filter({ hasText: "Manual test" }); await manual.getByRole("button", { name: "Retry delivery" }).click(); await until(deliveries, items => items.some((item: any) => item.id === delivery.id && item.retryCount === 1 && item.state === "failed")); await page.reload(); await manual.getByText("1 manual retry", { exact: true }).waitFor(); assert.equal(await manual.getByText("1 manual retries", { exact: true }).count(), 0); await manual.scrollIntoViewIfNeeded(); await shot("cancel-and-manual-retry"); mode = 200;
+  await page.reload(); await page.locator(".notification-history > summary").click(); const manual = panel().locator("tbody tr").filter({ hasText: "Fixture main" }).filter({ hasText: "Manual test" }); await manual.getByRole("button", { name: "Retry delivery" }).click(); await until(deliveries, items => items.some((item: any) => item.id === delivery.id && item.retryCount === 1 && item.state === "failed")); await page.reload(); await page.locator(".notification-history > summary").click(); await manual.getByText("1 manual retry", { exact: true }).waitFor(); assert.equal(await manual.getByText("1 manual retries", { exact: true }).count(), 0); await manual.scrollIntoViewIfNeeded(); await shot("cancel-and-manual-retry"); mode = 200;
 });
 
 test("a real signed-out PR watch is quiet after its first needs-attention delivery", { timeout: 65000 }, async () => {
@@ -91,7 +92,7 @@ test("a real signed-out PR watch is quiet after its first needs-attention delive
   await api(`/api/runs/${run.id}/pr`, { branch, into: "main" }); await api(`/api/runs/${run.id}/watch`, { branch, agent: "claude" });
   await until(() => api(`/api/runs/${run.id}`), value => value.watches[branch]?.state === "green"); const state = JSON.parse(readFileSync(gh, "utf8")); state.signedOut = true; writeFileSync(gh, JSON.stringify(state));
   await until(() => api(`/api/runs/${run.id}`), value => value.watches[branch]?.pollFailures >= 5, 60000); await until(deliveries, items => items.some((item: any) => item.runId === run.id && item.event === "needs-attention" && item.state === "delivered"));
-  assert.equal(requests.filter(request => request.payload.runId === run.id && request.payload.event === "needs-attention").length, 1); await open(); const rows = panel().locator("tbody tr").filter({ hasText: run.id }); await rows.first().waitFor(); assert.equal(await rows.count(), 1); await rows.first().scrollIntoViewIfNeeded(); await shot("watch-attention-once"); await api(`/api/runs/${run.id}/watch`, { branch, stop: true }); delete state.signedOut; writeFileSync(gh, JSON.stringify(state));
+  assert.equal(requests.filter(request => request.payload.runId === run.id && request.payload.event === "needs-attention").length, 1); await open(); await page.locator(".notification-history > summary").click(); const rows = panel().locator("tbody tr").filter({ hasText: run.id }); await rows.first().waitFor(); assert.equal(await rows.count(), 1); await rows.first().scrollIntoViewIfNeeded(); await shot("watch-attention-once"); await api(`/api/runs/${run.id}/watch`, { branch, stop: true }); delete state.signedOut; writeFileSync(gh, JSON.stringify(state));
 });
 
 test("damaged saved state replaces settings and history with repair guidance in both screens", async () => {

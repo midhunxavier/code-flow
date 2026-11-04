@@ -50,9 +50,9 @@ const errors: string[] = [];
 test("Connections consolidates old bookmarks and keeps access setup discoverable with an optional Board shortcut", { timeout: 45_000 }, async () => {
   page.on("pageerror", error => errors.push(error.message));
   await page.goto(`${base}/#/settings/ssh`);
-  await page.getByRole("navigation", { name: "Connection purpose" }).getByRole("link", { name: "Work on another computer" }).waitFor();
+  await page.getByRole("navigation", { name: "Connection purpose" }).getByRole("link", { name: "Computers" }).waitFor();
   assert.equal(await page.getByRole("navigation", { name: "Settings categories" }).getByRole("link", { name: "Connections", exact: true }).count(), 1);
-  await page.getByRole("link", { name: "Delegate execution", exact: true }).click();
+  await page.getByRole("link", { name: "Workers", exact: true }).click();
   await page.getByRole("heading", { name: /Remote workers/ }).waitFor();
   await page.goto(`${base}/#/settings/team`);
   const toggle = page.getByLabel("Show Board in the app menu");
@@ -142,8 +142,7 @@ test("scheduling shares four purposes and comparisons live in Insights", { timeo
   await page.getByText("Choose a project to create or manage its missions.").waitFor();
   await page.goto(`${base}/#/workflows`);
   await page.getByLabel("Task", { exact: true }).fill("Compare this task");
-  await page.getByRole("button", { name: /^Application menu:/ }).click();
-  await page.getByRole("menuitem", { name: "Insights", exact: true }).click();
+  await page.goto(`${base}/#/settings/insights`);
   await page.getByText("Experiments", { exact: true }).click();
   await page.getByRole("button", { name: "Compare setups…", exact: true }).click();
   await page.getByRole("dialog", { name: "Compare setups", exact: true }).waitFor();

@@ -23,7 +23,7 @@ test("connect from the app, browse a remote folder, run there, reconnect and ret
     const dialog = page.locator(".settings-content");
     await dialog.getByLabel("SSH host", { exact: true }).fill("fixture");
     await dialog.getByLabel("Display name").fill("Linux development");
-    await dialog.getByLabel("SSH port", { exact: true }).fill("2222");
+    await dialog.getByText("SSH options", { exact: true }).click(); await dialog.getByLabel("SSH port", { exact: true }).fill("2222");
     await dialog.getByLabel("Identity file", { exact: true }).fill("~/.ssh/development");
     await dialog.getByRole("button", { name: "Save connection", exact: true }).click();
     await dialog.getByRole("button", { name: "Open Linux development" }).waitFor();

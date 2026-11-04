@@ -6,7 +6,7 @@ import { dispatchLabel } from "../src/run-outcome.js";
 import { chatTaskId, chatUpdatedAt, groupChatTasks } from "../src/chat-family.js";
 import { peopleEnabled } from "./preferences.js";
 import { DesktopUpdateNotice } from "./desktop-updates.js";
-import { chats, watchChats, openChat, chatQuery, archivedChats, chatSearchTarget } from "./chat-state.js";
+import { chats, watchChats, openChat, chatQuery, chatSearchTarget } from "./chat-state.js";
 import { ComputerProjects, useComputerProjects } from "./connected-projects.js";
 import { useCallback, useEffect, useRef, useState } from "preact/hooks";
 import { inbox } from "./automations.js";
@@ -492,7 +492,6 @@ export function Rail() {
           }}
         />
       </div>
-      {!collapsed && ownerOnLocalListener.value && archivedChats.value ? <div class="rail-archive-view"><span>Archived chats</span><button type="button" class="rail-archive-toggle" onClick={() => { archivedChats.value = false; }}>Back to active chats</button></div> : null}
       {filtering ? (
         <div class="rail-hint">
           {list.length} of {all.length} tasks

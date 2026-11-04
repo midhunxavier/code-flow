@@ -153,20 +153,20 @@ test("large transcripts page backwards and return to live history with bounded r
 
 test("sidebar searches beyond loaded pages and loads older history without discarding visible results", async () => {
   await page.goto(`${base}/#/workflows`);
-  const history = page.getByRole("region", { name: "Run history pages" });
-  await history.getByRole("button", { name: "Load older runs", exact: true }).waitFor();
+  const history = page.getByRole("region", { name: "Chat history pages" });
+  await history.getByRole("button", { name: "Load older chats", exact: true }).waitFor();
   assert.equal(await page.getByRole("button", { name: /Ancient needle task/ }).count(), 0);
-  const search = page.getByRole("searchbox", { name: "Search chats and runs (press / to focus)" });
+  const search = page.getByRole("searchbox", { name: "Search chats (press / to focus)" });
   const remoteSearch = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/runs" && new URL(response.url()).searchParams.get("q") === "Ancient needle");
   await search.fill("Ancient needle"); assert.equal((await remoteSearch).status(), 200);
   await page.getByRole("button", { name: /Ancient needle task/ }).waitFor();
   assert.equal(await page.locator(".rail-run-row").count(), 1);
   await search.fill("");
   const older = page.waitForResponse(response => new URL(response.url()).pathname === "/api/runs" && !!new URL(response.url()).searchParams.get("cursor"));
-  await page.getByRole("button", { name: "Load older runs", exact: true }).click();
+  await page.getByRole("button", { name: "Load older chats", exact: true }).click();
   assert.equal((await (await older).json()).nextCursor ?? null, null);
-  await history.getByRole("button", { name: "Load older runs", exact: true }).waitFor({ state: "hidden" });
-  assert.equal(await page.getByRole("button", { name: "Load older runs", exact: true }).count(), 0);
+  await history.getByRole("button", { name: "Load older chats", exact: true }).waitFor({ state: "hidden" });
+  assert.equal(await page.getByRole("button", { name: "Load older chats", exact: true }).count(), 0);
 });
 
 test("opening a cold archived run hydrates full task and step evidence through the shared run stream", async () => {

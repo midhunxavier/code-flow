@@ -237,7 +237,7 @@ export function TaskConversationPage({ id }: {
         <div class="task-page-tools">{task ? <span class={`task-state ${active || preparing ? "working" : ""}`} role="status"><i />{phase}</span> : null}<button class="btn ghost small" aria-label="Back to existing workflows" title="Back to existing workflows" onClick={() => void openComposer(project)}><Icon name="layers" /><span>Workflows</span></button>{task ? <button class="btn small task-details-trigger" aria-expanded={detailsOpen} aria-controls="task-details" onClick={() => setDetailsOpen(true)}><Icon name="sliders" />Task details</button> : null}</div>
       </header>
       <div class="task-chat-scroll-wrap">
-        <div class="task-chat-scroll" ref={chatRef} tabIndex={0} aria-label="Conversation" onScroll={e => { const el = e.currentTarget, away = el.scrollHeight - el.clientHeight - el.scrollTop > 100; followChat.current = !away; setAwayFromLatest(away); }}>
+        <div class="task-chat-scroll" ref={chatRef} tabIndex={0} role="region" aria-label="Conversation" onScroll={e => { const el = e.currentTarget, away = el.scrollHeight - el.clientHeight - el.scrollTop > 100; followChat.current = !away; setAwayFromLatest(away); }}>
           <div class="task-chat-thread">
             {id === "new" ? <div class="task-new-chat">
               <div class="task-new-intro"><span class="task-intro-mark"><Icon name="sparkle" /></span><h2>What would you like to work on?</h2><p>Describe the outcome. Your agents’ approach, work, and results will stay in this conversation.</p></div>

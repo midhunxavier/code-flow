@@ -1,4 +1,5 @@
-import { ChatPage } from "./chat.js";
+import { lazyView } from "./lazy-view.js";
+const ChatPage = lazyView(() => import("./chat.js").then(module => module.ChatPage));
 import { api, post, enc, store, baseName } from "./lib.js";
 import { agents, route, providerDefaults, executionPaused } from "./state.js";
 import { AutomationHostStatus } from "./automation-setup.js";

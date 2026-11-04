@@ -68,15 +68,14 @@ const fits = (target: Page) => target.evaluate(() => { const main = document.get
 
 test("the People entry opens a useful empty board with a workflow summary", async () => {
   await page.evaluate(() => localStorage.setItem("peopleEnabled", "1")); await page.reload();
-  await page.getByRole("button", { name: /^Application menu:/ }).click();
-  await page.getByRole("menuitem", { name: "Board", exact: true }).click();
-  await page.waitForURL(/#\/team$/);
-  await page.getByRole("heading", { level: 1, name: "Board", exact: true }).waitFor();
+  await page.goto(`${base}/#/settings/board`);
+  await page.waitForURL(/#\/settings\/board$/);
+  await page.getByRole("heading", { name: "Board", exact: true }).waitFor();
   await page.getByRole("heading", { name: "Your board is ready for its first task", exact: true }).waitFor();
   assert.deepEqual(await page.locator(".team-workflow > span").evaluateAll(items => items.map(item => item.firstChild?.textContent)), ["Planned", "Working", "Blocked", "In review", "Done"]);
   assert.equal(await page.locator("section.team-column").count(), 0, "an empty board uses one actionable state instead of empty columns");
-  await page.getByText("Not connected to a team server", { exact: true }).waitFor();
-  assert.equal(await page.getByRole("link", { name: /Open Connections → Share access/ }).getAttribute("href"), "#/settings/connections/sharing");
+  assert.equal(await page.getByText("Not connected to a team server", { exact: true }).count(), 0, "embedded board avoids a duplicate setup card");
+  await page.getByText("Activity inbox", { exact: true }).click();
   await page.getByRole("heading", { name: /^Inbox/ }).waitFor(); await page.getByText("Nothing yet.", { exact: false }).waitFor();
   assert.deepEqual(errors, []);
 });
@@ -316,10 +315,10 @@ test("the rail's Team badge counts the inbox from the first paint, and marking i
   // A fresh load lands on the composer: the badge must not wait for a Team page to load the board.
   await page.goto(`${base}/#/`); await page.reload(); await page.getByRole("button", { name: "New chat", exact: true }).waitFor();
   await page.locator(".rail-menu-count", { hasText: "1" }).waitFor({ timeout: 10_000 });
-  await page.getByRole("button", { name: /^Application menu:/ }).click();
-  await page.getByRole("menuitem", { name: /^Board 1 unread$/ }).click(); await page.waitForURL(/#\/team$/);
+  await page.goto(`${base}/#/settings/board`); await page.waitForURL(/#\/settings\/board$/);
   const card = page.getByRole("region", { name: /^Planned/ }).getByRole("button", { name: new RegExp(TITLE) }); await card.waitFor();
   await page.locator(".team-card.needs-you").filter({ hasText: TITLE }).waitFor(); await card.getByText("Needs you", { exact: true }).waitFor();
+  await page.getByText("Activity inbox", { exact: true }).click();
   await page.getByRole("heading", { name: /^Inbox/ }).getByText("1", { exact: true }).waitFor();
   await page.getByRole("button", { name: "Mark all read", exact: true }).click();
   await page.locator(".team-card.needs-you").waitFor({ state: "hidden", timeout: 3_000 }); // the board reloads with the inbox, not on the next 15 s poll
@@ -433,7 +432,7 @@ test("an unknown execution blocks Start until the owner confirms it stopped and 
 test("three shared tabs on Team hold one connection each, so a request from the first still goes through", async () => {
   const extra: Page[] = [];
   try {
-    for (let n = 0; n < 2; n++) { const tab = await sharedContext.newPage(); extra.push(tab); await tab.goto(`${base}/#/team`); await tab.getByRole("tab", { name: "Board", exact: true, selected: true }).waitFor(); await tab.getByRole("heading", { level: 1, name: "Board", exact: true }).waitFor(); }
+    for (let n = 0; n < 2; n++) { const tab = await sharedContext.newPage(); extra.push(tab); await tab.goto(`${base}/#/team`); await tab.getByRole("tab", { name: "Board", exact: true, selected: true }).waitFor(); await tab.getByRole("heading", { name: "Board", exact: true }).waitFor(); }
     await shared.getByRole("tab", { name: "Board", exact: true, selected: true }).waitFor(); // the first tab is still on the task page
     // A browser gives one server six connections for all its tabs; with two streams per tab the third tab exhausted them and this fetch never returned.
     const result = await shared.evaluate(async () => { const started = performance.now(), control = new AbortController(), timer = setTimeout(() => control.abort(), 6_000); try { const response = await fetch("/api/team/inbox", { signal: control.signal }); return { status: response.status, ms: Math.round(performance.now() - started) }; } catch (error) { return { status: 0, ms: Math.round(performance.now() - started), error: String(error) }; } finally { clearTimeout(timer); } });

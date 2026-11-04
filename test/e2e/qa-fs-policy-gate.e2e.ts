@@ -169,8 +169,8 @@ test("under a restriction in one project, settings, health, the composer, termin
   assert.equal(await notice.getByRole("link", { name: "Review the filesystem policy" }).getAttribute("href"), "#/settings/projects");
   const settings = await page.locator("main").innerText();
   for (const text of ["Checking health…", "Install this CLI", "Not installed"]) assert.equal(settings.includes(text), false, text);
-  assert.equal(await page.getByText("Paused by filesystem policy", { exact: true }).count(), 3, "each provider card says it's paused");
-  await page.getByRole("button", { name: "Health & usage", exact: true }).click();
+  assert.equal(await page.locator(".settings-provider-status").count(), 0, "provider status cards are consolidated in Health");
+  await page.getByRole("button", { name: "Health", exact: true }).click();
   const health = page.locator("dialog.health"); await health.getByText("Provider health checks are paused", { exact: false }).waitFor();
   assert.equal((await health.innerText()).includes("Checking…"), false);
   await page.keyboard.press("Escape");
