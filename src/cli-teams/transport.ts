@@ -6,15 +6,18 @@ import { CliTeamError, fail } from "./model.js";
 import { CliTeamsService, tokenMatches } from "./service.js";
 import { CLI_MESSAGE_BYTES } from "./limits.js";
 
-export interface RuntimeDescriptor { version: 1; pid: number; endpoint: string; bootstrap: string }
+export interface RuntimeDescriptor { version: 1; pid: number; endpoint: string; bootstrap: string; releaseRoot?: string }
 export const RUNTIME_FILE = "cli-teams-runtime.json";
 /** Separate loopback transport; execution still belongs to the web runtime's RunManager. */
-export async function startCliTeamsTransport(service: CliTeamsService) {
+export async function startCliTeamsTransport(service: CliTeamsService, admitting: () => boolean = () => true) {
   const bootstrap = randomBytes(32).toString("hex");
   const capabilities = new Map<string, Awaited<ReturnType<CliTeamsService["connect"]>>>();
+  let requests = 0;
   const server = createServer({ maxHeaderSize: 8192 }, (req, res) => {
+    requests++;
     const send = (status: number, value: unknown) => { res.writeHead(status, { "content-type": "application/json", "cache-control": "no-store" }); res.end(JSON.stringify(value)); };
     void (async () => {
+      if (!admitting()) fail("runtime_unavailable", "Code Flow is handing over an idle backend; reconnect shortly");
       const address = server.address();
       if (!address || typeof address === "string" || req.headers.host !== `127.0.0.1:${address.port}` || req.headers.origin || req.method !== "POST" || !req.headers["content-type"]?.startsWith("application/json")) fail("scope_denied", "Use the local authenticated CLI transport");
       const bearer = req.headers.authorization?.replace(/^Bearer /, "") ?? "";
@@ -45,16 +48,16 @@ export async function startCliTeamsTransport(service: CliTeamsService) {
         } finally { service.disconnect(c); }
       } else fail("scope_denied", "Unknown or unauthorized CLI operation");
       send(200, { protocolVersion: 1, ok: true, data });
-    })().catch(error => send(error instanceof CliTeamError && error.code === "scope_denied" ? 403 : 400, { protocolVersion: 1, ok: false, error: { code: error instanceof CliTeamError ? error.code : "operation_failed", message: error instanceof Error ? error.message : "CLI request failed", details: error instanceof CliTeamError ? error.details : undefined } }));
+    })().catch(error => send(error instanceof CliTeamError && error.code === "scope_denied" ? 403 : 400, { protocolVersion: 1, ok: false, error: { code: error instanceof CliTeamError ? error.code : "operation_failed", message: error instanceof Error ? error.message : "CLI request failed", details: error instanceof CliTeamError ? error.details : undefined } })).finally(() => { requests--; });
   });
   await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
   const address = server.address(); if (!address || typeof address === "string") throw new Error("No CLI listener");
-  const descriptor: RuntimeDescriptor = { version: 1, pid: process.pid, endpoint: `http://127.0.0.1:${address.port}`, bootstrap };
+  const descriptor: RuntimeDescriptor = { version: 1, pid: process.pid, endpoint: `http://127.0.0.1:${address.port}`, bootstrap, ...(process.env.CODEFLOW_MANAGED_RELEASE ? { releaseRoot: process.env.CODEFLOW_MANAGED_RELEASE } : {}) };
   const file = join(service.home, RUNTIME_FILE), temp = `${file}.${process.pid}.tmp`;
   await mkdir(service.home, { recursive: true });
   try { await writeFile(temp, JSON.stringify(descriptor), { mode: 0o600, flag: "wx" }); await rename(temp, file); }
   catch (error) { server.close(); await rm(temp, { force: true }); throw error; }
-  return { descriptor, async close() {
+  return { descriptor, get busy() { return requests > 0 || [...capabilities.values()].some(c => c.active && c.expiresAt > Date.now()); }, async close() {
     for (const c of capabilities.values()) service.disconnect(c);
     capabilities.clear(); server.closeAllConnections();
     await new Promise<void>(resolve => server.close(() => resolve()));

@@ -6,6 +6,7 @@ import { CODEFLOW_HOME } from "../config.js";
 import { repoRoot } from "../git.js";
 import { acquireStateLock } from "../store.js";
 import { digest, fail, type Provider } from "./model.js";
+import { managedLauncher } from "../../bin/managed.mjs";
 
 const BEGIN = "# BEGIN codeflow managed MCP", END = "# END codeflow managed MCP";
 interface Edit { path: string; before?: string; after: string; kind: "json" | "toml" | "skill" | "preferences"; owned: string }
@@ -32,8 +33,12 @@ export async function installProject(path: string, providers: Provider[], dryRun
       if (prior) await atomic(manifestPath, JSON.stringify(prior)); else await rm(manifestPath, { force: true });
     }
     const owned = prior?.state === "installed" ? prior.edits : [];
-    const edits: Edit[] = [], mcp = { command: "codeflow", args: ["mcp", "--project-root", "."] };
-    const skill = await readFile(fileURLToPath(new URL("../../integrations/cli-teams/SKILL.md", import.meta.url)), "utf8");
+    const managed = await managedLauncher(home);
+    const edits: Edit[] = [], mcp = managed ? { command: process.execPath, args: [managed, "mcp", "--project-root", repo] } : { command: "codeflow", args: ["mcp", "--project-root", "."] };
+    const workflow = await readFile(fileURLToPath(new URL("../../integrations/cli-teams/SKILL.md", import.meta.url)), "utf8");
+    // Managed connections deliver the versioned contract at MCP initialization.
+    // A small stable skill avoids pinning a second, stale copy in each repository.
+    const skill = managed ? `${workflow.match(/^---\r?\n[\s\S]*?\r?\n---/)![0]}\n\n# Code Flow\n\nUse the connected Code Flow MCP tools and the workflow instructions supplied by that server during initialization. Those instructions and tool schemas come from the active shared runtime release. Stay in this conversation, respect the connection's bound repository, and obtain explicit approval of the exact proposal before starting work. Managed workers must never recursively start Code Flow runs. If the tools are unavailable, ask the user to reload this project's MCP connection; do not bypass it by launching provider CLIs.\n` : workflow;
     const prepare = async (file: string, kind: Edit["kind"], after: (before: string | undefined, previous?: Edit) => { text: string; owned: string }) => {
       const path = join(repo, file); await checkPath(repo, path);
       const before = await read(path), previous = owned.find(e => e.path === path), next = after(before, previous);
@@ -51,7 +56,7 @@ export async function installProject(path: string, providers: Provider[], dryRun
     if (providers.includes("codex")) {
       await prepare(".codex/config.toml", "toml", (before = "", previous) => {
         const data = parseToml(before) as any;
-        const section = `${BEGIN}\n[mcp_servers.codeflow]\ncommand = "codeflow"\nargs = ["mcp", "--project-root", "."]\nenv_vars = ["CODEFLOW_HOME"]\nstartup_timeout_sec = 30\ntool_timeout_sec = 420\n${END}`;
+        const section = `${BEGIN}\n[mcp_servers.codeflow]\ncommand = ${JSON.stringify(mcp.command)}\nargs = ${JSON.stringify(mcp.args)}\nenv_vars = ["CODEFLOW_HOME"]\nstartup_timeout_sec = 60\ntool_timeout_sec = 420\n${END}`;
         const start = before.indexOf(BEGIN), end = before.indexOf(END);
         if (data.mcp_servers?.codeflow && (!previous || start < 0 || end < start || digest(before.slice(start, end + END.length)) !== previous.owned)) fail("installation_conflict", "An existing or modified Codex codeflow entry is preserved; rename it before installing");
         const updated = start >= 0 ? before.slice(0, start) + section + before.slice(end + END.length) : `${before}${before && !before.endsWith("\n") ? "\n" : ""}\n${section}\n`;

@@ -22,7 +22,7 @@
     "dev": "PORT=4318 CODEFLOW_HOME=.codeflow-dev node scripts/dev.mjs --fake-agents",
     "dev:real": "PORT=4318 CODEFLOW_HOME=.codeflow-dev node scripts/dev.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test --test-concurrency=4 test/*.test.ts test/desktop/*.test.mjs",
+    "test": "tsx --test --test-concurrency=4 test/*.test.ts test/managed-updates.test.mjs test/desktop/*.test.mjs",
     "test:e2e": "tsx --test --test-concurrency=2 test/e2e/*.e2e.ts",
     "test:acp:live": "node --import tsx scripts/test-acp-live.mjs",
     "test:cli-workspace:live": "tsx scripts/test-cli-workspace-live.ts",

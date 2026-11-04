@@ -109,3 +109,23 @@ test("global execution activation cannot race a start awaiting its policy snapsh
   release.resolve(); const run = await starting; await until(() => run.status !== "running");
   await manager.withIdleExecution(async () => {}); assert.equal(manager.isRepositoryIdle(repo), true);
 });
+
+test("managed update retirement rejects live starts and work, then atomically closes admission", async () => {
+  const { repo, manager, input } = fixture(), entered = deferred(), release = deferred();
+  const work = manager.withReadOnlyExecution(repo, async () => { entered.resolve(); await release.promise; });
+  await entered.promise;
+  assert.throws(() => manager.beginIdleShutdown(), /Wait for every run/);
+  // Rejected retirement must not fence ordinary activity.
+  await manager.assertExecutionAllowed(repo);
+  release.resolve(); await work;
+  const starting = deferred(), admitted = deferred();
+  manager.setFilesystemPolicyGuard(async () => { starting.resolve(); await admitted.promise; return []; });
+  const launch = manager.start(input); await starting.promise;
+  assert.throws(() => manager.beginIdleShutdown(), /Wait for every run/);
+  admitted.resolve(); const run = await launch;
+  await until(() => run.status !== "running");
+  await until(() => { try { manager.beginIdleShutdown(); return true; } catch { return false; } });
+  assert.equal(run.status, "done");
+  await assert.rejects(manager.start(input), /shutting down/);
+  await assert.rejects(manager.withReadOnlyExecution(repo, async () => {}), /shutting down/);
+});

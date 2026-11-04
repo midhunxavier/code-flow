@@ -1,3 +1,4 @@
+import { launchTerminal } from "./terminal.js";
 import { formatStatus, formatToolResult } from "./presentation.js";
 import { catalog } from "./providers.js";
 import { readFile, mkdir, writeFile, rename, lstat } from "node:fs/promises";
@@ -9,11 +10,14 @@ import { repoRoot } from "../git.js";
 import { connectRuntime, runtimeRequest } from "./client.js";
 import { installProject, uninstallProject } from "./install.js";
 import { serveMcp } from "./mcp.js";
+import { configureDesktop, inspectDesktop, DESKTOP_HOSTS, type DesktopHost } from "./desktop.js";
 import { fail, validatePreferences, type Provider } from "./model.js";
 
 const usage = `Code Flow conversational teams
 
+  codeflow terminal claude|codex -- [provider arguments]
   codeflow init [--providers claude,codex] [--dry-run]
+  codeflow desktop setup|enable|disable|doctor|remove [--hosts claude-desktop,codex-app] [--project-root PATH] [--dry-run] [--json]
   codeflow doctor [--catalog] [--json]
   codeflow mcp [--project-root PATH]
   codeflow approve PROPOSAL_ID --revision NUMBER
@@ -33,15 +37,32 @@ Run approval uses your host's native confirmation form when available.
 Browser or terminal approval is a fallback. Host reattachment requires an interactive terminal.
 Existing bare codeflow and codeflow client commands are unchanged.
 `;
-export const CLI_COMMANDS = new Set(["open", "init", "doctor", "mcp", "approve", "status", "result", "diff", "apply", "pause", "resume", "cancel", "attach", "preferences", "uninstall"]);
+export const CLI_COMMANDS = new Set(["terminal", "desktop", "open", "init", "doctor", "mcp", "approve", "status", "result", "diff", "apply", "pause", "resume", "cancel", "attach", "preferences", "uninstall"]);
 export async function launchCli(args = process.argv.slice(2)) {
   const command = args.shift();
+  if (command === "terminal") { await launchTerminal(args.shift(), args); return; }
   if (!command || args.includes("--help")) { console.log(usage); return; }
   const option = (key: string) => { const index = args.indexOf(key); if (index < 0) return undefined; const value = args[index + 1]; if (!value || value.startsWith("--")) throw new Error(`Choose a value for ${key}`); return value; };
   const json = args.includes("--json");
-  const valuedOptions = new Set(["--project-root", "--providers", "--revision", "--connection", "--provider", "--model", "--effort", "--preferred-provider"]);
+  const valuedOptions = new Set(["--hosts", "--project-root", "--providers", "--revision", "--connection", "--provider", "--model", "--effort", "--preferred-provider"]);
   const positional = args.filter((a, i) => !a.startsWith("--") && !valuedOptions.has(args[i - 1] ?? ""));
   const root = resolve(option("--project-root") ?? process.cwd());
+  if (command === "desktop") {
+    const allowed = new Set(["--hosts", "--project-root", "--dry-run", "--json"]);
+    if (args.some(a => a.startsWith("--") && !allowed.has(a)) || positional.length !== 1) throw new Error("Use desktop setup|enable|disable|doctor|remove with --hosts, --project-root, --dry-run, or --json");
+    const action = positional[0] === "enable" ? "setup" : positional[0] === "disable" ? "remove" : positional[0];
+    if (action !== "setup" && action !== "doctor" && action !== "remove") throw new Error("Use codeflow desktop setup, doctor, or remove");
+    const hosts = (option("--hosts") ?? DESKTOP_HOSTS.join(",")).split(",") as DesktopHost[];
+    if (action === "doctor") {
+      const result = await inspectDesktop(root, hosts);
+      console.log(json ? JSON.stringify(result, null, 2) : [`Project: ${result.repo}`, `Connection: ${result.name}`, ...result.connections.map(c => `${c.host}: ${c.state}\n  ${c.path}${c.error ? `\n  ${c.error}` : ""}`), "Configuration check only. Verify tools in a fresh chat; older chats can retain stale MCP configuration. Do not restart an app with active work. Provider login and execution permissions are not tested."].join("\n"));
+      if (result.connections.some(c => c.state !== "configured")) process.exitCode = 1;
+    } else {
+      const result = await configureDesktop(root, hosts, action, args.includes("--dry-run"));
+      console.log(json ? JSON.stringify(result, null, 2) : [`${result.dryRun ? "Planned" : "Completed"} desktop ${action} for ${result.repo}`, `Connection: ${result.name}`, ...result.changes.map(c => `  ${c.host}: ${c.path}`), ...result.preserved.map(p => `Preserved modified entry: ${p}`), result.changes.length ? "" : "No configuration changes needed.", result.message].filter(Boolean).join("\n"));
+    }
+    return;
+  }
   const providers = async () => {
     const requested = option("--providers");
     if (requested) { const values = requested.split(","); if (!values.length || values.some(p => p !== "claude" && p !== "codex")) throw new Error("Choose --providers claude,codex or one provider"); return [...new Set(values)] as Provider[]; }

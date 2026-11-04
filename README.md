@@ -65,6 +65,8 @@ Changes live in separate Git worktrees. The [chat guide](docs/conversational-tas
 
 Prefer working in your Claude Code or Codex CLI conversation? The experimental [conversational teams integration](docs/cli-conversational-teams.md) creates a task-specific team and process through a project MCP connection. Run `codeflow init` in your target repository using an installed launcher; no preset or saved-team setup is required. Existing web workflows remain available.
 
+Use the same bridge from **Claude Desktop or the Codex app** with `codeflow desktop setup` in your target repository. [Desktop setup, checks, and removal](docs/desktop-mcp.md) covers app-wide connections bound to a specific project.
+
 **Inbox** and **Scheduling** are in the sidebar. **Existing workflows → Template library** groups task starters and saved configurations. Open **Repository tools** from a project; use **Settings → Connections** for remote work and sharing.
 
 <picture>

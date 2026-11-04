@@ -26,7 +26,7 @@ async function createMemory(p: Page, title: string, body: string, paths = "") { 
 before(async () => {
   // A private app copy keeps mutable bundles/assets away from other parallel suites.
   mkdirSync(appRoot);
-  for (const folder of ["src", "ui", "scripts", "training", "docs", "public"]) cpSync(join(root, folder), join(appRoot, folder), { recursive: true });
+  for (const folder of ["src", "bin", "ui", "scripts", "training", "docs", "public"]) cpSync(join(root, folder), join(appRoot, folder), { recursive: true });
   mkdirSync(join(appRoot, "integrations/vscode"), { recursive: true });
   cpSync(join(root, "integrations/vscode/README.md"), join(appRoot, "integrations/vscode/README.md"));
   cpSync(join(root, "tsconfig.json"), join(appRoot, "tsconfig.json"));

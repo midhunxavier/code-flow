@@ -144,6 +144,8 @@ import { teamEvaluationStore, buildTeamEvaluation, assessTeamRollout } from "./t
 import type { Run, RunEvent, RunSummary, SideTurn, StartRunInput } from "./engine.js";
 import { CliTeamsService } from "./cli-teams/service.js";
 import { startCliTeamsTransport } from "./cli-teams/transport.js";
+import { checkUpdates, retireManagedOwner } from "../bin/managed.mjs";
+import { spawn } from "node:child_process";
 import { TaskConversations } from "./conversational/service.js";
 import { handleTaskConversations } from "./conversational/api.js";
 import { Conversations } from "./conversational/chats.js";
@@ -3036,14 +3038,16 @@ tailscaleTimer.unref();
 const certificateRenewalTimer = setInterval(() => { void renewRemoteCertificate().catch((error) => logError("Certificate renewal failed", error)); }, 60_000);
 certificateRenewalTimer.unref();
 
+let activeHttpRequests = 0;
 function listener(via: Via) {
   return (req: IncomingMessage, res: ServerResponse) => {
+    activeHttpRequests++;
     handle(req, res, via).catch((err: Error & { confirm?: string; signIn?: boolean; logged?: boolean }) => {
       const status = err instanceof HttpError ? err.status : 500;
       if (status >= 500 && !err.logged) logError(`${req.method} ${requestLogPath(req.url ?? "/")} failed`, err);
       if (res.headersSent) return res.end();
       send(res, status, { error: err.message, confirm: err.confirm, signIn: err.signIn });
-    }).finally(() => fileAccess.end(req));
+    }).finally(() => { activeHttpRequests--; fileAccess.end(req); });
   };
 }
 
@@ -3072,7 +3076,7 @@ if (taskConversationsReady) {
   });
   await cliTeams.reconcileWorkspace().catch(error => { cliTeams.workspace = undefined; logError("CLI workspace synchronization unavailable; existing web conversations remain available", error); });
 }
-const cliTransport = cliReady ? await startCliTeamsTransport(cliTeams).catch(error => { logError("CLI bridge unavailable", error); return undefined; }) : undefined;
+const cliTransport = cliReady ? await startCliTeamsTransport(cliTeams, () => !stopping).catch(error => { logError("CLI bridge unavailable", error); return undefined; }) : undefined;
 const stopChatWatch = taskConversationsReady ? conversations.watch() : async () => {};
 if (!fileAccess.hasRestrictions()) startPolicyBackground();
 const server = createServer({ maxHeaderSize: MAX_HEADER_SIZE }, listener("local")).listen(PORT, HOST, async () => {
@@ -3252,3 +3256,27 @@ for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
   process.on(signal, () => void stop(signal));
 }
 if (process.env.CODEFLOW_LAUNCHER === "1") process.on("disconnect", () => void stop("launcher disconnected"));
+
+// Only automatically managed, headless owners may retire themselves. No updater
+// signals another PID. Existing hosts and active execution keep the old generation.
+if (process.env.CODEFLOW_CLI_HEADLESS === "1" && process.env.CODEFLOW_MANAGED_RELEASE) {
+  setInterval(() => { void checkUpdates(CODEFLOW_HOME).catch(() => undefined); }, 6 * 60 * 60 * 1000).unref();
+  let checking = false;
+  setInterval(() => {
+    if (checking || stopping) return;
+    checking = true;
+    void retireManagedOwner(CODEFLOW_HOME, process.env.CODEFLOW_MANAGED_RELEASE!, async () => {
+      if (!cliReady || !taskConversationsReady || !filteredTasksReady || !mlReady ||
+          activeHttpRequests || cliTransport?.busy || policyPreparations.size || improvingControllers.size ||
+          runFeed.clients.size || ownerHubStreams.size || extensions.list().length ||
+          filteredTasks.active() || ml.active() || teamTerminals.active() ||
+          shells.list().some(s => s.status === "running") || manager.devServers.list().some(s => s.status === "running")) return false;
+      // This synchronous claim includes starts, side turns, checks, merge validation,
+      // repository leases and ambiguous remote execution; no disk snapshot heuristic.
+      try { manager.beginIdleShutdown(); } catch { return false; }
+      const successor = spawn(process.execPath, [join(CODEFLOW_HOME, "integration-runtime", "launcher.mjs"), "--handover", String(process.pid)], { detached: true, stdio: "ignore", env: { ...process.env, CODEFLOW_HOME } });
+      successor.on("error", error => logError("Managed update handover failed; next connection will retry", error)); successor.unref();
+      void stop("idle managed runtime update"); return true;
+    }).catch(() => undefined).finally(() => { checking = false; });
+  }, 30000).unref();
+}

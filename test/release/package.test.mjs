@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
-import { access, chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, chmod, cp, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, delimiter } from "node:path";
@@ -130,7 +130,7 @@ test("the packed npm install runs outside the checkout, opens its authenticated 
 });
 
 test("packed conversational teams install, bootstrap one owner, execute through MCP and return the actual plan", { timeout: 120_000 }, async () => {
-  const directory = await mkdtemp(join(tmpdir(), "codeflow-package-cli-")), repo = join(directory, "repo"), home = join(directory, "state"), install = join(directory, "install");
+  const directory = await realpath(await mkdtemp(join(tmpdir(), "codeflow-package-cli-"))), repo = join(directory, "repo"), home = join(directory, "state"), install = join(directory, "install");
   let child, ownerPid;
   try {
     await mkdir(repo);
@@ -142,7 +142,7 @@ test("packed conversational teams install, bootstrap one owner, execute through 
     assert.ok(packed.files.some(f => f.path === "integrations/cli-teams/SKILL.md"));
     execFileSync("npm", ["install", "--prefix", install, "--ignore-scripts", "--no-audit", "--no-fund", join(directory, packed.filename)], { cwd: directory, stdio: "pipe" });
     const bin = join(install, "node_modules/.bin/codeflow");
-    const env = { ...process.env, CODEFLOW_HOME: home, PATH: [join(install, "node_modules/.bin"), join(root, "test/fake-bin"), process.env.PATH].join(delimiter) };
+    const env = { ...process.env, HOME: directory, CODEX_HOME: join(directory, ".codex"), CODEFLOW_HOME: home, PATH: [join(install, "node_modules/.bin"), join(root, "test/fake-bin"), process.env.PATH].join(delimiter) };
     const initialized = JSON.parse(execFileSync(bin, ["init", "--providers", "claude,codex", "--json"], { cwd: repo, env, encoding: "utf8" }));
     assert.ok(initialized.changes.some(c => c.path === ".agents/skills/codeflow/SKILL.md"));
     const humanSetup = execFileSync(bin, ["init", "--providers", "claude,codex"], { cwd: repo, env, encoding: "utf8" });
@@ -153,7 +153,20 @@ test("packed conversational teams install, bootstrap one owner, execute through 
     assert.ok(diagnosis.providers.every(p => /Not verified/.test(p.authentication)));
     assert.equal(JSON.parse(execFileSync(bin, ["init", "--providers", "claude,codex", "--json"], { cwd: repo, env, encoding: "utf8" })).changes.length, 0);
     assert.throws(() => execFileSync(bin, ["approve", "fixture", "--revision", "1"], { cwd: repo, env, stdio: "pipe" }), /interactive terminal/);
-    child = spawn(bin, ["mcp", "--project-root", "."], { cwd: repo, env, stdio: ["pipe", "pipe", "pipe"] });
+    const managed = JSON.parse(execFileSync(bin, ["updates", "enable", "--json"], { cwd: repo, env, encoding: "utf8" }));
+    execFileSync(bin, ["updates", "disable"], { cwd: repo, env, stdio: "pipe" }); // Fixture tests never poll the real registry.
+    execFileSync(bin, ["init", "--providers", "claude,codex"], { cwd: repo, env, stdio: "pipe" });
+    const projectMcp = JSON.parse(await readFile(join(repo, ".mcp.json"), "utf8")).mcpServers.codeflow;
+    assert.equal(projectMcp.args[0], join(home, "integration-runtime", "launcher.mjs"));
+    assert.match(await readFile(join(repo, ".codex/config.toml"), "utf8"), /integration-runtime/);
+    const desktopHosts = process.platform === "darwin" ? "claude-desktop,codex-app" : "codex-app";
+    const desktopArgs = ["--hosts", desktopHosts, "--project-root", repo, "--json"];
+    const desktopSetup = JSON.parse(execFileSync(bin, ["desktop", "setup", ...desktopArgs], { cwd: directory, env, encoding: "utf8" }));
+    assert.equal(desktopSetup.changes.length, desktopHosts.split(",").length);
+    const desktopStatus = JSON.parse(execFileSync(bin, ["desktop", "doctor", ...desktopArgs], { cwd: directory, env, encoding: "utf8" }));
+    assert.ok(desktopStatus.connections.every(c => c.state === "configured"));
+    const desktopCommand = desktopStatus.connections.find(c => c.host === "codex-app").command;
+    child = spawn(desktopCommand.command, desktopCommand.args, { cwd: directory, env: { ...env, ...desktopCommand.env }, stdio: ["pipe", "pipe", "pipe"] });
     const pending = new Map(), approvals = []; let next = 0, buffered = "", stderr = "";
     child.stderr.on("data", c => stderr += c);
     child.stdout.on("data", chunk => {
@@ -192,6 +205,13 @@ test("packed conversational teams install, bootstrap one owner, execute through 
     const proposal = await call("propose_run", { operationId: "package-propose", task: "CODEFLOW_CONVERSATIONAL_TEST: plan a login form", candidate });
     assert.equal(proposal.approvalMethod, "native_form");
     const { runId } = await call("start_run", { operationId: "package-start", proposalId: proposal.proposalId, expectedRevision: proposal.revision, proposalHash: proposal.proposalHash });
+    const nextInstall = join(directory, "next-release");
+    await cp(join(install, "node_modules", "@midhunxavier/code-flow"), nextInstall, { recursive: true });
+    const nextPackage = JSON.parse(await readFile(join(nextInstall, "package.json"), "utf8")); nextPackage.version = "0.1.0-preview.9999";
+    await writeFile(join(nextInstall, "package.json"), JSON.stringify(nextPackage));
+    execFileSync(process.execPath, [join(nextInstall, "bin/codeflow.mjs"), "updates", "enable", "--json"], { cwd: repo, env, stdio: "pipe" });
+    execFileSync(bin, ["updates", "disable"], { cwd: repo, env, stdio: "pipe" });
+    assert.equal(JSON.parse(await readFile(join(home, "server.lock"), "utf8")).pid, ownerPid, "staging never restarts the live owner");
     assert.equal(approvals.length, 1); assert.match(approvals[0].message, new RegExp(proposal.proposalHash));
     let run, cursor = 0;
     for (let i = 0; i < 20; i++) {
@@ -207,6 +227,19 @@ test("packed conversational teams install, bootstrap one owner, execute through 
     const recent = JSON.parse(execFileSync(bin, ["status", "--json"], { cwd: repo, env, encoding: "utf8" }));
     assert.ok(recent.runs.some(r => r.runId === runId));
     assert.equal(JSON.parse(await readFile(join(home, "server.lock"), "utf8")).pid, ownerPid, "the terminal client reuses the same owner");
+    const bridgeExited = once(child, "exit"); child.stdin.end(); await bridgeExited;
+    let replacement;
+    for (let i = 0; i < 500; i++) {
+      replacement = await readFile(join(home, "cli-teams-runtime.json"), "utf8").then(JSON.parse, () => undefined);
+      if (replacement?.pid !== ownerPid && replacement?.releaseRoot?.includes("preview.9999")) break;
+      await pause(100);
+    }
+    assert.ok(replacement?.releaseRoot?.includes("preview.9999"), "idle managed owner automatically hands over after the final MCP session closes");
+    assert.notEqual(replacement.pid, ownerPid); ownerPid = replacement.pid;
+    const afterUpdate = JSON.parse(execFileSync(bin, ["status", runId, "--json"], { cwd: repo, env, encoding: "utf8" }));
+    assert.equal(afterUpdate.outcome, "agreed_plan"); assert.equal(afterUpdate.status, "done");
+    const desktopRemoved = JSON.parse(execFileSync(bin, ["desktop", "remove", ...desktopArgs], { cwd: directory, env, encoding: "utf8" }));
+    assert.equal(desktopRemoved.changes.length, desktopHosts.split(",").length);
     execFileSync(bin, ["uninstall", "--project"], { cwd: repo, env, stdio: "pipe" });
     assert.equal(await readFile(join(repo, "README.md"), "utf8"), "Fixture login project\n");
     await access(join(home, "runs", `${runId}.journal.jsonl`)); await access(join(repo, ".codeflow/cli-teams.json"));
