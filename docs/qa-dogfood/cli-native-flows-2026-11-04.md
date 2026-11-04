@@ -99,3 +99,9 @@ Temporary evidence may be cleaned by the operating system. Each final directory 
 - Codex cancellation rerun: `/private/var/folders/8g/_7c6f3pn6bs_nb97tkbl2t7m0000gn/T/codeflow-native-flows-ueqhWc`
 - Full Claude suite: `/private/var/folders/8g/_7c6f3pn6bs_nb97tkbl2t7m0000gn/T/codeflow-native-flows-EYqjuI`
 - Partial Haiku-host suite: `/private/var/folders/8g/_7c6f3pn6bs_nb97tkbl2t7m0000gn/T/codeflow-native-flows-aA9k01`
+
+## Pre-merge CI follow-up
+
+The first PR CI run exposed a terminal restart race in browser shard 2: restarting a remembered terminal can issue DELETE using a cached shell list after the server has already lost that shell. The resulting 404 polluted the otherwise successful browser flow. Closing an already-removed shell now returns HTTP 200 with `closed: false`; reads and input still return 404. This also handles another tab closing the shell concurrently.
+
+The added API regression first reproduced the 404, then passed after the fix. The complete side-panel API suite passed 13 tests, and all eight side-notes/terminal browser tests passed without relaxing their network-error audit. The fix is included in the PR for a fresh complete CI run.

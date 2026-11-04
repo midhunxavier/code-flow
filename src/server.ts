@@ -2579,6 +2579,9 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
         throw err;
       }
     }
+    // Closing is idempotent: a cached terminal list can outlive a backend restart
+    // or another tab's close. Reads and input must still reject missing sessions.
+    if (id && req.method === "DELETE") return send(res, 200, { closed: shells.close(id) });
     if (id && !shells.get(id)) throw new HttpError(404, "That terminal is gone (code-flow restarted?)");
     if (id && req.method === "GET" && parts[3] === "events") return streamTopic(req, res, "shell", id);
     if (id && req.method === "GET") return send(res, 200, shells.get(id));
@@ -2605,7 +2608,6 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
       if (!shells.resize(id, cols, rows)) throw new HttpError(409, "That shell has exited; open a new one");
       return send(res, 200, shells.get(id));
     }
-    if (id && req.method === "DELETE") return send(res, 200, { closed: shells.close(id) });
   }
   if (req.method === "POST" && parts[1] === "improve-prompt" && parts.length === 2) return improveTask(await readJson(req, 256 * 1024), res);
   if (parts[1] === "model-catalog" && parts.length === 2 && ["GET", "POST"].includes(req.method ?? "")) {
