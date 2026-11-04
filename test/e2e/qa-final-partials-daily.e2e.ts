@@ -254,7 +254,7 @@ test("archived rail count preserves the visible button name for assistive techno
   for(const name of ["Show archived chats","Hide archived chats"]){
     await p.getByRole("button", { name: /^Application menu:/ }).click();
     const button=p.getByRole("menuitem",{name:new RegExp("^"+name)}); await button.waitFor();
-    assert.match(await button.innerText(),/archived chats\s+1/);
+    await until(() => button.innerText(), text => /archived chats\s+1/.test(text));
     const result=await p.evaluate(async()=>await (window as any).axe.run(".rail-menu",{runOnly:{type:"rule",values:["label-content-name-mismatch"]}}));
     assert.deepEqual(result.violations,[]); await button.click();
   }

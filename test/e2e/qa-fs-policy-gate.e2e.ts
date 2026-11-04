@@ -175,7 +175,7 @@ test("under a restriction in one project, settings, health, the composer, termin
   assert.equal((await health.innerText()).includes("Checking…"), false);
   await page.keyboard.press("Escape");
   await page.getByRole("button", { name: /^Application menu:/ }).click();
-  assert.match(await page.getByRole("menu").last().innerText(), /3 providers · paused by filesystem policy/); await page.keyboard.press("Escape");
+  assert.equal(await page.getByRole("menu").last().getByRole("menuitem", { name: /Agents|Providers/ }).count(), 0, "provider diagnostics live in Settings rather than a duplicate menu entry"); await page.keyboard.press("Escape");
 
   await newRun(projectB);
   await page.getByLabel("Task", { exact: true }).fill("A task in an unrestricted project");
