@@ -141,6 +141,7 @@ test("live archive and delete reconcile project rows and totals without discardi
   assert.equal(await history.getByRole("link", { name: /Ancient hidden loop/ }).count(), 0);
   assert.equal((await fetch(base + "/api/runs/big-006", { method: "DELETE", headers })).status, 200);
   await history.getByLabel("Include archived runs", { exact: true }).check();
+  await until(() => history.innerText(), text => /100 loaded of 129 matching runs/.test(text));
   await history.getByRole("button", { name: "Load older runs", exact: true }).click();
   await until(() => history.innerText(), text => /129 loaded of 129 matching runs/.test(text));
   assert.equal(await history.getByRole("link", { name: /Ancient hidden loop/ }).count(), 0);

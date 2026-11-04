@@ -525,14 +525,15 @@ test("project selection inherits a single repository and preserves explicit mult
         assert.equal(await p.locator(".automations, .automation-legacy, .automation-list-heading").count(),0);
         await p.goto(`${base}/#/settings/automations`);
         await p.locator(".automations").waitFor();
-        await p.getByText("Advanced scheduling tools",{exact:true}).click();
-        await p.getByRole("link",{name:"Run once later",exact:true}).waitFor();
+        assert.equal(await p.getByText("Advanced scheduling tools",{exact:true}).count(), 0);
         await p.goto(`${base}/#/project/${multi.id}/automation`);
-        await p.getByLabel("Automation repository",{exact:true}).waitFor();
-        await p.getByRole("textbox",{name:"Automation task"}).fill("Review each morning");
-        assert.equal(await p.getByRole("button",{name:"Create automation",exact:true}).isDisabled(),true);
-        await p.getByLabel("Automation repository",{exact:true}).selectOption(second);
-        assert.equal(await p.getByRole("button",{name:"Create automation",exact:true}).isEnabled(),true);
+        await chooseRepo.waitFor();
+        await chooseRepo.selectOption("");
+        await p.getByRole("textbox",{name:"Message",exact:true}).fill("Review each morning");
+        assert.equal(await p.getByRole("button",{name:"Send",exact:true}).isDisabled(),true);
+        await chooseRepo.selectOption(second);
+        await until(() => p.getByRole("button",{name:"Send",exact:true}).isEnabled(), Boolean, "scheduled chat inherits repository source");
+        assert.equal(await p.getByRole("button", {name:"Schedule task",exact:true}).getAttribute("aria-pressed"), "true");
     } finally { await context.close(); }
 });
 
