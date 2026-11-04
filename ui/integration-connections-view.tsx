@@ -103,6 +103,11 @@ function ProjectConnectionActions({ connection, projectId, repository }: { conne
   // Show loading on the first paint, but let the user change kind during a slow request.
   const [busy, setBusy] = useState(true), [error, setError] = useState(""), [preview, setPreview] = useState<{ project: string; repository: string; github?: PullRequest & { kind: "issue" | "pr" }; source?: ExternalSource; checks?: Check[] }>();
   const [codeHostKey, setCodeHostKey] = useState<string>(), [publish, setPublish] = useState(false);
+  const previewRef = useRef<HTMLElement>(null), codeHostRef = useRef<HTMLDivElement>(null), publishRef = useRef<HTMLDivElement>(null);
+  const reveal = (element: HTMLElement | null) => { element?.scrollIntoView({ block: "start" }); element?.focus({ preventScroll: true }); };
+  useEffect(() => { if (preview) reveal(previewRef.current); }, [preview]);
+  useEffect(() => { if (codeHostKey) reveal(codeHostRef.current); }, [codeHostKey]);
+  useEffect(() => { if (publish) reveal(publishRef.current); }, [publish]);
   const restoringDraft = !draftsReady.value || composerLoading.value;
   const codeHost = ["github", "gitlab", "bitbucket"].includes(connection.provider);
   const base = `/api/integration-connections/projects/${enc(projectId)}/${enc(connection.id)}`;
@@ -144,13 +149,13 @@ function ProjectConnectionActions({ connection, projectId, repository }: { conne
     <div class="connection-items">{items.map(item => <article key={item.key} class="connection-item"><div><strong>{item.key} · {item.title}</strong>{item.body ? <p class="help">{item.body.slice(0, 240)}</p> : null}</div><button class="btn small" disabled={busy} onClick={() => void pick(item)}>{kind === "issue" ? "Choose issue" : "Load PR preview"}</button></article>)}</div>
     {cursor && items.length < 1000 ? <button class="btn" disabled={busy} onClick={() => void load(cursor)}>Load more</button> : null}
     {truncated || cursor && items.length >= 1000 ? <p class="help" role="status">The listing reached its limit. Showing {items.length.toLocaleString()} {kind === "issue" ? "issues" : "pull requests"}. Narrow the project or open {SERVICE_NAMES[connection.provider as ConnectionProvider]} to see the rest.</p> : null}
-    {preview ? <article class="connection-preview" aria-label="Source preview"><h3>{preview.github?.title ?? preview.source?.title}</h3><p class="connection-source-body">{preview.github?.body ?? preview.source?.body}</p>{safeHref(preview.github?.url ?? preview.source?.url) ? <a href={safeHref(preview.github?.url ?? preview.source?.url)} target="_blank" rel="noreferrer">Open source</a> : null}
+    {preview ? <article ref={previewRef} tabIndex={-1} class="connection-preview" aria-label="Source preview"><h3>{preview.github?.title ?? preview.source?.title}</h3><p class="connection-source-body">{preview.github?.body ?? preview.source?.body}</p>{safeHref(preview.github?.url ?? preview.source?.url) ? <a href={safeHref(preview.github?.url ?? preview.source?.url)} target="_blank" rel="noreferrer">Open source</a> : null}
       {preview.github?.kind === "pr" ? <><p>{preview.github.headRefName} → {preview.github.baseRefName}</p><ul>{preview.checks?.map(check => <li key={check.name}>{check.name}: {check.state}</li>)}</ul></> : null}
       {restoringDraft ? <p class="help" role="status">Restoring your project draft…</p> : null}
       <div class="integration-actions"><button class="btn primary" disabled={busy || restoringDraft} onClick={() => void start()}>{kind === "issue" ? "Start task from issue" : "Review pull request"}</button>{preview.github?.kind === "pr" ? <button class="btn" disabled={busy || restoringDraft || !preview.checks?.some(c => c.bucket === "fail")} onClick={() => void start(true)}>Fix failing checks</button> : null}</div>
     </article> : null}
-    {codeHostKey ? <CodeHostsPanel key={codeHostKey} projects={projects.value} context={{ project: projectId, repository, integration: connection.id, number: codeHostKey }} /> : null}
-    {publish ? <CompletedPullRequest connection={connection} projectId={projectId} repository={repository} /> : null}
+    {codeHostKey ? <div ref={codeHostRef} tabIndex={-1} class="connection-reveal"><CodeHostsPanel key={codeHostKey} projects={projects.value} context={{ project: projectId, repository, integration: connection.id, number: codeHostKey }} /></div> : null}
+    {publish ? <div ref={publishRef} tabIndex={-1} class="connection-reveal"><CompletedPullRequest connection={connection} projectId={projectId} repository={repository} /></div> : null}
   </section>;
 }
 

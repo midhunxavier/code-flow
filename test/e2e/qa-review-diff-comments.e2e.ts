@@ -249,3 +249,25 @@ test("an Agent chat's comments go to its provider at once; a team run's wait for
   } finally { release?.(); await panel.unrouteAll({ behavior: "ignoreErrors" }); await panel.close(); }
   assert.deepEqual(errors, []);
 });
+
+test("short phone review keeps evidence, changed lines and feedback reachable", { timeout: 60_000 }, async () => {
+  const run = await solo("claude", "Review on a short phone");
+  await page.setViewportSize({ width: 320, height: 568 });
+  try {
+    await review(run);
+    const evidence = page.locator(".review-overview");
+    const diff = page.locator(".review-diff");
+    const line = diff.locator("tr.dl.add[tabindex]").first();
+    await line.waitFor();
+    assert.ok(await evidence.isVisible(), "run evidence remains available");
+    assert.ok(await diff.evaluate(element => element.clientHeight >= 200), "the diff has room to read");
+    await line.scrollIntoViewIfNeeded();
+    await line.click();
+    const feedback = page.getByRole("textbox", { name: "Overall comment" });
+    await feedback.scrollIntoViewIfNeeded();
+    await feedback.fill("Please clarify this change.");
+    assert.equal(await feedback.inputValue(), "Please clarify this change.");
+  } finally {
+    await page.setViewportSize({ width: 1440, height: 1000 });
+  }
+});
