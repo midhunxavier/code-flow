@@ -3493,9 +3493,9 @@ dialog.picker.team-build-dialog { max-height: min(780px, calc(100dvh - 32px)); }
 .task-workflow .field { flex: 1; min-width: 0; width: auto; height: 30px; min-height: 30px; padding: 0 8px; font-size: 12px; }
 
 /* Project defaults live in settings; the composer only exposes per-run choices. */
-.project-run-settings, .project-default-fields { display: grid; gap: 16px; min-width: 0; }
+.project-run-settings, .project-default-fields { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; min-width: 0; }
 .project-run-settings h2 { margin: 8px 0 0; }
-.project-run-settings .lbl { display: grid; gap: 8px; }
+.project-run-settings .lbl { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; min-width: 0; }
 .project-run-settings .mono { overflow-wrap: anywhere; }
 .task-branch { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--border); min-width: 0; }
 .task-branch label, .task-branch .help { font-size: 12px; color: var(--muted); white-space: nowrap; }
@@ -4161,7 +4161,7 @@ dialog.task-conflict-dialog[open] { display: flex; flex-direction: column; }
 .connection-source-body { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 280px; overflow-y: auto; }
 .integration-advanced { margin: 24px 0; }
 .integration-advanced summary { cursor: pointer; }
-.connection-work { scroll-margin-top: 16px; }
+.connection-work, .connection-preview, .connection-reveal { scroll-margin-top: 16px; }
 .browser-context-cards { display: grid; gap: 8px; min-width: 0; margin: 8px 0; }
 .browser-context-card { min-width: 0; padding: 12px; border: 1px solid var(--border-strong); border-radius: 12px; background: var(--raised); text-align: left; }
 .browser-context-heading { display: flex; align-items: center; gap: 10px; min-width: 0; }
@@ -4180,6 +4180,7 @@ dialog.task-conflict-dialog[open] { display: flex; flex-direction: column; }
   .connection-item, .connections-heading { flex-direction: column; align-items: stretch; }
   .connections-heading { gap: 18px; }
   .connection-repository { width: 100%; }
+  .integration-actions .btn, .integration-primary-actions .btn { max-width: 100%; height: auto; min-height: 34px; padding-block: 8px; white-space: normal; line-height: 1.35; text-align: center; }
 }
 
 /* Local and SSH model-training preview. */
@@ -4648,3 +4649,34 @@ dialog.rail::backdrop { background: rgb(0 0 0 / .28); }
 .result-technical summary { cursor: pointer; padding-block: 6px; }
 .result-technical dl { margin-block: 12px; }
 .result-technical pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* Keep the desktop controls usable with a finger on narrow screens. */
+@media (max-width: 760px) and (pointer: coarse) {
+  .topbar .icon-btn, .topbar .command-btn { width: 44px; height: 44px; }
+  .topbar .host-switcher > .icon-btn { width: auto; min-height: 44px; }
+  .side-tab { min-width: 44px; height: 44px; justify-content: center; }
+  .project-tabs .btn { min-height: 44px; }
+}
+
+/* On phones, the review's evidence, diff and feedback share the page scroll.
+   Give the diff its own usable viewport even when the screen is short. */
+@media (max-width: 760px) {
+  .side-tabs { overflow-x: auto; }
+  .side-tabs .side-tab { flex: none; }
+  .side-tabs .side-tab span { display: block; }
+  .review { overflow-y: auto; overscroll-behavior: contain; }
+  .review-head, .review-overview, .review-feedback { flex: none; }
+  .review-overview { max-height: none; overflow: visible; }
+  .review-body { flex: none; grid-template-rows: auto minmax(280px, 45dvh); }
+  .review-files { max-height: 120px; }
+  .pp-row { flex-wrap: wrap; }
+  .pp-row .t { flex-basis: calc(100% - 24px); white-space: normal; overflow-wrap: anywhere; }
+  .pp-row .m { display: block; white-space: normal; }
+  .pp-row .pills { flex-wrap: wrap; }
+  details.work > summary { flex-wrap: wrap; }
+  .work-agents { display: flex; flex-wrap: wrap; margin-left: 0; }
+  .task-team-disclosure > summary { flex-wrap: wrap; }
+  .task-team-count { display: inline; }
+  .task-create-footer { flex-wrap: wrap; }
+  .task-create-footer > p { display: flex; }
+}

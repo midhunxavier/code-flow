@@ -6,7 +6,7 @@ import { useEffect, useRef, useState } from "preact/hooks";
 import { AgentTag, Markdown } from "./bits.js";
 import { Icon } from "./icons.js";
 import { ChatControls, type ChatPermissions, type ChatSettings } from "./chat-controls.js";
-import { baseName, post, SHORT, showToast, showError, store, STATUS_TEXT } from "./lib.js";
+import { baseName, post, SHORT, showToast, showError, store, STATUS_TEXT, sendOnEnter } from "./lib.js";
 import { Menu, MenuItem, MenuTitle, resultWorktree, Strip, type StripItem } from "./panel-bits.js";
 import { ChatThread, ConversationBar, DraftImages, FollowUpBadges, teamSteps, TurnBody, useRunStream } from "./run.js";
 import {
@@ -347,7 +347,7 @@ function SideComposer({ run, chat }: { run: RunSummary; chat?: SideChat }) {
             value={parseBrowserMessage(text).text}
             onInput={(e) => setText(editBrowserText(text, e.currentTarget.value))}
             onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+              if (e.key === "Enter" && !e.shiftKey && !e.isComposing && sendOnEnter()) {
                 e.preventDefault();
                 void send();
               }
@@ -535,7 +535,7 @@ function NewChat({ scope }: { scope: SideScope }) {
               value={text}
               onInput={(e) => setText(e.currentTarget.value)}
               onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+                if (e.key === "Enter" && !e.shiftKey && !e.isComposing && sendOnEnter()) {
                   e.preventDefault();
                   void send();
                 }

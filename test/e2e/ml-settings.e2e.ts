@@ -67,7 +67,7 @@ test("Settings enables ML on demand, survives reload and restart, and keeps unus
   assert.equal(await page.getByRole("button", { name: "Add SSH server", exact: true }).isEnabled(), true);
   await page.goto(`${base}/#/settings/general`);
 
-  for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
+  for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }, { width: 320, height: 568 }]) {
     await page.setViewportSize(viewport);
     await card.scrollIntoViewIfNeeded();
     await page.addScriptTag({ content: axe.source });
