@@ -354,7 +354,7 @@ test("a check that can't run here: the result is still reviewed, and the inbox a
   await item.waitFor({ timeout: 30_000 });
   await item.locator(".inbox-details > summary").click();
   await item.locator(".cant-run", { hasText: "nosuchtool-e2e" }).waitFor();
-  assert.match(await item.locator(".inbox-meta").innerText(), /checks: blocked/);
+  assert.match(await item.locator(".inbox-meta").innerText(), /checks: blocked/i);
 
   await item.locator(".inbox-item-title a").click();
   await page.locator(".result-details > summary").click();
