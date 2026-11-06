@@ -28,6 +28,13 @@ Start `claude` or `codex` from that project. Trust the project and approve its M
 
 Code Flow connects to the existing local owner. If none is running, it starts one without opening a browser. It does not start a competing execution store or take over an incompatible owner. Close/restart an older owner if it lacks the CLI bridge. Codex configuration explicitly forwards `CODEFLOW_HOME`; use an absolute path for a custom state directory shared across projects.
 
+## Start in Claude Code or Codex
+
+1. In the same project directory, run `claude` or `codex` and trust the project. Approve the Code Flow MCP connection if prompted; restart the CLI if the skill or connection is missing.
+2. In Claude Code, invoke `/codeflow`. In Codex, invoke `$codeflow`. Native skill availability depends on your CLI version.
+3. Describe the outcome, for example: “Use Claude to implement this bug fix and Codex to review it. Run the focused tests.” Both CLIs must be installed and signed in if you request both.
+4. Review the proposed participants, work, checks and limits. Approve the native confirmation, or open the provided Code Flow link and start the task there. Ask for changes before accepting if needed.
+
 ## Describe your task
 
 Invoke the installed `codeflow` skill in the host conversation. Examples of native explicit invocation are `/codeflow` in Claude Code and `$codeflow` in Codex; availability follows your host's native skill support. Then describe your task:

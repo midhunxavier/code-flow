@@ -4,6 +4,34 @@ Open the macOS or Windows WSL2 desktop app, or start the local browser app with 
 
 **Desktop preview 0.1.0-preview.11.** Download a desktop app or use the exact release package below. Each published app release automatically updates the npm `latest` and `preview` channels after npm processing completes. See the [preview release notes and checksums](https://github.com/midhunxavier/code-flow/releases/tag/v0.1.0-preview.11).
 
+## Quick start: browser, terminal, or desktop
+
+**Local web app.** On macOS, Linux, or in WSL2, install Node.js 22.13+, Git 2.38+, and at least one supported CLI (`claude`, `codex`, or `agy`). Sign in to that CLI, then run:
+
+```sh
+npm install -g @midhunxavier/code-flow@preview
+codeflow
+```
+
+Code Flow opens in your browser. If it does not, open the private sign-in link printed in the terminal. Leave the terminal running; press Ctrl+C to stop.
+
+**Claude Code or Codex CLI.** Install the launcher above, then from your Git project run:
+
+```sh
+cd /path/to/your-git-project
+codeflow init
+codeflow doctor
+```
+
+Start `claude` or `codex` in that project, trust it and approve the MCP connection. Invoke `/codeflow` in Claude Code or `$codeflow` in Codex, then describe your task and review the proposed approach. This integration is experimental. See [terminal setup](cli-conversational-teams.md) for approval and troubleshooting details.
+
+**Desktop preview.** Node is included; Git and a signed-in coding CLI are still required.
+
+- macOS 13+: [Apple Silicon DMG](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.11/code-flow-0.1.0-preview.11-macos-arm64-unnotarized.dmg) · [Intel DMG](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.11/code-flow-0.1.0-preview.11-macos-x64-unnotarized.dmg). Open the DMG and drag Code Flow to Applications. These preview builds are unnotarized and macOS may block them.
+- Windows: [x64 ZIP](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.11/code-flow-0.1.0-preview.11-windows-x64-unsigned.zip) · [ARM64 ZIP](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.11/code-flow-0.1.0-preview.11-windows-arm64-unsigned.zip). Extract the entire ZIP and open Code Flow.exe. WSL2 is required; install Git and sign in to your agent CLI inside WSL. These builds are unsigned.
+
+On Windows, run web and terminal commands in WSL2, with your repository and CLIs in the Linux environment. See [Windows setup](windows-desktop.md).
+
 ## Choose an installation method
 
 <div class="install-picker" data-install-picker>

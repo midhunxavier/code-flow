@@ -1,10 +1,11 @@
-const copy = document.querySelector('#copy-command');
-copy?.addEventListener('click', async () => {
-  try {
-    await navigator.clipboard.writeText(document.querySelector('#install-command').textContent);
-    copy.textContent = 'Copied';
-    setTimeout(() => { copy.textContent = 'Copy'; }, 2000);
-  } catch {
-    copy.textContent = 'Select to copy';
-  }
+document.querySelectorAll('[data-copy]').forEach((button) => {
+  button.addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(button.parentElement.querySelector('code').textContent);
+      button.textContent = 'Copied';
+      setTimeout(() => { button.textContent = 'Copy'; }, 2000);
+    } catch {
+      button.textContent = 'Select text to copy';
+    }
+  });
 });
