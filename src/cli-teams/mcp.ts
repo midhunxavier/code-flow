@@ -34,7 +34,11 @@ export async function serveMcp(projectRoot: string) {
       const timer = setTimeout(() => { prompts.delete(id); reject(new CliTeamError("acceptance_cancelled", "This confirmation timed out without starting work. Check the shared task before requesting start again.")); }, 5 * 60_000);
       prompts.set(id, { parent, resolve, reject, timer });
       send({ jsonrpc: "2.0", id, method: "elicitation/create", params: {
-        mode: "form", message: handoff ? `Review application of these exact task changes.\n\n${preview.summary}\nPreview hash: ${preview.previewHash}` : `Review this Code Flow proposal before starting.\n\n${preview.preview}`,
+        mode: "form", message: handoff ? `Review application of these exact task changes.\n\n${preview.summary}\nPreview hash: ${preview.previewHash}` : [
+          "Review this Code Flow proposal. Set approval to True (tick the checkbox), then submit.",
+          preview.reviewUrl ? `Full proposal in Code Flow: ${preview.reviewUrl}` : undefined,
+          "", preview.preview,
+        ].filter(line => line !== undefined).join("\n"),
         requestedSchema: { type: "object", properties: { approve: { type: "boolean", title: handoff ? "Apply and stage these exact changes" : "Approve and start this exact proposal", description: handoff ? `Run ${args.runId}. This changes the checkout and index; no commit or push.` : `Proposal ${args.proposalId}, revision ${args.expectedRevision}. Declining starts no work.`, default: false } }, required: ["approve"] },
       } });
     });
@@ -72,6 +76,7 @@ export async function serveMcp(projectRoot: string) {
             await approveInHost(m.id, args, name === "codeflow_apply_handoff"); data = await client.call(name, args);
           }
           if (name === "codeflow_propose_run") data = { ...data, approvalMethod: nativeForm ? "native_form" : data.workspace ? "browser" : "terminal", ...(nativeForm ? { nextAction: "Review this proposal, then call codeflow_start_run with its ID, revision, and hash. Code Flow will ask the user to approve and start inside this session; no separate terminal is needed." } : data.workspace ? { nextAction: "Review and start the approach in Code Flow using workspace.url or codeflow_open_task. Then call codeflow_start_run with the same proposal revision and hash to recover the existing run. Terminal approval remains available." } : {}) };
+          if (name === "codeflow_start_run") data = { ...data, follow: { runId: data.runId, follow: true } };
           if (name === "codeflow_list_providers") {
             // Inspect host-side files here, not in the owner (which may be a bundled remote host).
             let configuration: { state: string; message: string; pendingFiles?: string[] };

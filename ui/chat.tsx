@@ -10,6 +10,7 @@ import { ProjectContextEditor } from "./chat-context-editor.js";
 import { MessageSettings } from "./chat-settings.js";
 import { ChatResultPane } from "./chat-result.js";
 import { ChatInlineResult } from "./chat-inline-result.js";
+import { ChatTeamActivity } from "./chat-team-activity.js";
 import { subscribe } from "./stream.js";
 import { createPortal } from "preact/compat";
 import { activeChatContext, chatDetailsTarget } from "./chat-context.js";
@@ -115,7 +116,7 @@ export function ChatPage({ id, project: initialProject, automation = false }: { 
     void poll(); return () => { controller.abort(); clearTimeout(timer); off(); };
   }, [id, agents.value.length, executionPaused.value, ownerOnLocalListener.value]);
   useEffect(() => { if (!draft.project || !draft.repo || id !== "new" && !!snapshot?.chat.repo || !ownerOnLocalListener.value || !agents.value.length || executionPaused.value) return; const controller = new AbortController(); setSourceInfo(undefined); void api<typeof sourceInfo>(`/api/task-conversations/source?project=${enc(draft.project)}&repo=${enc(draft.repo)}`, { signal: controller.signal }).then(setSourceInfo).catch(e => { if (!controller.signal.aborted) setError(e.message); }); return () => controller.abort(); }, [draft.project, draft.repo, snapshot?.chat.repo, id, agents.value.length, executionPaused.value, ownerOnLocalListener.value]);
-  useEffect(() => { if (follow.current && scroll.current) scroll.current.scrollTop = scroll.current.scrollHeight; }, [snapshot?.history.lastSequence, snapshot?.turn?.status, snapshot?.tasks.map(t => `${t.execution?.status}:${t.execution?.activity.length}`).join(",")]);
+  useEffect(() => { if (follow.current && scroll.current) scroll.current.scrollTop = scroll.current.scrollHeight; }, [snapshot?.history.lastSequence, snapshot?.turn?.status, snapshot?.tasks.map(t => `${t.execution?.status}:${t.execution?.activity.length}:${t.execution?.artifacts.length}:${t.execution?.participation.flatMap(p => p.assignments.filter(a => a.status === "running").map(a => a.id)).join("-")}`).join(",")]);
   useEffect(() => { const thread = scroll.current?.firstElementChild; if (!thread) return; const observer = new ResizeObserver(() => { if (follow.current && scroll.current) scroll.current.scrollTop = scroll.current.scrollHeight; }); observer.observe(thread); return () => observer.disconnect(); }, []);
   useEffect(() => {
     if (!follow.current || !snapshot) return;
@@ -308,8 +309,10 @@ function ManagedTask({ task, scheduleMode, onSchedule, busy, onAction, onInspect
   const proposal = task.proposal, run = task.execution, started = !!proposal?.runId;
   if (!proposal) return <p class="help">{task.task.error ?? "Preparing the approach…"}</p>;
   if (started) {
-    if (!run?.questions.length) return run?.error ? <div class="chat-task-error"><p role="alert">{run.error.split("\n")[0]}</p><button class="btn ghost small" onClick={onInspect}>Inspect preserved work</button></div> : null;
-    return <article class="task-turn chat-task-decisions"><div class="task-message-meta"><b>Code Flow</b></div><div class="task-turn-body">{run.questions.map(q => <div class="task-question" key={q.id}><h3>{q.question}</h3>{q.inputs?.length ? <TaskResult taskId={task.task.id} execution={run} preferredId={q.inputs[0]} label="Decision evidence"/> : null}<div class="task-actions">{q.options.map(option => <button class="btn" disabled={busy} key={option} onClick={() => onAction("answer", { questionId: q.id, message: option })}>{option}</button>)}</div></div>)}</div></article>;
+    if (!run) return null;
+    return <><ChatTeamActivity key={run.id} taskId={task.task.id} execution={run} status={task.view.label} onInspect={onInspect}/>
+      {run.error ? <div class="chat-task-error"><p role="alert">{run.error.split("\n")[0]}</p><button class="btn ghost small" onClick={onInspect}>Inspect preserved work</button></div> : null}
+      {run.questions.length ? <article class="task-turn chat-task-decisions"><div class="task-message-meta"><b>Code Flow</b></div><div class="task-turn-body">{run.questions.map(q => <div class="task-question" key={q.id}><h3>{q.question}</h3>{q.inputs?.length ? <TaskResult taskId={task.task.id} execution={run} preferredId={q.inputs[0]} label="Decision evidence"/> : null}<div class="task-actions">{q.options.map(option => <button class="btn" disabled={busy} key={option} onClick={() => onAction("answer", { questionId: q.id, message: option })}>{option}</button>)}</div></div>)}</div></article> : null}</>;
   }
 
   return <section class="chat-proposal" aria-label="Proposed approach">

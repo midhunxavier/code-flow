@@ -25,6 +25,13 @@ export interface Connection extends ConversationScope { id: string; expiresAt: n
 const META = "cli-teams-control";
 const id = () => randomBytes(16).toString("hex");
 export const tokenMatches = (a: string, b: string) => { const left = Buffer.from(a), right = Buffer.from(b); return left.length === right.length && timingSafeEqual(left, right); };
+function artifactBodyPage(body: string, cursor = 0, maxBytes = 12000) {
+  const bytes = Buffer.from(body);
+  if (cursor > bytes.length || cursor < bytes.length && (bytes[cursor]! & 0xc0) === 0x80) fail("validation_failed", "Invalid UTF-8 artifact cursor");
+  let end = Math.min(bytes.length, cursor + maxBytes);
+  while (end < bytes.length && (bytes[end]! & 0xc0) === 0x80) end--;
+  return { body: bytes.subarray(cursor, end).toString("utf8"), totalBytes: bytes.length, nextCursor: end < bytes.length ? end : undefined };
+}
 async function preferences(path: string, projectRoot?: string): Promise<Preferences> {
   try {
     if (projectRoot && ((await lstat(join(projectRoot, ".codeflow"))).isSymbolicLink() || (await lstat(path)).isSymbolicLink())) fail("validation_failed", "Project preference files must stay inside the repository; replace the symlink before use");
@@ -172,7 +179,8 @@ export class CliTeamsService {
   async acceptancePreview(c: Connection, proposalId: string, revision: number) {
     const p = this.proposal(c, proposalId);
     if (p.revision !== revision || p.runId) fail("revision_conflict", "Proposal changed or already started; retrieve the current proposal");
-    return { preview: `${this.proposalSummary(p)}\n\nFull proposal\n${this.preview(p)}`, hash: p.hash };
+    const reviewUrl = p.chatId ? this.workspace?.url(`/?team=local#/chat/${p.chatId}`) : undefined;
+    return { preview: `${this.proposalSummary(p)}\n\nFull proposal\n${this.preview(p)}`, hash: p.hash, reviewUrl };
   }
   async handoffPreview(c: Connection, runId: string) {
     await this.manager.assertExecutionAllowed(c.repo, undefined, "Inspect task changes");
@@ -444,10 +452,8 @@ export class CliTeamsService {
     if (name === "codeflow_get_artifact") {
       const artifact = state.artifacts[a.artifactId];
       if (!artifact || artifact.sha256 !== a.sha256) fail("artifact_stale", "Choose the exact artifact ID/hash returned by get_run");
-      const bytes = Buffer.from(artifact.body), cursor = a.cursor ?? 0;
-      if (cursor > bytes.length || cursor < bytes.length && (bytes[cursor]! & 0xc0) === 0x80) fail("validation_failed", "Invalid UTF-8 artifact cursor");
-      let end = Math.min(bytes.length, cursor + (a.maxBytes ?? 12000));
-      while (end < bytes.length && (bytes[end]! & 0xc0) === 0x80) end--;
+      const cursor = a.cursor ?? 0;
+      const page = artifactBodyPage(artifact.body, cursor, a.maxBytes);
       const files = artifact.data.changedFiles;
       const fileCursor = a.fileCursor ?? 0, fileEnd = fileCursor + 100;
       let data: Record<string, unknown> = Array.isArray(files) ? { ...artifact.data, changedFiles: files.slice(fileCursor, fileEnd), nextFileCursor: fileEnd < files.length ? fileEnd : undefined } : artifact.data;
@@ -457,20 +463,53 @@ export class CliTeamsService {
         data = { targetHash: data.targetHash, passed: data.passed, command: data.command,
           evidence: check ? { ok: check.ok, exitCode: check.exitCode, timedOut: check.timedOut, durationMs: check.durationMs } : undefined };
       }
-      return { id: artifact.id, sha256: artifact.sha256, kind: artifact.kind, body: bytes.subarray(cursor, end).toString("utf8"), totalBytes: bytes.length, nextCursor: end < bytes.length ? end : undefined, ...(cursor === 0 ? { data: ["result", "code_snapshot", "review", "verification"].includes(artifact.kind) ? data : undefined } : {}) };
+      return { id: artifact.id, sha256: artifact.sha256, kind: artifact.kind, ...page, ...(cursor === 0 ? { data: ["result", "code_snapshot", "review", "verification"].includes(artifact.kind) ? data : undefined } : {}) };
     }
-    const events = await this.manager.events(run.id);
     const cursor = a.afterCursor ?? 0;
-    const meaningful = events.filter(e => e.seq > cursor && (e.type === "log" || e.type === "step"));
-    if (!meaningful.length && run.status === "running" && a.waitMs) await new Promise<void>(resolve => { const finish = () => { clearTimeout(timer); off(); resolve(); }; const off = this.manager.subscribe(run.id, finish); const timer = setTimeout(finish, a.waitMs); });
+    const artifactCursor = a.artifactCursor ?? 0;
+    const hasUpdate = () => digest(runProgress(run)) !== a.progressCursor || Object.keys(state.artifacts).length > artifactCursor;
+    const readEvents = async () => (await this.manager.events(run.id)).filter(e => e.seq > cursor && (e.type === "log" || e.type === "step"));
+    let events = a.follow ? [] : await readEvents();
+    const progressBeforeWait = runProgress(run);
+    if (a.waitMs && run.status === "running" && (a.follow
+      ? !hasUpdate() && !progressBeforeWait.needsAttention && progressBeforeWait.phase !== "paused"
+      : !events.length)) {
+      await new Promise<void>(resolve => {
+        const finish = () => { clearTimeout(timer); off(); resolve(); };
+        const off = this.manager.subscribe(run.id, event => {
+          if (!a.follow || (event.type === "run" || event.type === "step") && hasUpdate()) finish();
+        });
+        const timer = setTimeout(finish, a.waitMs);
+      });
+      if (!a.follow) events = await readEvents();
+    }
     let eventBytes = 0;
-    const latest = (await this.manager.events(run.id)).filter(e => e.seq > cursor && (e.type === "log" || e.type === "step")).slice(0, a.limit ?? 50).map(e => e.type === "step" ? { seq: e.seq, type: e.type, title: e.step.title.slice(0, 200), status: e.step.status, error: e.step.error?.slice(0, 500) } : e.type === "log" ? { seq: e.seq, type: e.type, text: e.text.slice(0, 500) } : { seq: e.seq }).filter(e => { eventBytes += Buffer.byteLength(JSON.stringify(e)); return eventBytes < 10000; });
+    const latest = events.slice(0, a.limit ?? 50).map(e => e.type === "step" ? { seq: e.seq, type: e.type, title: e.step.title.slice(0, 200), status: e.step.status, error: e.step.error?.slice(0, 500) } : e.type === "log" ? { seq: e.seq, type: e.type, text: e.text.slice(0, 500) } : { seq: e.seq }).filter(e => { eventBytes += Buffer.byteLength(JSON.stringify(e)); return eventBytes < 10000; });
     const status = run.status === "running" && Object.values(state.pending).some(p => !p.output) ? "waiting_host" : run.status === "running" && Object.values(state.questions).some(q => !q.answer) ? "waiting_user" : run.status;
-    const artifacts = Object.values(state.artifacts), artifactCursor = a.artifactCursor ?? 0, artifactEnd = artifactCursor + (a.artifactLimit ?? 50);
+    const artifacts = Object.values(state.artifacts);
+    const artifactEnd = artifactCursor + (a.follow ? Math.min(a.artifactLimit ?? 5, 5) : a.artifactLimit ?? 50);
+    const page = artifacts.slice(artifactCursor, artifactEnd);
+    const progress = runProgress(run);
+    const progressCursor = a.follow ? digest(progress) : undefined;
+    const moreOutputs = artifactEnd < artifacts.length;
+    const keepFollowing = run.status === "running" ? !progress.needsAttention && progress.phase !== "paused" : moreOutputs;
+    const evidence = runEvidence(run);
+    const finalArtifact = a.follow && !keepFollowing && run.status !== "running" && evidence.result ? state.artifacts[evidence.result.id] : undefined;
+    const follow = a.follow ? {
+      changed: progressCursor !== a.progressCursor || page.length > 0,
+      updates: page.filter(artifact => artifact.kind !== "result" && artifact.kind !== "collection").map(artifact => ({
+        id: artifact.id, sha256: artifact.sha256, kind: artifact.kind, participant: artifact.participant,
+        excerpt: artifact.body.slice(0, 1200), truncated: artifact.body.length > 1200,
+      })),
+      next: keepFollowing ? {
+        runId: run.id, follow: true, progressCursor, artifactCursor: Math.min(artifactEnd, artifacts.length), waitMs: moreOutputs ? 0 : 20000,
+      } : undefined,
+      resultPage: finalArtifact ? { id: finalArtifact.id, sha256: finalArtifact.sha256, ...artifactBodyPage(finalArtifact.body) } : undefined,
+    } : undefined;
     const persistent = this.connections.get(c.id ?? "")?.kind === "mcp";
     const needsHost = run.status === "running" && state.definition.participants.some(p => p.binding === "current_session");
-    return { ...runEvidence(run), task: this.proposal({ ...c, taskId: state.taskConversation?.id }, state.proposalId).task.slice(0, 600), progress: runProgress(run), continuation: { context: { reuseRunId: run.id }, requiresNewApproval: true, message: "Use this context in propose_run to reuse the deliverable, matching worker settings and original chat. Source changes are revalidated; write tasks retain preserved code." }, runId: run.id, status, runtimeStatus: run.status, paused: !!run.pauseRequested, outcome: state.outcome, error: run.error?.slice(0, 1000), detail: state.detail?.slice(0, 1000), summary: run.summary?.slice(0, 4000), events: latest, afterCursor: latest.at(-1)?.seq ?? cursor,
-      artifacts: artifacts.slice(artifactCursor, artifactEnd).map(({ id, kind, sha256, participant }) => ({ id, kind, sha256, participant })), artifactCount: artifacts.length, nextArtifactCursor: artifactEnd < artifacts.length ? artifactEnd : undefined,
+    return { ...evidence, task: this.proposal({ ...c, taskId: state.taskConversation?.id }, state.proposalId).task.slice(0, 600), progress, ...(follow ? { follow } : {}), continuation: { context: { reuseRunId: run.id }, requiresNewApproval: true, message: "Use this context in propose_run to reuse the deliverable, matching worker settings and original chat. Source changes are revalidated; write tasks retain preserved code." }, runId: run.id, status, runtimeStatus: run.status, paused: !!run.pauseRequested, outcome: state.outcome, error: run.error?.slice(0, 1000), detail: state.detail?.slice(0, 1000), summary: run.summary?.slice(0, 4000), events: latest, afterCursor: latest.at(-1)?.seq ?? cursor,
+      artifacts: page.map(({ id, kind, sha256, participant }) => ({ id, kind, sha256, participant })), artifactCount: artifacts.length, nextArtifactCursor: artifactEnd < artifacts.length ? artifactEnd : undefined,
       assignments: run.status === "running" && state.hostConnection === c.id ? Object.values(state.pending).filter(p => !p.output).map(p => ({ id: p.id, participant: p.participant, attemptId: p.attemptId, claimed: !!p.claimHash })) : [],
       questions: run.status === "running" ? Object.entries(state.questions).filter(([, q]) => !q.answer).map(([id, q]) => ({ id, ...q })) : [],
       host: { connected: this.connections.get(state.hostConnection)?.active === true && this.connections.get(state.hostConnection)!.expiresAt > Date.now(), thisSession: state.hostConnection === c.id, ...(needsHost && state.hostConnection !== c.id ? persistent ? { attachCommand: `codeflow attach ${run.id} --connection ${c.id}` } : { reconnect: "Ask your Claude or Codex MCP session to inspect this run, then use the attachment command it returns. Terminal status connections are temporary." } : {}) },

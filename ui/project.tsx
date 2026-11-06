@@ -146,9 +146,10 @@ function ProjectRuns({ projectId }: { projectId: string }) {
   const [historyQuery, setHistoryQuery] = useState<string | null>(null);
   const [loading, setLoading] = useState(false), [error, setError] = useState("");
   const generation = useRef(0), retainedPages = useRef(1), reading = useRef(false);
-  const read = async (next?: string) => {
+  const read = async (next?: string, background = false) => {
     const current = ++generation.current;
-    setLoading(true); reading.current = true; setError("");
+    if (!background) setLoading(true);
+    reading.current = true; setError("");
     try {
       const params = new URLSearchParams({ project: projectId, limit: "100", q: query.trim(), archived: archived ? "include" : "exclude" });
       if (next) params.set("cursor", next);
@@ -159,19 +160,26 @@ function ProjectRuns({ projectId }: { projectId: string }) {
         const more = await api<HistoryPage>(`/api/runs?${params}`);
         page = { ...more, runs: [...page.runs, ...more.runs] };
       }
-      if (current !== generation.current) return;
+      if (current !== generation.current) return false;
       if (next) retainedPages.current++;
       setHistory(previous => next ? [...previous, ...page.runs] : page.runs); setHistoryQuery(query.trim()); setCursor(page.nextCursor ?? null); setTotal(page.total); setArchivedMatches(page.archivedMatches ?? 0);
     } catch (error) { if (current === generation.current) setError((error as Error).message); }
     finally { if (current === generation.current) { setLoading(false); reading.current = false; } }
+    return current === generation.current;
   };
-  useEffect(() => { retainedPages.current = 1; setTotal(null); setArchivedMatches(0); const timer = setTimeout(() => void read(), 150); return () => { clearTimeout(timer); generation.current++; }; }, [projectId, query, archived]);
+  useEffect(() => { retainedPages.current = 1; setCursor(null); setTotal(null); setArchivedMatches(0); const timer = setTimeout(() => void read(), 150); return () => { clearTimeout(timer); generation.current++; }; }, [projectId, query, archived]);
   const liveRuns = runs.value;
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout>;
-    const refresh = () => { if (reading.current) timer = setTimeout(refresh, 250); else void read(); };
+    let active = true;
+    const refresh = async () => {
+      // A foreground page request can supersede a live refresh. Refresh again
+      // after it finishes so the new page and the live update are both kept.
+      if (!reading.current && await read(undefined, true)) return;
+      if (active) timer = setTimeout(refresh, 250);
+    };
     timer = setTimeout(refresh, 250);
-    return () => clearTimeout(timer);
+    return () => { active = false; clearTimeout(timer); };
   }, [liveRuns, projectId, query, archived]);
   const merged = new Map(history.filter(run => !isRunDeleted(run.id)).map(run => [run.id, liveRuns.get(run.id) ?? run]));
   for (const run of runs.value.values()) if (projectFor(run)?.id === projectId) merged.set(run.id, run);
