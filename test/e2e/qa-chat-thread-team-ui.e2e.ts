@@ -124,6 +124,8 @@ test("t11-2: stopped team turns keep their corrections and progress in message o
   // Mixed stop + work instructions steer the team (cluster14); this case exercises explicit stops.
   await send("Stop the team and wait.");
   await until(() => api(`/api/runs/${run.id}`), value => value.status === "cancelled", "first stop");
+  // Wait until the composer sends a follow-up instead of a note to the stopped turn.
+  await main.locator('.chatbox-hint[title^="Continues "]').waitFor({ state: "attached" });
   await send("AUTO-EVENT Implement part B");
   await working(2);
   await send("stop");
