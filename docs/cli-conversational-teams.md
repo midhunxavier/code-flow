@@ -12,9 +12,11 @@ Claude Code and Codex CLI also support [automatic shared runtime updates](deskto
 
 Use Node.js 22.13+, Git 2.38+, and at least one installed and signed-in Claude Code or Codex CLI. Use the installed Code Flow launcher on PATH. For a source build, run `npm ci`, `npm run package:npm`, then install the resulting `dist/npm` package using your normal local/global package installation method.
 
-From your target Git project:
+Install the launcher for regular use, then initialize your target Git project:
 
 ```sh
+npm install -g @midhunxavier/code-flow@preview
+cd /path/to/your-git-project
 codeflow init --dry-run
 codeflow init
 codeflow doctor
@@ -22,7 +24,7 @@ codeflow doctor
 
 `init` detects installed providers. You can choose `--providers claude`, `--providers codex`, or `--providers claude,codex`; both providers are not required for a task using only one. Setup merges project configuration and installs the `codeflow` skill. It does not run repository setup commands or agent inference. Existing unrelated MCP entries are preserved. It refuses to overwrite an existing or user-modified Code Flow entry.
 
-Trust the project and approve its MCP connection through your native CLI. Reload the CLI if the skill/connection does not appear. Codex uses `.codex/config.toml` and `.agents/skills/codeflow/`; Claude uses `.mcp.json` and `.claude/skills/codeflow/`. Generated configuration contains the installed `codeflow` executable and relative project arguments, not credentials or machine-specific executable paths. It expects the native host to launch the project MCP server in that project's directory.
+Start `claude` or `codex` from that project. Trust the project and approve its MCP connection through your native CLI. Reload the CLI if the skill/connection does not appear. Codex uses `.codex/config.toml` and `.agents/skills/codeflow/`; Claude uses `.mcp.json` and `.claude/skills/codeflow/`. Generated configuration contains the installed `codeflow` executable and relative project arguments, not credentials or machine-specific executable paths. It expects the native host to launch the project MCP server in that project's directory.
 
 Code Flow connects to the existing local owner. If none is running, it starts one without opening a browser. It does not start a competing execution store or take over an incompatible owner. Close/restart an older owner if it lacks the CLI bridge. Codex configuration explicitly forwards `CODEFLOW_HOME`; use an absolute path for a custom state directory shared across projects.
 

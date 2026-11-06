@@ -18,7 +18,7 @@ npm ci
 npm run docs:preview
 ```
 
-Open [127.0.0.1:4319](http://127.0.0.1:4319), or set `DOCS_PORT=0 npm run docs:preview` to choose a free port and open the printed URL. `DOCS_PORT` accepts0–65535; it is separate from the application’s `PORT`. This preview intentionally behaves like GitHub Pages, so companion controls are omitted. Restart the preview after editing Markdown or site assets.
+Open [127.0.0.1:4319](http://127.0.0.1:4319), or set `DOCS_PORT=0 npm run docs:preview` to choose a free port and open the printed URL. `DOCS_PORT` accepts 0–65535; it is separate from the application’s `PORT`. This preview intentionally behaves like GitHub Pages, so companion controls are omitted. Restart the preview after editing Markdown or site assets.
 
 ## Publish to GitHub Pages
 
@@ -27,9 +27,9 @@ Open [127.0.0.1:4319](http://127.0.0.1:4319), or set `DOCS_PORT=0 npm run docs:p
 3. Run the **Documentation** workflow manually, or push a documentation change to `main`.
 4. Open the deployment URL reported by the workflow's `github-pages` environment.
 
-The upstream site is [Code Flow documentation](https://midhunxavier.github.io/code-flow/). GitHub may redirect this address to the owner’s configured Pages domain. Forks use their own owner and repository names. Adding the workflow alone does not activate or publish a site.
+The upstream site is [Code Flow documentation](https://midhunxavier.com/code-flow/docs/). GitHub Pages redirects `/code-flow/docs` to the trailing-slash URL. The existing `/code-flow/` address also serves the documentation. Forks use their own Pages address. Adding the workflow alone does not activate or publish a site.
 
-The workflow builds `dist/docs`, runs the documentation tests, uploads the Pages artifact and deploys it. Pull requests build and test without deploying. All site assets and links are relative, so project subpaths and custom domains work without a base-URL setting. There are no CDN fonts, analytics scripts or client framework dependencies.
+The workflow builds `dist/docs`, runs the documentation tests, copies the site to both the artifact root and its `docs/` directory, and deploys the Pages artifact. Relative links and assets work at both paths. Pull requests build and test without deploying. All site assets and links are relative, so project subpaths and custom domains work without a base-URL setting. There are no CDN fonts, analytics scripts or client framework dependencies.
 
 For another static host, build and upload the contents of `dist/docs`:
 

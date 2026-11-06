@@ -9,7 +9,7 @@
 </p>
 <p align="center">
   <a href="#try-the-preview">Try the preview</a> ·
-  <a href="https://midhunxavier.github.io/code-flow/">Documentation</a> ·
+  <a href="https://midhunxavier.com/code-flow/docs/">Documentation</a> ·
   <a href="docs/patterns.md">Workflows</a> ·
   <a href="docs/security.md">Security</a>
 </p>

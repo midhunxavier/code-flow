@@ -7,22 +7,23 @@ Code Flow brings coding CLIs into one workspace for planning, implementation, re
 Start Code Flow locally and open it in your browser:
 
 ```bash
-npx --yes --package=https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.8/midhunxavier-code-flow-0.1.0-preview.8.tgz codeflow
+npx --yes --package=https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.11/midhunxavier-code-flow-0.1.0-preview.11.tgz codeflow
 ```
 
 Use **Node.js 22.13+**, **Git 2.38+** and a supported coding CLI installed and signed in. Runs on macOS, Linux and Windows through **WSL2**. Keep the terminal open while you work; **Ctrl+C** stops the app.
 
-Prefer a macOS app? Download **0.1.0-preview.8**:
+Prefer a macOS app? Download **0.1.0-preview.11**:
 
-- [Download for Apple Silicon (M1 or later)](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.8/code-flow-0.1.0-preview.8-macos-arm64-unnotarized.dmg)
-- [Download for Intel Mac](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.8/code-flow-0.1.0-preview.8-macos-x64-unnotarized.dmg)
+- [Download for Apple Silicon (M1 or later)](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.11/code-flow-0.1.0-preview.11-macos-arm64-unnotarized.dmg)
+- [Download for Intel Mac](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.11/code-flow-0.1.0-preview.11-macos-x64-unnotarized.dmg)
 
 Requires **macOS 13+**. The app opens its own window and keeps agents running when you close it. Node is included; Git, a signed-in coding CLI and Chrome or Edge for the shared browser are still required. The DMGs are **unnotarized preview builds** and macOS may block them; use npm if blocked.
 
-[Installation and setup](getting-started.md#install-and-run) · [Release notes and checksums](https://github.com/midhunxavier/code-flow/releases/tag/v0.1.0-preview.8)
+[Installation and setup](getting-started.md#install-and-run) · [Release notes and checksums](https://github.com/midhunxavier/code-flow/releases/tag/v0.1.0-preview.11)
 
 <div class="cards">
 <a href="getting-started.md"><strong>Start your first run ↗</strong><span>Install the app, connect a CLI and take a task from prompt to review.</span></a>
+<a href="cli-conversational-teams.md"><strong>Use Code Flow in your terminal ↗</strong><span>Set up Claude Code or Codex and run a team from your conversation.</span></a>
 <a href="patterns.md"><strong>Choose a workflow ↗</strong><span>Plan and build, test first, compare candidates or ask a team to investigate.</span></a>
 <a href="runs.md"><strong>Find your way around ↗</strong><span>Follow agent activity, ask questions and open files, changes and terminals.</span></a>
 <a href="verification.md"><strong>Review with confidence ↗</strong><span>Understand checks, review evidence and when a result is ready to ship.</span></a>
@@ -44,7 +45,7 @@ Requires **macOS 13+**. The app opens its own window and keeps agents running wh
 
 ## Work with agents
 
-- [Team patterns](patterns.md) · [Auto team](auto-team.md) · [Project missions](project-teams.md)
+- [Claude Code and Codex terminal setup](cli-conversational-teams.md) · [Team patterns](patterns.md) · [Auto team](auto-team.md) · [Project missions](project-teams.md)
 - [Runs and the workspace](runs.md) · [Review inbox](review-inbox.md) · [Verification](verification.md)
 - [GitHub and shipping](github.md) · [GitHub review threads](github-review-threads.md)
 - [Selective task reruns](task-reruns.md) · [Deferred starts](deferred-runs.md)
