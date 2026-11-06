@@ -140,10 +140,20 @@ test("live archive and delete reconcile project rows and totals without discardi
   await until(() => history.innerText(), text => /117 loaded of 117 matching runs/.test(text));
   assert.equal(await history.getByRole("link", { name: /Ancient hidden loop/ }).count(), 0);
   assert.equal((await fetch(base + "/api/runs/big-006", { method: "DELETE", headers })).status, 200);
-  await history.getByLabel("Include archived runs", { exact: true }).check();
-  await until(() => history.innerText(), text => /100 loaded of 129 matching runs/.test(text));
-  await history.getByRole("button", { name: "Load older runs", exact: true }).click();
-  await until(() => history.innerText(), text => /129 loaded of 129 matching runs/.test(text));
+  let release!: () => void, firstPageReads = 0;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  await page.route(url => url.pathname === "/api/runs" && url.searchParams.get("project") === "p-big"
+    && url.searchParams.get("archived") === "include" && !url.searchParams.has("cursor"), async route => {
+    if (++firstPageReads === 2) await held;
+    await route.continue();
+  });
+  try {
+    await history.getByLabel("Include archived runs", { exact: true }).check();
+    await until(() => history.innerText(), text => /100 loaded of 129 matching runs/.test(text));
+    await until(async () => firstPageReads, reads => reads >= 2);
+    await history.getByRole("button", { name: "Load older runs", exact: true }).click();
+    await until(() => history.innerText(), text => /129 loaded of 129 matching runs/.test(text));
+  } finally { release(); }
   assert.equal(await history.getByRole("link", { name: /Ancient hidden loop/ }).count(), 0);
   await api("/api/runs/big-007/archive", { archived: true, cleanup: false });
   assert.equal((await fetch(base + "/api/runs/big-007", { method: "DELETE", headers })).status, 200);

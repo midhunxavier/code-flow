@@ -8,11 +8,11 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createServer } from "node:net";
 import { chromium, type Browser, type Page } from "playwright-core";
+import { reserveQaPorts } from "../qa-port-block.js";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
-const port = Number(process.env.QA_CHAT_PORT) || await new Promise<number>(resolve => { const server = createServer().listen(0, "127.0.0.1", () => { const p = (server.address() as { port: number }).port; server.close(() => resolve(p)); }); });
+const ports = await reserveQaPorts(2, process.env.QA_CHAT_PORT || undefined), { port } = ports;
 const base = `http://127.0.0.1:${port}`, token = "qa-chat-thread-team-ui";
 const home = mkdtempSync(join(tmpdir(), "cf-qa-chat-thread-")), repo = join(home, "repo");
 const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
@@ -28,6 +28,7 @@ before(async () => {
   mkdirSync(repo); const git = (...args: string[]) => execFileSync("git", args, { cwd: repo });
   git("init", "-q", "-b", "main"); writeFileSync(join(repo, "README.md"), "Empty input is valid.\n"); git("add", "."); git("-c", "user.name=Test", "-c", "user.email=t@t", "commit", "-qm", "Fixture");
   execFileSync(process.execPath, ["scripts/build-ui.mjs"], { cwd: root });
+  await ports.release();
   server = spawn(process.execPath, ["--import", "tsx", "src/server.ts"], { cwd: root, env: { ...process.env, PORT: String(port), CODEFLOW_HOME: join(home, "state"), CODEFLOW_TOKEN: token, FAKE_GH_STATE: join(home, "fake-gh.json"), FAKE_AUTO_SLOW_RELEASE: join(home, "release-slow"), PATH: `${root}/test/fake-bin:${process.env.PATH}` }, stdio: ["ignore", "pipe", "pipe"] });
   server.stdout?.on("data", c => { serverLogs += c; }); server.stderr?.on("data", c => { serverLogs += c; });
   for (let i = 0; i < 150; i++) { if (await fetch(`${base}/api/health`, { headers }).then(r => r.ok, () => false)) break; if (i === 149) throw new Error(`Server failed: ${serverLogs}`); await new Promise(r => setTimeout(r, 200)); }
@@ -38,6 +39,7 @@ before(async () => {
   await page.addInitScript(() => { localStorage.setItem("sideOpen", "0"); });
 });
 after(async () => {
+  await ports.release();
   await browser?.close();
   if (server?.exitCode === null) { server.kill("SIGTERM"); await new Promise<void>(resolve => server.once("exit", () => resolve())); }
   rmSync(home, { recursive: true, force: true });
