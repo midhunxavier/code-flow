@@ -4597,7 +4597,29 @@ dialog.rail::backdrop { background: rgb(0 0 0 / .28); }
 .automation-context { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 220px; overflow-y: auto; font-size: 12px; }
 .automation-setup-dialog > footer { position: sticky; bottom: -26px; padding: 16px 0; margin-bottom: -10px; background: var(--raised); border-top: 1px solid var(--border); z-index: 1; }
 
-/* Chat stays conversational; execution controls and evidence live in Task details. */
+/* Team milestones and outputs stay in the chat; execution controls live in Task details. */
+.chat-team-run { display: grid; gap: 12px; min-width: 0; padding: 12px 14px; border: 1px solid var(--border); border-radius: 12px; background: var(--raised); overflow-wrap: anywhere; }
+.chat-team-run-header { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.chat-team-run-header > .icon { width: 15px; height: 15px; color: var(--muted); }
+.chat-team-run-header h2 { margin: 0; font-size: 13px; }
+.chat-team-run-header > span { color: var(--muted); font-size: 11px; }
+.chat-team-run-header .btn { margin-inline-start: auto; }
+.chat-team-run > .help, .chat-team-step-history > .task-milestones { margin: 0; }
+.chat-team-workers, .chat-team-outputs { display: grid; gap: 8px; list-style: none; margin: 0; padding: 0; }
+.chat-team-workers li { display: flex; align-items: baseline; gap: 8px; font-size: 12px; }
+.chat-team-workers .dot { flex: 0 0 6px; height: 6px; border-radius: 50%; background: var(--info); }
+.chat-team-workers li > div { display: grid; gap: 3px; min-width: 0; }
+.chat-team-workers li > div > span { color: var(--muted); }
+.chat-team-output { min-width: 0; border: 1px solid var(--border); border-radius: 8px; }
+.chat-team-output-toggle { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px; width: 100%; padding: 8px 10px; border: 0; border-radius: 8px; background: transparent; color: inherit; font: inherit; font-size: 12px; text-align: start; cursor: pointer; }
+.chat-team-output-toggle:hover { background: var(--hover); }
+.chat-team-output-toggle .icon { width: 12px; height: 12px; align-self: center; transform: rotate(-90deg); }
+.chat-team-output-toggle[aria-expanded="true"] .icon { transform: none; }
+.chat-team-output-index, .chat-team-output-verdict { color: var(--muted); font-size: 11px; margin-inline-end: 8px; }
+.chat-team-output-verdict { margin-inline-start: 8px; }
+.chat-team-output-preview { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; margin: 0 10px 10px; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.chat-team-output .task-result { padding: 4px 10px 12px; }
+.chat-team-step-history > summary { color: var(--muted); font-size: 12px; padding: 4px 0; }
 .chat-task-progress .task-turn-body { padding: 0; background: transparent; border: 0; }
 .chat-progress-row { display: flex; align-items: center; gap: 8px; }
 .chat-progress-summary { display: flex; align-items: center; gap: 12px; flex: 1; min-width: 0; padding: 12px 0; border: 0; background: transparent; color: var(--text); text-align: left; border-radius: 8px; }

@@ -63,7 +63,7 @@ Only selected non-ignored untracked files enter a dirty-change snapshot. Tell th
 
 The assistant shows the proposed jobs, provider/model/effort choices, work order, completion criteria, source snapshot, commands, and execution limits. Change the approach conversationally before starting.
 
-When your host declares MCP form elicitation support, Code Flow displays the full proposal in a native confirmation dialog inside your Claude/Codex session. Approve and submit the form to start that exact revision. Declining or cancelling starts no work. The assistant requests this dialog by calling `codeflow_start_run`; it cannot supply an approval boolean as a tool argument.
+When your host declares MCP form elicitation support, Code Flow includes the full proposal in a native confirmation dialog. The host may collapse the text. Open the review link to read the proposal in Code Flow, or set the approval field to True and submit it in the CLI after review. In Claude Code, Space ticks the checkbox, and **Accept** submits it. Declining or cancelling starts no work. The assistant requests the form with `codeflow_start_run` and cannot supply the approval value as a tool argument.
 
 The confirmation waits up to five minutes. The installed Codex configuration allows seven minutes per MCP call so its tool timeout leaves room for confirmation and owner communication. This does not increase the run's managed execution allowance. See [Claude Code's elicitation documentation](https://code.claude.com/docs/en/mcp#respond-to-mcp-elicitation-requests) and [Codex's native elicitation protocol](https://learn.chatgpt.com/docs/app-server#mcp-server-elicitation-requests).
 
@@ -82,6 +82,10 @@ After upgrading an earlier install, rerun `codeflow init` with the same `CODEFLO
 Normal reviews and repairs inside the accepted bounds do not require repeated workflow confirmation. Plan-only work never expands into implementation without a new proposal.
 
 ## Progress and changes
+
+After approval, the CLI conversation follows the run in the same turn. It reports changes in who is working, shares findings as steps finish, and retrieves the final result when the run ends. A paused run, a question for you, or a disconnected host assignment can interrupt the follow-up. Progress comes from completed steps and recorded run state, rather than workers' live token streams.
+
+The linked browser chat shows **Team activity** under the approved task. It lists active assignments and completed outputs in order. Expand a plan, review, check, or decision to read it in full. The final result appears separately in the chat when execution ends.
 
 Ask questions or steer work in the same conversation:
 

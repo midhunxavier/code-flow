@@ -112,7 +112,10 @@ async function cliOutput(repo: string, args: string[]) {
 
 test("CLI UX e2e: MCP connection, native planning approval, continuation, result and confirmed checkout handoff", async () => {
   const f = await setup();
+  let releaseReviews!: () => void;
+  const reviews = new Promise<void>(resolve => { releaseReviews = resolve; });
   stub(async opts => {
+    if (opts.jsonSchema) await reviews;
     if (opts.mode === "write") writeFileSync(join(opts.cwd, "app.mjs"), "export const value = 2;\n");
     return { ok: true, finalText: opts.jsonSchema ? JSON.stringify({ body: "Exact target reviewed", verdict: "approve", findings: [] }) : "Plan: set value to 2 and run the unchanged test." };
   });
@@ -135,7 +138,32 @@ test("CLI UX e2e: MCP connection, native planning approval, continuation, result
     const p = await call("propose_run", { operationId: "ux-plan", task: "Plan the value fix", candidate: planning() });
     assert.match(p.summary, /Deliverable:/);
     const started = await approve("start_run", { operationId: "ux-start", proposalId: p.proposalId, expectedRevision: p.revision, proposalHash: p.proposalHash });
-    const plan = f.manager.get(started.structuredContent.data.runId)!; await finished(plan);
+    const plan = f.manager.get(started.structuredContent.data.runId)!;
+    assert.match(started.content[0].text, /Continue in this turn/);
+    let follow = await call("get_run", started.structuredContent.data.follow);
+    const excerpts: string[] = [];
+    const bothReviewing = () => ["author", "peer"].every(participant => follow.progress.active.some((step: { participant: string }) => step.participant === participant));
+    for (let i = 0; i < 20; i++) {
+      excerpts.push(...follow.follow.updates.map((update: { excerpt: string }) => update.excerpt));
+      if (excerpts.some(excerpt => excerpt.includes("Plan: set value to 2")) && bothReviewing()) break;
+      follow = await call("get_run", { ...follow.follow.next, waitMs: 250 });
+    }
+    assert.equal(follow.runtimeStatus, "running");
+    assert.match(excerpts.join("\n"), /Plan: set value to 2/);
+    assert.ok(bothReviewing());
+    const unchanged = await call("get_run", { ...follow.follow.next, waitMs: 10 });
+    assert.equal(unchanged.follow.changed, false);
+    assert.deepEqual(unchanged.follow.updates, []);
+    releaseReviews();
+    await finished(plan);
+    const final = await peer.call("get_run", follow.follow.next).result;
+    const finalData = final.structuredContent.data;
+    assert.equal(finalData.follow.next, undefined);
+    assert.match(final.content[0].text, /present the result in this turn/);
+    const deliverable = await call("get_artifact", { runId: plan.id, artifactId: finalData.result.id, sha256: finalData.result.sha256 });
+    assert.match(deliverable.body, /Plan: set value to 2/);
+    assert.equal(finalData.follow.resultPage.body, deliverable.body);
+    assert.ok(final.content[0].text.includes(deliverable.body));
     const planStatus = await call("get_run", { runId: plan.id });
     assert.equal(planStatus.progress.phase, "completed"); assert.equal(planStatus.continuation.context.reuseRunId, plan.id);
     const proposed = await call("propose_run", { operationId: "ux-build", task: "Implement that plan", candidate: building(), context: planStatus.continuation.context });
@@ -165,7 +193,7 @@ test("CLI UX e2e: MCP connection, native planning approval, continuation, result
     assert.equal(execFileSync("git", ["diff", "--cached", "--name-only"], { cwd: f.repo, encoding: "utf8" }).trim(), "app.mjs");
     const checkEnv = { ...process.env }; delete checkEnv.NODE_TEST_CONTEXT;
     assert.match(execFileSync(process.execPath, ["--test", "--test-reporter=tap", "app.test.mjs"], { cwd: f.repo, encoding: "utf8", env: checkEnv }), /pass 1/);
-  } finally { await peer.close(); await transport.close(); }
+  } finally { releaseReviews(); await peer.close(); await transport.close(); }
 });
 
 test("CLI UX: task delta excludes prior user changes and application receipts survive restart", async () => {
@@ -272,6 +300,17 @@ test("CLI UX: every artifact and changed-file page remains discoverable with sta
     assert.ok(page.evidence.participants.every((p: any) => p.assignments.some((s: any) => s.invocations > 0)));
   } while (cursor !== undefined);
   assert.deepEqual(seen, Object.keys(run.cliTeam!.artifacts));
+  const updates: string[] = [];
+  let following = await f.call("get_run", { runId: run.id, follow: true });
+  while (following.follow.next) {
+    assert.equal(following.follow.next.waitMs, 0);
+    assert.equal(following.follow.resultPage, undefined);
+    updates.push(...following.follow.updates.map((a: { id: string }) => a.id));
+    following = await f.call("get_run", following.follow.next);
+  }
+  updates.push(...following.follow.updates.map((a: { id: string }) => a.id));
+  assert.deepEqual(updates, Object.values(run.cliTeam!.artifacts).filter(a => a.kind !== "result" && a.kind !== "collection").map(a => a.id));
+  assert.equal(following.follow.resultPage.body, originalResult.body);
   const files = Array.from({ length: 213 }, (_, i) => ({ path: `file ${i}.ts`, status: "M" }));
   run.cliTeam!.artifacts.files = { id: "files", sha256: "files-hash", kind: "code_snapshot", body: "Snapshot", data: { changedFiles: files, changedFileCount: files.length } };
   const paths: any[] = []; cursor = 0;

@@ -539,14 +539,14 @@ test("project selection inherits a single repository and preserves explicit mult
 
 test("CLI workspace: real MCP proposal opens an authenticated chat, browser approval and native approval stay in sync", { timeout: 120000 }, async () => {
     const child = spawn(process.execPath, ["--import", "tsx", "src/cli-teams/cli.ts", "mcp", "--project-root", repo], { cwd: root, env: { ...process.env, CODEFLOW_HOME: join(home, "state") }, stdio: ["pipe", "pipe", "pipe"] });
-    let seq = 0, buffer = "", elicited = 0;
+    let seq = 0, buffer = "", elicited = 0, approvalMessage = "";
     const pending = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>();
     const send = (m: object) => child.stdin!.write(JSON.stringify({ jsonrpc: "2.0", ...m }) + "\n");
     child.stdout!.on("data", chunk => {
         buffer += chunk; let end: number;
         while ((end = buffer.indexOf("\n")) >= 0) {
             const m = JSON.parse(buffer.slice(0, end)); buffer = buffer.slice(end + 1);
-            if (m.method === "elicitation/create") { elicited++; send({ id: m.id, result: { action: "accept", content: { approve: true } } }); continue; }
+            if (m.method === "elicitation/create") { elicited++; approvalMessage = m.params.message; send({ id: m.id, result: { action: "accept", content: { approve: true } } }); continue; }
             const waiter = pending.get(m.id); if (waiter) { pending.delete(m.id); clearTimeout(waiter.timer); m.error ? waiter.reject(new Error(m.error.message)) : waiter.resolve(m.result); }
         }
     });
@@ -561,8 +561,10 @@ test("CLI workspace: real MCP proposal opens an authenticated chat, browser appr
     const context = await browser.newContext(), p = await context.newPage();
     try {
         await request("initialize", { protocolVersion: "2025-11-25", capabilities: { elicitation: { form: {} } } });
-        const proposal = await call("propose_run", { operationId: "cli-ui-plan", task: "Plan a login form from CLI", candidate });
-        const again = await call("propose_run", { operationId: "cli-ui-plan", task: "Plan a login form from CLI", candidate });
+        const checkpoint = { id: "inspect-draft", type: "user_decision", question: "Review the saved draft before the next worker?", options: ["Continue review", "Stop for changes"], inputs: ["draft"], continueOn: "Continue review" };
+        const firstCandidate = { ...candidate, steps: [candidate.steps[0], checkpoint, ...candidate.steps.slice(1)] };
+        const proposal = await call("propose_run", { operationId: "cli-ui-plan", task: "Plan a login form from CLI", candidate: firstCandidate });
+        const again = await call("propose_run", { operationId: "cli-ui-plan", task: "Plan a login form from CLI", candidate: firstCandidate });
         assert.equal(proposal.proposalId, again.proposalId); assert.equal(proposal.workspace.chatId, again.workspace.chatId);
         assert.equal(proposal.approvalMethod, "native_form");
         const opened = await call("open_task", { id: proposal.proposalId }); assert.equal(opened.opened, true);
@@ -576,8 +578,20 @@ test("CLI workspace: real MCP proposal opens an authenticated chat, browser appr
         assert.equal((await fetch(handoff, { redirect: "manual" })).status, 410, "ticket cannot be replayed");
         await p.locator(`button[data-chat="${proposal.workspace.chatId}"]`).waitFor();
         assert.equal(await p.locator(`button[data-chat="${proposal.workspace.chatId}"]`).count(), 1);
-        const done = await startTask(p, proposal.workspace.chatId, proposal.workspace.taskId);
+        await p.getByRole("button", { name: "Start planning", exact: true }).click();
+        const activity = p.getByRole("region", { name: "Team activity" }).first();
+        const outputs = activity.getByRole("list", { name: "Completed outputs" });
+        await outputs.getByText(/Fixture login plan/).waitFor();
+        await outputs.getByRole("button", { name: "Plan from author", exact: true }).click();
+        const openedOutput = outputs.getByRole("region", { name: "Plan from author" });
+        await openedOutput.getByText(/accessible labels, validation, keyboard focus/).waitFor();
+        assert.equal((await api(`/api/chats/${proposal.workspace.chatId}`)).tasks[0].execution.status, "running");
+        await activity.screenshot({ path: join(root, "output/playwright/cli-team-intermediate-output.png") });
+        await p.getByRole("button", { name: "Continue review", exact: true }).click();
+        const done = await until(() => api(`/api/chats/${proposal.workspace.chatId}`), s => s.tasks[0]?.execution?.status === "done", "CLI task completed after reviewing its intermediate output");
         assert.equal(done.tasks[0].execution.outcome, "agreed_plan");
+        await outputs.getByText("Review from reviewer", { exact: true }).waitFor();
+        await p.getByRole("region", { name: "Final result" }).getByText(/Fixture login plan/).waitFor();
         assert.ok(done.tasks[0].execution.participation.every((a: any) => a.assignments.some((s: any) => s.invocations > 0)), "both fixture providers participated");
         const resumed = await call("start_run", { operationId: "recover-ui-start", proposalId: proposal.proposalId, expectedRevision: proposal.revision, proposalHash: proposal.proposalHash });
         assert.equal(resumed.runId, done.tasks[0].execution.id); assert.equal(elicited, 0, "browser approval is already authoritative");
@@ -586,6 +600,7 @@ test("CLI workspace: real MCP proposal opens an authenticated chat, browser appr
         await p.reload(); await p.getByRole("button", { name: "Start planning", exact: true }).waitFor();
         const native = await call("start_run", { operationId: "native-start-ui", proposalId: next.proposalId, expectedRevision: next.revision, proposalHash: next.proposalHash });
         assert.equal(elicited, 1);
+        assert.match(approvalMessage.split("\n").slice(0, 2).join("\n"), /tick the checkbox.*\nFull proposal in Code Flow: http:\/\//);
         await until(() => api(`/api/chats/${proposal.workspace.chatId}`), s => s.tasks[1]?.execution?.outcome === "agreed_plan", "native-approved run visible in browser");
         const status = await call("get_run", { runId: native.runId }); assert.equal(status.workspace.chatId, proposal.workspace.chatId);
         assert.equal(status.conversation.latestProposal.runId, native.runId);

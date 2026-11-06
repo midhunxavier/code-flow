@@ -342,18 +342,19 @@ export function ApproachEditor({ value, onChange, catalogUrl }: {
         update(n.steps);
     } }); update(next.steps); onChange(next); }}/></label>)}{value.scope === "write" ? <><label>Setup command<input class="field" value={value.setup ?? ""} onInput={e => onChange({ ...value, setup: e.currentTarget.value || undefined })}/></label><label>Required check command<textarea class="field" value={value.check ?? ""} onInput={e => onChange({ ...value, check: e.currentTarget.value || undefined })}/></label></> : null}<p class="help">These edits use validation without coordinator inference. Describe scope or work-sequence changes in the conversation.</p></div>;
 }
-export function TaskResult({ taskId, execution, preferredId, label = "Task result" }: {
+export function TaskResult({ taskId, execution, preferredId, label = "Task result", artifactOnly = false }: {
     taskId: string;
     execution: { id: string; artifacts: { id: string; kind: string; sha256: string }[] };
     preferredId?: string;
     label?: string;
+    artifactOnly?: boolean;
 }) {
-    const artifacts = execution.artifacts.filter(a => ["result", "plan", "review", "verification"].includes(a.kind));
+    const artifacts = execution.artifacts.filter(a => artifactOnly ? a.id === preferredId : ["result", "plan", "review", "verification"].includes(a.kind));
     const preferred = artifacts.find(a => a.id === preferredId) ?? artifacts.filter(a => a.kind === "result").at(-1) ?? artifacts.at(-1);
-    const [selected, setSelected] = useState(""), [body, setBody] = useState(""), [error, setError] = useState("");
+    const [selected, setSelected] = useState(""), [body, setBody] = useState<string>(), [error, setError] = useState("");
     const artifact = artifacts.find(a => a.id === selected) ?? preferred;
     useEffect(() => { if (!artifact)
-        return; const controller = new AbortController(); setBody(""); setError(""); void (async () => { try {
+        return; const controller = new AbortController(); setBody(undefined); setError(""); void (async () => { try {
         let cursor: number | undefined = 0, text = "";
         do {
             const page: {
@@ -372,7 +373,7 @@ export function TaskResult({ taskId, execution, preferredId, label = "Task resul
     } })(); return () => controller.abort(); }, [taskId, execution.id, artifact?.id, artifact?.sha256]);
     if (!artifact)
         return null;
-    return <section class="task-result" aria-label={label}>{error ? <p role="alert">{error}</p> : body ? artifact.kind === "result" ? <StoppedResult body={body}/> : <Markdown text={body}/> : <p role="status">Loading the complete artifact…</p>}<details class="task-result-options"><summary><Icon name="files" />Result and evidence <span>{artifacts.length}</span></summary><label>Show artifact<select class="field" value={artifact.id} onChange={e => setSelected(e.currentTarget.value)}>{artifacts.map(a => <option key={a.id} value={a.id}>{a.kind.replaceAll("_", " ")} · {a.id.slice(-8)}</option>)}</select></label><p class="help">Agreement records reviewer verdicts on a specific version. Passing checks apply to their recorded code snapshot.</p></details></section>;
+    return <section class="task-result" aria-label={label}>{error ? <p role="alert">{error}</p> : body === undefined ? <p role="status">Loading the complete artifact…</p> : !body ? <p class="help">No output text was recorded.</p> : artifact.kind === "result" ? <StoppedResult body={body}/> : <Markdown text={body}/>} {!artifactOnly ? <details class="task-result-options"><summary><Icon name="files" />Result and evidence <span>{artifacts.length}</span></summary><label>Show artifact<select class="field" value={artifact.id} onChange={e => setSelected(e.currentTarget.value)}>{artifacts.map(a => <option key={a.id} value={a.id}>{a.kind.replaceAll("_", " ")} · {a.id.slice(-8)}</option>)}</select></label><p class="help">Agreement records reviewer verdicts on a specific version. Passing checks apply to their recorded code snapshot.</p></details> : null}</section>;
 }
 function HistoricalApproach({ taskId, proposalId, revision, scope }: {
     taskId: string;

@@ -38,9 +38,32 @@ export function formatToolResult(name: string, value: any): string {
   if (!value.ok) return `Code Flow: ${value.error.message}\nCode: ${value.error.code}${value.error.nextAction ? `\nNext: ${value.error.nextAction}` : ""}`;
   const d = value.data;
   const link = d.workspace?.url ? `\nOpen in Code Flow: ${d.workspace.url}` : "";
+  if (name === "codeflow_get_run" && d.follow) {
+    const lines = [`Run: ${d.runId}`];
+    const updates = d.follow.updates.map((update: any) => `Completed ${update.kind.replaceAll("_", " ")}${update.participant ? ` from ${update.participant}` : ""}${update.truncated ? " (excerpt)" : ""}:\n${update.excerpt}`);
+    if (d.follow.next) {
+      if (d.follow.changed) {
+        if (updates.length) lines.push(...updates, "Before the next tool call, tell the user what each new output found or recommended. Write it as a visible message in the conversation.");
+        lines.push(d.progress.message);
+        for (const step of d.progress.active) lines.push(`Active: ${step.participant ? `${step.participant} · ` : ""}${step.title}`);
+        if (!updates.length) lines.push("Share meaningful progress in the conversation as an interim update.");
+      } else lines.push("No new progress in this wait.");
+      lines.push(`Continue monitoring in this turn. Call codeflow_get_run with ${JSON.stringify(d.follow.next)}.`);
+    } else {
+      lines.push(...updates);
+      const result = d.follow.resultPage;
+      if (result) {
+        lines.push(`${result.nextCursor === undefined ? "Recorded result" : "First page of recorded result"}:\n${result.body}`);
+        if (result.nextCursor !== undefined) lines.push(`Read the rest with codeflow_get_artifact using ${JSON.stringify({ runId: d.runId, artifactId: result.id, sha256: result.sha256, cursor: result.nextCursor })}. Follow all pages.`);
+        lines.push("Use the recorded artifact to present the result in this turn.");
+      }
+      lines.push(formatStatus(d));
+    }
+    return lines.join("\n");
+  }
   if (name === "codeflow_get_run") return `${formatStatus(d)}\nRun: ${d.runId} · event cursor: ${d.afterCursor}${d.nextArtifactCursor !== undefined ? ` · next artifact cursor: ${d.nextArtifactCursor}` : ""}`;
-  if (name === "codeflow_propose_run") return `${d.summary ?? d.preview}\nProposal: ${d.proposalId} · revision: ${d.revision}\nHash: ${d.proposalHash}\n${d.nextAction}${link}`;
-  if (name === "codeflow_start_run") return `Task started or existing execution recovered.\nRun: ${d.runId}\nRead progress with codeflow_get_run.${link}`;
+  if (name === "codeflow_propose_run") return `${link ? `${link.slice(1)}\n` : ""}Proposal: ${d.proposalId} · revision: ${d.revision}\n${d.summary ?? d.preview}\nHash: ${d.proposalHash}\n${d.nextAction}`;
+  if (name === "codeflow_start_run") return `Task started or existing execution recovered.\nRun: ${d.runId}\nContinue in this turn: call codeflow_get_run with ${JSON.stringify(d.follow ?? { runId: d.runId, follow: true })}. Follow progress and deliver the result without waiting for another message.${link}`;
   if (name === "codeflow_list_providers") return [d.connection?.message ?? "Code Flow is connected to this project.", ...(d.providers ?? []).map((p: any) => `${p.id}: ${p.installed ? "CLI found" : "CLI missing"}`), d.connection?.configuration?.message, `Confirmation: ${d.approvalMethod ?? "host dependent"}. Authentication and execution permissions remain unverified.`].filter(Boolean).join("\n");
   if (name === "codeflow_list_runs") return d.runs.length ? d.runs.map((r: any) => `${r.task} · ${r.outcome ?? r.status}\nRun: ${r.runId}`).join("\n\n") + (d.nextCursor !== undefined ? `\nMore tasks: cursor ${d.nextCursor}` : "") : "No Code Flow tasks found in this repository.";
   if (name === "codeflow_get_artifact") return `${d.body}\n\nArtifact: ${d.id} · SHA-256: ${d.sha256}${d.nextCursor !== undefined ? `\nMore content: cursor ${d.nextCursor}; retrieve the remaining pages.` : ""}${d.data?.nextFileCursor !== undefined ? `\nMore files: fileCursor ${d.data.nextFileCursor}.` : ""}`;
