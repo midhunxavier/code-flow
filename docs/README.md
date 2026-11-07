@@ -29,6 +29,8 @@ Requires **macOS 13+**. The app opens its own window and keeps agents running wh
 <a href="verification.md"><strong>Review with confidence ↗</strong><span>Understand checks, review evidence and when a result is ready to ship.</span></a>
 </div>
 
+Read the story: [Your coding agents. One workspace.](https://midhunxavier.com/blog/code-flow/one-workspace-for-your-coding-agents/) · [Code Flow journal](https://midhunxavier.com/blog/code-flow/)
+
 ## From task to reviewed result
 
 1. **Open a project.** Choose Open repository, confirm its project, then describe the outcome and add context.
