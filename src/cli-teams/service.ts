@@ -202,7 +202,7 @@ export class CliTeamsService {
       `Limit: up to ${p.definition.limits.maxInvocations} agent call${p.definition.limits.maxInvocations === 1 ? "" : "s"} · ${p.definition.limits.maxMinutes} minutes`,
     ].join("\n");
   }
-  /** A signed-in link to review and start this exact revision in the browser. */
+  /** A single-use link to review and start this exact revision in a browser that is already signed in. */
   async approvalLink(c: Connection, proposalId: string, revision: number) {
     const p = this.proposal(c, proposalId);
     if (p.revision !== revision || p.runId) fail("revision_conflict", "Proposal changed or already started; retrieve the current proposal");

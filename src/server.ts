@@ -1613,10 +1613,12 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
   if (via === "lan") checkLanOrigin(req); else checkOrigin(req);
   if (url.pathname.startsWith("/cli-workspace/") && req.method === "GET") {
     if (via !== "local") throw new HttpError(404, "Not found");
-    const destination = workspaceHandoffs.consume(url.pathname.slice("/cli-workspace/".length));
-    if (!destination) throw new HttpError(410, "This workspace link expired. Run codeflow open again.");
+    const ticket = workspaceHandoffs.redeem(url.pathname.slice("/cli-workspace/".length));
+    if (!ticket) throw new HttpError(410, "This workspace link expired. Run codeflow open again.");
+    // An approval link only shows the plan: a browser that is not signed in yet signs in the usual way.
+    if (!ticket.signIn) { res.writeHead(303, { location: ticket.path, "cache-control": "no-store", "referrer-policy": "no-referrer", ...NO_FRAMES }); return res.end(); }
     auth.claimable = false;
-    res.writeHead(303, { location: destination, "set-cookie": [sessionCookie(), clearCookie(SHARED_COOKIE)], "cache-control": "no-store", "referrer-policy": "no-referrer", ...NO_FRAMES });
+    res.writeHead(303, { location: ticket.path, "set-cookie": [sessionCookie(), clearCookie(SHARED_COOKIE)], "cache-control": "no-store", "referrer-policy": "no-referrer", ...NO_FRAMES });
     return res.end();
   }
   // A public local-origin bounce lets Strict cookies accompany a hub-initiated handoff.
@@ -3079,8 +3081,8 @@ if (taskConversationsReady) {
   const workspaceUrl = (path: string) => `http://localhost:${PORT}${path}`;
   connectCliWorkspace(cliTeams, taskConversations, conversations, projects, {
     url: workspaceUrl,
-    // Shown only in the host's own confirmation dialog: single-use, local-only, 16 random bytes.
-    link: path => { const ticket = workspaceHandoffs.issue(path, 10 * 60_000, 16); return { url: workspaceUrl(`/cli-workspace/${ticket}`), ticket }; },
+    // Shown only in the host's own confirmation dialog: single-use, local-only, 16 random bytes, never a sign-in.
+    link: path => { const ticket = workspaceHandoffs.issue(path, 10 * 60_000, 16, false); return { url: workspaceUrl(`/cli-workspace/${ticket}`), ticket }; },
     revoke: ticket => workspaceHandoffs.revoke(ticket),
     open: async path => {
       const ticket = workspaceHandoffs.issue(path);

@@ -628,17 +628,21 @@ test("CLI workspace: real MCP proposal opens an authenticated chat, browser appr
         assert.equal(status.conversation.latestProposal.runId, native.runId);
         await p.screenshot({ path: join(root, "output/playwright/cli-workspace-synced.png"), fullPage: true });
 
-        // Start from the browser instead: open the dialog's link in a signed-out browser and press Start there.
+        // Start from the browser instead: the dialog's link opens the plan, and Start is pressed there.
         answerForms = false;
         const third = await call("propose_run", { operationId: "cli-ui-third", task: "Review the login plan a third time", candidate, context: { chatId: proposal.workspace.chatId } });
         const pendingStart = request("tools/call", { name: "codeflow_start_run", arguments: { operationId: "browser-start-ui", proposalId: third.proposalId, expectedRevision: third.revision, proposalHash: third.proposalHash } });
         await until(async () => forms.length, n => n === 2, "approval dialog with a browser link");
         const dialog = forms[1], approvalLink = dialog.params.message.split("\n")[2];
         assert.match(approvalLink, /^http:\/\/localhost:\d+\/cli-workspace\/[a-f0-9]{32}$/);
-        const fresh = await browser.newContext(), signedOut = await fresh.newPage();
+        // Anything holding the CLI bootstrap secret can ask for this link, so it must never sign a browser in.
+        const linked = await fetch(approvalLink, { redirect: "manual" });
+        assert.equal(linked.status, 303); assert.equal(linked.headers.get("set-cookie"), null, "the approval link does not sign a browser in");
+        const plan = linked.headers.get("location")!; assert.match(plan, /^\/\?team=local#\/chat\/[a-f0-9]{32}$/);
+        const fresh = await browser.newContext(), signedIn = await fresh.newPage();
         try {
-            await signedOut.goto(approvalLink);
-            await signedOut.getByRole("button", { name: "Start planning", exact: true }).click();
+            await signedIn.goto(`${base}/?token=${token}`); await signedIn.goto(`${base}${plan}`);
+            await signedIn.getByRole("button", { name: "Start planning", exact: true }).click();
             const started = (await pendingStart).structuredContent;
             assert.equal(started.ok, true, JSON.stringify(started));
             assert.ok(notices.some(n => n.method === "notifications/cancelled" && n.params.requestId === dialog.id), "the Claude dialog is closed after a browser start");
