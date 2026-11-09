@@ -15,14 +15,17 @@ export function showTaskSection(taskId: string, section: TaskSection) {
   }));
 }
 
-const providerName = (id: string) => id === "codex" ? "Codex" : id === "claude" ? "Claude" : id;
+const providerName = (id: string) => id === "codex" ? "Codex" : id === "claude" ? "Claude" : id === "agy" ? "Antigravity" : id;
 const scopeLabel = (scope: string) => scope === "write" ? "Code changes" : scope === "review" ? "Review only, no file changes" : "Plan only, no file changes";
 
 /** The approach as people read it before and after starting: team, steps, done-when and limits. */
 export function ApproachSummary({ task }: { task: TaskSnapshot }) {
   const proposal = task.proposal!, d = proposal.definition;
+  // Starting here approves the proposal, so an unrestricted Antigravity worker must be as visible as in the CLI card.
+  const unrestricted = d.antigravity === "unrestricted" && d.participants.some(p => p.provider === "agy" && p.binding !== "current_session");
   return <div class="task-plan-view">
-    <section><h3>Team</h3><ul class="task-plan-team">{d.participants.map(p => <li key={p.id}><b>{p.id}</b><span>{providerName(p.provider)}{p.model ? ` · ${p.model}` : ""}{p.effort ? ` · ${p.effort}` : ""}</span></li>)}</ul></section>
+    <section><h3>Team</h3><ul class="task-plan-team">{d.participants.map(p => <li key={p.id}><b>{p.id}</b><span>{providerName(p.provider)}{p.model ? ` · ${p.model}` : ""}{p.effort ? ` · ${p.effort}` : ""}{unrestricted && p.provider === "agy" && p.binding !== "current_session" ? " · unrestricted" : ""}</span></li>)}</ul></section>
+    {unrestricted ? <p class="task-execution-note" role="note">Antigravity: unrestricted. agy uses your normal profile and settings, outside Code Flow's sandbox. Terminal, browser, MCP and hooks are not restricted by Code Flow.</p> : null}
     <section><h3>Steps</h3><Sequence steps={d.steps}/></section>
     {d.completion.length ? <section><h3>Done when</h3><ul>{d.completion.map(item => <li key={item}>{item}</li>)}</ul></section> : null}
     <p class="task-plan-meta">{scopeLabel(d.scope)} · up to {d.limits.maxInvocations} agent calls · {d.limits.maxMinutes} min · source <code>{proposal.source.commit.slice(0, 10)}</code> ({proposal.source.source === "working_changes" ? "working copy" : "committed code"}){d.check ? <> · check <code>{d.check}</code></> : null}</p>

@@ -57,7 +57,9 @@ export class TaskConversations {
         return this.serialized(async () => {
             const existing = this.tasks.get(p.taskId!);
             if (existing && (existing.project !== p.project || existing.repo !== p.repo || existing.chatId !== p.chatId)) fail("scope_denied", "Task workspace identity changed");
-            const first = p.definition.participants.find(a => a.binding !== "current_session") ?? p.definition.participants[0]!;
+            // Browser task leads are Claude or Codex, so an Antigravity worker is never chosen to lead.
+            const managed = p.definition.participants.filter(a => a.binding !== "current_session");
+            const first = managed.find(a => a.provider === "claude" || a.provider === "codex") ?? managed[0] ?? p.definition.participants[0]!;
             const t: TaskConversation = existing ? structuredClone(existing) : {
                 id: p.taskId!, version: 0, project: p.project!, repo: p.repo, chatId: p.chatId, createHash: digest(["cli", p.taskId]), createdAt: Date.now(), updatedAt: Date.now(), request: p.task,
                 source: p.source.source, untracked: p.context.untracked ?? [], coordinator: { id: "coordinator", provider: first.provider, model: first.model, effort: first.effort },
@@ -126,7 +128,9 @@ export class TaskConversations {
             let provider = a.coordinator?.provider;
             if (!provider) {
                 const discovered = await this.core.operateWeb({ project, repo }, "codeflow_list_providers", {});
-                provider = discovered.preferredProvider ?? discovered.providers.find((p: any) => p.installed)?.id;
+                // Coordinators are Claude or Codex; an Antigravity preference applies to workers.
+                const lead = (id: unknown) => id === "claude" || id === "codex";
+                provider = (lead(discovered.preferredProvider) ? discovered.preferredProvider : undefined) ?? discovered.providers.find((p: any) => p.installed && lead(p.id))?.id;
             }
             const request = text(a.request, "Task", 12000), coordinator: Participant = { id: "coordinator", provider, ...a.coordinator };
             if (a.coordinator)

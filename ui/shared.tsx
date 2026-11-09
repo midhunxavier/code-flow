@@ -29,7 +29,7 @@ export function SharedLogin({ onSignedIn = reload }: { onSignedIn?: () => void }
     <label for="shared-username">Username</label><input id="shared-username" class="field" value={username} maxLength={64} autoComplete="username" required onInput={(event) => setUsername(event.currentTarget.value)} />
     <label for="shared-password">Password</label><input ref={passwordInput} id="shared-password" class="field" type="password" value={password} autoComplete="current-password" required onInput={(event) => setPassword(event.currentTarget.value)} />
     {error ? <p class="shared-error" role="alert">{error}</p> : null}<button class="btn primary shared-submit" type="submit" disabled={busy || !username || !password}>{busy ? "Signing in…" : "Sign in"}</button>
-  </form><p class="help">The owner can still use the recovery link printed in the server terminal. Network sign-in requires HTTPS.</p></div></main>;
+  </form>{["localhost", "127.0.0.1"].includes(location.hostname) ? <p class="help">Came here from a link in Claude Code, Codex or Antigravity? You do not need an account. Ask that CLI to open the task in Code Flow, or run <code>codeflow open</code> with the proposal ID in your project folder; either signs this browser in.</p> : null}<p class="help">The owner can still use the recovery link printed in the server terminal. Network sign-in requires HTTPS.</p></div></main>;
 }
 
 export function SharedAccountsPanel({ projects, projectId }: { projects: Array<{ id: string; name: string }>; projectId?: string }) {

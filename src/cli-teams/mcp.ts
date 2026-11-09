@@ -113,7 +113,7 @@ export async function serveMcp(projectRoot: string, explicit = true) {
             if (!["codeflow_start_run", "codeflow_apply_handoff"].includes(name) || !nativeForm || !(e instanceof CliTeamError) || e.code !== "acceptance_required") throw e;
             await approveInHost(m.id, args, name === "codeflow_apply_handoff"); data = await client.call(name, args);
           }
-          if (name === "codeflow_propose_run") data = { ...data, approvalMethod: nativeForm ? "native_form" : data.workspace ? "browser" : "terminal", ...(nativeForm ? { nextAction: "Paste the proposal card above into your reply word for word, with the Open in Code Flow link, before any other tool call. The approval form shows only its first lines, so your reply is where the user reads the plan. Then call codeflow_start_run with its ID, revision and hash; Code Flow asks the user to accept inside this session." } : data.workspace ? { nextAction: "Review and start the approach in Code Flow using workspace.url or codeflow_open_task. Then call codeflow_start_run with the same proposal revision and hash to recover the existing run. Terminal approval remains available." } : {}) };
+          if (name === "codeflow_propose_run") data = { ...data, approvalMethod: nativeForm ? "native_form" : data.workspace ? "browser" : "terminal", ...(nativeForm ? { nextAction: "Paste the proposal card above into your reply word for word, with the Open in Code Flow link, before any other tool call. The approval form shows only its first lines, so your reply is where the user reads the plan. Then call codeflow_start_run with its ID, revision and hash; Code Flow asks the user to accept inside this session." } : data.workspace ? { nextAction: "Call codeflow_open_task now so the approach opens in the user's browser already signed in; the plain workspace.url works only in a browser that is already signed in to Code Flow, and no username or password is needed. The user reviews and starts it there. Then call codeflow_start_run with the same proposal revision and hash to recover the existing run. Terminal approval remains available." } : {}) };
           if (name === "codeflow_start_run") data = { ...data, follow: { runId: data.runId, follow: true } };
           if (name === "codeflow_list_providers") {
             // Inspect host-side files here, not in the owner (which may be a bundled remote host).
@@ -174,7 +174,7 @@ export async function serveMcp(projectRoot: string, explicit = true) {
 }
 
 async function serveOutsideRepository(folder: string) {
-  const message = `Code Flow works on a Git repository, and this session started in ${folder}, which is not inside one. Ask the user to start claude or codex from their project folder (or run git init there), then reconnect Code Flow from /mcp.`;
+  const message = `Code Flow works on a Git repository, and this session started in ${folder}, which is not inside one. Ask the user to start claude, codex or agy from their project folder (or run git init there), then reconnect Code Flow from /mcp.`;
   const send = (value: unknown) => process.stdout.write(`${JSON.stringify(value)}\n`);
   const { createInterface } = await import("node:readline");
   for await (const line of createInterface({ input: process.stdin })) {
