@@ -922,8 +922,13 @@ test("projects: the Automations page and its inbox follow the project you're in;
   assert.deepEqual(await page.locator(".auto-row b").allInnerTexts(), ["E2E side hook"]);
   // Scheduling exposes its scope in the shared project picker. Legacy records
   // without a project have their own notice and do not imply another project.
-  await page.locator(".automation-management .project-btn").click();
-  await page.locator(".project-row", { hasText: "All projects" }).locator(".pr-main").click();
+  // On a busy runner the first click can land before the picker is ready; open it until its rows show.
+  const allProjects = page.locator(".project-row", { hasText: "All projects" }).locator(".pr-main");
+  for (let attempt = 0; attempt < 3 && !await allProjects.isVisible(); attempt++) {
+    await page.locator(".automation-management .project-btn").click();
+    await allProjects.waitFor({ timeout: 8_000 }).catch(() => undefined);
+  }
+  await allProjects.click();
   await page.locator(".project-btn", { hasText: "All projects" }).waitFor();
   assert.equal(await page.locator(".auto-row").count(), total);
   await page.goto(`${BASE}/#/inbox`);
