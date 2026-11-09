@@ -15,17 +15,22 @@ export type ChatSettings = { model?: string; effort?: string };
 export type ChatPermissions = { trust: Trust; tools: boolean };
 
 /** Choices belong to the next message; changing them never changes an in-flight turn. */
-export function ChatControls({ agent, onAgent, settings, onSettings, permissions, onPermissions, restricted = false, approvalsAvailable = true, approvalsUnavailableReason, providers, showPermissions = true, resetPermissionsOnAgentChange = true, unrestricted = false, labeled = false }: {
+export function ChatControls({ agent, onAgent, settings, onSettings, permissions, onPermissions, restricted = false, approvalsAvailable = true, approvalsUnavailableReason, providers, showPermissions = true, resetPermissionsOnAgentChange = true, unrestricted = false, acpAllowed = false, onAcpAllowed, labeled = false }: {
   agent: AgentId; onAgent?: (id: AgentId) => void;
   settings: ChatSettings; onSettings: (settings: ChatSettings) => void;
   permissions: ChatPermissions; onPermissions: (permissions: ChatPermissions) => void;
   restricted?: boolean; approvalsAvailable?: boolean; approvalsUnavailableReason?: string; providers?: AgentInfo[]; showPermissions?: boolean; resetPermissionsOnAgentChange?: boolean;
   /** Unrestricted Antigravity (agy-native-v1): the trust choice doesn't sandbox it. */
   unrestricted?: boolean;
+  /** The run opted in to unrestricted ACP agents (acp-native-v1), so they can be chosen. */
+  acpAllowed?: boolean;
+  /** Where the provider menu itself is the place to opt in (the chat page has no Advanced section). */
+  onAcpAllowed?: (allowed: boolean) => void;
   labeled?: boolean;
 }) {
   const [custom, setCustom] = useState(false);
   const choices = providers ?? agents.value;
+  const acpPolicy = acpAllowed ? { acpExecution: "native" as const } : undefined;
   const provider = choices.find((entry) => entry.id === agent);
   const raw = catalogs.value[agent];
   const catalog = raw && !("error" in raw) ? raw : undefined;
@@ -46,7 +51,7 @@ export function ChatControls({ agent, onAgent, settings, onSettings, permissions
   const field = (name: string, control: ComponentChildren) => labeled ? <div class="chat-setting-row"><span class="chat-setting-label" aria-hidden="true">{name}</span>{control}</div> : control;
   return <div class={`chat-controls${labeled ? " chat-controls-labeled" : ""}`}>
     {field("Provider", onAgent ? <Menu above label="Provider" icon="layers" class="chat-choice" trigger={trigger(provider?.displayName ?? agent)}>
-      {(close) => <><MenuTitle>Provider</MenuTitle>{choices.map((entry) => <MenuItem key={entry.id} on={entry.id === agent} disabled={!!providerProblem(entry, providers ? null : health.value)} sub={providerProblem(entry, providers ? null : health.value) || undefined} onClick={() => { onAgent(entry.id); if (permissions.tools && resetPermissionsOnAgentChange) onPermissions({ trust: "standard", tools: entry.id === "codex" || entry.id === "claude" }); setCustom(false); close(); }}>{pick(entry.id === agent, entry.displayName)}</MenuItem>)}</>}
+      {(close) => <><MenuTitle>Provider</MenuTitle>{choices.map((entry) => <MenuItem key={entry.id} on={entry.id === agent} disabled={!!providerProblem(entry, providers ? null : health.value, acpPolicy)} sub={providerProblem(entry, providers ? null : health.value, acpPolicy) || undefined} onClick={() => { onAgent(entry.id); if (permissions.tools && resetPermissionsOnAgentChange) onPermissions({ trust: "standard", tools: entry.id === "codex" || entry.id === "claude" }); setCustom(false); close(); }}>{pick(entry.id === agent, entry.displayName)}</MenuItem>)}{onAcpAllowed && choices.some(entry => entry.id.startsWith("acp:")) ? <MenuItem on={acpAllowed} sub="OpenCode, Kilo, Cline and other connected CLIs use their own tools and settings: no Code Flow sandbox or subagent limits. Needs Full access." onClick={() => onAcpAllowed(!acpAllowed)}>{pick(acpAllowed, "Allow unrestricted ACP agents")}</MenuItem> : null}</>}
     </Menu> : <span class="chat-provider-fixed" title="Provider stays fixed for this conversation. Start a new run to use another provider.">{provider?.displayName ?? agent}</span>)}
     {field("Model", <ModelSelect compact label="Model" title={`Model · ${provider?.displayName ?? agent}`} value={showCustom ? "__custom" : settings.model ?? ""} placeholder={modelName} note={listError ? `Couldn't list models: ${listError}` : undefined}
       options={[
@@ -62,29 +67,32 @@ export function ChatControls({ agent, onAgent, settings, onSettings, permissions
         {!efforts.length ? <MenuTitle>{listError ? "Effort choices unavailable — models could not be listed" : "This model offers no effort choices"}</MenuTitle> : null}
       </>}
     </Menu>)}
-    {showPermissions ? <PermissionMenu agent={agent} permissions={permissions} onPermissions={onPermissions} restricted={restricted} approvalsAvailable={approvalsAvailable} approvalsUnavailableReason={approvalsUnavailableReason} unrestricted={unrestricted} /> : null}
+    {showPermissions ? <PermissionMenu agent={agent} permissions={permissions} onPermissions={onPermissions} restricted={restricted} approvalsAvailable={approvalsAvailable} approvalsUnavailableReason={approvalsUnavailableReason} unrestricted={unrestricted} acpAllowed={acpAllowed} /> : null}
     {showCustom ? <><input class="field chat-custom-model" aria-label="Custom model" aria-invalid={!!modelError} aria-describedby={modelError ? errorId : undefined} placeholder="Model ID" value={settings.model ?? ""} onInput={(event) => chooseModel(event.currentTarget.value)} onBlur={(event) => chooseModel(event.currentTarget.value.trim())} />{modelError ? <span id={errorId} class="help" role="status">{modelError}</span> : null}</> : null}
   </div>;
 }
 
-export function PermissionMenu({ agent = "codex", permissions, onPermissions, restricted = false, approvalsAvailable = true, approvalsUnavailableReason, unrestricted = false }: {
-  agent?: AgentId; permissions: ChatPermissions; onPermissions: (value: ChatPermissions) => void; restricted?: boolean; approvalsAvailable?: boolean; approvalsUnavailableReason?: string; unrestricted?: boolean;
+export function PermissionMenu({ agent = "codex", permissions, onPermissions, restricted = false, approvalsAvailable = true, approvalsUnavailableReason, unrestricted = false, acpAllowed = false }: {
+  agent?: AgentId; permissions: ChatPermissions; onPermissions: (value: ChatPermissions) => void; restricted?: boolean; approvalsAvailable?: boolean; approvalsUnavailableReason?: string; unrestricted?: boolean; acpAllowed?: boolean;
 }) {
-  const unavailable = runProviderProblem(agent);
-  const canAsk = approvalsAvailable && !restricted && (agent === "codex" || agent === "claude");
+  const unavailable = runProviderProblem(agent, agent, acpAllowed ? { acpExecution: "native" } : undefined);
+  // An unrestricted ACP agent runs only with Full access; its own permission requests can still be answered.
+  const acp = acpAllowed && agent.startsWith("acp:");
+  const canAsk = approvalsAvailable && !restricted && (agent === "codex" || agent === "claude" || acp);
   // Each item is one trust level; approvals kept at Safe, Trusted or Full access tick that level and show in the label.
-  const asking = asksForApproval(permissions);
+  const asking = asksForApproval(permissions, acp);
   const level = (trust: Trust) => !asking && permissions.trust === trust;
   const pick = (selected: boolean, text: string) => <><span>{text}</span>{selected ? <span class="chat-choice-check" aria-label="Selected">✓</span> : null}</>;
   // Unrestricted Antigravity always runs with full native access, whatever trust level is chosen.
   return (
-    <Menu above label="Permissions" icon="sliders" class={`chat-choice chat-permissions ${unrestricted || permissions.trust === "full" && !permissions.tools ? "full-access" : ""}`} title={unrestricted ? "Unrestricted Antigravity: no Code Flow sandbox" : undefined} trigger={<><Icon name="sliders" /><span>{unrestricted ? "Unrestricted" : permissionLabel(permissions)}</span><Icon name="chevron" /></>}>
+    <Menu above label="Permissions" icon="sliders" class={`chat-choice chat-permissions ${unrestricted || permissions.trust === "full" && !permissions.tools ? "full-access" : ""}`} title={unrestricted ? "Unrestricted Antigravity: no Code Flow sandbox" : undefined} trigger={<><Icon name="sliders" /><span>{unrestricted ? "Unrestricted" : permissionLabel(permissions, acp)}</span><Icon name="chevron" /></>}>
       {(close) => <><MenuTitle>How should actions be approved?</MenuTitle>{unavailable ? <MenuTitle>{unavailable}</MenuTitle> : null}
         {unrestricted ? <MenuTitle>Unrestricted Antigravity is on: it uses your normal profile and settings without Code Flow's sandbox, whichever level is chosen.</MenuTitle> : null}
-        <MenuItem on={level("safe")} disabled={!!unavailable} sub="Edit files only. Claude can't run commands; Codex stays sandboxed." onClick={() => { onPermissions({ trust: "safe", tools: false }); close(); }}>{pick(level("safe"), "Safe")}</MenuItem>
-        <MenuItem on={asking} disabled={!!unavailable || !canAsk && !asking} sub={canAsk ? "Show supported tool requests in the approval inbox." : approvalsUnavailableReason ?? "Requires a local Claude or Codex provider with approval support."} onClick={() => { onPermissions({ trust: "standard", tools: true }); close(); }}>{pick(asking, "Ask for approval")}</MenuItem>
-        <MenuItem on={level("standard")} disabled={restricted || !!unavailable} sub="Allow routine edits and commands. Restricted actions are blocked." onClick={() => { onPermissions({ trust: "standard", tools: false }); close(); }}>{pick(level("standard"), "Approve for me")}</MenuItem>
-        <MenuItem on={level("trusted")} disabled={restricted || !!unavailable} sub="Any command for Claude; network inside Codex's sandbox. For repositories you trust." onClick={() => { onPermissions({ trust: "trusted", tools: false }); close(); }}>{pick(level("trusted"), "Trusted")}</MenuItem>
+        {acp ? <MenuTitle>Unrestricted ACP agent: it needs Full access and uses its own tools and settings. Ask for approval sends the permission requests it makes to the approval inbox.</MenuTitle> : null}
+        <MenuItem on={level("safe")} disabled={!!unavailable || acp} sub="Edit files only. Claude can't run commands; Codex stays sandboxed." onClick={() => { onPermissions({ trust: "safe", tools: false }); close(); }}>{pick(level("safe"), "Safe")}</MenuItem>
+        <MenuItem on={asking} disabled={!!unavailable || !canAsk && !asking} sub={canAsk ? "Show supported tool requests in the approval inbox." : approvalsUnavailableReason ?? "Requires a local Claude or Codex provider with approval support."} onClick={() => { onPermissions({ trust: acp ? "full" : "standard", tools: true }); close(); }}>{pick(asking, "Ask for approval")}</MenuItem>
+        <MenuItem on={level("standard")} disabled={restricted || !!unavailable || acp} sub="Allow routine edits and commands. Restricted actions are blocked." onClick={() => { onPermissions({ trust: "standard", tools: false }); close(); }}>{pick(level("standard"), "Approve for me")}</MenuItem>
+        <MenuItem on={level("trusted")} disabled={restricted || !!unavailable || acp} sub="Any command for Claude; network inside Codex's sandbox. For repositories you trust." onClick={() => { onPermissions({ trust: "trusted", tools: false }); close(); }}>{pick(level("trusted"), "Trusted")}</MenuItem>
         <MenuItem on={level("full")} disabled={restricted || !!unavailable} sub="No provider sandbox. Commands, network and files outside the worktree." onClick={() => { onPermissions({ trust: "full", tools: false }); close(); }}>{pick(level("full"), "Full access")}</MenuItem>
         {restricted ? <MenuTitle>This run's permission restrictions stay in effect.</MenuTitle> : null}
       </>}

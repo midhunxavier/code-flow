@@ -3,9 +3,9 @@ import type { Health } from "./state.js";
 import { runProviderProblem } from "../src/run-permissions.js";
 export const POLICY_PAUSED = "Paused by filesystem policy";
 
-export function providerProblem(entry: AgentInfo, diagnostics: readonly Health[] | null = null): string {
+export function providerProblem(entry: AgentInfo, diagnostics: readonly Health[] | null = null, policy?: { acpExecution?: "native" }): string {
   if (!entry.available) return entry.unavailableReason === "filesystem-policy" ? POLICY_PAUSED : "Not installed";
-  const unsupported = runProviderProblem(entry.id, entry.displayName);
+  const unsupported = runProviderProblem(entry.id, entry.displayName, policy);
   if (unsupported) return unsupported;
   const health = diagnostics?.find(item => item.id === entry.id);
   if (health?.signedIn === false) return "Signed out — sign in from Settings → Agents & models";
@@ -13,8 +13,8 @@ export function providerProblem(entry: AgentInfo, diagnostics: readonly Health[]
   return "";
 }
 
-export function providerSetupProblem(entries: readonly AgentInfo[], diagnostics: readonly Health[] | null): string {
-  if (entries.some(entry => !providerProblem(entry, diagnostics))) return "";
+export function providerSetupProblem(entries: readonly AgentInfo[], diagnostics: readonly Health[] | null, policy?: { acpExecution?: "native" }): string {
+  if (entries.some(entry => !providerProblem(entry, diagnostics, policy))) return "";
   const signedOut = diagnostics?.find(item => item.installed && item.signedIn === false);
   if (signedOut) return `${signedOut.name} isn't signed in — open Settings → Agents & models`;
   const installed = entries.find(entry => entry.available);

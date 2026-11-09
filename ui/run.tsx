@@ -297,6 +297,7 @@ export function RunView({ id }: { id: string }) {
                 {run.chatLink?.kind !== "side" ? <ProjectChip run={run} /> : null}
                 <span class="run-pattern">{leadTurn ? "Conversation lead" : p?.name ?? run.pattern}</span>
                 {run.permissions?.antigravityExecution === "native" ? <span class="badge warn run-unrestricted" title="Antigravity turns in this run use your normal profile and settings without Code Flow's sandbox">Unrestricted Antigravity</span> : null}
+                {run.permissions?.acpExecution === "native" ? <span class="badge warn run-unrestricted" title="ACP agents in this run use their own tools and settings without Code Flow's sandbox or delegation limits">Unrestricted ACP</span> : null}
                 {teamTask ? <a class="run-team-task" href={`#/team/task/${enc(teamTask)}`} title="This run executes a task of the team board">Team task</a> : null}
               </div>
               <h2 title={leadTurn ? "Conversation lead" : run.task}>{runTitle(run)}</h2>
@@ -2101,7 +2102,7 @@ export function ConversationBar({ run, steps, chat, onOpenChat }: { run: RunSumm
                 </select>
               </label>
             )}
-            {!running && chosen !== "team" && replyAgent && !(chat && (runs.value.get(chatTaskId(run)) ?? run).taskTeam?.enabled) ? <ChatControls showPermissions={run.chatLink?.kind !== "side"} providers={run.chatLink?.kind === "side" ? agents.value.filter(item => item.id === "claude" || item.id === "codex" || item.id === "agy") : undefined} agent={replyAgent} onAgent={chat && draftReady ? agent => setHandoff({ agent, settings: agent === replyAgent ? selectedSettings : replySettings[agent] ?? {} }) : undefined} resetPermissionsOnAgentChange={!chat} settings={selectedSettings} onSettings={(value) => setReplySettings({ ...replySettings, [replyAgent]: value })} permissions={selectedPermissions} onPermissions={setReplyPermissions} restricted={!!run.lockdown || !!run.trigger} approvalsAvailable={!run.loop.remoteWorker && !run.loop.agentContainer} unrestricted={replyAgent === "agy" && run.permissions?.antigravityExecution === "native"} /> : null}
+            {!running && chosen !== "team" && replyAgent && !(chat && (runs.value.get(chatTaskId(run)) ?? run).taskTeam?.enabled) ? <ChatControls acpAllowed={run.permissions?.acpExecution === "native"} showPermissions={run.chatLink?.kind !== "side"} providers={run.chatLink?.kind === "side" ? agents.value.filter(item => item.id === "claude" || item.id === "codex" || item.id === "agy") : undefined} agent={replyAgent} onAgent={chat && draftReady ? agent => setHandoff({ agent, settings: agent === replyAgent ? selectedSettings : replySettings[agent] ?? {} }) : undefined} resetPermissionsOnAgentChange={!chat} settings={selectedSettings} onSettings={(value) => setReplySettings({ ...replySettings, [replyAgent]: value })} permissions={selectedPermissions} onPermissions={setReplyPermissions} restricted={!!run.lockdown || !!run.trigger} approvalsAvailable={!run.loop.remoteWorker && !run.loop.agentContainer} unrestricted={replyAgent === "agy" && run.permissions?.antigravityExecution === "native"} /> : null}
             {chat && soloAgent ? <TaskTeamControl run={run} lead={soloAgent} /> : null}
             {run.chatLink?.kind === "side" ? <span class="help">Read only</span> : null}
             <span class="chatbox-hint" title={hint}>
@@ -2393,6 +2394,7 @@ export async function editAndRerun(run: RunSummary) {
     verificationProfile: run.loop.verification ?? null,
     toolApprovals: run.approvals?.tools === true,
     antigravityExecution: run.permissions?.antigravityExecution,
+    acpExecution: run.permissions?.acpExecution,
     permissionRequirements: [...(run.permissions?.required ?? [])],
   };
   intentDraft.value = run.intent;
@@ -2505,7 +2507,7 @@ function ProviderChatDialog({ run, initialAgent, initialSettings, initialPermiss
   const [busy, setBusy] = useState(false), [error, setError] = useState("");
   const ref = useDialog(true, onClose, () => !busy);
   const raised = !side && narrowerTrust(run.trust, permissions.trust) !== permissions.trust;
-  const problem = runProviderProblem(agent, choices.find(item => item.id === agent)?.displayName) || (raised ? `This chat runs with ${TRUST_NAMES[run.trust]}, and a new chat can't have more access. Choose ${TRUST_NAMES[run.trust]} or lower, or reply here with ${TRUST_NAMES[permissions.trust]} first.` : "");
+  const problem = runProviderProblem(agent, choices.find(item => item.id === agent)?.displayName, run.permissions) || (raised ? `This chat runs with ${TRUST_NAMES[run.trust]}, and a new chat can't have more access. Choose ${TRUST_NAMES[run.trust]} or lower, or reply here with ${TRUST_NAMES[permissions.trust]} first.` : "");
   const unrestricted = !side && agent === "agy" && run.permissions?.antigravityExecution === "native";
   const start = async () => {
     if (busy || problem || !message.trim() || !choices.some(item => item.id === agent && item.available)) return;
@@ -2523,7 +2525,7 @@ function ProviderChatDialog({ run, initialAgent, initialSettings, initialPermiss
         <label>Message<textarea class="field" rows={4} maxLength={20000} autoFocus value={parseBrowserMessage(message).text} onInput={(event) => setMessage(editBrowserText(message, event.currentTarget.value))} placeholder="What should the new chat do?" /></label>
         <BrowserDraftCards text={message} onText={setMessage} images={images} onImages={setImages} />
         <DraftImages message={message} images={images} onRemove={index => setImages(images.filter((_, i) => i !== index))} />
-        <ChatControls agent={agent} onAgent={(value) => { setAgent(value); setSettings({}); }} providers={choices} settings={settings} onSettings={setSettings} permissions={permissions} onPermissions={setPermissions} showPermissions={!side} restricted={!!run.lockdown || !!run.trigger} approvalsAvailable={approvalsAvailable} approvalsUnavailableReason={!run.approvals.tools ? "The source chat doesn't ask for approval. A fork can ask only when its source does." : undefined} unrestricted={unrestricted} />
+        <ChatControls agent={agent} onAgent={(value) => { setAgent(value); setSettings({}); }} providers={choices} settings={settings} onSettings={setSettings} permissions={permissions} onPermissions={setPermissions} showPermissions={!side} restricted={!!run.lockdown || !!run.trigger} approvalsAvailable={approvalsAvailable} approvalsUnavailableReason={!run.approvals.tools ? "The source chat doesn't ask for approval. A fork can ask only when its source does." : undefined} unrestricted={unrestricted} acpAllowed={run.permissions?.acpExecution === "native"} />
       </fieldset>
       {unrestricted ? <p class="full-warn" role="alert"><b>Unrestricted Antigravity.</b> This chat's run allows it, so the new chat uses your normal Antigravity profile and settings without Code Flow's sandbox.</p>
         : !side && !raised && permissions.trust === "full" && !permissions.tools ? <p class="full-warn" role="alert"><b>Full access: no sandbox.</b> The new chat can run commands and change files outside its worktree with your credentials.</p> : null}

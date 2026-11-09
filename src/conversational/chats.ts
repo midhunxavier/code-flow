@@ -28,7 +28,8 @@ function text(value: unknown, label: string, max = 12000): string {
   return value.trim();
 }
 export function chatDefaults(value: any): ChatDefaults {
-  fields(value, ["mode", "provider", "model", "effort", "trust", "tools", "maxCalls", "maxMinutes"]);
+  fields(value, ["mode", "provider", "model", "effort", "trust", "tools", "maxCalls", "maxMinutes", "acpExecution"]);
+  if (value.acpExecution !== undefined && value.acpExecution !== "native") fail("validation_failed", "Invalid ACP execution mode");
   if (!["agent", "team"].includes(value.mode) || !["safe", "standard", "trusted", "full"].includes(value.trust) || typeof value.tools !== "boolean") fail("validation_failed", "Choose valid mode and permission settings");
   getAdapter(value.provider);
   if (value.mode === "team" && !["claude", "codex"].includes(value.provider)) fail("unsupported_settings", "Team preparation requires Claude or Codex. Other providers remain available in Agent mode.");
@@ -361,7 +362,7 @@ export class Conversations {
         ? (await captureAgentSource(this.manager, { project: chat.project, repo: chat.repo, chatId: chat.id }, run.id)).commit
         : retained?.branch ?? (await captureSource(chat.repo, chat.source, chat.untracked)).commit;
       const delivered = Object.values(latestTaskRun?.cliTeam?.artifacts ?? {}).filter(a => a.kind === "result").at(-1)?.body ?? "";
-      await this.manager.start({ pattern: findPattern("solo")!, conversationId: chat.id, project: chat.project, repo: chat.repo, requireProjectRepo: true, baseRef: source, task: `Conversation context (historical; the latest request takes precedence):\n${transcript}\n\nLatest task deliverable (historical context):\n${delivered.slice(0, 16000)}\n\nLatest request:\n${this.turnMessage(chat, pending)}`, roles: { agent: [defaults.provider] }, agentSettings: { [defaults.provider]: { model: defaults.model, effort: defaults.effort } }, options: {}, loop: { maxSteps: defaults.maxCalls ?? 12, maxInvocations: defaults.maxCalls ?? 12, maxMinutes: defaults.maxMinutes ?? 30, check: pending.projectContext?.defaults?.check, setup: pending.projectContext?.defaults?.setup }, trust: defaults.trust, approvals: { tools: defaults.tools }, context: { attachments: await loadChatFiles(pending.files ?? event.attachments) },
+      await this.manager.start({ pattern: findPattern("solo")!, conversationId: chat.id, project: chat.project, repo: chat.repo, requireProjectRepo: true, baseRef: source, task: `Conversation context (historical; the latest request takes precedence):\n${transcript}\n\nLatest task deliverable (historical context):\n${delivered.slice(0, 16000)}\n\nLatest request:\n${this.turnMessage(chat, pending)}`, roles: { agent: [defaults.provider] }, agentSettings: { [defaults.provider]: { model: defaults.model, effort: defaults.effort } }, options: {}, loop: { maxSteps: defaults.maxCalls ?? 12, maxInvocations: defaults.maxCalls ?? 12, maxMinutes: defaults.maxMinutes ?? 30, check: pending.projectContext?.defaults?.check, setup: pending.projectContext?.defaults?.setup }, trust: defaults.trust, acpExecution: defaults.mode === "agent" ? defaults.acpExecution : undefined, approvals: { tools: defaults.tools }, context: { attachments: await loadChatFiles(pending.files ?? event.attachments) },
         beforeDispatch: async run => { await flushWrites(); pending.runId = run.id; chat.agentRuns.push(run.id); await this.save(chat); } });
       return;
     }
