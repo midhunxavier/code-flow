@@ -57,9 +57,10 @@ export async function installUser(providers: Provider[], dryRun = false, options
     const skill = await skillText(!!managed);
     const files: { path: string; before?: string; after: string; kind: "codex-mcp" | "skill"; owned: string }[] = [];
     const changes: { host: string; path: string }[] = [], kept: UserEdit[] = [];
-    let claude: "add" | "replace" | undefined;
+    let claude: "add" | "replace" | undefined, previousClaude: unknown;
     if (providers.includes("claude")) {
       const config = await read(paths.claudeConfig), current = config ? JSON.parse(config)?.mcpServers?.codeflow : undefined;
+      previousClaude = current;
       // A connection with the exact same settings is ours whether or not an earlier run finished recording it.
       if (current !== undefined && digest(current) !== digest(entry) && digest(current) !== owned("claude-mcp")) fail("installation_conflict", "Your Claude user settings already have a `codeflow` MCP server that Code Flow did not create. Remove it with `claude mcp remove -s user codeflow`, then run init again.");
       if (current === undefined) claude = "add"; else if (digest(current) !== digest(entry)) claude = "replace"; else kept.push({ kind: "claude-mcp", owned: digest(entry) });
@@ -83,9 +84,10 @@ export async function installUser(providers: Provider[], dryRun = false, options
     for (const f of files) changes.push({ host: f.kind === "skill" ? "Skill" : "Codex", path: f.path });
     if (!dryRun && (files.length || claude)) {
       const written: typeof files = [];
+      let removed = false;
       try {
         for (const f of files) { if (await read(f.path) !== f.before) fail("installation_conflict", "Configuration changed during setup; run init again"); await atomic(f.path, f.after); written.push(f); }
-        if (claude === "replace") await run("claude", ["mcp", "remove", "-s", "user", "codeflow"]);
+        if (claude === "replace") { await run("claude", ["mcp", "remove", "-s", "user", "codeflow"]); removed = true; }
         if (claude) {
           await run("claude", ["mcp", "add-json", "-s", "user", "codeflow", JSON.stringify(entry)]);
           const stored = JSON.parse(await read(paths.claudeConfig) ?? "{}")?.mcpServers?.codeflow;
@@ -93,10 +95,22 @@ export async function installUser(providers: Provider[], dryRun = false, options
         }
       } catch (error) {
         for (const f of written.reverse()) if (await read(f.path) === f.after) { if (f.before === undefined) await rm(f.path); else await atomic(f.path, f.before); }
+        // A failed replacement must not leave Claude without the connection that was working before.
+        if (removed) {
+          const stored = JSON.parse(await read(paths.claudeConfig).catch(() => undefined) ?? "{}")?.mcpServers?.codeflow;
+          if (stored !== undefined && digest(stored) !== digest(previousClaude)) await run("claude", ["mcp", "remove", "-s", "user", "codeflow"]).catch(() => undefined);
+          if (stored === undefined || digest(stored) !== digest(previousClaude)) await run("claude", ["mcp", "add-json", "-s", "user", "codeflow", JSON.stringify(previousClaude)]).catch(() => undefined);
+        }
         throw error;
       }
+    }
+    if (!dryRun) {
+      // Recorded even when nothing had to be written, so an entry that already matches stays ours
+      // (a run interrupted before saving this would otherwise leave it unowned). Hosts not set up now keep their record.
       const edits: UserEdit[] = [...kept, ...(claude ? [{ kind: "claude-mcp" as const, owned: digest(entry) }] : []), ...files.map(f => ({ kind: f.kind, path: f.path, owned: f.owned }))];
-      await atomic(manifestPath, JSON.stringify({ version: 1, scope: "user", edits } satisfies UserManifest));
+      const same = (a: UserEdit, b: UserEdit) => a.kind === b.kind && ("path" in a ? "path" in b && a.path === b.path : true);
+      const all = [...(prior?.edits.filter(e => !edits.some(n => same(n, e))) ?? []), ...edits];
+      if (!prior || digest(prior.edits) !== digest(all)) await atomic(manifestPath, JSON.stringify({ version: 1, scope: "user", edits: all } satisfies UserManifest));
     }
     return { dryRun, changes, connection: entry, message: "Start claude or codex inside any Git repository and ask for a Code Flow task. Code Flow works on the repository you start the CLI in; open sessions need /mcp reconnect. No agent calls were made." };
   } finally { release(); }

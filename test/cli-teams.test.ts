@@ -657,6 +657,27 @@ function userSetup() {
   return { user, env, calls, options, claudeConfig, codexConfig: join(user, ".codex", "config.toml"), claudeSkill: join(user, ".claude/skills/codeflow/SKILL.md"), codexSkill: join(user, ".codex/skills/codeflow/SKILL.md") };
 }
 
+test("a failed Claude update restores the working connection, and a setup that already matches is recorded as ours", async () => {
+  const u = userSetup();
+  await installUser(["claude"], false, u.options);
+  const working = u.claudeConfig().mcpServers.codeflow;
+  // The replacement registration fails after the old entry was removed.
+  const moved = { ...u.options, env: { ...u.env, CODEFLOW_HOME: join(u.user, "elsewhere") }, run: async (command: string, args: string[]) => {
+    if (args[1] === "add-json" && args[5]?.includes("elsewhere")) throw new Error("claude mcp add-json failed: timed out");
+    await u.options.run(command, args);
+  } };
+  await assert.rejects(installUser(["claude"], false, moved), /timed out/);
+  assert.deepEqual(u.claudeConfig().mcpServers.codeflow, working, "the previous connection is back");
+  // An interrupted run left matching settings but no ownership record: setup records it without rewriting anything.
+  const manifest = join(u.options.home, "cli-teams-installations", "user.json");
+  rmSync(manifest); u.calls.length = 0;
+  assert.equal((await installUser(["claude"], false, u.options)).changes.length, 0);
+  assert.equal(u.calls.length, 0, "no configuration write was needed");
+  assert.ok(existsSync(manifest), "ownership is recorded again");
+  await uninstallUser(u.options);
+  assert.equal(u.claudeConfig().mcpServers?.codeflow, undefined, "so uninstall can still remove it");
+});
+
 test("setup registers one connection per CLI in user settings and writes nothing into repositories", async () => {
   const u = userSetup(), project = repo();
   mkdirSync(join(u.user, ".codex")); writeFileSync(u.codexConfig, 'model = "existing"\n[mcp_servers.other]\ncommand = "other"\n');
