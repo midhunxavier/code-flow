@@ -33,14 +33,56 @@ test('immutable seed, shared launcher, no downgrade and disable preserve working
  const output=execFileSync(process.execPath,[join(f.home,'integration-runtime/launcher.mjs'),'mcp','--project-root',f.dir],{encoding:'utf8'});assert.equal(JSON.parse(output).version,'0.1.0-preview.10');
  assert.equal((await updateStatus(f.home)).activeSessions,0);
 });
-test('concurrent hosts stay pinned while a verified release stages; next host upgrades after owner exits',async()=>{
+test('connected sessions do not hold an update back; running work does, and status says why',async()=>{
  const f=await fixture(),old=await release(f.dir,'1.0.0'),next=await release(f.dir,'1.1.0');const initial=await enableUpdates(f.home,old);
  const a=await claimSession(f.home);await descriptor(f.home,a.root);
  await checkUpdates(f.home,true,await registry(next,'1.1.0'));
- const b=await claimSession(f.home);assert.equal(b.root,a.root);assert.equal((await updateStatus(f.home)).pending,true);
- let stopped=false;assert.equal(await retireManagedOwner(f.home,a.root,async()=>{stopped=true;return true;}),false);assert.equal(stopped,false);
- await a.close();await b.close();assert.equal(await retireManagedOwner(f.home,initial.releases[0].root,async()=>false),false);
- await rm(join(f.home,'cli-teams-runtime.json'));const c=await claimSession(f.home);assert.notEqual(c.root,a.root);await c.close();
+ // New sessions use the running backend's release so their tools match it.
+ const b=await claimSession(f.home);assert.equal(b.root,a.root);
+ let asked=0;assert.equal(await retireManagedOwner(f.home,a.root,async()=>{asked++;return 'a task is running';}),false);assert.equal(asked,1,'sessions alone no longer block');
+ const status=await updateStatus(f.home);assert.equal(status.pending,true);assert.equal(status.waiting,'a task is running');assert.deepEqual(status.sessions.map(s=>s.release),[initial.current,initial.current]);assert.equal(status.backend.release,initial.current);
+ await assert.rejects(access(join(f.home,'integration-runtime',`handover-${process.pid}.json`)),'nothing is handed over while waiting');
+ await a.close();await b.close();
+ await rm(join(f.home,'cli-teams-runtime.json'));const c=await claimSession(f.home);assert.notEqual(c.root,a.root);assert.equal((await updateStatus(f.home)).waiting,undefined);await c.close();
+});
+test('handover starts the selected release on the same port with the same sign-in',async()=>{
+ const f=await fixture(),old=await release(f.dir,'1.0.0'),next=await release(f.dir,'1.1.0');
+ // The successor records what it was given, then stays up briefly like a real owner.
+ await writeFile(join(next,'src/server.js'),"import {readFileSync,writeFileSync} from 'node:fs';const file=process.env.CODEFLOW_HANDOVER_FILE;const token=JSON.parse(readFileSync(file,'utf8')).token;writeFileSync(process.env.CODEFLOW_HOME+'/cli-teams-runtime.json',JSON.stringify({pid:process.pid,releaseRoot:process.env.CODEFLOW_MANAGED_RELEASE,port:process.env.PORT,token}));setTimeout(()=>{},4000);");
+ await enableUpdates(f.home,old);const state=await checkUpdates(f.home,true,await registry(next,'1.1.0'));
+ const gone=spawn(process.execPath,['-e','']);await new Promise(r=>gone.once('exit',r));
+ const token='ab'.repeat(24);await writeFile(join(f.home,'integration-runtime',`handover-${gone.pid}.json`),JSON.stringify({port:4567,token}));
+ execFileSync(process.execPath,[join(f.home,'integration-runtime/launcher.mjs'),'--handover',String(gone.pid)],{env:{...process.env,CODEFLOW_HOME:f.home}});
+ const owner=JSON.parse(await readFile(join(f.home,'cli-teams-runtime.json'),'utf8'));
+ try {
+  assert.equal(owner.port,'4567');assert.equal(owner.token,token);assert.equal(owner.releaseRoot,state.releases.find(r=>r.id===state.current).root);
+  await assert.rejects(access(join(f.home,'integration-runtime',`handover-${gone.pid}.json`)),'the sign-in file is removed');
+ } finally {process.kill(owner.pid);}
+});
+test('an open MCP session moves to the backend release once idle, without the host reconnecting',async()=>{
+ const f=await fixture(),old=await release(f.dir,'1.0.0'),next=await release(f.dir,'1.1.0');
+ // A minimal MCP server per release: answers with its version; "slow" takes a moment.
+ const server=v=>`if(process.argv[2]==='--version'){console.log(${JSON.stringify(v)});}else{let b='';process.stdin.setEncoding('utf8');process.stdin.on('data',d=>{b+=d;let i;while((i=b.indexOf('\\n'))>=0){const m=JSON.parse(b.slice(0,i));b=b.slice(i+1);if(m.id===undefined)continue;const reply=r=>process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,result:r})+'\\n');if(m.method==='initialize')reply({protocolVersion:'2025-03-26',capabilities:{tools:{}},serverInfo:{name:'code-flow',version:${JSON.stringify(v)}},seen:m.params});else if(m.method==='slow')setTimeout(()=>reply({version:${JSON.stringify(v)}}),4000);else reply({version:${JSON.stringify(v)}});}});}`;
+ await writeFile(join(old,'bin/codeflow.mjs'),server('1.0.0'));await writeFile(join(next,'bin/codeflow.mjs'),server('1.1.0'));
+ const initial=await enableUpdates(f.home,old),oldRoot=initial.releases[0].root;await descriptor(f.home,oldRoot);
+ const state=await checkUpdates(f.home,true,await registry(next,'1.1.0')),nextRoot=state.releases.find(r=>r.id===state.current).root;
+ const host=spawn(process.execPath,[join(f.home,'integration-runtime/launcher.mjs'),'mcp'],{env:{...process.env,CODEFLOW_HOME:f.home},stdio:['pipe','pipe','inherit']});
+ const seen=[];let buffer='';host.stdout.setEncoding('utf8');host.stdout.on('data',d=>{buffer+=d;let i;while((i=buffer.indexOf('\n'))>=0){seen.push(JSON.parse(buffer.slice(0,i)));buffer=buffer.slice(i+1);}});
+ const send=m=>host.stdin.write(JSON.stringify({jsonrpc:'2.0',...m})+'\n');
+ const reply=async(id,ms=15000)=>{for(let t=0;t<ms/50;t++){const r=seen.find(m=>m.id===id);if(r)return r;await new Promise(r=>setTimeout(r,50));}throw new Error(`no reply to ${id}`);};
+ try {
+  send({id:1,method:'initialize',params:{protocolVersion:'2025-03-26',capabilities:{elicitation:{}}}});const init=await reply(1);
+  assert.equal(init.result.serverInfo.version,'1.0.0');assert.equal(init.result.capabilities.tools.listChanged,true);
+  send({method:'notifications/initialized'});
+  // A request is open when the backend moves: the session waits for it rather than dropping it.
+  send({id:2,method:'slow'});await descriptor(f.home,nextRoot);
+  assert.equal((await reply(2)).result.version,'1.0.0');
+  for(let t=0;t<200&&!seen.some(m=>m.method==='notifications/tools/list_changed');t++)await new Promise(r=>setTimeout(r,50));
+  assert.ok(seen.some(m=>m.method==='notifications/tools/list_changed'),'the host is told the tools may have changed');
+  send({id:3,method:'tools/list'});assert.equal((await reply(3)).result.version,'1.1.0');
+  assert.equal(seen.filter(m=>m.id===1).length,1,'the repeated handshake stays private');
+  assert.deepEqual((await updateStatus(f.home)).sessions.map(s=>s.release),[state.current]);
+ } finally {host.stdin.end();await new Promise(r=>{host.once('exit',r);setTimeout(()=>{host.kill();r();},5000).unref();});}
 });
 test('legacy backend is never retired or signalled; all bridges use retained seed',async()=>{
  const f=await fixture(),old=await release(f.dir,'1.0.0'),next=await release(f.dir,'1.1.0');const initial=await enableUpdates(f.home,old);await descriptor(f.home);

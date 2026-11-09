@@ -7,7 +7,7 @@ import { resolve, join, dirname } from "node:path";
 import { CODEFLOW_HOME } from "../config.js";
 import { getAdapter } from "../adapters/index.js";
 import { repoRoot } from "../git.js";
-import { connectRuntime, runtimeRequest } from "./client.js";
+import { connectRuntime } from "./client.js";
 import { hasProjectInstall, installUser, uninstallProject, uninstallUser } from "./install.js";
 import { serveMcp } from "./mcp.js";
 import { configureDesktop, inspectDesktop, DESKTOP_HOSTS, type DesktopHost } from "./desktop.js";
@@ -146,7 +146,7 @@ export async function launchCli(args = process.argv.slice(2)) {
       const prompt = createInterface({ input: process.stdin, output: process.stdout });
       try {
         if ((await prompt.question("\nApply and stage these exact changes? Type apply: ")).trim() !== "apply") { console.log("Not applied; checkout unchanged."); return; }
-        await runtimeRequest(client.runtime, "/handoff-confirm", { projectRoot: root, runId, previewHash: preview.previewHash });
+        await client.privileged("/handoff-confirm", { projectRoot: root, runId, previewHash: preview.previewHash });
         const applied = await client.call("codeflow_apply_handoff", { operationId: `apply-${preview.previewHash}`, runId, previewHash: preview.previewHash });
         console.log(applied.message);
       } finally { prompt.close(); }
@@ -165,16 +165,16 @@ export async function launchCli(args = process.argv.slice(2)) {
         if (command === "approve") {
           const proposalId = args[0], revision = Number(option("--revision"));
           if (!proposalId || !Number.isSafeInteger(revision) || revision < 1) throw new Error("Choose a proposal and --revision NUMBER");
-          const preview = await runtimeRequest(client.runtime, "/preview", { projectRoot: root, proposalId, revision });
+          const preview = await client.privileged("/preview", { projectRoot: root, proposalId, revision });
           console.log(preview.preview);
           if ((await prompt.question("\nAccept this exact proposal? Type start: ")).trim() !== "start") { console.log("Not accepted; no work started."); return; }
-          await runtimeRequest(client.runtime, "/confirm", { projectRoot: root, proposalId, revision, hash: preview.hash });
+          await client.privileged("/confirm", { projectRoot: root, proposalId, revision, hash: preview.hash });
           console.log("Accepted. Return to your CLI conversation to start this proposal.");
         } else {
           const runId = args[0], connectionId = option("--connection");
           if (!runId || !connectionId) throw new Error("Choose RUN_ID and --connection from get_run");
           if ((await prompt.question(`Attach host connection ${connectionId} to run ${runId}? Type attach: `)).trim() !== "attach") return;
-          console.log(JSON.stringify(await runtimeRequest(client.runtime, "/attach", { projectRoot: root, runId, connectionId })));
+          console.log(JSON.stringify(await client.privileged("/attach", { projectRoot: root, runId, connectionId })));
         }
       } finally { prompt.close(); }
       return;

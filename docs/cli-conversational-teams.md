@@ -83,7 +83,7 @@ codeflow approve PROPOSAL_ID --revision 1
 
 The fallback displays the complete proposal. Type `start` to accept that exact revision, then return to your conversation so the host can start it. There is no unattended `--yes` bypass. Native provider tool permissions are separate from this workflow acceptance.
 
-After upgrading an earlier install, rerun `codeflow init` with the same `CODEFLOW_HOME` to refresh your user-level skills, then reconnect Code Flow from `/mcp` or restart the native host. A running MCP process retains its previously loaded code and a host conversation may retain the earlier skill instructions.
+After upgrading an earlier install, rerun `codeflow init` with the same `CODEFLOW_HOME` to refresh your user-level skills. With shared updates (`codeflow updates enable`), open sessions move to a new release on their own once no work is running. Without them, reconnect Code Flow from `/mcp` or restart the native host. In either case a host conversation may keep the earlier skill instructions until it starts afresh. If the backend restarts, or the computer sleeps past the connection heartbeat, a session reconnects on its next request.
 
 Normal reviews and repairs inside the accepted bounds do not require repeated workflow confirmation. Plan-only work never expands into implementation without a new proposal.
 

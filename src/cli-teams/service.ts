@@ -121,7 +121,7 @@ export class CliTeamsService {
   }
   disconnect(connection: Connection) { connection.active = false; }
   heartbeat(connection: Connection) { this.validateConnection(connection); connection.expiresAt = Date.now() + 60_000; }
-  private validateConnection(c: Connection) { if (!this.connections.has(c.id) || !c.active || c.expiresAt < Date.now()) fail("scope_denied", "Connection expired; reconnect the Code Flow MCP server"); }
+  private validateConnection(c: Connection) { if (!this.connections.has(c.id) || !c.active || c.expiresAt < Date.now()) fail("scope_denied", "Connection expired; reconnect the Code Flow MCP server", { reconnect: true }); }
   private proposal(c: ConversationScope, proposalId: string): Proposal {
     const p = this.journal.get(`proposal:${proposalId}`) as Proposal | undefined;
     if (!p || p.repo !== c.repo || c.surface === "web" && p.project !== c.project || c.taskId && p.taskId !== c.taskId) fail("scope_denied", "Proposal is unavailable in this project"); return structuredClone(p);

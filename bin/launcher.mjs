@@ -59,6 +59,21 @@ export async function openBrowser(url) {
   await promisify(execFile)(command, args, { timeout: 10_000, windowsHide: true });
 }
 
+/** Which release each part runs, and what (if anything) the switch is waiting for. */
+function describeUpdate(status) {
+  const lines = [`Selected release: ${status.current}`];
+  const backend = status.backend;
+  lines.push(!backend ? "Backend: not running (starts with the next session)" : `Backend: ${backend.release ?? (backend.releaseRoot ? "an unknown release" : "started outside shared updates")} (pid ${backend.pid})`);
+  const counts = new Map();
+  for (const session of status.sessions ?? []) counts.set(session.release ?? "an unknown release", (counts.get(session.release ?? "an unknown release") ?? 0) + 1);
+  lines.push(`MCP sessions: ${status.activeSessions}${counts.size ? ` (${[...counts].map(([release, count]) => `${count} on ${release}`).join(", ")})` : ""}`);
+  if (!status.pending) lines.push("Everything runs the selected release.");
+  else if (backend && !backend.releaseRoot) lines.push("This backend was started outside shared updates and is never replaced automatically. Restart it to use the selected release.");
+  else if (backend && backend.release !== status.current) lines.push(`Switching to ${status.current} as soon as no work is running${status.waiting ? `. Waiting: ${status.waiting}.` : " (checked every 15 seconds)."} Sessions and open tabs follow on their own.`);
+  else lines.push("The backend runs the selected release; open sessions move to it within a few seconds once idle.");
+  return lines.join("\n");
+}
+
 export async function launch(args = process.argv.slice(2)) {
   if (args.length === 1 && ["-h", "--help", "help"].includes(args[0])) {
     console.log(usage);
@@ -83,7 +98,7 @@ export async function launch(args = process.argv.slice(2)) {
     if (action === "disable") await configureUpdates(managedHome, false);
     if (action === "check") await checkUpdates(managedHome, true);
     const status = await updateStatus(managedHome);
-    console.log(args.includes("--json") ? JSON.stringify(status, null, 2) : `Shared Code Flow updates: ${status.enabled ? "enabled" : "disabled"}${status.channel ? ` (${status.channel})` : ""}\n${status.installed ? `Selected release: ${status.current}\nActive MCP sessions: ${status.activeSessions}\n${status.pending ? "Update pending: existing sessions and backend keep their current release." : "New sessions use the selected release."}` : "Run updates enable from a built release to install the shared launcher."}${status.error ? `\nLast check: ${status.error}` : ""}${action === "enable" ? "\nRun desktop setup and/or init once to migrate host connections. Existing runs are not stopped." : ""}`);
+    console.log(args.includes("--json") ? JSON.stringify(status, null, 2) : `Shared Code Flow updates: ${status.enabled ? "enabled" : "disabled"}${status.channel ? ` (${status.channel})` : ""}\n${status.installed ? describeUpdate(status) : "Run updates enable from a built release to install the shared launcher."}${status.error ? `\nLast check: ${status.error}` : ""}${action === "enable" ? "\nOpen sessions and tabs move to it on their own once no work is running. Existing runs are not stopped." : ""}`);
     return;
   }
   if (args[0] === "mcp" && process.env.CODEFLOW_MANAGED_CHILD !== "1" && await managedLauncher(managedHome)) {

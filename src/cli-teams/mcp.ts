@@ -2,13 +2,17 @@ import { CLI_TOOLS, HOST_TOOLS } from "./tools.js";
 import { guideText, startupInstructions, type GuideSection } from "./guide.js";
 import { shapeProblem } from "./model.js";
 import { CliTeamError } from "./model.js";
-import { connectRuntime, runtimeRequest } from "./client.js";
+import { connectRuntime } from "./client.js";
+import { readFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { CLI_MESSAGE_BYTES } from "./limits.js";
 import { realpath } from "node:fs/promises";
 import { repoRoot } from "../git.js";
 import { formatToolResult } from "./presentation.js";
 import { hasProjectInstall, installUser } from "./install.js";
+
+/** This release's version, so hosts and `claude mcp` show which Code Flow answers. */
+const VERSION = (() => { try { return String(JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")).version); } catch { return "0.0.0"; } })();
 
 /**
  * With no explicit --project-root, the connection works on the Git repository the CLI was started in.
@@ -19,7 +23,7 @@ export async function serveMcp(projectRoot: string, explicit = true) {
   if (!found) return serveOutsideRepository(projectRoot);
   projectRoot = found;
   const client = await connectRuntime(projectRoot, true, "mcp");
-  const heartbeat = setInterval(() => { void runtimeRequest(client.runtime, "/heartbeat", {}, client.token).catch(() => undefined); }, 10000).unref();
+  const heartbeat = setInterval(() => { void client.heartbeat().catch(() => undefined); }, 10000).unref();
   const prompts = new Map<string, { parent: string | number; resolve: (value: any) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
   const cancelPrompts = (message: string, parent?: string | number) => {
     for (const [id, pending] of prompts) if (parent === undefined || pending.parent === parent) {
@@ -33,11 +37,11 @@ export async function serveMcp(projectRoot: string, explicit = true) {
   const send = (value: unknown) => process.stdout.write(`${JSON.stringify(value)}\n`);
   const rpcError = (id: unknown, code: number, message: string) => send({ jsonrpc: "2.0", id, error: { code, message } });
   const approveInHost = async (parent: string | number, args: any, handoff = false) => {
-    const preview = await runtimeRequest(client.runtime, handoff ? "/handoff-preview" : "/preview", { projectRoot, runId: args.runId, proposalId: args.proposalId, revision: args.expectedRevision });
+    const preview = await client.privileged(handoff ? "/handoff-preview" : "/preview", { projectRoot, runId: args.runId, proposalId: args.proposalId, revision: args.expectedRevision });
     if ((handoff ? preview.previewHash : preview.hash) !== (handoff ? args.previewHash : args.proposalHash)) throw new CliTeamError("acceptance_stale", "The preview changed; inspect it again before confirming.");
     // The user may approve here or read the full plan in the browser and press Start there.
     // Both approve the same proposal revision, so exactly one run starts either way.
-    const link: { url?: string; ticket?: string } = handoff ? {} : await runtimeRequest(client.runtime, "/approval-link", { projectRoot, proposalId: args.proposalId, revision: args.expectedRevision }).catch(() => ({}));
+    const link: { url?: string; ticket?: string } = handoff ? {} : await client.privileged("/approval-link", { projectRoot, proposalId: args.proposalId, revision: args.expectedRevision }).catch(() => ({}));
     let watcher: ReturnType<typeof setInterval> | undefined;
     const result = await new Promise<any>((resolve, reject) => {
       const id = `codeflow-approval-${randomBytes(16).toString("hex")}`;
@@ -59,7 +63,7 @@ export async function serveMcp(projectRoot: string, explicit = true) {
         requestedSchema: { type: "object", properties: { approve: { type: "boolean", title: handoff ? "Apply these changes" : "Start this task", default: true } } },
       } });
       if (link.url) watcher = setInterval(() => {
-        void runtimeRequest(client.runtime, "/approval-state", { projectRoot, proposalId: args.proposalId, revision: args.expectedRevision }).then((state: any) => {
+        void client.privileged("/approval-state", { projectRoot, proposalId: args.proposalId, revision: args.expectedRevision }).then((state: any) => {
           if (!state.accepted || !prompts.has(id)) return;
           // Started in the browser: close this dialog and continue with the same run.
           send({ jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: id, reason: "Started in Code Flow" } });
@@ -68,13 +72,13 @@ export async function serveMcp(projectRoot: string, explicit = true) {
       }, 1500);
     }).finally(() => {
       if (watcher) clearInterval(watcher);
-      if (link.ticket) void runtimeRequest(client.runtime, "/approval-revoke", { projectRoot, ticket: link.ticket }).catch(() => undefined);
+      if (link.ticket) void client.privileged("/approval-revoke", { projectRoot, ticket: link.ticket }).catch(() => undefined);
     });
     if (result?.elsewhere) return;
     if (result?.action !== "accept" || result.content?.approve === false) throw new CliTeamError(result?.action === "cancel" ? "acceptance_cancelled" : "acceptance_declined", handoff ? "Application was not approved; the checkout was not changed by this request." : "This confirmation did not approve or start work. Check the shared task if it was started elsewhere; otherwise revise it or request start again when ready.");
     // The reply is a server-request response from the native host, never a tool argument
     // supplied by the model. The owner rechecks the exact revision/hash atomically.
-    await runtimeRequest(client.runtime, handoff ? "/handoff-confirm" : "/confirm", { projectRoot, runId: args.runId, previewHash: args.previewHash, proposalId: args.proposalId, revision: args.expectedRevision, hash: preview.hash });
+    await client.privileged(handoff ? "/handoff-confirm" : "/confirm", { projectRoot, runId: args.runId, previewHash: args.previewHash, proposalId: args.proposalId, revision: args.expectedRevision, hash: preview.hash });
   };
   const request = async (m: any) => {
     const validId = (v: unknown) => typeof v === "string" || typeof v === "number" && Number.isFinite(v);
@@ -90,7 +94,7 @@ export async function serveMcp(projectRoot: string, explicit = true) {
         const elicitation = m.params?.capabilities?.elicitation;
         nativeForm = !!elicitation && typeof elicitation === "object" && !Array.isArray(elicitation) && (Object.hasOwn(elicitation, "form") || Object.keys(elicitation).length === 0);
         const versions = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
-        result = { protocolVersion: versions.includes(m.params?.protocolVersion) ? m.params.protocolVersion : "2025-03-26", capabilities: { tools: {} }, serverInfo: { name: "code-flow", version: "1.0.0" }, instructions: await startupInstructions(projectRoot, nativeForm) };
+        result = { protocolVersion: versions.includes(m.params?.protocolVersion) ? m.params.protocolVersion : "2025-03-26", capabilities: { tools: {} }, serverInfo: { name: "code-flow", version: VERSION }, instructions: await startupInstructions(projectRoot, nativeForm) };
       } else if (m.method === "ping") result = {};
       else if (!initialized) { rpcError(m.id, -32000, "Initialize first"); return; }
       else if (m.method === "tools/list") result = { tools: [...CLI_TOOLS, ...HOST_TOOLS] };
@@ -177,7 +181,7 @@ async function serveOutsideRepository(folder: string) {
     let m: any; try { m = JSON.parse(line); } catch { send({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } }); continue; }
     if (m?.id === undefined || m.method === undefined) continue;
     const versions = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
-    if (m.method === "initialize") send({ jsonrpc: "2.0", id: m.id, result: { protocolVersion: versions.includes(m.params?.protocolVersion) ? m.params.protocolVersion : "2025-03-26", capabilities: { tools: {} }, serverInfo: { name: "code-flow", version: "1.0.0" }, instructions: message } });
+    if (m.method === "initialize") send({ jsonrpc: "2.0", id: m.id, result: { protocolVersion: versions.includes(m.params?.protocolVersion) ? m.params.protocolVersion : "2025-03-26", capabilities: { tools: {} }, serverInfo: { name: "code-flow", version: VERSION }, instructions: message } });
     else if (m.method === "ping") send({ jsonrpc: "2.0", id: m.id, result: {} });
     else if (m.method === "tools/list") send({ jsonrpc: "2.0", id: m.id, result: { tools: [...CLI_TOOLS, ...HOST_TOOLS] } });
     else if (m.method === "tools/call") {

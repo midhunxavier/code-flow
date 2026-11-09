@@ -13,16 +13,19 @@ export async function startCliTeamsTransport(service: CliTeamsService, admitting
   const bootstrap = randomBytes(32).toString("hex");
   const capabilities = new Map<string, Awaited<ReturnType<CliTeamsService["connect"]>>>();
   let requests = 0;
+  // A start or apply confirmation open in a host: the backend must outlive it, or the answer has nowhere to go.
+  const holds = new Map<string, number>(), tickets = new Map<string, string>();
+  const hold = (key: string) => holds.set(key, Date.now() + 6 * 60_000), release = (key?: string) => { if (key) holds.delete(key); };
   const server = createServer({ maxHeaderSize: 8192 }, (req, res) => {
     requests++;
     const send = (status: number, value: unknown) => { res.writeHead(status, { "content-type": "application/json", "cache-control": "no-store" }); res.end(JSON.stringify(value)); };
     void (async () => {
-      if (!admitting()) fail("runtime_unavailable", "Code Flow is handing over an idle backend; reconnect shortly");
+      if (!admitting()) fail("runtime_unavailable", "Code Flow is handing over an idle backend; reconnect shortly", { reconnect: true });
       const address = server.address();
       if (!address || typeof address === "string" || req.headers.host !== `127.0.0.1:${address.port}` || req.headers.origin || req.method !== "POST" || !req.headers["content-type"]?.startsWith("application/json")) fail("scope_denied", "Use the local authenticated CLI transport");
       const bearer = req.headers.authorization?.replace(/^Bearer /, "") ?? "";
       const privileged = tokenMatches(bearer, bootstrap), connection = capabilities.get(bearer);
-      if (!privileged && !connection) fail("scope_denied", "Invalid CLI connection");
+      if (!privileged && !connection) fail("scope_denied", "Invalid CLI connection", { reconnect: true });
       const chunks: Buffer[] = []; let bytes = 0;
       for await (const chunk of req) { bytes += chunk.length; if (bytes <= CLI_MESSAGE_BYTES) chunks.push(chunk); }
       if (bytes > CLI_MESSAGE_BYTES) fail("validation_failed", "Request exceeds 8 MiB; reduce attachments or proposal size");
@@ -48,7 +51,14 @@ export async function startCliTeamsTransport(service: CliTeamsService, admitting
             : req.url === "/approval-revoke" ? service.revokeApprovalLink(String(body.ticket ?? ""))
             : req.url === "/confirm" ? await service.accept(c, body.proposalId, body.revision, body.hash)
             : await service.attach(c, body.runId, body.connectionId);
-        } finally { service.disconnect(c); }
+        } finally {
+          service.disconnect(c);
+          const key = req.url?.startsWith("/handoff") ? `run:${body.runId}` : `proposal:${body.proposalId}`;
+          if (req.url === "/preview" || req.url === "/handoff-preview") hold(key);
+          else if (req.url === "/approval-link" && data && typeof (data as any).ticket === "string") tickets.set((data as any).ticket, key);
+          else if (req.url === "/approval-revoke") { release(tickets.get(String(body.ticket ?? ""))); tickets.delete(String(body.ticket ?? "")); }
+          else if (req.url === "/confirm" || req.url === "/handoff-confirm") release(key);
+        }
       } else fail("scope_denied", "Unknown or unauthorized CLI operation");
       send(200, { protocolVersion: 1, ok: true, data });
     })().catch(error => send(error instanceof CliTeamError && error.code === "scope_denied" ? 403 : 400, { protocolVersion: 1, ok: false, error: { code: error instanceof CliTeamError ? error.code : "operation_failed", message: error instanceof Error ? error.message : "CLI request failed", details: error instanceof CliTeamError ? error.details : undefined } })).finally(() => { requests--; });
@@ -60,7 +70,12 @@ export async function startCliTeamsTransport(service: CliTeamsService, admitting
   await mkdir(service.home, { recursive: true });
   try { await writeFile(temp, JSON.stringify(descriptor), { mode: 0o600, flag: "wx" }); await rename(temp, file); }
   catch (error) { server.close(); await rm(temp, { force: true }); throw error; }
-  return { descriptor, get busy() { return requests > 0 || [...capabilities.values()].some(c => c.active && c.expiresAt > Date.now()); }, async close() {
+  return { descriptor,
+    get busy() { return requests > 0 || [...capabilities.values()].some(c => c.active && c.expiresAt > Date.now()); },
+    /** Requests being answered now. Connected hosts alone do not count: they reconnect after an update. */
+    get inFlight() { return requests > 0; },
+    get holding() { for (const [key, until] of holds) if (until < Date.now()) holds.delete(key); return holds.size > 0; },
+    async close() {
     for (const c of capabilities.values()) service.disconnect(c);
     capabilities.clear(); server.closeAllConnections();
     await new Promise<void>(resolve => server.close(() => resolve()));

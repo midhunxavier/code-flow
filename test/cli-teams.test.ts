@@ -72,7 +72,9 @@ async function start(f: Awaited<ReturnType<typeof setup>>, candidate = planning(
 }
 async function finished(run: Run) { for (let i = 0; i < 1500 && run.status === "running"; i++) await pause(); assert.notEqual(run.status, "running", run.error); }
 async function mcpPeer(f: Awaited<ReturnType<typeof setup>>, capabilities: object, launch?: { command: string; args: string[]; env: Record<string, string> }) {
-  const child = spawn(launch?.command ?? process.execPath, launch?.args ?? ["--import", import.meta.resolve("tsx"), fileURLToPath(new URL("../src/cli-teams/cli.ts", import.meta.url)), "mcp", "--project-root", f.repo], { cwd: "/", env: { ...process.env, ...launch?.env }, stdio: ["pipe", "pipe", "pipe"] });
+  // Its own user folder: the configuration check must not read this computer's real Claude or Codex settings.
+  const user = mkdtempSync(join(tmpdir(), "codeflow-peer-user-")); repos.push(user);
+  const child = spawn(launch?.command ?? process.execPath, launch?.args ?? ["--import", import.meta.resolve("tsx"), fileURLToPath(new URL("../src/cli-teams/cli.ts", import.meta.url)), "mcp", "--project-root", f.repo], { cwd: "/", env: { ...process.env, HOME: user, CLAUDE_CONFIG_DIR: "", CODEX_HOME: join(user, ".codex"), ...launch?.env }, stdio: ["pipe", "pipe", "pipe"] });
   const pending = new Map<number, { resolve: (value: any) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>(), prompts: any[] = [];
   let sequence = 0, buffered = "";
   const send = (message: object) => child.stdin.write(JSON.stringify({ jsonrpc: "2.0", ...message }) + "\n");
@@ -103,7 +105,8 @@ function stub(fn?: typeof adapters.claude.run) {
   adapters.claude.run = worker; adapters.codex.run = worker;
 }
 async function cliOutput(repo: string, args: string[]) {
-  const child = spawn(process.execPath, ["--import", import.meta.resolve("tsx"), fileURLToPath(new URL("../src/cli-teams/cli.ts", import.meta.url)), ...args, "--project-root", repo], { env: process.env, stdio: ["ignore", "pipe", "pipe"] });
+  const user = mkdtempSync(join(tmpdir(), "codeflow-cli-user-")); repos.push(user); // never this computer's real host settings
+  const child = spawn(process.execPath, ["--import", import.meta.resolve("tsx"), fileURLToPath(new URL("../src/cli-teams/cli.ts", import.meta.url)), ...args, "--project-root", repo], { env: { ...process.env, HOME: user, CLAUDE_CONFIG_DIR: "", CODEX_HOME: join(user, ".codex") }, stdio: ["ignore", "pipe", "pipe"] });
   let out = "", err = ""; child.stdout.on("data", c => out += c); child.stderr.on("data", c => err += c);
   const timer = setTimeout(() => child.kill("SIGKILL"), 15000);
   try { const code = await new Promise<number | null>((resolve, reject) => { child.on("error", reject); child.on("exit", resolve); }); assert.equal(code, 0, err); return out; }
@@ -134,7 +137,7 @@ test("CLI UX e2e: MCP connection, native planning approval, continuation, result
   };
   try {
     const connection = await call("list_providers"); assert.equal(connection.connection.live, true); assert.equal(connection.connection.compatible, true);
-    assert.equal(connection.connection.configuration.state, "update_available");
+    assert.equal(connection.connection.configuration.state, "update_available", connection.connection.configuration.message);
     const p = await call("propose_run", { operationId: "ux-plan", task: "Plan the value fix", candidate: planning() });
     assert.match(p.summary, /^Task: Plan the value fix\nWhat it does: Plan only\. Your files are not changed\.\nTeam:\n/); assert.match(p.summary, /Limit: up to 18 agent calls · 120 minutes$/); assert.doesNotMatch(p.summary, /hash|lifetime|transport/i);
     const started = await approve("start_run", { operationId: "ux-start", proposalId: p.proposalId, expectedRevision: p.revision, proposalHash: p.proposalHash });
@@ -703,6 +706,25 @@ test("outside a Git repository the connection starts and explains instead of fai
     const call = await ask(3, "tools/call", { name: "codeflow_list_providers", arguments: {} });
     assert.equal(call.result.isError, true); assert.equal(call.result.structuredContent.error.code, "not_a_repository");
   } finally { child.kill(); }
+});
+
+test("an MCP session follows the backend across a restart and an expired connection, and reports its version", async () => {
+  const f = await setup(); let bridge = await startCliTeamsTransport(f.service);
+  const peer = await mcpPeer(f, {});
+  try {
+    assert.equal(peer.initialized.serverInfo.version, JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version);
+    assert.equal((await peer.call("list_runs").result).isError, false);
+    // The backend is replaced (as an update hands over): the next call finds the new one and is sent once more.
+    await bridge.close(); bridge = await startCliTeamsTransport(f.service);
+    const live = () => [...(f.service as any).connections.values()].filter((c: any) => c.kind === "mcp" && c.id !== f.connection.id && c.active && c.expiresAt > Date.now()).map((c: any) => c.id);
+    const first = live();
+    const after = await peer.call("list_runs").result; assert.equal(after.isError, false, after.content?.[0]?.text);
+    assert.equal(live().length, 1); assert.notDeepEqual(live(), first, "the session attached again");
+    // The computer slept past the heartbeat: the same backend takes the session back.
+    for (const c of (f.service as any).connections.values()) if (c.kind === "mcp" && c.id !== f.connection.id) c.expiresAt = 0;
+    const woke = await peer.call("list_runs").result; assert.equal(woke.isError, false, woke.content?.[0]?.text);
+    assert.equal(live().length, 1);
+  } finally { await peer.close(); await bridge.close(); }
 });
 
 test("project-scoped loopback and stdio MCP negotiate and deny owner-tool expansion", async () => {
