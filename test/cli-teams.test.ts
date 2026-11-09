@@ -383,6 +383,31 @@ test("UX01/02/14: strict task-generated contracts expose fourteen tools and leav
   assert.throws(() => validateCandidate({ ...planning(), steps: [{ id: "bad", type: "script", body: "process.exit()" }] }), /Unknown/);
 });
 
+test("a repair step fed by a review sees its verdict and findings, not only the review summary", async () => {
+  const f = await setup(); let repairPrompt = "";
+  stub(async opts => {
+    if (opts.jsonSchema) return { ok: true, finalText: JSON.stringify({ body: "Two correctness issues remain.", verdict: "changes_requested", findings: ["FINDING_ONE_MIDNIGHT", "FINDING_TWO_YEAR_ZERO"] }) };
+    if (opts.prompt.includes("Assignment (repair)")) repairPrompt = opts.prompt;
+    if (opts.mode === "write") writeFileSync(join(opts.cwd, "app.mjs"), "export const value = 2;\n");
+    return { ok: true, finalText: "Changed value to 2." };
+  });
+  const candidate: Candidate = { scope: "write", participants: [{ id: "builder", provider: "claude" }, { id: "reviewer", provider: "codex" }], check: "node --test app.test.mjs", completion: ["value is 2"], steps: [
+    { id: "build", type: "task", operation: "implement", participant: "builder", instructions: "Set value to 2" },
+    { id: "snap1", type: "task", operation: "capture_snapshot", instructions: "Capture" },
+    { id: "review", type: "task", operation: "review_code", participant: "reviewer", instructions: "Review", inputs: ["snap1"] },
+    { id: "fix", type: "task", operation: "repair", participant: "builder", instructions: "Fix the issues raised by the review.", inputs: ["review"] },
+    { id: "snap2", type: "task", operation: "capture_snapshot", instructions: "Capture" },
+    { id: "check", type: "task", operation: "verify", instructions: "Run the check", inputs: ["snap2"] },
+    { id: "done", type: "gate", policy: "verified", target: "snap2", reviews: [], verification: "check" },
+    { id: "result", type: "finish", outcome: "verified_changes", inputs: ["snap2", "done"] },
+  ] };
+  const run = await start(f, candidate); await finished(run);
+  assert.equal(run.cliTeam!.outcome, "verified_changes", run.error);
+  assert.match(repairPrompt, /Verdict: changes requested\nBlocking findings:\n1\. FINDING_ONE_MIDNIGHT\n2\. FINDING_TWO_YEAR_ZERO/);
+  const review = Object.values(run.cliTeam!.artifacts).find(a => a.kind === "review")!;
+  assert.deepEqual(review.data.findings, ["FINDING_ONE_MIDNIGHT", "FINDING_TWO_YEAR_ZERO"], "the structured findings stay for gates and counts");
+});
+
 test("structured blocking findings reach the next author and the final result contains one canonical plan", async () => {
   const f = await setup(); let drafts = 0;
   stub(async opts => {

@@ -89,7 +89,11 @@ export const cliTeamPattern: Pattern = {
         await ctx.commit(wt, `${p.provider}: ${node.instructions.slice(0, 100)}`);
         return codeTarget(path, output.producer, output.body);
       }
-      return save(path, review ? "review" : "plan", output.body, { ...(review ? { target: target!.id, targetHash: target!.sha256, verdict: output.verdict, findings: output.findings ?? [] } : {}), ...(output.producer ? { producer: output.producer } : {}) }, p.id);
+      // Every reader of a review sees its verdict and findings: the steps it feeds (a repair reads only bodies),
+      // a host session's artifact pages and the task card. The structured fields stay for gates and counts.
+      const findings = output.findings ?? [];
+      const body = review ? `${output.body.trimEnd()}\n\nVerdict: ${output.verdict === "approve" ? "approved" : "changes requested"}\nBlocking findings:${findings.length ? findings.map((f, i) => `\n${i + 1}. ${f}`).join("") : " none"}` : output.body;
+      return save(path, review ? "review" : "plan", body, { ...(review ? { target: target!.id, targetHash: target!.sha256, verdict: output.verdict, findings } : {}), ...(output.producer ? { producer: output.producer } : {}) }, p.id);
     };
     const execute = async (steps: Node[], prefix: string): Promise<void> => {
       for (const node of steps) {
