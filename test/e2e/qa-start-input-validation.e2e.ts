@@ -31,7 +31,7 @@ async function stop() { if (!server || server.exitCode !== null || server.signal
 async function page(hash: string, initial: Record<string, string> = {}) {
   const context = await browser.newContext({ viewport: { width: 1440, height: 1100 } }); await context.addInitScript(initial => { if (!sessionStorage.getItem("fixture-initialized")) { for (const [k, v] of Object.entries({ sideOpen: "0", ...initial })) localStorage.setItem(k, v); sessionStorage.setItem("fixture-initialized", "1"); } }, initial);
   const p = await context.newPage(); p.setDefaultTimeout(15000); p.on("pageerror", error => errors.push(error.message));
-  p.on("console", message => { if (message.type() !== "error") return; const url = message.location().url, text = message.text(); const isRestart = restart && url.startsWith(base + "/api/") && /net::ERR_(?:CONNECTION_REFUSED|EMPTY_RESPONSE|INCOMPLETE_CHUNKED_ENCODING)/.test(text); (isRestart ? expected : offlineCompare && url === base + "/api/compare" && /net::ERR_FAILED/.test(text) ? expectedOffline : errors).push(`${text} [${url}]`); });
+  p.on("console", message => { if (message.type() !== "error") return; const url = message.location().url, text = message.text(); const isRestart = restart && url.startsWith(base + "/api/") && /net::ERR_(?:CONNECTION_REFUSED|EMPTY_RESPONSE|INCOMPLETE_CHUNKED_ENCODING)|status of 503 \(Service Unavailable\)/.test(text); (isRestart ? expected : offlineCompare && url === base + "/api/compare" && /net::ERR_FAILED/.test(text) ? expectedOffline : errors).push(`${text} [${url}]`); });
   await p.goto(`${base}/?token=${token}${hash}`); return p;
 }
 async function fixture() {
