@@ -120,6 +120,10 @@ test("sign-out rotates identity and closes streams even when its nonce cannot be
   const response = await p.request.post(base + "/api/auth/logout", { data: {}, headers: { origin: base }, timeout: 12_000 }); assert.equal(response.status(), 200);
   assert.notDeepEqual((await api("/api/auth/self")).streamSharing, before); await until(() => api("/api/health"), value => value.streams.streams === 0);
   assert.equal((await (await p.request.get(base + "/api/auth/self", { timeout: 12_000 })).json()).kind, "anonymous");
-  // Retire the signed-out document before disposing its context; its reconnect timer may reload it.
-  await p.goto("about:blank", { waitUntil: "commit", timeout: 12_000 });
+  // Retire the signed-out document before disposing its context; its reconnect timer may reload it,
+  // and that reload can interrupt this navigation. Let it finish, then leave again.
+  for (let attempt = 0; ; attempt++) {
+    try { await p.goto("about:blank", { waitUntil: "commit", timeout: 12_000 }); break; }
+    catch (error) { if (attempt >= 3 || !/interrupted by another navigation/.test(String(error))) throw error; await p.waitForLoadState("domcontentloaded", { timeout: 12_000 }).catch(() => undefined); }
+  }
 });
