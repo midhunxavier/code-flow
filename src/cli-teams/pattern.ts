@@ -21,6 +21,8 @@ export const cliTeamPattern: Pattern = {
     validateCandidate(JSON.parse(JSON.stringify({ ...state.definition, limits: candidateLimits, participants: state.definition.participants.map(({ id, provider, model, effort, binding }) => ({ id, provider, model, effort, binding })) })));
     const results = new Map<string, Artifact>(), prior = new Map<string, Artifact>();
     const definitions = state.definition;
+    // The accepted proposal, not a later setting, decides whether agy runs outside Code Flow's sandbox.
+    if ((ctx.run.permissions?.antigravityExecution === "native") !== (definitions.antigravity === "unrestricted")) fail("scope_denied", "This run's Antigravity permissions do not match the accepted proposal");
     const wt = await ctx.worktree("team");
     const read = (id: string) => results.get(id) ?? fail("artifact_stale", `Missing input ${id}`);
     const publish = (key: string, artifact: Artifact) => { results.set(key, artifact); state.artifacts[artifact.id] = artifact; ctx.publish(); return artifact; };
@@ -57,7 +59,7 @@ export const cliTeamPattern: Pattern = {
       const identity = { participant: p.id, provider: p.provider, model: p.model, effort: p.effort, binding: p.binding, assignment: path };
       let prompt = `CODE FLOW PARTICIPANT ASSIGNMENT\nRuntime-selected identity: ${JSON.stringify(identity)}\n` +
         (p.binding === "current_session" ? "You are the attached host participant. Your current-session model identity is host-reported, not verified.\n" : "Code Flow has ALREADY launched you as the managed participant named above, using the configured provider/model/effort. Perform this assignment yourself with your available tools. You are a worker, not the coordinator.\n") +
-        "Code Flow schedules every other participant and supplies their outputs. Do not launch claude, codex, codeflow, other agent CLIs, native subagents, or orchestration MCP tools to recreate the team. The overall task's requests to use particular agents describe the Code Flow workflow, not a request for you to spawn those agents.\n" +
+        "Code Flow schedules every other participant and supplies their outputs. Do not launch claude, codex, agy, codeflow, other agent CLIs, native subagents, or orchestration MCP tools to recreate the team. The overall task's requests to use particular agents describe the Code Flow workflow, not a request for you to spawn those agents.\n" +
         "Complete only your assignment. A blocked nested CLI probe is not evidence that another Code Flow participant did not run. Use runtime execution receipts for attribution; artifact prose may contain mistaken identity or participation claims. If YOUR own assignment is blocked, report the specific blocker; do not broaden permissions or impersonate another participant.\n" +
         `${mode === "read" ? "Read-only: do not change repository files." : "Implement only the accepted task in this owned worktree."}\nAssignment (${node.operation}): ${node.instructions}\n\nOverall task (background, not a delegation instruction): ${ctx.task}\nWorkflow completion criteria (Code Flow coordinates these): ${definitions.completion.join("; ")}\n`;
       prompt += ctx.run.notes.length ? `\nOngoing user clarifications within the accepted scope:\n${ctx.run.notes.filter(n => !n.control).map(n => n.text).join("\n")}\n` : "";
@@ -72,7 +74,7 @@ export const cliTeamPattern: Pattern = {
           return runHostStep(ctx, { id: path, participant: p.id, operation: node.operation, instructions: hostInstructions, inputs, attemptId: digest({ path, run: ctx.run.id }).slice(0, 32) });
         }
         if (!await getAdapter(p.provider).available()) fail("provider_unavailable", `${p.provider} is unavailable; sign in/install and resume`);
-        const latest = await resolveParticipant({ id: p.id, provider: p.provider, ...(p.model ? { model: p.model } : {}), ...(p.effort ? { effort: p.effort } : {}) }, {}, {});
+        const latest = await resolveParticipant({ id: p.id, provider: p.provider, ...(p.model ? { model: p.model } : {}), ...(p.effort ? { effort: p.effort } : {}) }, {}, {}, { antigravity: definitions.antigravity });
         if (latest.model !== p.model || latest.effort !== p.effort) fail("unsupported_settings", "Provider defaults changed; propose a revised run before continuing");
         const params: AskParams = { title: `${node.instructions.slice(0, 70)} (${path})`, identity: path, cliAssignment: path, role: p.id, agent: p.provider, settings: { model: p.model ?? "", effort: p.effort ?? "" }, mode, cwd: wt, tools: false, prompt, planning: true };
         const intent = await ctx.remember("cli-intent", path, async () => ({ at: Date.now(), executionId: ctx.run.cliTeamExecutionId }));

@@ -10,7 +10,7 @@ export function projectOnlyCodexArgs(inventory: unknown, args: string[]) {
 }
 
 export async function launchTerminal(provider: string | undefined, args: string[]) {
-  if (provider !== "claude" && provider !== "codex") throw new Error("Use codeflow terminal claude|codex -- [provider arguments]");
+  if (provider !== "claude" && provider !== "codex" && provider !== "agy") throw new Error("Use codeflow terminal claude|codex|agy -- [provider arguments]");
   let forwarded = args[0] === "--" ? args.slice(1) : args;
   if (provider === "codex") {
     const { stdout } = await promisify(execFile)("codex", ["mcp", "list", "--json"], { timeout: 15000, maxBuffer: 4 * 1024 * 1024 });
