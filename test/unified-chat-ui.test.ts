@@ -133,9 +133,9 @@ test("Team discussion stays lightweight, then one chat plans, implements and ret
         await p.locator(".chat-deliverable").getByRole("region", { name: "Final result", exact: true }).getByText(/Fixture login plan/).waitFor();
         await p.locator(".chat-deliverable").getByRole("button", { name: "Evidence and changes", exact: true }).click();
         await p.getByLabel("Task output", { exact: true }).getByText(/Fixture login plan/).waitFor();
-        await p.getByRole("button", { name: "Approach", exact: true }).click();
+        await p.getByLabel("Task output", { exact: true }).getByRole("button", { name: "Approach", exact: true }).click();
         await p.getByLabel("Task output", { exact: true }).getByText("Accepted for this execution", { exact: false }).waitFor();
-        await p.getByRole("button", { name: "Preview", exact: true }).click();
+        await p.getByLabel("Task output", { exact: true }).getByRole("button", { name: "Preview", exact: true }).click();
         await p.getByText(/No running preview for this task/).waitFor();
         await p.getByRole("button", { name: "Close task output" }).click();
         await p.reload();
@@ -152,7 +152,7 @@ test("Team discussion stays lightweight, then one chat plans, implements and ret
         assert.equal(await p.locator(`button[data-task="${built.tasks[1].execution.id}"]`).count(), 0);
         await p.getByRole("button", { name: "Agent", exact: true }).click();
         await p.locator(".chat-deliverable").last().getByRole("button", { name: "Evidence and changes", exact: true }).click();
-        await p.getByRole("button", { name: "Reviews", exact: true }).click();
+        await p.getByLabel("Task output", { exact: true }).getByRole("button", { name: "Reviews", exact: true }).click();
         await p.getByLabel("Task output", { exact: true }).getByLabel("Task result", { exact: true }).waitFor();
         // Read both rectangles in one frame after the responsive layout settles.
         // Compact controls may wrap in either order.
@@ -266,12 +266,21 @@ test("project context has an explicit scope and new turns pin the saved revision
     await p.getByRole("button", { name: "Team", exact: true }).click(); const ready = await sendMessage(p, "WEB_TASK_PLAN Plan an accessible form.");
     assert.equal(ready.state.chat.events.find((e: any) => e.kind === "user").projectContext.revision, 1);
     assert.match(ready.state.tasks[0].proposal.context.notes, /keyboard navigation/);
-    await openTaskDetails(p);
-    await p.getByRole("button", { name: "View full approach", exact: true }).click();
-    await p.getByLabel("Task output", { exact: true }).getByText("Awaiting your authorization", { exact: false }).waitFor();
+    // The whole approach is readable in the thread before starting, and the side panel opens it there without closing.
+    const proposed = p.getByRole("region", { name: "Proposed approach", exact: true });
+    await proposed.getByRole("heading", { name: "Steps", exact: true }).waitFor();
+    await proposed.getByText("Awaiting your authorization", { exact: false }).waitFor();
+    assert.equal(await proposed.getByRole("button", { name: "Start planning", exact: true }).isEnabled(), true);
+    const panel = await openTaskDetails(p);
+    await panel.getByRole("button", { name: "Show approach in chat", exact: true }).click();
+    await until(() => proposed.evaluate(el => { const scroller = el.closest(".task-chat-scroll")!, box = scroller.getBoundingClientRect(), top = el.getBoundingClientRect().top, atEnd = scroller.scrollTop >= scroller.scrollHeight - scroller.clientHeight - 1; return top >= box.top - 1 && (top < box.top + 40 || atEnd); }), Boolean, "approach scrolled into view");
+    assert.equal(await panel.isVisible(), true, "the side panel stays open");
     await p.screenshot({ path: join(root, "output/playwright/workspace-output-desktop.png"), fullPage: true });
     await p.setViewportSize({ width: 360, height: 844 }); assert.ok(await p.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 2));
-    await p.getByRole("button", { name: "Close task output" }).click(); await p.getByRole("textbox", { name: "Message", exact: true }).waitFor();
+    // On a phone-width screen the panel covers the chat, so showing the approach closes it.
+    await panel.getByRole("button", { name: "Show approach in chat", exact: true }).click();
+    await p.getByRole("textbox", { name: "Message", exact: true }).waitFor();
+    await proposed.getByRole("heading", { name: "Steps", exact: true }).waitFor();
   } finally { await context.close(); }
 });
 test("chat menus rename, pin, archive and restore; search finds message contents", { timeout: 90000 }, async () => {
@@ -539,14 +548,16 @@ test("project selection inherits a single repository and preserves explicit mult
 
 test("CLI workspace: real MCP proposal opens an authenticated chat, browser approval and native approval stay in sync", { timeout: 120000 }, async () => {
     const child = spawn(process.execPath, ["--import", "tsx", "src/cli-teams/cli.ts", "mcp", "--project-root", repo], { cwd: root, env: { ...process.env, CODEFLOW_HOME: join(home, "state") }, stdio: ["pipe", "pipe", "pipe"] });
-    let seq = 0, buffer = "", elicited = 0, approvalMessage = "";
+    let seq = 0, buffer = "", elicited = 0, approvalMessage = "", answerForms = true;
+    const forms: any[] = [], notices: any[] = [];
     const pending = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>();
     const send = (m: object) => child.stdin!.write(JSON.stringify({ jsonrpc: "2.0", ...m }) + "\n");
     child.stdout!.on("data", chunk => {
         buffer += chunk; let end: number;
         while ((end = buffer.indexOf("\n")) >= 0) {
             const m = JSON.parse(buffer.slice(0, end)); buffer = buffer.slice(end + 1);
-            if (m.method === "elicitation/create") { elicited++; approvalMessage = m.params.message; send({ id: m.id, result: { action: "accept", content: { approve: true } } }); continue; }
+            if (m.method === "elicitation/create") { elicited++; approvalMessage = m.params.message; forms.push(m); if (answerForms) send({ id: m.id, result: { action: "accept", content: { approve: true } } }); continue; }
+            if (m.method) { notices.push(m); continue; }
             const waiter = pending.get(m.id); if (waiter) { pending.delete(m.id); clearTimeout(waiter.timer); m.error ? waiter.reject(new Error(m.error.message)) : waiter.resolve(m.result); }
         }
     });
@@ -592,6 +603,17 @@ test("CLI workspace: real MCP proposal opens an authenticated chat, browser appr
         assert.equal(done.tasks[0].execution.outcome, "agreed_plan");
         await outputs.getByText("Review from reviewer", { exact: true }).waitFor();
         await p.getByRole("region", { name: "Final result" }).getByText(/Fixture login plan/).waitFor();
+        // Approach, reviews and result switch in place inside the task.
+        const sections = activity.getByRole("group", { name: "Task sections", exact: true });
+        await sections.getByRole("button", { name: /^Reviews/ }).click();
+        await activity.getByRole("list", { name: "Reviews", exact: true }).getByText("Review from reviewer", { exact: true }).waitFor();
+        await activity.getByText(/1 review · 1 approved/).waitFor();
+        await sections.getByRole("button", { name: "Approach", exact: true }).click();
+        await activity.getByText("Accepted for this execution", { exact: false }).waitFor();
+        await sections.getByRole("button", { name: "Result", exact: true }).click();
+        await activity.getByRole("region", { name: "Task result", exact: true }).getByText(/Fixture login plan/).waitFor();
+        await sections.getByRole("button", { name: "Progress", exact: true }).click();
+        await outputs.waitFor();
         assert.ok(done.tasks[0].execution.participation.every((a: any) => a.assignments.some((s: any) => s.invocations > 0)), "both fixture providers participated");
         const resumed = await call("start_run", { operationId: "recover-ui-start", proposalId: proposal.proposalId, expectedRevision: proposal.revision, proposalHash: proposal.proposalHash });
         assert.equal(resumed.runId, done.tasks[0].execution.id); assert.equal(elicited, 0, "browser approval is already authoritative");
@@ -600,11 +622,30 @@ test("CLI workspace: real MCP proposal opens an authenticated chat, browser appr
         await p.reload(); await p.getByRole("button", { name: "Start planning", exact: true }).waitFor();
         const native = await call("start_run", { operationId: "native-start-ui", proposalId: next.proposalId, expectedRevision: next.revision, proposalHash: next.proposalHash });
         assert.equal(elicited, 1);
-        assert.match(approvalMessage.split("\n").slice(0, 2).join("\n"), /tick the checkbox.*\nFull proposal in Code Flow: http:\/\//);
+        assert.match(approvalMessage, /^Plan only, no file changes · .* · up to \d+ calls?, \d+ min\nAccept starts it here\. Or open the full plan and press Start there:\nhttp:\/\/localhost:\d+\/cli-workspace\/[a-f0-9]{32}\n\nTask: [\s\S]*\n\nDecline starts nothing\.$/);
         await until(() => api(`/api/chats/${proposal.workspace.chatId}`), s => s.tasks[1]?.execution?.outcome === "agreed_plan", "native-approved run visible in browser");
         const status = await call("get_run", { runId: native.runId }); assert.equal(status.workspace.chatId, proposal.workspace.chatId);
         assert.equal(status.conversation.latestProposal.runId, native.runId);
         await p.screenshot({ path: join(root, "output/playwright/cli-workspace-synced.png"), fullPage: true });
+
+        // Start from the browser instead: open the dialog's link in a signed-out browser and press Start there.
+        answerForms = false;
+        const third = await call("propose_run", { operationId: "cli-ui-third", task: "Review the login plan a third time", candidate, context: { chatId: proposal.workspace.chatId } });
+        const pendingStart = request("tools/call", { name: "codeflow_start_run", arguments: { operationId: "browser-start-ui", proposalId: third.proposalId, expectedRevision: third.revision, proposalHash: third.proposalHash } });
+        await until(async () => forms.length, n => n === 2, "approval dialog with a browser link");
+        const dialog = forms[1], approvalLink = dialog.params.message.split("\n")[2];
+        assert.match(approvalLink, /^http:\/\/localhost:\d+\/cli-workspace\/[a-f0-9]{32}$/);
+        const fresh = await browser.newContext(), signedOut = await fresh.newPage();
+        try {
+            await signedOut.goto(approvalLink);
+            await signedOut.getByRole("button", { name: "Start planning", exact: true }).click();
+            const started = (await pendingStart).structuredContent;
+            assert.equal(started.ok, true, JSON.stringify(started));
+            assert.ok(notices.some(n => n.method === "notifications/cancelled" && n.params.requestId === dialog.id), "the Claude dialog is closed after a browser start");
+            assert.equal((await fetch(approvalLink, { redirect: "manual" })).status, 410, "the approval link is single-use");
+            const synced = await until(() => api(`/api/chats/${proposal.workspace.chatId}`), s => s.tasks[2]?.execution?.id === started.data.runId, "browser-started run is the CLI's run");
+            assert.equal(synced.tasks.filter((t: any) => t.execution?.id === started.data.runId).length, 1, "one run, not two");
+        } finally { await fresh.close(); }
     } finally {
         await context.close(); child.stdin!.end();
         await until(async () => child.exitCode, x => x !== null, "MCP shutdown", 15000).catch(() => child.kill());

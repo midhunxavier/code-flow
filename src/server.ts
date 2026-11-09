@@ -29,7 +29,7 @@ import { StreamSharingIdentity } from "./stream-sharing.js";
 import { JourneyStore } from "./journey-store.js";
 import { journeyApi } from "./journey-api.js";
 import { taskIntent, outcomeMetrics, workflowRecommendations } from "./experience.js";
-import { join } from "node:path";
+import { join, resolve as resolvePath, sep } from "node:path";
 import type { Socket } from "node:net";
 import { CertificateRenewal } from "./certificate-renewal.js";
 import { loadRemoteCertificate, saveRemoteCertificate, validateRemoteCertificate, certificateHostname, inspectEnvironmentCertificate, certificateCoversHost, certificateTimeInvalid, type CertificateInfo, type RemoteCertificate } from "./remote-tls.js";
@@ -37,7 +37,7 @@ import { requestTailscaleCertificate } from "./tailscale.js";
 import { ProjectTeams } from "./project-teams.js";
 import { handleProjectTeams } from "./project-teams-api.js";
 import { SshProjects } from "./ssh-projects/manager.js";
-import { readFileSync } from "node:fs";
+import { readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { ProjectFilePolicies, FilePolicyError, assertPolicyExecution, configureFilePolicyResolver, filterPolicyDiff, policyIsRestrictive } from "./filesystem-policy.js";
 import { FilesystemAccess } from "./filesystem-access.js";
 import { createCodeHostsApi } from "./code-hosts-api.js";
@@ -365,12 +365,24 @@ function checkOrigin(req: IncomingMessage) {
 }
 
 /**
+ * A managed owner that replaced an idle predecessor keeps its sign-in (and port), so open tabs
+ * carry on. The predecessor wrote it to a private file that only this process reads, then removes.
+ */
+function inheritedToken() {
+  const file = process.env.CODEFLOW_HANDOVER_FILE; delete process.env.CODEFLOW_HANDOVER_FILE;
+  if (!file || !process.env.CODEFLOW_MANAGED_RELEASE || !resolvePath(file).startsWith(join(resolvePath(CODEFLOW_HOME), "integration-runtime") + sep)) return;
+  try { const token = JSON.parse(readFileSync(file, "utf8")).token; return typeof token === "string" && /^[a-f0-9]{48}$/.test(token) ? token : undefined; }
+  catch { return; }
+  finally { rmSync(file, { force: true }); }
+}
+/**
  * Who may use the API. The Host/Origin checks stop web pages, but not programs on this machine
  * — including the agents code-flow runs, some of which are sandboxed with network access and
  * could otherwise ask this server to run a command outside their sandbox. So the API needs a
  * session cookie that only a browser holds.
  *
- * The token lives only in this process's memory. The first browser to open code-flow gets the
+ * The token lives only in this process's memory. (When an idle managed backend updates, it passes
+ * the token to its successor through a private file the successor removes as it starts.) The first browser to open code-flow gets the
  * cookie ("claims" it) — until a browser has signed in (by claiming it, with the link or with a
  * cookie it already has) or code-flow first starts an agent, a check, or an app, whichever comes
  * first. After that nothing on this machine that isn't already signed in can claim it. Any other
@@ -379,7 +391,7 @@ function checkOrigin(req: IncomingMessage) {
  */
 const auth = {
   fixed: !!process.env.CODEFLOW_TOKEN,
-  token: process.env.CODEFLOW_TOKEN || randomBytes(24).toString("hex"),
+  token: process.env.CODEFLOW_TOKEN || inheritedToken() || randomBytes(24).toString("hex"),
   claimable: !process.env.CODEFLOW_SSH_HOST && sharedAccounts.available && !sharedAccounts.hasUsers,
 };
 sharedAccounts.onChange(() => { auth.claimable = false; });
@@ -3067,6 +3079,9 @@ if (taskConversationsReady) {
   const workspaceUrl = (path: string) => `http://localhost:${PORT}${path}`;
   connectCliWorkspace(cliTeams, taskConversations, conversations, projects, {
     url: workspaceUrl,
+    // Shown only in the host's own confirmation dialog: single-use, local-only, 16 random bytes.
+    link: path => { const ticket = workspaceHandoffs.issue(path, 10 * 60_000, 16); return { url: workspaceUrl(`/cli-workspace/${ticket}`), ticket }; },
+    revoke: ticket => workspaceHandoffs.revoke(ticket),
     open: async path => {
       const ticket = workspaceHandoffs.issue(path);
       const opened = await openWorkspaceBrowser(workspaceUrl(`/cli-workspace/${ticket}`));
@@ -3258,25 +3273,42 @@ for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
 if (process.env.CODEFLOW_LAUNCHER === "1") process.on("disconnect", () => void stop("launcher disconnected"));
 
 // Only automatically managed, headless owners may retire themselves. No updater
-// signals another PID. Existing hosts and active execution keep the old generation.
+// signals another PID. Running work keeps the old generation; connected sessions and open
+// tabs do not, because the successor keeps this port and sign-in and they reconnect to it.
 if (process.env.CODEFLOW_CLI_HEADLESS === "1" && process.env.CODEFLOW_MANAGED_RELEASE) {
   setInterval(() => { void checkUpdates(CODEFLOW_HOME).catch(() => undefined); }, 6 * 60 * 60 * 1000).unref();
+  /** What holds an update back, in words `codeflow updates status` shows. */
+  const updateBlocker = () =>
+    !cliReady || !taskConversationsReady || !filteredTasksReady || !mlReady ? "Code Flow is still starting"
+    : cliTransport?.holding ? "a start confirmation is open"
+    : activeHttpRequests || cliTransport?.inFlight ? "a request is in progress"
+    : policyPreparations.size ? "agent settings are being prepared"
+    : improvingControllers.size ? "a prompt is being improved"
+    : ownerHubStreams.size ? "a linked team runner is connected"
+    : extensions.list().length ? "an extension is running"
+    : filteredTasks.active() ? "a filtered task is running"
+    : ml.active() ? "a training job is running"
+    : teamTerminals.active() ? "a team terminal is open"
+    : shells.list().some(s => s.status === "running") ? "a terminal command is running"
+    : manager.devServers.list().some(s => s.status === "running") ? "an app preview is running"
+    : undefined;
   let checking = false;
   setInterval(() => {
     if (checking || stopping) return;
     checking = true;
     void retireManagedOwner(CODEFLOW_HOME, process.env.CODEFLOW_MANAGED_RELEASE!, async () => {
-      if (!cliReady || !taskConversationsReady || !filteredTasksReady || !mlReady ||
-          activeHttpRequests || cliTransport?.busy || policyPreparations.size || improvingControllers.size ||
-          runFeed.clients.size || ownerHubStreams.size || extensions.list().length ||
-          filteredTasks.active() || ml.active() || teamTerminals.active() ||
-          shells.list().some(s => s.status === "running") || manager.devServers.list().some(s => s.status === "running")) return false;
+      const blocker = updateBlocker();
+      if (blocker) return blocker;
       // This synchronous claim includes starts, side turns, checks, merge validation,
       // repository leases and ambiguous remote execution; no disk snapshot heuristic.
-      try { manager.beginIdleShutdown(); } catch { return false; }
-      const successor = spawn(process.execPath, [join(CODEFLOW_HOME, "integration-runtime", "launcher.mjs"), "--handover", String(process.pid)], { detached: true, stdio: "ignore", env: { ...process.env, CODEFLOW_HOME } });
+      try { manager.beginIdleShutdown(); } catch { return "a task is running"; }
+      // Written only now, with nothing running: the successor keeps this port and sign-in, and removes the file on start.
+      const handover = join(CODEFLOW_HOME, "integration-runtime", `handover-${process.pid}.json`), temp = `${handover}.${randomBytes(6).toString("hex")}.tmp`;
+      try { writeFileSync(temp, JSON.stringify({ port: PORT, ...(auth.fixed ? {} : { token: auth.token }) }), { mode: 0o600, flag: "wx" }); renameSync(temp, handover); }
+      catch (error) { rmSync(temp, { force: true }); logError("Could not pass this sign-in to the updated backend; open tabs will need a new link", error); }
+      const successor = spawn(process.execPath, [join(CODEFLOW_HOME, "integration-runtime", "launcher.mjs"), "--handover", String(process.pid)], { cwd: CODEFLOW_HOME, detached: true, stdio: "ignore", env: { ...process.env, CODEFLOW_HOME } });
       successor.on("error", error => logError("Managed update handover failed; next connection will retry", error)); successor.unref();
       void stop("idle managed runtime update"); return true;
     }).catch(() => undefined).finally(() => { checking = false; });
-  }, 30000).unref();
+  }, 15000).unref();
 }

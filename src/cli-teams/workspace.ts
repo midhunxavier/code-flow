@@ -6,7 +6,7 @@ import type { CliTeamsService } from "./service.js";
 import { digest, fail } from "./model.js";
 
 /** Adapts CLI work to the existing task/chat services; execution remains owned by core. */
-export function connectCliWorkspace(core: CliTeamsService, tasks: TaskConversations, chats: Conversations, projects: Projects, browser: { url: (path: string) => string; open: (path: string) => Promise<boolean> }) {
+export function connectCliWorkspace(core: CliTeamsService, tasks: TaskConversations, chats: Conversations, projects: Projects, browser: { url: (path: string) => string; open: (path: string) => Promise<boolean>; link?: (path: string) => { url: string; ticket: string }; revoke?: (ticket: string) => void }) {
   core.workspace = {
     ...browser,
     async resolve(repo, context, proposalId) {

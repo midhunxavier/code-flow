@@ -1,19 +1,29 @@
-import { CLI_TOOLS } from "./tools.js";
+import { CLI_TOOLS, HOST_TOOLS } from "./tools.js";
+import { guideText, startupInstructions, type GuideSection } from "./guide.js";
+import { shapeProblem } from "./model.js";
 import { CliTeamError } from "./model.js";
-import { connectRuntime, runtimeRequest } from "./client.js";
+import { connectRuntime } from "./client.js";
+import { readFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { CLI_MESSAGE_BYTES } from "./limits.js";
-import { readFile, realpath } from "node:fs/promises";
+import { realpath } from "node:fs/promises";
 import { repoRoot } from "../git.js";
 import { formatToolResult } from "./presentation.js";
-import { installProject } from "./install.js";
+import { hasProjectInstall, installUser } from "./install.js";
 
-export async function serveMcp(projectRoot: string) {
-  projectRoot = await realpath(await repoRoot(projectRoot));
-  // Desktop chat hosts do not discover project skills. Share the same workflow contract.
-  const workflow = (await readFile(new URL("../../integrations/cli-teams/SKILL.md", import.meta.url), "utf8")).replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/, "").trim();
+/** This release's version, so hosts and `claude mcp` show which Code Flow answers. */
+const VERSION = (() => { try { return String(JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")).version); } catch { return "0.0.0"; } })();
+
+/**
+ * With no explicit --project-root, the connection works on the Git repository the CLI was started in.
+ * Registered once per user, it also starts outside repositories; there it explains instead of failing to start.
+ */
+export async function serveMcp(projectRoot: string, explicit = true) {
+  const found = await repoRoot(projectRoot).then(root => realpath(root)).catch(error => { if (explicit) throw error; return undefined; });
+  if (!found) return serveOutsideRepository(projectRoot);
+  projectRoot = found;
   const client = await connectRuntime(projectRoot, true, "mcp");
-  const heartbeat = setInterval(() => { void runtimeRequest(client.runtime, "/heartbeat", {}, client.token).catch(() => undefined); }, 10000).unref();
+  const heartbeat = setInterval(() => { void client.heartbeat().catch(() => undefined); }, 10000).unref();
   const prompts = new Map<string, { parent: string | number; resolve: (value: any) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
   const cancelPrompts = (message: string, parent?: string | number) => {
     for (const [id, pending] of prompts) if (parent === undefined || pending.parent === parent) {
@@ -27,25 +37,48 @@ export async function serveMcp(projectRoot: string) {
   const send = (value: unknown) => process.stdout.write(`${JSON.stringify(value)}\n`);
   const rpcError = (id: unknown, code: number, message: string) => send({ jsonrpc: "2.0", id, error: { code, message } });
   const approveInHost = async (parent: string | number, args: any, handoff = false) => {
-    const preview = await runtimeRequest(client.runtime, handoff ? "/handoff-preview" : "/preview", { projectRoot, runId: args.runId, proposalId: args.proposalId, revision: args.expectedRevision });
+    const preview = await client.privileged(handoff ? "/handoff-preview" : "/preview", { projectRoot, runId: args.runId, proposalId: args.proposalId, revision: args.expectedRevision });
     if ((handoff ? preview.previewHash : preview.hash) !== (handoff ? args.previewHash : args.proposalHash)) throw new CliTeamError("acceptance_stale", "The preview changed; inspect it again before confirming.");
+    // The user may approve here or read the full plan in the browser and press Start there.
+    // Both approve the same proposal revision, so exactly one run starts either way.
+    const link: { url?: string; ticket?: string } = handoff ? {} : await client.privileged("/approval-link", { projectRoot, proposalId: args.proposalId, revision: args.expectedRevision }).catch(() => ({}));
+    let watcher: ReturnType<typeof setInterval> | undefined;
     const result = await new Promise<any>((resolve, reject) => {
       const id = `codeflow-approval-${randomBytes(16).toString("hex")}`;
+      const settle = (value: any) => { if (!prompts.has(id)) return; const pending = prompts.get(id)!; prompts.delete(id); clearTimeout(pending.timer); pending.resolve(value); };
       const timer = setTimeout(() => { prompts.delete(id); reject(new CliTeamError("acceptance_cancelled", "This confirmation timed out without starting work. Check the shared task before requesting start again.")); }, 5 * 60_000);
       prompts.set(id, { parent, resolve, reject, timer });
       send({ jsonrpc: "2.0", id, method: "elicitation/create", params: {
-        mode: "form", message: handoff ? `Review application of these exact task changes.\n\n${preview.summary}\nPreview hash: ${preview.previewHash}` : [
-          "Review this Code Flow proposal. Set approval to True (tick the checkbox), then submit.",
-          preview.reviewUrl ? `Full proposal in Code Flow: ${preview.reviewUrl}` : undefined,
-          "", preview.preview,
-        ].filter(line => line !== undefined).join("\n"),
-        requestedSchema: { type: "object", properties: { approve: { type: "boolean", title: handoff ? "Apply and stage these exact changes" : "Approve and start this exact proposal", description: handoff ? `Run ${args.runId}. This changes the checkout and index; no commit or push.` : `Proposal ${args.proposalId}, revision ${args.expectedRevision}. Declining starts no work.`, default: false } }, required: ["approve"] },
+        mode: "form", message: handoff ? `Apply these task changes to your checkout?\n\n${preview.summary}\n\nAccept stages the changes (no commit or push). Decline changes nothing.` : [
+          // Claude Code shows about three lines before "+N more lines": lead with the decision.
+          preview.headline ?? "Start this Code Flow task?",
+          link.url ? "Accept starts it here. Or open the full plan and press Start there:" : "Accept starts it. Decline starts nothing.",
+          // Single-use sign-in link: a plain link would land on the sign-in page.
+          link.url ?? `Details: run \`codeflow open ${args.proposalId}\` in a terminal`,
+          "", preview.card ?? preview.preview,
+          "", "Decline starts nothing.",
+        ].join("\n"),
+        // Accept is the approval: the answer comes from the host's own form, never from the model.
+        // The field is pre-ticked for hosts that need one; unticking it declines.
+        requestedSchema: { type: "object", properties: { approve: { type: "boolean", title: handoff ? "Apply these changes" : "Start this task", default: true } } },
       } });
+      if (link.url) watcher = setInterval(() => {
+        void client.privileged("/approval-state", { projectRoot, proposalId: args.proposalId, revision: args.expectedRevision }).then((state: any) => {
+          if (!state.accepted || !prompts.has(id)) return;
+          // Started in the browser: close this dialog and continue with the same run.
+          send({ jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: id, reason: "Started in Code Flow" } });
+          settle({ action: "accept", elsewhere: true });
+        }).catch(() => undefined);
+      }, 1500);
+    }).finally(() => {
+      if (watcher) clearInterval(watcher);
+      if (link.ticket) void client.privileged("/approval-revoke", { projectRoot, ticket: link.ticket }).catch(() => undefined);
     });
-    if (result?.action !== "accept" || result.content?.approve !== true) throw new CliTeamError(result?.action === "cancel" ? "acceptance_cancelled" : "acceptance_declined", handoff ? "Application was not approved; the checkout was not changed by this request." : "This confirmation did not approve or start work. Check the shared task if it was started elsewhere; otherwise revise it or request start again when ready.");
+    if (result?.elsewhere) return;
+    if (result?.action !== "accept" || result.content?.approve === false) throw new CliTeamError(result?.action === "cancel" ? "acceptance_cancelled" : "acceptance_declined", handoff ? "Application was not approved; the checkout was not changed by this request." : "This confirmation did not approve or start work. Check the shared task if it was started elsewhere; otherwise revise it or request start again when ready.");
     // The reply is a server-request response from the native host, never a tool argument
     // supplied by the model. The owner rechecks the exact revision/hash atomically.
-    await runtimeRequest(client.runtime, handoff ? "/handoff-confirm" : "/confirm", { projectRoot, runId: args.runId, previewHash: args.previewHash, proposalId: args.proposalId, revision: args.expectedRevision, hash: preview.hash });
+    await client.privileged(handoff ? "/handoff-confirm" : "/confirm", { projectRoot, runId: args.runId, previewHash: args.previewHash, proposalId: args.proposalId, revision: args.expectedRevision, hash: preview.hash });
   };
   const request = async (m: any) => {
     const validId = (v: unknown) => typeof v === "string" || typeof v === "number" && Number.isFinite(v);
@@ -61,28 +94,33 @@ export async function serveMcp(projectRoot: string) {
         const elicitation = m.params?.capabilities?.elicitation;
         nativeForm = !!elicitation && typeof elicitation === "object" && !Array.isArray(elicitation) && (Object.hasOwn(elicitation, "form") || Object.keys(elicitation).length === 0);
         const versions = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
-        result = { protocolVersion: versions.includes(m.params?.protocolVersion) ? m.params.protocolVersion : "2025-03-26", capabilities: { tools: {} }, serverInfo: { name: "code-flow", version: "1.0.0" }, instructions: `This connection is bound exclusively to repository ${JSON.stringify(projectRoot)}. Show this repository when proposing work; never assume it is the current chat's working directory. Tools cannot switch repositories. ${nativeForm ? "Call codeflow_start_run to show native approval in this session." : "This host has no form elicitation; use the Code Flow workspace or terminal confirmation returned by codeflow_propose_run."}\n\n${workflow}` };
+        result = { protocolVersion: versions.includes(m.params?.protocolVersion) ? m.params.protocolVersion : "2025-03-26", capabilities: { tools: {} }, serverInfo: { name: "code-flow", version: VERSION }, instructions: await startupInstructions(projectRoot, nativeForm) };
       } else if (m.method === "ping") result = {};
       else if (!initialized) { rpcError(m.id, -32000, "Initialize first"); return; }
-      else if (m.method === "tools/list") result = { tools: CLI_TOOLS };
+      else if (m.method === "tools/list") result = { tools: [...CLI_TOOLS, ...HOST_TOOLS] };
       else if (m.method === "tools/call") {
         let value: unknown, error = false;
         try {
           const name = m.params?.name, args = m.params?.arguments ?? {};
           let data: any;
-          try { data = await client.call(name, args); }
+          const hostTool = HOST_TOOLS.find(t => t.name === name);
+          if (hostTool) {
+            const issue = shapeProblem(hostTool.inputSchema, args);
+            if (issue) throw new CliTeamError("validation_failed", issue);
+            data = { section: args.section, guide: await guideText(args.section as GuideSection) };
+          } else try { data = await client.call(name, args); }
           catch (e) {
             if (!["codeflow_start_run", "codeflow_apply_handoff"].includes(name) || !nativeForm || !(e instanceof CliTeamError) || e.code !== "acceptance_required") throw e;
             await approveInHost(m.id, args, name === "codeflow_apply_handoff"); data = await client.call(name, args);
           }
-          if (name === "codeflow_propose_run") data = { ...data, approvalMethod: nativeForm ? "native_form" : data.workspace ? "browser" : "terminal", ...(nativeForm ? { nextAction: "Review this proposal, then call codeflow_start_run with its ID, revision, and hash. Code Flow will ask the user to approve and start inside this session; no separate terminal is needed." } : data.workspace ? { nextAction: "Review and start the approach in Code Flow using workspace.url or codeflow_open_task. Then call codeflow_start_run with the same proposal revision and hash to recover the existing run. Terminal approval remains available." } : {}) };
+          if (name === "codeflow_propose_run") data = { ...data, approvalMethod: nativeForm ? "native_form" : data.workspace ? "browser" : "terminal", ...(nativeForm ? { nextAction: "Paste the proposal card above into your reply word for word, with the Open in Code Flow link, before any other tool call. The approval form shows only its first lines, so your reply is where the user reads the plan. Then call codeflow_start_run with its ID, revision and hash; Code Flow asks the user to accept inside this session." } : data.workspace ? { nextAction: "Review and start the approach in Code Flow using workspace.url or codeflow_open_task. Then call codeflow_start_run with the same proposal revision and hash to recover the existing run. Terminal approval remains available." } : {}) };
           if (name === "codeflow_start_run") data = { ...data, follow: { runId: data.runId, follow: true } };
           if (name === "codeflow_list_providers") {
             // Inspect host-side files here, not in the owner (which may be a bundled remote host).
             let configuration: { state: string; message: string; pendingFiles?: string[] };
             try {
-              const setup = await installProject(projectRoot, data.providers.filter((p: any) => p.installed).map((p: any) => p.id), true);
-              configuration = { state: setup.changes.length ? "update_available" : "current", pendingFiles: setup.changes.map(e => e.path), message: setup.changes.length ? "Project setup differs from this runtime. Run codeflow init, then reconnect Code Flow in the host to load the updated tools and skill." : "Project configuration matches this runtime." };
+              const setup = await installUser(data.providers.filter((p: any) => p.installed).map((p: any) => p.id), true), legacy = await hasProjectInstall(projectRoot);
+              configuration = { state: setup.changes.length || legacy ? "update_available" : "current", pendingFiles: setup.changes.map(e => e.path), message: legacy ? "This repository still has the old in-repository Code Flow setup. Run codeflow init once to move it to your user settings, then reconnect Code Flow in the host." : setup.changes.length ? "Your Code Flow setup differs from this runtime. Run codeflow init, then reconnect Code Flow in the host to load the updated tools and skill." : "Your user setup matches this runtime." };
             } catch (e) { configuration = { state: "needs_attention", message: `Configuration check: ${e instanceof Error ? e.message : "unavailable"}. Existing configuration was preserved.` }; }
             const compatible = CLI_TOOLS.every(t => data.connection?.tools?.includes(t.name));
             data = { ...data, connection: { ...data.connection, compatible, configuration,
@@ -133,4 +171,22 @@ export async function serveMcp(projectRoot: string) {
     cancelPrompts("Host disconnected; no approval was recorded");
     while (inflight) await new Promise(resolve => setTimeout(resolve, 25));
   } finally { clearInterval(heartbeat); process.off("SIGINT", stop); process.off("SIGTERM", stop); await client.close(); }
+}
+
+async function serveOutsideRepository(folder: string) {
+  const message = `Code Flow works on a Git repository, and this session started in ${folder}, which is not inside one. Ask the user to start claude or codex from their project folder (or run git init there), then reconnect Code Flow from /mcp.`;
+  const send = (value: unknown) => process.stdout.write(`${JSON.stringify(value)}\n`);
+  const { createInterface } = await import("node:readline");
+  for await (const line of createInterface({ input: process.stdin })) {
+    let m: any; try { m = JSON.parse(line); } catch { send({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } }); continue; }
+    if (m?.id === undefined || m.method === undefined) continue;
+    const versions = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
+    if (m.method === "initialize") send({ jsonrpc: "2.0", id: m.id, result: { protocolVersion: versions.includes(m.params?.protocolVersion) ? m.params.protocolVersion : "2025-03-26", capabilities: { tools: {} }, serverInfo: { name: "code-flow", version: VERSION }, instructions: message } });
+    else if (m.method === "ping") send({ jsonrpc: "2.0", id: m.id, result: {} });
+    else if (m.method === "tools/list") send({ jsonrpc: "2.0", id: m.id, result: { tools: [...CLI_TOOLS, ...HOST_TOOLS] } });
+    else if (m.method === "tools/call") {
+      const value = { protocolVersion: 1, ok: false, error: { code: "not_a_repository", message }, nextAction: message };
+      send({ jsonrpc: "2.0", id: m.id, result: { content: [{ type: "text", text: message }], structuredContent: value, isError: true } });
+    } else send({ jsonrpc: "2.0", id: m.id, error: { code: -32601, message: "Method not found" } });
+  }
 }

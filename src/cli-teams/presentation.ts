@@ -74,6 +74,7 @@ export function formatToolResult(name: string, value: any): string {
   if (name === "codeflow_apply_handoff") return `${d.message}\nRun: ${d.runId}`;
   if (name === "codeflow_submit_step") return `Assignment output saved for run ${d.runId}. Read progress for the next step.${link}`;
   if (name === "codeflow_claim_step") return `Assignment: ${d.assignment.id}\n${d.assignment.instructions}\nUse the exact inputs and private claim token in structuredContent. Do not display the token.`;
+  if (name === "codeflow_get_guide") return d.guide;
   if (name === "codeflow_list_models") return (d.models ?? []).map((m: any) => `${m.id ?? m.name}: ${JSON.stringify(m)}`).join("\n") + (d.nextCursor !== undefined ? `\nMore models: cursor ${d.nextCursor}` : "");
   return "Code Flow completed the request. See structuredContent for the result.";
 }

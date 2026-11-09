@@ -7,8 +7,8 @@ import { resolve, join, dirname } from "node:path";
 import { CODEFLOW_HOME } from "../config.js";
 import { getAdapter } from "../adapters/index.js";
 import { repoRoot } from "../git.js";
-import { connectRuntime, runtimeRequest } from "./client.js";
-import { installProject, uninstallProject } from "./install.js";
+import { connectRuntime } from "./client.js";
+import { hasProjectInstall, installUser, uninstallProject, uninstallUser } from "./install.js";
 import { serveMcp } from "./mcp.js";
 import { configureDesktop, inspectDesktop, DESKTOP_HOSTS, type DesktopHost } from "./desktop.js";
 import { fail, validatePreferences, type Provider } from "./model.js";
@@ -29,7 +29,7 @@ const usage = `Code Flow conversational teams
   codeflow pause|resume|cancel RUN_ID
   codeflow attach RUN_ID --connection CONNECTION_ID
   codeflow preferences [--provider claude|codex --model ID --effort VALUE] [--preferred-provider claude|codex] [--personal]
-  codeflow uninstall --project
+  codeflow uninstall --user | --project
 
 Use the codeflow skill in your Claude or Codex conversation to describe a task.
 Teams and processes are generated for that task. No presets or saved teams.
@@ -70,11 +70,24 @@ export async function launchCli(args = process.argv.slice(2)) {
     const chosen = installed.filter((p): p is Provider => !!p); if (!chosen.length) throw new Error("Install Claude Code or Codex, or explicitly choose --providers before connecting it later"); return chosen;
   };
   if (command === "init") {
-    const result = await installProject(root, await providers(), args.includes("--dry-run"));
-    console.log(json ? JSON.stringify(result, null, 2) : `${result.dryRun ? "Planned setup" : "Code Flow is configured"} for ${result.repo}\n${result.changes.length ? result.changes.map(c => `  ${c.path}`).join("\n") : "No configuration changes needed."}\nIn Claude use /codeflow; in Codex use $codeflow. Ask to check the Code Flow connection. If tools are missing, trust this project and enable Code Flow in /mcp; reconnect after an update. No agent calls were made.`); return;
+    const dryRun = args.includes("--dry-run");
+    const result = await installUser(await providers(), dryRun);
+    // Earlier versions wrote the connection into the repository with personal paths. Move this repository off it.
+    const legacy = await hasProjectInstall(root) ? dryRun ? { removed: ["in-repo Code Flow setup (removed when you run init)"], preserved: [] as string[] } : await uninstallProject(root) : undefined;
+    console.log(json ? JSON.stringify({ ...result, ...(legacy ? { removedFromRepository: legacy.removed, keptInRepository: legacy.preserved } : {}) }, null, 2) : [
+      `${result.dryRun ? "Planned setup" : "Code Flow is set up"} for your user account`,
+      result.changes.length ? result.changes.map(c => `  ${c.host}: ${c.path}`).join("\n") : "No configuration changes needed.",
+      ...(legacy?.removed.length ? [`Removed the old in-repository setup: ${legacy.removed.join(", ")}`] : []),
+      ...(legacy?.preserved.length ? [`Kept in the repository (changed since setup): ${legacy.preserved.join(", ")}`] : []),
+      "Nothing is written into your repositories. Start claude or codex inside any Git repository and ask for a Code Flow task; it works on that repository. Reconnect open sessions from /mcp. No agent calls were made.",
+    ].join("\n")); return;
   }
-  if (command === "uninstall") { if (!args.includes("--project")) throw new Error("Use uninstall --project to remove only this project's managed entries"); const result = await uninstallProject(root); console.log(json ? JSON.stringify(result, null, 2) : [`Removed ${result.removed.length} managed file(s); preserved ${result.preserved.length}.`, result.message].join("\n")); return; }
-  if (command === "mcp") { await serveMcp(root); return; }
+  if (command === "uninstall") {
+    if (args.includes("--project")) { const result = await uninstallProject(root); console.log(json ? JSON.stringify(result, null, 2) : [`Removed ${result.removed.length} managed file(s); preserved ${result.preserved.length}.`, result.message].join("\n")); return; }
+    if (!args.includes("--user")) throw new Error("Use uninstall --user to remove your Code Flow connections and skills, or uninstall --project to remove an old in-repository setup");
+    const result = await uninstallUser(); console.log(json ? JSON.stringify(result, null, 2) : [`Removed ${result.removed.length} item(s); kept ${result.preserved.length} you edited.`, ...result.removed.map(r => `  ${r}`), result.message].join("\n")); return;
+  }
+  if (command === "mcp") { await serveMcp(root, option("--project-root") !== undefined); return; }
   if (command === "doctor") {
     const repo = await repoRoot(root);
     const installed = await Promise.all((["claude", "codex"] as const).map(async provider => {
@@ -86,7 +99,7 @@ export async function launchCli(args = process.argv.slice(2)) {
       }
       return { provider, installed: available, authentication: "Not verified; catalog discovery is not an execution or permission probe.", catalog: models };
     }));
-    const configuration = await installProject(root, installed.filter(p => p.installed).map(p => p.provider), true);
+    const configuration = await installUser(installed.filter(p => p.installed).map(p => p.provider), true);
     let connection: { live: boolean; message: string };
     try {
       const client = await connectRuntime(root, false);
@@ -94,7 +107,7 @@ export async function launchCli(args = process.argv.slice(2)) {
       finally { await client.close(); }
     } catch (e) { connection = { live: false, message: `Owner bridge: ${e instanceof Error ? e.message : "unavailable"}. The MCP connection can start the owner when enabled in your host.` }; }
     const result = { repo, providers: installed, connection, node: process.version, pendingFiles: configuration.changes.map(c => c.path), notes: ["No agent inference was performed.", "Project trust, authentication, and tool permissions must be verified in the native CLI."] };
-    console.log(json ? JSON.stringify(result, null, 2) : [`Project: ${repo}`, ...installed.map(p => `${p.provider}: ${p.installed ? "CLI found" : "not installed; install this provider before assigning work"}${p.catalog ? ` · catalog ${p.catalog.state}${p.catalog.count !== undefined ? ` (${p.catalog.count} models)` : ""}${p.catalog.issue ? `: ${p.catalog.issue}` : ""}` : ""}`), configuration.changes.length ? "Setup needs updating: run codeflow init, then reconnect Code Flow in your CLI." : "Project setup is current.", connection.message, "Authentication and execution permissions are not verified. Open each provider CLI and sign in before starting work.", "No agent calls were made. Use --catalog to check model discovery."].join("\n")); return;
+    console.log(json ? JSON.stringify(result, null, 2) : [`Project: ${repo}`, ...installed.map(p => `${p.provider}: ${p.installed ? "CLI found" : "not installed; install this provider before assigning work"}${p.catalog ? ` · catalog ${p.catalog.state}${p.catalog.count !== undefined ? ` (${p.catalog.count} models)` : ""}${p.catalog.issue ? `: ${p.catalog.issue}` : ""}` : ""}`), configuration.changes.length ? "Setup needs updating: run codeflow init, then reconnect Code Flow in your CLI." : "Your user setup is current.", connection.message, "Authentication and execution permissions are not verified. Open each provider CLI and sign in before starting work.", "No agent calls were made. Use --catalog to check model discovery."].join("\n")); return;
   }
   if (command === "preferences") {
     const file = args.includes("--personal") ? join(CODEFLOW_HOME, "cli-teams-preferences.json") : join(await repoRoot(root), ".codeflow", "cli-teams.json");
@@ -133,7 +146,7 @@ export async function launchCli(args = process.argv.slice(2)) {
       const prompt = createInterface({ input: process.stdin, output: process.stdout });
       try {
         if ((await prompt.question("\nApply and stage these exact changes? Type apply: ")).trim() !== "apply") { console.log("Not applied; checkout unchanged."); return; }
-        await runtimeRequest(client.runtime, "/handoff-confirm", { projectRoot: root, runId, previewHash: preview.previewHash });
+        await client.privileged("/handoff-confirm", { projectRoot: root, runId, previewHash: preview.previewHash });
         const applied = await client.call("codeflow_apply_handoff", { operationId: `apply-${preview.previewHash}`, runId, previewHash: preview.previewHash });
         console.log(applied.message);
       } finally { prompt.close(); }
@@ -152,16 +165,16 @@ export async function launchCli(args = process.argv.slice(2)) {
         if (command === "approve") {
           const proposalId = args[0], revision = Number(option("--revision"));
           if (!proposalId || !Number.isSafeInteger(revision) || revision < 1) throw new Error("Choose a proposal and --revision NUMBER");
-          const preview = await runtimeRequest(client.runtime, "/preview", { projectRoot: root, proposalId, revision });
+          const preview = await client.privileged("/preview", { projectRoot: root, proposalId, revision });
           console.log(preview.preview);
           if ((await prompt.question("\nAccept this exact proposal? Type start: ")).trim() !== "start") { console.log("Not accepted; no work started."); return; }
-          await runtimeRequest(client.runtime, "/confirm", { projectRoot: root, proposalId, revision, hash: preview.hash });
+          await client.privileged("/confirm", { projectRoot: root, proposalId, revision, hash: preview.hash });
           console.log("Accepted. Return to your CLI conversation to start this proposal.");
         } else {
           const runId = args[0], connectionId = option("--connection");
           if (!runId || !connectionId) throw new Error("Choose RUN_ID and --connection from get_run");
           if ((await prompt.question(`Attach host connection ${connectionId} to run ${runId}? Type attach: `)).trim() !== "attach") return;
-          console.log(JSON.stringify(await runtimeRequest(client.runtime, "/attach", { projectRoot: root, runId, connectionId })));
+          console.log(JSON.stringify(await client.privileged("/attach", { projectRoot: root, runId, connectionId })));
         }
       } finally { prompt.close(); }
       return;

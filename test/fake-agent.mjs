@@ -16,6 +16,20 @@ if (args[0] === "--version") {
   process.exit(0);
 }
 
+// User-scope MCP registration, stored where Claude Code keeps it.
+if (vendor === "claude" && args[0] === "mcp" && ["add-json", "remove"].includes(args[1])) {
+  const { join } = await import("node:path");
+  const file = join(process.env.CLAUDE_CONFIG_DIR || process.env.HOME, ".claude.json");
+  let config = {}; try { config = JSON.parse(readFileSync(file, "utf8")); } catch {}
+  const rest = args.slice(2).filter((a, i, all) => a !== "-s" && all[i - 1] !== "-s"), name = rest[0];
+  if (args[args.indexOf("-s") + 1] !== "user") { process.stderr.write("fixture supports user scope only\n"); process.exit(1); }
+  config.mcpServers ??= {};
+  if (args[1] === "add-json") { if (config.mcpServers[name]) { process.stderr.write(`MCP server ${name} already exists in user config\n`); process.exit(1); } config.mcpServers[name] = JSON.parse(rest[1]); }
+  else { if (!config.mcpServers[name]) { process.stderr.write(`No user-scoped MCP server found with name: ${name}\n`); process.exit(1); } delete config.mcpServers[name]; }
+  writeFileSync(file, JSON.stringify(config, null, 2));
+  process.exit(0);
+}
+
 if (vendor === "claude" && args.includes("--input-format") && args.includes("--tools") && args[args.indexOf("--tools") + 1] === "") {
   const {createInterface} = await import("node:readline");
   for await (const line of createInterface({input:process.stdin})) {

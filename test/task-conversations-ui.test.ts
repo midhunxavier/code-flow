@@ -97,7 +97,7 @@ test("web users prepare, edit participants, approve once, reload results, and re
         const chatBox = await p.locator(".task-chat-scroll").boundingBox();
         assert.ok(chatBox);
         await until(() => p.getByLabel("Follow-up messages").boundingBox(), box => !!box && box.y + box.height <= chatBox.y + chatBox.height + 2, "Sending a reply brings its response into view");
-        assert.equal(await reply.inputValue(), "");
+        await until(() => reply.inputValue(), value => value === "", "The reply box clears once the reply is sent");
         const afterReply = await api(`/api/task-conversations/${task.id}`);
         assert.equal(afterReply.preparationUsage.calls, 1, "A status question does not prepare another approach");
         assert.equal(afterReply.task.executions.length, 1);

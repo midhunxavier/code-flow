@@ -20,8 +20,13 @@ export async function captureSource(repo: GitCwd, source: SourceSnapshot["source
   const base = unborn ? await checked(repo, ["commit-tree", await checked(repo, ["mktree"]), "-m", "Code Flow empty initial source"], snapshotIdentity) : head.stdout.trim();
   if (source === "head") return { base, commit: base, fingerprint: digest({ base }), source, untracked: [], ...(unborn ? { unborn: true as const } : {}) };
   if (untracked.length > 100 || untracked.some(p => !p || p.startsWith("/") || p.split(/[\\/]/).includes("..") || p.includes("\0"))) fail("validation_failed", "Choose at most 100 repository-relative untracked paths");
-  const listed = (await git(["ls-files", "--others", "--exclude-standard", "-z"], repo)).stdout.split("\0");
-  if (untracked.some(p => !listed.includes(p))) fail("validation_failed", "Selected untracked paths must be existing, non-ignored files");
+  const listed = (await git(["ls-files", "--others", "--exclude-standard", "-z"], repo)).stdout.split("\0").filter(Boolean);
+  // A selected folder stands for the untracked, non-ignored files inside it.
+  const matches = (p: string) => { const path = p.replace(/[\\/]+$/, ""); return listed.includes(path) ? [path] : listed.filter(f => f.startsWith(`${path}/`)); };
+  const missing = untracked.filter(p => !matches(p).length);
+  if (missing.length) fail("validation_failed", `Not an untracked, non-ignored file or folder: ${missing.join(", ")}. ${listed.length ? `Untracked files: ${listed.slice(0, 20).join(", ")}${listed.length > 20 ? ` and ${listed.length - 20} more` : ""}` : "This checkout has no untracked files."}`);
+  untracked = [...new Set(untracked.flatMap(matches))];
+  if (untracked.length > 100) fail("validation_failed", `The selected folders contain ${untracked.length} untracked files; choose at most 100`);
   const scratch = await mkdtemp(join(tmpdir(), "codeflow-cli-snapshot-"));
   try {
     const env = { GIT_INDEX_FILE: join(scratch, "index") };
