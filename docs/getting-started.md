@@ -15,7 +15,7 @@ Take a small, well-defined task from your own repository to a reviewed result. T
 On macOS, Linux or inside Windows **WSL2**, run:
 
 ```bash
-npx --yes --package=https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.12/midhunxavier-code-flow-0.1.0-preview.12.tgz codeflow
+npx --yes --package=https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.13/midhunxavier-code-flow-0.1.0-preview.13.tgz codeflow
 ```
 
 The launcher starts Code Flow locally and opens your default browser with its sign-in link. Keep the terminal open while you work; press **Ctrl+C** to stop. If the browser does not open, copy the sign-in link printed in the terminal. Keep that link private.
@@ -36,14 +36,14 @@ Run the same install command to update. Remove the launcher with `npm uninstall 
 
 ### Download the macOS app
 
-Choose **0.1.0-preview.12** for your Mac (**macOS 13+**):
+Choose **0.1.0-preview.13** for your Mac (**macOS 13+**):
 
-- [Download Apple Silicon DMG (M1 or later)](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.12/code-flow-0.1.0-preview.12-macos-arm64-unnotarized.dmg)
-- [Download Intel DMG](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.12/code-flow-0.1.0-preview.12-macos-x64-unnotarized.dmg)
+- [Download Apple Silicon DMG (M1 or later)](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.13/code-flow-0.1.0-preview.13-macos-arm64-unnotarized.dmg)
+- [Download Intel DMG](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.13/code-flow-0.1.0-preview.13-macos-x64-unnotarized.dmg)
 
 Open the DMG, drag **Code Flow** to **Applications**, then open Code Flow. The Electron app opens its own desktop window. Closing or reloading that window keeps agents running. Click the Dock icon or **Code Flow → Show Code Flow** to return. Use **Code Flow → Quit** to stop the app; it asks before interrupting active agents. Node is bundled; install Git and sign in to a supported agent CLI before your first run. Install Chrome or Edge for the shared browser.
 
-These are **unnotarized preview builds**. macOS may block them; use npm if blocked. Quit Code Flow before replacing it with a newer download. Run one launcher at a time. [Release notes and checksums](https://github.com/midhunxavier/code-flow/releases/tag/v0.1.0-preview.12).
+These are **unnotarized preview builds**. macOS may block them; use npm if blocked. Quit Code Flow before replacing it with a newer download. Run one launcher at a time. [Release notes and checksums](https://github.com/midhunxavier/code-flow/releases/tag/v0.1.0-preview.13).
 
 New builds include in-app updates for macOS previews. After installing a build with this updater, background checks download compatible updates automatically. **Settings → General → App updates** shows download progress and **Restart to update** when ready. Restarting saves active work after confirmation, replaces the app, and reopens it. The updater verifies the release checksum, bundle identity, version, architecture and code signature, and restores the previous bundle if replacement or launch fails. Signed installations continue to use the native signed-update mechanism.
 
