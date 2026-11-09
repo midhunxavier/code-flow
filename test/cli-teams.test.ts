@@ -18,7 +18,7 @@ const { adapters } = await import("../src/adapters/index.js");
 const { CliTeamsService } = await import("../src/cli-teams/service.js");
 const { CLI_TOOLS } = await import("../src/cli-teams/tools.js");
 const { validateCandidate, digest } = await import("../src/cli-teams/model.js");
-const { installProject, uninstallProject } = await import("../src/cli-teams/install.js");
+const { installUser, uninstallUser, uninstallProject, hasProjectInstall } = await import("../src/cli-teams/install.js");
 const { captureSource } = await import("../src/cli-teams/snapshots.js");
 const { flushWrites, journalEntry } = await import("../src/store.js");
 const { startCliTeamsTransport } = await import("../src/cli-teams/transport.js");
@@ -128,7 +128,7 @@ test("CLI UX e2e: MCP connection, native planning approval, continuation, result
   };
   const approve = async (name: string, args: object, accepted = true) => {
     const requested = peer.call(name, args), form = await peer.prompt();
-    assert.equal(form.params.requestedSchema.properties.approve.default, false);
+    assert.equal(form.params.requestedSchema.properties.approve.default, true);
     peer.send({ id: form.id, result: { action: "accept", content: { approve: accepted } } });
     return requested.result;
   };
@@ -136,7 +136,7 @@ test("CLI UX e2e: MCP connection, native planning approval, continuation, result
     const connection = await call("list_providers"); assert.equal(connection.connection.live, true); assert.equal(connection.connection.compatible, true);
     assert.equal(connection.connection.configuration.state, "update_available");
     const p = await call("propose_run", { operationId: "ux-plan", task: "Plan the value fix", candidate: planning() });
-    assert.match(p.summary, /Deliverable:/);
+    assert.match(p.summary, /^Task: Plan the value fix\nWhat it does: Plan only\. Your files are not changed\.\nTeam:\n/); assert.match(p.summary, /Limit: up to 18 agent calls · 120 minutes$/); assert.doesNotMatch(p.summary, /hash|lifetime|transport/i);
     const started = await approve("start_run", { operationId: "ux-start", proposalId: p.proposalId, expectedRevision: p.revision, proposalHash: p.proposalHash });
     const plan = f.manager.get(started.structuredContent.data.runId)!;
     assert.match(started.content[0].text, /Continue in this turn/);
@@ -348,6 +348,26 @@ test("CLI UX: missing provider fails preflight before any worker spends allowanc
     await assert.rejects(f.call("start_run", { proposalId: proposal.proposalId, expectedRevision: proposal.revision, proposalHash: proposal.proposalHash }), /no workers were launched/);
     assert.equal(f.manager.list().length, 0);
   } finally { adapters.codex.available = available; }
+});
+
+test("startup instructions fit Claude Code's 4,096-character cap and the full guide stays reachable", async () => {
+  const { startupInstructions, guideText, GUIDE_SECTIONS } = await import("../src/cli-teams/guide.js");
+  // A deep checkout path: the repository is part of the instructions.
+  const root = "/Users/someone/" + "nested-folder/".repeat(13) + "project";
+  for (const nativeForm of [true, false]) {
+    const text = await startupInstructions(root, nativeForm);
+    assert.ok(text.length <= 4000, `startup instructions are ${text.length} characters; Claude Code keeps only the first 4,096`);
+    assert.ok(text.startsWith(`This connection is bound exclusively to repository ${JSON.stringify(root)}.`));
+    assert.match(text, nativeForm ? /native approval/ : /no form elicitation/);
+    for (const rule of [/codeflow_get_guide/, /Never answer, supply or simulate approval/, /follow\.next/, /operationId/, /Managed workers must never/, /Do not invent model IDs/]) assert.match(text, rule);
+  }
+  const skill = readFileSync(new URL("../integrations/cli-teams/SKILL.md", import.meta.url), "utf8");
+  const headings = [...skill.matchAll(/^## (.+)$/gm)].map(m => m[1]);
+  assert.equal(GUIDE_SECTIONS.length, headings.length, "every skill section has a guide section");
+  const all = await guideText("all");
+  for (const heading of headings) assert.ok(all.includes(`## ${heading}`), heading);
+  for (const section of GUIDE_SECTIONS) { const text = await guideText(section); assert.match(text, /^## /); assert.ok(text.length < all.length); }
+  await assert.rejects(guideText("nope" as any), /Unknown guide section/);
 });
 
 test("UX01/02/14: strict task-generated contracts expose fourteen tools and leave the web picker unchanged", () => {
@@ -568,15 +588,121 @@ test("UX16: dirty source capture preserves index bytes and includes only selecte
   assert.match(execFileSync("git", ["show", `${captured.commit}:app.mjs`], { cwd: p, encoding: "utf8" }), /4/);
 });
 
-test("installer is transactional, idempotent, and preserves unrelated/user-edited configuration", async () => {
-  const p = repo(); mkdirSync(join(p, ".codex")); writeFileSync(join(p, ".codex/config.toml"), 'model = "existing"\n[mcp_servers.other]\ncommand = "other"\n'); writeFileSync(join(p, ".mcp.json"), JSON.stringify({ mcpServers: { other: { command: "other" } } }));
-  const dry = await installProject(p, ["claude", "codex"], true); assert.ok(dry.changes.length); assert.ok(!existsSync(join(p, ".agents")));
-  await installProject(p, ["claude", "codex"]); assert.equal((await installProject(p, ["claude", "codex"])).changes.length, 0);
-  const skill = join(p, ".agents/skills/codeflow/SKILL.md"); writeFileSync(skill, readFileSync(skill, "utf8") + "\nUser customization\n");
-  const removed = await uninstallProject(p); assert.ok(removed.preserved.includes(".agents/skills/codeflow/SKILL.md")); assert.ok(existsSync(join(p, ".codeflow/cli-teams.json")));
-  assert.equal(readFileSync(join(p, ".codex/config.toml"), "utf8"), 'model = "existing"\n[mcp_servers.other]\ncommand = "other"\n'); assert.deepEqual(JSON.parse(readFileSync(join(p, ".mcp.json"), "utf8")), { mcpServers: { other: { command: "other" } } });
-  const broken = repo(); mkdirSync(join(broken, ".codex")); writeFileSync(join(broken, ".codex/config.toml"), "invalid = [");
-  await assert.rejects(installProject(broken, ["claude", "codex"])); assert.ok(!existsSync(join(broken, ".mcp.json")), "all files validated before mutation");
+test("an untracked folder selects the untracked files inside it, and a wrong path lists what exists", async () => {
+  const p = repo(); mkdirSync(join(p, "src/lib"), { recursive: true });
+  writeFileSync(join(p, "src/main.ts"), "main"); writeFileSync(join(p, "src/lib/util.ts"), "util"); writeFileSync(join(p, "notes.txt"), "notes");
+  writeFileSync(join(p, ".gitignore"), "src/lib/ignored.ts\n"); writeFileSync(join(p, "src/lib/ignored.ts"), "ignored");
+  const captured = await captureSource(p, "working_changes", ["src/"]);
+  assert.deepEqual([...captured.untracked].sort(), ["src/lib/util.ts", "src/main.ts"]);
+  const files = execFileSync("git", ["ls-tree", "-r", "--name-only", captured.commit], { cwd: p, encoding: "utf8" });
+  assert.match(files, /src\/main\.ts/); assert.match(files, /src\/lib\/util\.ts/); assert.doesNotMatch(files, /notes|ignored/);
+  await assert.rejects(captureSource(p, "working_changes", ["docs"]), /Not an untracked, non-ignored file or folder: docs\. Untracked files: .*src\/main\.ts/);
+});
+
+test("default limits follow the proposed work", async () => {
+  const f = await setup();
+  const review = await f.call("propose_run", { task: "Review the README", candidate: { scope: "review", participants: [{ id: "reviewer", provider: "codex" }], completion: ["Findings are reported"], steps: [
+    { id: "snapshot", type: "task", operation: "capture_snapshot" }, { id: "review", type: "task", operation: "review_code", participant: "reviewer", instructions: "Review the README", inputs: ["snapshot"] },
+    { id: "result", type: "finish", outcome: "review_complete", inputs: ["review"] }] } });
+  assert.match(review.summary, /Limit: up to 2 agent calls · 30 minutes$/);
+  assert.match(review.headline, /^Review only, no file changes · Codex[^·]* · up to 2 calls, 30 min$/);
+  assert.match(review.summary, /What it does: Review only\. Your files are not changed\./);
+  // Four parallel reviewers run two at a time: two rounds plus the combining step, not five steps in a row.
+  const reviewers = ["luna", "terra", "sonnet", "opus"];
+  const parallel = await f.call("propose_run", { task: "Review the README with four reviewers", candidate: { scope: "review", participants: reviewers.map((id, i) => ({ id, provider: i < 2 ? "codex" : "claude" })), completion: ["Findings are combined"], steps: [
+    { id: "snapshot", type: "task", operation: "capture_snapshot" },
+    { id: "reviews", type: "parallel", tasks: reviewers.map(id => ({ id: `review-${id}`, type: "task", operation: "review_code", participant: id, instructions: "Review the README", inputs: ["snapshot"] })) },
+    { id: "combine", type: "task", operation: "synthesize", participant: "sonnet", instructions: "Combine the reviews", inputs: reviewers.map(id => `review-${id}`) },
+    { id: "result", type: "finish", outcome: "review_complete", inputs: ["combine", ...reviewers.map(id => `review-${id}`)] }] } });
+  assert.match(parallel.summary, /Limit: up to 10 agent calls · 60 minutes$/);
+  const pinned = await f.call("propose_run", { task: "Review the README", candidate: { ...planning(), limits: { maxInvocations: 40, maxMinutes: 90 } } });
+  assert.match(pinned.summary, /Limit: up to 40 agent calls · 90 minutes$/);
+});
+
+function userSetup() {
+  const user = mkdtempSync(join(tmpdir(), "codeflow-cli-user-")); repos.push(user);
+  const env = { ...process.env, HOME: user, CODEX_HOME: join(user, ".codex"), CLAUDE_CONFIG_DIR: "", CODEFLOW_HOME: "" };
+  const fake = fileURLToPath(new URL("./fake-agent.mjs", import.meta.url)), calls: string[][] = [];
+  const run = async (command: string, args: string[]) => { calls.push([command, ...args]); execFileSync(process.execPath, [fake, command, ...args], { env, stdio: "pipe" }); };
+  const options = { home: join(user, "codeflow-home"), env, run };
+  const claudeConfig = () => JSON.parse(readFileSync(join(user, ".claude.json"), "utf8"));
+  return { user, env, calls, options, claudeConfig, codexConfig: join(user, ".codex", "config.toml"), claudeSkill: join(user, ".claude/skills/codeflow/SKILL.md"), codexSkill: join(user, ".codex/skills/codeflow/SKILL.md") };
+}
+
+test("setup registers one connection per CLI in user settings and writes nothing into repositories", async () => {
+  const u = userSetup(), project = repo();
+  mkdirSync(join(u.user, ".codex")); writeFileSync(u.codexConfig, 'model = "existing"\n[mcp_servers.other]\ncommand = "other"\n');
+  writeFileSync(join(u.user, ".claude.json"), JSON.stringify({ numStartups: 3, mcpServers: { other: { type: "stdio", command: "other", args: [] } } }));
+  const dry = await installUser(["claude", "codex"], true, u.options);
+  assert.equal(dry.changes.length, 4); assert.equal(u.calls.length, 0); assert.ok(!existsSync(u.claudeSkill));
+  await installUser(["claude", "codex"], false, u.options);
+  assert.deepEqual(u.claudeConfig().mcpServers.codeflow, { type: "stdio", command: "codeflow", args: ["mcp"] });
+  assert.equal(u.claudeConfig().numStartups, 3, "unrelated Claude settings are kept");
+  const codex = readFileSync(u.codexConfig, "utf8");
+  assert.match(codex, /^model = "existing"\n\[mcp_servers\.other\]/); assert.match(codex, /\[mcp_servers\.codeflow\]\ncommand = "codeflow"\nargs = \["mcp"\]/);
+  assert.doesNotMatch(codex + JSON.stringify(u.claudeConfig()), /project-root/, "the connection follows the folder the CLI starts in");
+  assert.match(readFileSync(u.claudeSkill, "utf8"), /^---\n[\s\S]*Code Flow/); assert.equal(readFileSync(u.codexSkill, "utf8"), readFileSync(u.claudeSkill, "utf8"));
+  assert.equal(execFileSync("git", ["status", "--porcelain"], { cwd: project, encoding: "utf8" }), "", "no repository files");
+  assert.equal((await installUser(["claude", "codex"], false, u.options)).changes.length, 0, "a second run changes nothing");
+  // Changed settings replace only Code Flow's own Claude entry.
+  const moved = { ...u.options, env: { ...u.env, CODEFLOW_HOME: join(u.user, "elsewhere") } }; u.calls.length = 0;
+  await installUser(["claude", "codex"], false, moved);
+  assert.deepEqual(u.calls.map(c => c[2]), ["remove", "add-json"]); assert.deepEqual(u.claudeConfig().mcpServers.codeflow.env, { CODEFLOW_HOME: join(u.user, "elsewhere") });
+  assert.ok(u.claudeConfig().mcpServers.other, "other servers are kept");
+  writeFileSync(u.claudeSkill, readFileSync(u.claudeSkill, "utf8") + "\nMy own note\n");
+  await assert.rejects(installUser(["claude"], false, u.options), /changed by you/);
+  const removed = await uninstallUser(u.options);
+  assert.ok(removed.preserved.includes(u.claudeSkill), "edited skill is kept"); assert.ok(!existsSync(u.codexSkill));
+  assert.equal(readFileSync(u.codexConfig, "utf8"), 'model = "existing"\n[mcp_servers.other]\ncommand = "other"\n');
+  assert.deepEqual(Object.keys(u.claudeConfig().mcpServers), ["other"]);
+});
+
+test("setup refuses to replace a codeflow connection the user created and changes nothing", async () => {
+  const u = userSetup(); mkdirSync(join(u.user, ".codex"));
+  writeFileSync(join(u.user, ".claude.json"), JSON.stringify({ mcpServers: { codeflow: { type: "stdio", command: "my-own" } } }));
+  await assert.rejects(installUser(["claude", "codex"], false, u.options), /did not create/);
+  assert.ok(!existsSync(u.codexConfig) && !existsSync(u.codexSkill)); assert.equal(u.calls.length, 0);
+  writeFileSync(join(u.user, ".claude.json"), "{}"); writeFileSync(u.codexConfig, "invalid = [");
+  await assert.rejects(installUser(["claude", "codex"], false, u.options)); assert.ok(!existsSync(u.claudeSkill), "all settings are checked before anything is written");
+  // A failed Claude registration rolls back files already written.
+  writeFileSync(u.codexConfig, "");
+  await assert.rejects(installUser(["claude", "codex"], false, { ...u.options, run: async () => { throw new Error("claude unavailable"); } }), /claude unavailable/);
+  assert.equal(readFileSync(u.codexConfig, "utf8"), ""); assert.ok(!existsSync(u.claudeSkill) && !existsSync(u.codexSkill));
+});
+
+test("init moves an old in-repository setup out of the repository", async () => {
+  const project = repo(), mcp = { command: "/usr/local/bin/node", args: ["/Users/someone/.codeflow/integration-runtime/launcher.mjs", "mcp", "--project-root", project] };
+  const text = JSON.stringify({ mcpServers: { codeflow: mcp } }, null, 2) + "\n"; writeFileSync(join(project, ".mcp.json"), text);
+  const { realpathSync } = await import("node:fs"); const canonical = realpathSync(project);
+  const skill = "---\nname: codeflow\n---\nOld skill\n", preferences = '{\n  "schemaVersion": 1,\n  "preferences": {}\n}\n';
+  mkdirSync(join(project, ".claude/skills/codeflow"), { recursive: true }); writeFileSync(join(project, ".claude/skills/codeflow/SKILL.md"), skill);
+  mkdirSync(join(project, ".claude/kept")); writeFileSync(join(project, ".claude/kept/note.md"), "mine\n");
+  mkdirSync(join(project, ".codeflow")); writeFileSync(join(project, ".codeflow/cli-teams.json"), preferences);
+  mkdirSync(join(home, "cli-teams-installations"), { recursive: true });
+  writeFileSync(join(home, "cli-teams-installations", `${digest(canonical)}.json`), JSON.stringify({ version: 1, repo: canonical, state: "installed", edits: [{ path: join(canonical, ".mcp.json"), after: text, kind: "json", owned: digest(mcp) }, { path: join(canonical, ".claude/skills/codeflow/SKILL.md"), after: skill, kind: "skill", owned: digest(skill) }, { path: join(canonical, ".codeflow/cli-teams.json"), after: preferences, kind: "preferences", owned: "preferences-preserved" }] }));
+  assert.equal(await hasProjectInstall(project), true);
+  const user = mkdtempSync(join(tmpdir(), "codeflow-cli-user-")); repos.push(user);
+  const out = execFileSync(process.execPath, ["--import", import.meta.resolve("tsx"), fileURLToPath(new URL("../src/cli-teams/cli.ts", import.meta.url)), "init", "--providers", "codex"], { cwd: project, env: { ...process.env, HOME: user, CODEX_HOME: join(user, ".codex") }, encoding: "utf8" });
+  assert.match(out, /Removed the old in-repository setup: \.mcp\.json/); assert.match(out, /Nothing is written into your repositories/);
+  assert.ok(!existsSync(join(project, ".mcp.json"))); assert.equal(await hasProjectInstall(project), false);
+  assert.ok(!existsSync(join(project, ".claude/skills")) && !existsSync(join(project, ".codeflow")), "empty folders and the untouched default preferences are removed");
+  assert.ok(existsSync(join(project, ".claude/kept/note.md")), "a folder with other files is kept");
+  assert.match(readFileSync(join(user, ".codex", "config.toml"), "utf8"), /\[mcp_servers\.codeflow\]/);
+});
+
+test("outside a Git repository the connection starts and explains instead of failing", async () => {
+  const folder = mkdtempSync(join(tmpdir(), "codeflow-not-a-repo-")); repos.push(folder);
+  const child = spawn(process.execPath, ["--import", import.meta.resolve("tsx"), fileURLToPath(new URL("../src/cli-teams/cli.ts", import.meta.url)), "mcp"], { cwd: folder, stdio: ["pipe", "pipe", "pipe"] });
+  const replies: any[] = []; let buffer = "";
+  child.stdout.on("data", chunk => { buffer += chunk; let end; while ((end = buffer.indexOf("\n")) >= 0) { replies.push(JSON.parse(buffer.slice(0, end))); buffer = buffer.slice(end + 1); } });
+  const ask = async (id: number, method: string, params: object) => { child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n"); for (let i = 0; i < 300 && !replies.some(r => r.id === id); i++) await pause(50); return replies.find(r => r.id === id); };
+  try {
+    const init = await ask(1, "initialize", { protocolVersion: "2025-11-25", capabilities: {} });
+    assert.match(init.result.instructions, /not inside one/);
+    assert.equal((await ask(2, "tools/list", {})).result.tools.length, CLI_TOOLS.length + 1);
+    const call = await ask(3, "tools/call", { name: "codeflow_list_providers", arguments: {} });
+    assert.equal(call.result.isError, true); assert.equal(call.result.structuredContent.error.code, "not_a_repository");
+  } finally { child.kill(); }
 });
 
 test("project-scoped loopback and stdio MCP negotiate and deny owner-tool expansion", async () => {
@@ -589,7 +715,7 @@ test("project-scoped loopback and stdio MCP negotiate and deny owner-tool expans
     assert.match(stdout, /2025-03-26/, stderr);
     child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" }) + "\n");
     for (let i = 0; i < 200 && !stdout.includes('"id":2'); i++) await pause();
-    const response = stdout.trim().split("\n").map(s => JSON.parse(s)).find(r => r.id === 2); assert.equal(response.result.tools.length, 14);
+    const response = stdout.trim().split("\n").map(s => JSON.parse(s)).find(r => r.id === 2); assert.equal(response.result.tools.length, 15);
     const denied = await fetch(`${bridge.descriptor.endpoint}/call`, { method: "POST", headers: { "content-type": "application/json", origin: "https://evil.invalid", authorization: `Bearer ${bridge.descriptor.bootstrap}` }, body: "{}" }); assert.equal(denied.status, 403);
   } finally { child.stdin.end(); await new Promise<void>(resolve => { child.once("exit", () => resolve()); setTimeout(() => { child.kill(); resolve(); }, 3000).unref(); }); await bridge.close(); }
 });
@@ -838,10 +964,10 @@ test("native MCP confirmation binds human approval to the exact revision and sta
   const bridge = await startCliTeamsTransport(f.service), peer = await mcpPeer(f, { elicitation: { form: {} } });
   try {
     const proposed = await peer.call("propose_run", { operationId: "native-proposal", task: "Plan a login form", candidate: planning() }).result;
-    let p = proposed.structuredContent.data; assert.equal(p.approvalMethod, "native_form"); assert.match(p.nextAction, /no separate terminal/);
+    let p = proposed.structuredContent.data; assert.equal(p.approvalMethod, "native_form"); assert.match(p.nextAction, /Paste the proposal card above into your reply word for word.*accept inside this session/s);
     const args = () => ({ operationId: `native-start-${p.revision}`, proposalId: p.proposalId, expectedRevision: p.revision, proposalHash: p.proposalHash });
     const denied = peer.call("start_run", args()), first = await peer.prompt();
-    assert.match(first.params.message, new RegExp(p.proposalHash)); assert.equal(first.params.requestedSchema.properties.approve.default, false); assert.equal(launches, 0);
+    assert.match(first.params.message, /^Plan only, no file changes · Claude opus high \+ Codex gpt-a · up to \d+ calls, \d+ min\nAccept starts it\. Decline starts nothing\.\nDetails: run `codeflow open [a-f0-9]{32}` in a terminal\n\nTask: Plan a login form\n/); assert.doesNotMatch(first.params.message, new RegExp(p.proposalHash)); assert.equal(first.params.requestedSchema.properties.approve.default, true); assert.equal(first.params.requestedSchema.required, undefined); assert.equal(launches, 0);
     peer.send({ id: first.id, result: { action: "accept", content: { approve: false } } });
     assert.equal((await denied.result).structuredContent.error.code, "acceptance_declined"); assert.equal(f.manager.list().length, 0);
     const stale = peer.call("start_run", args()), second = await peer.prompt();
@@ -855,7 +981,8 @@ test("native MCP confirmation binds human approval to the exact revision and sta
     const forged = await peer.call("start_run", { ...args(), approved: true }).result;
     assert.equal(forged.structuredContent.error.code, "validation_failed"); assert.equal(f.manager.list().length, 0);
     const accepted = peer.call("start_run", args()), fourth = await peer.prompt();
-    peer.send({ id: fourth.id, result: { action: "accept", content: { approve: true } } });
+    // Pressing Accept is the approval, even when the host sends no field values.
+    peer.send({ id: fourth.id, result: { action: "accept" } });
     const started = await accepted.result; assert.equal(started.isError, false, JSON.stringify(started));
     assert.deepEqual(await peer.call("start_run", args()).result, started); assert.equal(peer.prompts.length, 0);
     const run = f.manager.get(started.structuredContent.data.runId)!; await finished(run); assert.equal(run.status, "done", run.error); assert.equal(launches, 3);
@@ -899,9 +1026,11 @@ test("desktop configs launch the same scoped MCP bridge from an unrelated cwd wi
       try {
         assert.match(peer.initialized.instructions, /bound exclusively to repository/);
         assert.ok(peer.initialized.instructions.includes(JSON.stringify(await (await import("node:fs/promises")).realpath(f.repo))));
-        assert.match(peer.initialized.instructions, /Candidate contract/);
+        assert.match(peer.initialized.instructions, /codeflow_get_guide/);
         assert.match(peer.initialized.instructions, /Managed workers must never|do not invoke provider CLIs/);
-        assert.equal((await peer.request("tools/list", {}).result).tools.length, 14);
+        assert.equal((await peer.request("tools/list", {}).result).tools.length, 15);
+        const guide = (await peer.call("get_guide", { section: "candidate" }).result); assert.equal(guide.isError, false); assert.match(guide.content[0].text, /^## Candidate contract/);
+        assert.ok(peer.initialized.instructions.length <= 4000, "instructions fit Claude Code's cap");
         const p = (await peer.call("propose_run", { operationId: `desktop-proposal-${connection.host}`, task: "Plan a login form", candidate: planning() }).result).structuredContent.data;
         const args = { operationId: `desktop-start-${connection.host}`, proposalId: p.proposalId, expectedRevision: p.revision, proposalHash: p.proposalHash };
         if (!native) {

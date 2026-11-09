@@ -26,7 +26,7 @@ export function ChatResultPane({ task: current, runId, onClose }: { task: TaskSn
       {run ? <a class="btn ghost small" href={`#/run/${enc(run.id)}`}>Inspect execution and preserved workspace</a> : null}
     </div></aside>;
 }
-function OutputChanges({ execution }: { execution: NonNullable<TaskSnapshot["execution"]> }) {
+export function OutputChanges({ execution }: { execution: NonNullable<TaskSnapshot["execution"]> }) {
   const [files, setFiles] = useState<DiffFile[]>(), [error, setError] = useState("");
   const branch = execution.worktrees[0]?.branch;
   useEffect(() => { if (!branch) return; const controller = new AbortController(); setFiles(undefined); setError(""); void api<DiffFile[]>(`/api/runs/${enc(execution.id)}/diff?branch=${enc(branch)}`, { signal: controller.signal }).then(setFiles).catch(e => { if (!controller.signal.aborted) setError(e.message); }); return () => controller.abort(); }, [execution.id, branch, execution.artifacts.length, execution.status]);

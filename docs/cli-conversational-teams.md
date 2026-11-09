@@ -12,19 +12,25 @@ Claude Code and Codex CLI also support [automatic shared runtime updates](deskto
 
 Use Node.js 22.13+, Git 2.38+, and at least one installed and signed-in Claude Code or Codex CLI. Use the installed Code Flow launcher on PATH. For a source build, run `npm ci`, `npm run package:npm`, then install the resulting `dist/npm` package using your normal local/global package installation method.
 
-Install the launcher for regular use, then initialize your target Git project:
+Install the launcher for regular use, then set up Code Flow once for your user account:
 
 ```sh
 npm install -g @midhunxavier/code-flow@preview
-cd /path/to/your-git-project
 codeflow init --dry-run
 codeflow init
 codeflow doctor
 ```
 
-`init` detects installed providers. You can choose `--providers claude`, `--providers codex`, or `--providers claude,codex`; both providers are not required for a task using only one. Setup merges project configuration and installs the `codeflow` skill. It does not run repository setup commands or agent inference. Existing unrelated MCP entries are preserved. It refuses to overwrite an existing or user-modified Code Flow entry.
+`init` detects installed providers. You can choose `--providers claude`, `--providers codex`, or `--providers claude,codex`; both providers are not required for a task using only one. Setup registers one user-level `codeflow` MCP connection per CLI and installs the `codeflow` skill in your user settings:
 
-Start `claude` or `codex` from that project. Trust the project and approve its MCP connection through your native CLI. Reload the CLI if the skill/connection does not appear. Codex uses `.codex/config.toml` and `.agents/skills/codeflow/`; Claude uses `.mcp.json` and `.claude/skills/codeflow/`. Generated configuration contains the installed `codeflow` executable and relative project arguments, not credentials or machine-specific executable paths. It expects the native host to launch the project MCP server in that project's directory.
+- Claude Code: `claude mcp add-json -s user codeflow …` (stored in `~/.claude.json`) and `~/.claude/skills/codeflow/`.
+- Codex: a marked block in `$CODEX_HOME/config.toml` (default `~/.codex/config.toml`) and `$CODEX_HOME/skills/codeflow/`.
+
+Nothing is written into your repositories, so they never contain personal paths. The connection works on the Git repository the CLI was started in (a subfolder resolves to its repository root). Started outside a repository, it explains how to continue instead of failing. Setup does not run repository setup commands or agent inference. Unrelated MCP entries are preserved, and setup refuses to overwrite a `codeflow` entry or skill you created or edited.
+
+If a repository has the older in-repository setup (`.mcp.json`, `.codex/config.toml`, `.claude/skills` or `.agents/skills` written by an earlier `codeflow init`), running `codeflow init` inside it removes the entries Code Flow owns and keeps anything you edited. `codeflow uninstall --user` removes the user-level connections and skills; `codeflow uninstall --project` removes only an older in-repository setup.
+
+Start `claude` or `codex` from your project. Reload the CLI or reconnect from `/mcp` if the skill/connection does not appear.
 
 Code Flow connects to the existing local owner. If none is running, it starts one without opening a browser. It does not start a competing execution store or take over an incompatible owner. Close/restart an older owner if it lacks the CLI bridge. Codex configuration explicitly forwards `CODEFLOW_HOME`; use an absolute path for a custom state directory shared across projects.
 
@@ -77,7 +83,7 @@ codeflow approve PROPOSAL_ID --revision 1
 
 The fallback displays the complete proposal. Type `start` to accept that exact revision, then return to your conversation so the host can start it. There is no unattended `--yes` bypass. Native provider tool permissions are separate from this workflow acceptance.
 
-After upgrading an earlier install, rerun `codeflow init` with the same `CODEFLOW_HOME` to refresh installer-owned skills, then reconnect Code Flow from `/mcp` or restart the native host. A running MCP process retains its previously loaded code and a host conversation may retain the earlier skill instructions.
+After upgrading an earlier install, rerun `codeflow init` with the same `CODEFLOW_HOME` to refresh your user-level skills, then reconnect Code Flow from `/mcp` or restart the native host. A running MCP process retains its previously loaded code and a host conversation may retain the earlier skill instructions.
 
 Normal reviews and repairs inside the accepted bounds do not require repeated workflow confirmation. Plan-only work never expands into implementation without a new proposal.
 

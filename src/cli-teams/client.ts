@@ -3,7 +3,7 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer } from "node:net";
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { CODEFLOW_HOME } from "../config.js";
 import { CliTeamError } from "./model.js";
 import { RUNTIME_FILE, type RuntimeDescriptor } from "./transport.js";
@@ -31,7 +31,8 @@ export async function connectRuntime(projectRoot: string, start = true, kind: "m
     await new Promise<void>(resolve => probe.close(() => resolve()));
     const js = fileURLToPath(new URL("../server.js", import.meta.url));
     const args = existsSync(js) ? [js] : ["--import", import.meta.resolve("tsx"), fileURLToPath(new URL("../server.ts", import.meta.url))];
-    const child = spawn(process.execPath, args, { detached: true, stdio: "ignore", cwd: projectRoot, env: { ...process.env, CODEFLOW_HOME: resolve(CODEFLOW_HOME), PORT: String(port), CODEFLOW_CLI_HEADLESS: "1" } });
+    mkdirSync(resolve(CODEFLOW_HOME), { recursive: true });
+    const child = spawn(process.execPath, args, { detached: true, stdio: "ignore", cwd: resolve(CODEFLOW_HOME), env: { ...process.env, CODEFLOW_HOME: resolve(CODEFLOW_HOME), PORT: String(port), CODEFLOW_CLI_HEADLESS: "1" } });
     child.unref();
     let spawnError: Error | undefined; child.once("error", e => { spawnError = e; });
     for (let i = 0; i < 200 && !runtime; i++) { await new Promise(resolve => setTimeout(resolve, 100)); runtime = await descriptor(); if (spawnError) throw spawnError; }

@@ -48,7 +48,7 @@ Each entry invokes the same bridge with an absolute Node executable, Code Flow l
 
 These are **app-wide connections bound to specific repositories**. They remain bound even when another repository is open in the conversation. The MCP instructions identify the repository; proposals show it again before execution. Install separate connections for additional repositories and select the intended connection in the host. Use a small number of enabled connections to keep tool discovery manageable.
 
-If you already ran `codeflow init`, the project-scoped CLI connection may appear alongside the app-wide desktop connection in Codex. Choose one route per repository to avoid duplicate tools. `codeflow uninstall --project` removes installer-owned CLI configuration and skills; it preserves history, preferences, and modified entries. Desktop connections supply their workflow instructions directly over MCP and do not require project skill installation.
+If you also ran `codeflow init`, its user-level `codeflow` connection (which follows the folder Codex starts in) may appear alongside these repository-bound desktop connections in Codex. Choose one route per repository to avoid duplicate tools. `codeflow uninstall --user` removes the user-level CLI connections and skills; it preserves history, preferences, and modified entries. Desktop connections supply their workflow instructions directly over MCP and do not require project skill installation.
 
 ## Global app access and optional project terminals
 
@@ -70,9 +70,9 @@ codeflow terminal codex
 codeflow terminal claude
 ```
 
-The Codex wrapper disables the `codeflow-*` desktop connections for that terminal process only. It leaves the project-local `codeflow` connection and unrelated MCP servers alone. Claude uses its normal project configuration. Neither command installs anything or changes the global configuration. Provider arguments follow `--`, for example `codeflow terminal codex -- --model MODEL`. Explicit provider configuration overrides remain under your control.
+The Codex wrapper disables the `codeflow-*` desktop connections for that terminal process only. It leaves the user-level `codeflow` connection and unrelated MCP servers alone. Claude uses its normal project configuration. Neither command installs anything or changes the global configuration. Provider arguments follow `--`, for example `codeflow terminal codex -- --model MODEL`. Explicit provider configuration overrides remain under your control.
 
-Enable a project when needed with `codeflow init --providers claude,codex` from that repository. Remove its owned terminal integration with `codeflow uninstall --project`, then reconnect terminal sessions. Project trust and provider authentication still apply. Existing globally installed Codeflow entries from other installation methods should be removed separately if you want strict project-only access.
+Set up terminal access once with `codeflow init --providers claude,codex`; it follows the repository each CLI starts in. Remove it with `codeflow uninstall --user`, then reconnect terminal sessions. Project trust and provider authentication still apply. Existing globally installed Codeflow entries from other installation methods should be removed separately if you want strict project-only access.
 
 ## Try a task
 
@@ -109,11 +109,11 @@ From a built release, enable updates once, then migrate each existing desktop/pr
 ```sh
 codeflow updates enable --channel preview
 codeflow desktop setup --project-root /absolute/path/to/project
-codeflow init --providers claude,codex --project-root /absolute/path/to/project
+codeflow init --providers claude,codex
 codeflow updates status
 ```
 
-The desktop apps, Claude Code, and Codex CLI now use one stable launcher under `CODEFLOW_HOME/integration-runtime`. Reload their MCP connections once after migration. Existing modified or unowned host entries remain protected by the installers. Managed project skills installed by `init` are small entry points that defer to the running release's workflow instructions supplied by MCP initialization. User-edited skill files are never automatically overwritten.
+The desktop apps, Claude Code, and Codex CLI now use one stable launcher under `CODEFLOW_HOME/integration-runtime`. Reload their MCP connections once after migration. Existing modified or unowned host entries remain protected by the installers. Managed skills installed by `init` in your user settings are small entry points that defer to the running release's workflow instructions supplied by MCP initialization. User-edited skill files are never automatically overwritten.
 
 The launcher checks the official npm registry for `@midhunxavier/code-flow` on first use and every six hours while a managed session or headless backend is running. `preview` follows published preview releases; choose `latest` for the stable channel. Checks only adopt a newer version advertising managed-runtime protocol 1. They verify SHA-512 integrity, install offline with lifecycle scripts disabled, validate startup, and atomically select an immutable release directory. Failed or offline checks retain the selected version and record the error in `updates status`. npm must be available for installing downloaded releases. Release directories are retained so running processes never lose files beneath them.
 

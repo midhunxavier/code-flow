@@ -4809,6 +4809,30 @@ dialog.rail::backdrop { background: rgb(0 0 0 / .28); }
 .chat-proposal-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; }
 .chat-proposal-actions .help { margin: 0; font-size: 11px; }
 .chat-proposal-actions .btn { min-height: 28px; }
+/* A proposal reads as a card in the thread: team, steps, done-when and limits, with Start beside them. */
+.chat-proposal-card { display: grid; gap: 14px; min-width: 0; margin: 0 0 22px; padding: 14px 16px; border: 1px solid var(--border); border-radius: 12px; background: var(--raised); overflow-wrap: anywhere; }
+.chat-proposal-card > header { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px; }
+.chat-proposal-card > header h2 { margin: 0; font-size: 13px; }
+.chat-proposal-card > header .help { margin: 0; font-size: 11px; }
+.task-plan-view { display: grid; gap: 12px; min-width: 0; font-size: 12px; }
+.task-plan-view h3 { margin: 0 0 6px; color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: .03em; text-transform: uppercase; }
+.task-plan-view ul, .task-plan-view .task-sequence { margin: 0; }
+.task-plan-view > section > ul:not(.task-plan-team) { padding-left: 20px; line-height: 1.6; }
+.task-plan-view .task-sequence li { margin: 4px 0; }
+.task-plan-team { display: flex; flex-wrap: wrap; gap: 6px; list-style: none; padding: 0; }
+.task-plan-team li { display: inline-flex; align-items: baseline; gap: 6px; padding: 3px 10px; border: 1px solid var(--border); border-radius: 999px; background: var(--bg); }
+.task-plan-team li span { color: var(--muted); font-size: 11px; }
+.task-plan-meta { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.6; }
+/* Sections switch in place inside a task card. */
+.task-card-sections { display: flex; gap: 2px; margin: 0 -14px; padding: 0 10px; overflow-x: auto; border-bottom: 1px solid var(--border); scrollbar-width: none; }
+.task-card-sections > button { flex: none; display: inline-flex; align-items: center; gap: 5px; min-height: 30px; padding: 4px 8px; border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; color: var(--muted); font: inherit; font-size: 12px; cursor: pointer; }
+.task-card-sections > button:hover { color: var(--text); }
+.task-card-sections > button[aria-pressed="true"] { color: var(--text); border-bottom-color: var(--accent-edge); font-weight: 600; }
+.task-card-count { min-width: 16px; padding: 0 5px; border-radius: 999px; background: var(--hover); color: var(--text-2); font-size: 10px; font-weight: 600; line-height: 16px; text-align: center; }
+.task-card-summary { margin: 0; color: var(--muted); font-size: 12px; }
+.chat-team-output-verdict.is-approved { color: var(--ok); }
+.chat-team-output-verdict.is-changes { color: var(--warn); }
+.chat-team-run .task-result { min-width: 0; }
 .chat-details-panel { padding: 18px 16px 28px; min-width: 0; }
 .chat-details-panel > h2 { margin: 0 0 16px; font-size: 16px; }
 .chat-details-panel .task-details-body { padding: 0; }

@@ -1,4 +1,5 @@
 import { CANDIDATE_SCHEMA, shapeProblem, fail } from "./model.js";
+import { GUIDE_SECTIONS } from "./guide.js";
 const str = { type: "string", minLength: 1, maxLength: 200 };
 const revision = { type: "integer", minimum: 1 };
 const run = { runId: str };
@@ -19,6 +20,10 @@ export const CLI_TOOLS = [
   tool("get_artifact", "Retrieve an exact artifact by ID/hash. Page through the entire result; never silently omit the end.", { ...run, artifactId: str, sha256: str, fileCursor: { type: "integer", minimum: 0 }, cursor: { type: "integer", minimum: 0 }, maxBytes: { type: "integer", minimum: 256, maximum: 24000 } }, ["runId", "artifactId", "sha256"]),
   tool("claim_step", "Claim a ready read-only assignment for this bound host session. Keep claimToken private; it is scoped to this exact attempt.", { ...mutation, ...run, stepId: str, attemptId: str }, ["operationId", "runId", "stepId", "attemptId"]),
   tool("submit_step", "Submit this host's exact assignment. Review outputs need body, verdict and blocking findings. Human/tool approval is never an assignment output.", { ...mutation, ...run, stepId: str, attemptId: str, claimToken: str, output: { type: "object", additionalProperties: false, required: ["body"], properties: { body: { type: "string", minLength: 1, maxLength: 32000 }, verdict: { enum: ["approve", "changes_requested"] }, findings: { type: "array", maxItems: 50, items: { type: "string", maxLength: 4000 } } } } }, ["operationId", "runId", "stepId", "attemptId", "claimToken", "output"]),
+];
+// Served by the host-side MCP bridge itself, so they work with any running owner.
+export const HOST_TOOLS = [
+  tool("get_guide", "Read the Code Flow workflow guide. Call with section \"candidate\" before your first proposal; other sections: prepare, start, follow, deliver, workspace, find, connection, handoff, or all.", { section: { enum: [...GUIDE_SECTIONS, "all"] } }, ["section"]),
 ];
 export function validateTool(name: string, args: unknown) {
   const spec = CLI_TOOLS.find(t => t.name === name) ?? fail("unknown_tool", "Unknown Code Flow tool");

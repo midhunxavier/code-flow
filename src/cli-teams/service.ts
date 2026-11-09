@@ -6,7 +6,6 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 import { readFile, realpath, mkdir, open, chmod, lstat, stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { Run, RunManager, TeamContext } from "../engine.js";
-import { DEFAULT_LOOP } from "../run-projection.js";
 import { CODEFLOW_HOME, STEP_TIMEOUT_MS } from "../config.js";
 import { getAdapter } from "../adapters/index.js";
 import { repoRoot, assertWorktree, git } from "../git.js";
@@ -14,7 +13,7 @@ import { flushWrites, journalEntry, loadJournal, RUNS_DIR } from "../store.js";
 import { cliTeamPattern } from "./pattern.js";
 import { catalog, resolveParticipant } from "./providers.js";
 import { captureSource, type SourceSnapshot } from "./snapshots.js";
-import { canonical, digest, fail, validateCandidate, validateWebCandidate, validatePreferences, type Definition, type PendingAssignment, type Preferences } from "./model.js";
+import { canonical, digest, fail, validateCandidate, validateWebCandidate, validatePreferences, type Definition, type Node, type PendingAssignment, type Preferences } from "./model.js";
 import { validateTool, CLI_TOOLS } from "./tools.js";
 import { registerHostHandlers } from "./host.js";
 import { recoverCliAccounting } from "./accounting.js";
@@ -50,6 +49,8 @@ export class CliTeamsService {
     describe: (proposal: Proposal) => Promise<unknown>;
     open: (path: string) => Promise<boolean>;
     url: (path: string) => string;
+    link?: (path: string) => { url: string; ticket: string };
+    revoke?: (ticket: string) => void;
   };
   workspaceProposals() { return [...this.journal.entries()].filter(([k]) => k.startsWith("proposal:")).map(([, p]) => structuredClone(p as Proposal)); }
   private readonly syncedWorkspaceEvents = new Set<string>();
@@ -168,19 +169,58 @@ export class CliTeamsService {
     ].join("\n\n");
     return compact && Buffer.byteLength(preview) > 24000 ? preview.slice(0, 7500) + "\n\n[Compact preview abbreviated. Read the complete configuration in interactive confirmation.]" : preview;
   }
+  /** One line with what matters most: hosts show only the first few lines of a confirmation. */
+  proposalHeadline(p: Proposal) {
+    const names: Record<string, string> = { claude: "Claude", codex: "Codex", agy: "Antigravity" };
+    const what = { plan: "Plan only, no file changes", review: "Review only, no file changes", write: "Writes code in a separate worktree" }[p.definition.scope];
+    const team = p.definition.participants.map(a => [names[a.provider] ?? a.provider, a.model, a.effort].filter(Boolean).join(" ")).join(" + ");
+    const { maxInvocations: calls, maxMinutes: minutes } = p.definition.limits;
+    return `${what} · ${team} · up to ${calls} call${calls === 1 ? "" : "s"}, ${minutes} min`;
+  }
+  /** A short card in plain words for the chat and the native form. The full exact proposal stays behind the link and in the terminal. */
   proposalSummary(p: Proposal) {
-    return [`Task: ${p.task.slice(0, 600)}`, `Deliverable: ${p.definition.completion.map(s => s.slice(0, 200)).join("; ")}`,
-      `Source: ${p.source.source} · ${p.source.commit}${p.context.continueRunId ? " · preserved task changes" : ""}`,
-      ...p.definition.participants.map(a => `${a.id}: ${a.provider} / ${a.model ?? "provider default"} / ${a.effort ?? "default"} effort${a.binding === "current_session" ? " (current CLI; settings unverified)" : ""}`),
-      `Scope: ${p.definition.scope}${p.definition.scope === "write" ? " in an isolated worktree" : " only"}. Setup: ${p.definition.setup || "none"}. Check: ${p.definition.check || "none"}.`,
-      `Limits: ${p.definition.limits.maxInvocations} managed calls · ${p.definition.limits.maxMinutes} execution minutes.`,
-      "Review the full work sequence and permissions in the exact-revision confirmation."].join("\n");
+    const what = { plan: "Plan only. Your files are not changed.", review: "Review only. Your files are not changed.", write: "Writes code in a separate worktree. Nothing reaches your branch until you apply it." }[p.definition.scope];
+    const names: Record<string, string> = { claude: "Claude", codex: "Codex", agy: "Antigravity" };
+    const verbs: Record<string, string> = { propose: "drafts a plan", revise_proposal: "revises the plan", synthesize: "combines the proposals", review_plan: "reviews the plan", implement: "writes the code", repair: "fixes the findings", review_code: "reviews the changes" };
+    const steps = (nodes: Definition["steps"], indent = ""): string[] => nodes.flatMap(n => {
+      if (n.type === "task") return n.operation === "capture_snapshot" ? [`${indent}Snapshot your current files`] : n.operation === "verify" ? [`${indent}Run the check`] : [`${indent}${n.participant} ${verbs[n.operation]}`];
+      if (n.type === "loop") return [`${indent}Repeat up to ${n.maxIterations} times until approved:`, ...steps(n.steps, `${indent}  `)];
+      if (n.type === "parallel") return [`${indent}At the same time:`, ...steps(n.tasks, `${indent}  `)];
+      if (n.type === "gate") return [n.reviews.length ? `${indent}Continue only if the reviewers approve${n.policy === "verified" ? " and the check passes" : ""}` : `${indent}Continue only if the check passes`];
+      if (n.type === "user_decision") return [`${indent}Ask you: ${n.question.slice(0, 120)}`];
+      if (n.type === "join") return [];
+      return [`${indent}Return the result to this chat`];
+    });
+    const numbered = steps(p.definition.steps).map((line, i, all) => line.startsWith(" ") ? `   ${line}` : `${all.slice(0, i + 1).filter(l => !l.startsWith(" ")).length}. ${line}`);
+    const commands = [p.definition.setup && `setup \`${p.definition.setup}\``, p.definition.check && `check \`${p.definition.check}\``].filter(Boolean).join(", ");
+    return [
+      `Task: ${p.task.length > 240 ? `${p.task.slice(0, 240).trimEnd()}…` : p.task}`,
+      `What it does: ${what}`,
+      "Team:", ...p.definition.participants.map(a => `  • ${a.id}: ${names[a.provider] ?? a.provider} · ${a.model ?? "default model"} · ${a.effort ?? "default"} effort${a.binding === "current_session" ? " (this CLI session)" : ""}`),
+      "Steps:", ...numbered,
+      `Commands it runs: ${commands || "none"}`,
+      `Limit: up to ${p.definition.limits.maxInvocations} agent call${p.definition.limits.maxInvocations === 1 ? "" : "s"} · ${p.definition.limits.maxMinutes} minutes`,
+    ].join("\n");
+  }
+  /** A signed-in link to review and start this exact revision in the browser. */
+  async approvalLink(c: Connection, proposalId: string, revision: number) {
+    const p = this.proposal(c, proposalId);
+    if (p.revision !== revision || p.runId) fail("revision_conflict", "Proposal changed or already started; retrieve the current proposal");
+    if (!p.chatId || !this.workspace?.link) return {};
+    await this.syncWorkspace(p);
+    return this.workspace.link(`/?team=local#/chat/${p.chatId}`);
+  }
+  revokeApprovalLink(ticket: string) { this.workspace?.revoke?.(ticket); return {}; }
+  /** Whether this revision was accepted or started from another surface, such as the browser. */
+  approvalState(c: Connection, proposalId: string, revision: number) {
+    const p = this.proposal(c, proposalId);
+    return { revision: p.revision, runId: p.runId, accepted: !!p.runId || p.revision === revision && p.accepted?.hash === p.hash };
   }
   async acceptancePreview(c: Connection, proposalId: string, revision: number) {
     const p = this.proposal(c, proposalId);
     if (p.revision !== revision || p.runId) fail("revision_conflict", "Proposal changed or already started; retrieve the current proposal");
     const reviewUrl = p.chatId ? this.workspace?.url(`/?team=local#/chat/${p.chatId}`) : undefined;
-    return { preview: `${this.proposalSummary(p)}\n\nFull proposal\n${this.preview(p)}`, hash: p.hash, reviewUrl };
+    return { preview: `${this.proposalSummary(p)}\n\nFull proposal\n${this.preview(p)}`, card: this.proposalSummary(p), headline: this.proposalHeadline(p), hash: p.hash, reviewUrl };
   }
   async handoffPreview(c: Connection, runId: string) {
     await this.manager.assertExecutionAllowed(c.repo, undefined, "Inspect task changes");
@@ -311,7 +351,16 @@ export class CliTeamsService {
     if (old && (old.revision !== a.expectedRevision || old.runId)) fail("revision_conflict", "Proposal changed or started; create a new proposal");
     const project = await preferences(join(c.repo, ".codeflow", "cli-teams.json"), c.repo), personal = await preferences(join(this.home, "cli-teams-preferences.json"));
     const participants = await Promise.all(candidate.participants.map(p => resolveParticipant(p, project, personal)));
-    const limits = { maxInvocations: Math.min(DEFAULT_LOOP.maxInvocations ?? DEFAULT_LOOP.maxSteps, 256), maxMinutes: Math.min(DEFAULT_LOOP.maxMinutes, 720), concurrency: 2, maxAttempts: 2, ...candidate.limits, attemptTimeoutMs: STEP_TIMEOUT_MS };
+    // Default allowances follow the proposed work, so a one-reviewer task is not shown 256 calls and 12 hours.
+    const managed = new Set(participants.filter(p => p.binding !== "current_session").map(p => p.id));
+    // Calls add up everywhere. Time counts rounds: parallel work runs side by side, up to the concurrency limit.
+    const concurrency = candidate.limits?.concurrency ?? 2;
+    const most = (steps: Node[]): { calls: number; steps: number } => steps.reduce((sum, n) => {
+      const part = n.type === "task" ? { calls: n.participant && managed.has(n.participant) ? 1 : 0, steps: n.operation === "capture_snapshot" ? 0 : 1 } : n.type === "parallel" ? (branches => ({ calls: branches.reduce((total, b) => total + b.calls, 0), steps: Math.max(0, ...branches.map(b => b.steps), Math.ceil(branches.reduce((total, b) => total + b.steps, 0) / concurrency)) }))(n.tasks.map(task => most([task]))) : n.type === "loop" ? (({ calls, steps }) => ({ calls: calls * n.maxIterations, steps: steps * n.maxIterations }))(most(n.steps)) : { calls: 0, steps: 0 };
+      return { calls: sum.calls + part.calls, steps: sum.steps + part.steps };
+    }, { calls: 0, steps: 0 });
+    const work = most(candidate.steps), attempts = candidate.limits?.maxAttempts ?? 2;
+    const limits = { maxInvocations: Math.min(Math.max(1, work.calls * attempts), 256), maxMinutes: Math.min(Math.max(30, work.steps * 20), 720), concurrency: 2, maxAttempts: 2, ...candidate.limits, attemptTimeoutMs: STEP_TIMEOUT_MS };
     const definition: Definition = { ...candidate, participants, limits };
     limits.attemptTimeoutMs = Math.min(limits.attemptTimeoutMs, limits.maxMinutes * 60_000);
     if (old?.chatId && context.chatId && context.chatId !== old.chatId || old?.project && context.projectId && context.projectId !== old.project) fail("scope_denied", "Revise this proposal in its original project and chat");
@@ -330,7 +379,7 @@ export class CliTeamsService {
     p.hash = digest({ ...p, hash: undefined });
     await this.save(`proposal-history:${p.id}:${p.revision}`, p);
     await this.save(`proposal:${p.id}`, p);
-    return { proposalId: p.id, revision: p.revision, proposalHash: p.hash, summary: this.proposalSummary(p), preview: this.preview(p, true), definition: { participants, limits, scope: definition.scope }, nextAction: `codeflow approve ${p.id} --revision ${p.revision}` };
+    return { proposalId: p.id, revision: p.revision, proposalHash: p.hash, summary: this.proposalSummary(p), headline: this.proposalHeadline(p), preview: this.preview(p, true), definition: { participants, limits, scope: definition.scope }, nextAction: `codeflow approve ${p.id} --revision ${p.revision}` };
   }
   private async startProposal(c: ConversationScope, a: any, trigger?: Run["trigger"], untrustedText = false): Promise<any> {
     const p = this.proposal(c, a.proposalId);

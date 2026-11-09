@@ -15,15 +15,14 @@ codeflow
 
 Code Flow opens in your browser. If it does not, open the private sign-in link printed in the terminal. Leave the terminal running; press Ctrl+C to stop.
 
-**Claude Code or Codex CLI.** Install the launcher above, then from your Git project run:
+**Claude Code or Codex CLI.** Install the launcher above, then set up Code Flow once for your user account:
 
 ```sh
-cd /path/to/your-git-project
 codeflow init
 codeflow doctor
 ```
 
-Start `claude` or `codex` in that project, trust it and approve the MCP connection. Invoke `/codeflow` in Claude Code or `$codeflow` in Codex, then describe your task and review the proposed approach. This integration is experimental. See [terminal setup](cli-conversational-teams.md) for approval and troubleshooting details.
+`init` adds one `codeflow` connection and skill to your own Claude Code and Codex settings. It writes nothing into your repositories. Start `claude` or `codex` inside any Git project; Code Flow works on the repository you start it in. Invoke `/codeflow` in Claude Code or `$codeflow` in Codex, then describe your task and review the proposed approach. This integration is experimental. See [terminal setup](cli-conversational-teams.md) for approval and troubleshooting details.
 
 **Desktop preview.** Node is included; Git and a signed-in coding CLI are still required.
 

@@ -66,12 +66,12 @@ async function validate(root, expectedVersion) {
   const pkg = await read(join(root,'package.json'));
   if (pkg.name !== PACKAGE || pkg.codeflow?.managedRuntime !== 1 || !version(pkg.version) || expectedVersion && pkg.version !== expectedVersion || Object.keys(pkg.dependencies??{}).length || Object.keys(pkg.optionalDependencies??{}).length) throw new Error('Release does not support the managed MCP runtime protocol');
   for (const p of ['bin/codeflow.mjs','bin/managed.mjs','src/server.js','src/cli-teams/cli.js','src/cli-teams/mcp.js','integrations/cli-teams/SKILL.md']) await access(join(root,p));
-  const {stdout} = await exec(process.execPath,[join(root,'bin/codeflow.mjs'),'--version'],{timeout:15000,env:{...process.env,CODEFLOW_MANAGED_CHILD:'1'}});
+  const {stdout} = await exec(process.execPath,[join(root,'bin/codeflow.mjs'),'--version'],{cwd:root,timeout:15000,env:{...process.env,CODEFLOW_MANAGED_CHILD:'1'}});
   if (stdout.trim() !== pkg.version) throw new Error('Release startup validation failed');
   const probeHome = await mkdtemp(join(tmpdir(),'codeflow-release-check-'));
   try {
     // Import the MCP graph without starting a backend, worker or provider call.
-    await exec(process.execPath,['--input-type=module','-e',"const m=await import(process.argv[1]);if(typeof m.serveMcp!=='function')process.exit(1)",pathToFileURL(join(root,'src/cli-teams/mcp.js')).href],{timeout:15000,env:{...process.env,CODEFLOW_HOME:probeHome,CODEFLOW_MANAGED_CHILD:'1'}});
+    await exec(process.execPath,['--input-type=module','-e',"const m=await import(process.argv[1]);if(typeof m.serveMcp!=='function')process.exit(1)",pathToFileURL(join(root,'src/cli-teams/mcp.js')).href],{cwd:root,timeout:15000,env:{...process.env,CODEFLOW_HOME:probeHome,CODEFLOW_MANAGED_CHILD:'1'}});
   } finally {await rm(probeHome,{recursive:true,force:true});}
   return pkg;
 }
@@ -209,7 +209,8 @@ export async function runManaged(args,home) {
     try {
       if(await owner(home))return;
       const state=await updateState(home),selected=state.releases.find(r=>r.id===state.current);
-      const child=spawn(process.execPath,[join(selected.root,'src/server.js')],{detached:true,stdio:'ignore',env:{...process.env,CODEFLOW_HOME:resolve(home),CODEFLOW_MANAGED_RELEASE:selected.root,CODEFLOW_CLI_HEADLESS:'1'}});child.unref();
+      // Background processes start in Code Flow's own folder, never a project folder that may be moved or deleted.
+      const child=spawn(process.execPath,[join(selected.root,'src/server.js')],{cwd:resolve(home),detached:true,stdio:'ignore',env:{...process.env,CODEFLOW_HOME:resolve(home),CODEFLOW_MANAGED_RELEASE:selected.root,CODEFLOW_CLI_HEADLESS:'1'}});child.unref();
       let error;child.once('error',e=>{error=e;});
       for(let i=0;i<200;i++){if(error)throw error;if(await owner(home))return;await new Promise(r=>setTimeout(r,100));}
       throw new Error('Updated owner did not become ready; next host connection will retry');
@@ -218,7 +219,7 @@ export async function runManaged(args,home) {
   // Configuration commands use the selected release without pinning the backend.
   const state=['updates','desktop','init','uninstall','terminal','--help','--version'].includes(args[0])?await updateState(home):undefined;
   const session=state?{root:state.releases.find(r=>r.id===state.current).root,close:async()=>{}}:await claimSession(home);
-  const requestCheck=()=>{const child=spawn(process.execPath,[join(base(home),'launcher.mjs'),'--check-updates'],{detached:true,stdio:'ignore',env:{...process.env,CODEFLOW_HOME:home}});child.on('error',()=>{});child.unref();};
+  const requestCheck=()=>{const child=spawn(process.execPath,[join(base(home),'launcher.mjs'),'--check-updates'],{cwd:resolve(home),detached:true,stdio:'ignore',env:{...process.env,CODEFLOW_HOME:home}});child.on('error',()=>{});child.unref();};
   const autoCheck=args[0]==='mcp'||args[0]==='start'||args.length===0;
   if(autoCheck)requestCheck();const timer=autoCheck?setInterval(requestCheck,INTERVAL).unref():undefined;
   const child=spawn(process.execPath,[join(session.root,'bin/codeflow.mjs'),...args],{stdio:'inherit',env:{...process.env,CODEFLOW_HOME:resolve(home),CODEFLOW_MANAGED_CHILD:'1',CODEFLOW_MANAGED_RELEASE:session.root}});

@@ -3067,6 +3067,9 @@ if (taskConversationsReady) {
   const workspaceUrl = (path: string) => `http://localhost:${PORT}${path}`;
   connectCliWorkspace(cliTeams, taskConversations, conversations, projects, {
     url: workspaceUrl,
+    // Shown only in the host's own confirmation dialog: single-use, local-only, 16 random bytes.
+    link: path => { const ticket = workspaceHandoffs.issue(path, 10 * 60_000, 16); return { url: workspaceUrl(`/cli-workspace/${ticket}`), ticket }; },
+    revoke: ticket => workspaceHandoffs.revoke(ticket),
     open: async path => {
       const ticket = workspaceHandoffs.issue(path);
       const opened = await openWorkspaceBrowser(workspaceUrl(`/cli-workspace/${ticket}`));
@@ -3274,7 +3277,7 @@ if (process.env.CODEFLOW_CLI_HEADLESS === "1" && process.env.CODEFLOW_MANAGED_RE
       // This synchronous claim includes starts, side turns, checks, merge validation,
       // repository leases and ambiguous remote execution; no disk snapshot heuristic.
       try { manager.beginIdleShutdown(); } catch { return false; }
-      const successor = spawn(process.execPath, [join(CODEFLOW_HOME, "integration-runtime", "launcher.mjs"), "--handover", String(process.pid)], { detached: true, stdio: "ignore", env: { ...process.env, CODEFLOW_HOME } });
+      const successor = spawn(process.execPath, [join(CODEFLOW_HOME, "integration-runtime", "launcher.mjs"), "--handover", String(process.pid)], { cwd: CODEFLOW_HOME, detached: true, stdio: "ignore", env: { ...process.env, CODEFLOW_HOME } });
       successor.on("error", error => logError("Managed update handover failed; next connection will retry", error)); successor.unref();
       void stop("idle managed runtime update"); return true;
     }).catch(() => undefined).finally(() => { checking = false; });

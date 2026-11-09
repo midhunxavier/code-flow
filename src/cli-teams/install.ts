@@ -1,6 +1,8 @@
 import { parse as parseToml } from "smol-toml";
-import { mkdir, readFile, writeFile, rename, rm, lstat, realpath } from "node:fs/promises";
-import { dirname, join, relative } from "node:path";
+import { mkdir, readFile, readdir, writeFile, rename, rm, rmdir, lstat, realpath } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { homedir } from "node:os";
+import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CODEFLOW_HOME } from "../config.js";
 import { repoRoot } from "../git.js";
@@ -10,6 +12,7 @@ import { managedLauncher } from "../../bin/managed.mjs";
 
 const BEGIN = "# BEGIN codeflow managed MCP", END = "# END codeflow managed MCP";
 interface Edit { path: string; before?: string; after: string; kind: "json" | "toml" | "skill" | "preferences"; owned: string }
+// Project manifests only exist for installs made before setup moved to user settings; uninstallProject cleans them up.
 interface Manifest { version: 1; repo: string; state: "installing" | "installed"; edits: Edit[]; previous?: Manifest }
 const read = (file: string) => readFile(file, "utf8").catch(e => { if (e.code === "ENOENT") return undefined; throw e; });
 async function atomic(file: string, body: string) { await mkdir(dirname(file), { recursive: true }); const temp = `${file}.${process.pid}.tmp`; try { await writeFile(temp, body, { mode: 0o600, flag: "wx" }); await rename(temp, file); } finally { await rm(temp, { force: true }); } }
@@ -19,69 +22,122 @@ async function checkPath(repo: string, path: string) {
   let p = path;
   while (p !== repo) { const info = await lstat(p).catch(e => { if (e.code === "ENOENT") return; throw e; }); if (info?.isSymbolicLink()) fail("installation_conflict", `Move the symlink before configuring ${relative(repo, path)}`); p = dirname(p); }
 }
-export async function installProject(path: string, providers: Provider[], dryRun = false, home = CODEFLOW_HOME) {
-  const repo = await realpath(await repoRoot(path)), manifestPath = join(home, "cli-teams-installations", `${digest(repo)}.json`);
-  const release = dryRun ? () => {} : await acquireStateLock(`${manifestPath}.lock`, 2000, () => "Another Code Flow installer is updating this project");
+/** The skill each CLI loads. Managed connections deliver the versioned rules at MCP start, so the skill stays small and stable. */
+async function skillText(managed: boolean) {
+  const workflow = await readFile(fileURLToPath(new URL("../../integrations/cli-teams/SKILL.md", import.meta.url)), "utf8");
+  return managed ? `${workflow.match(/^---\r?\n[\s\S]*?\r?\n---/)![0]}\n\n# Code Flow\n\nUse the connected Code Flow MCP tools. They work on the Git repository you started this session in. Follow the short rules the server supplies at initialization, and call \`codeflow_get_guide\` with section \`candidate\` before your first proposal (section \`all\` for the full guide). The guide and tool schemas come from the active shared runtime release. Before opening approval, show the team, steps, and full proposal link in the conversation. A plain plan uses a finish node with outcome \`plan_ready\` and inputs pointing to the plan task; it needs no agreement gate. Obtain explicit approval of the exact proposal before starting work. Managed workers must never recursively start Code Flow runs. If the tools are unavailable, ask the user to run \`codeflow init\` and reconnect Code Flow from /mcp; do not bypass it by launching provider CLIs.\n` : workflow;
+}
+
+export interface UserPaths { claudeConfig: string; claudeSkill: string; codexConfig: string; codexSkill: string }
+/** Where each CLI keeps per-user settings. Nothing here is inside a repository. */
+export function userPaths(env: NodeJS.ProcessEnv = process.env): UserPaths {
+  const home = env.HOME || homedir(), claudeDir = env.CLAUDE_CONFIG_DIR ? resolve(env.CLAUDE_CONFIG_DIR) : undefined, codexHome = env.CODEX_HOME ? resolve(env.CODEX_HOME) : join(home, ".codex");
+  return { claudeConfig: join(claudeDir ?? home, ".claude.json"), claudeSkill: join(claudeDir ?? join(home, ".claude"), "skills", "codeflow", "SKILL.md"), codexConfig: join(codexHome, "config.toml"), codexSkill: join(codexHome, "skills", "codeflow", "SKILL.md") };
+}
+type UserEdit = { kind: "claude-mcp"; owned: string } | { kind: "codex-mcp" | "skill"; path: string; owned: string };
+interface UserManifest { version: 1; scope: "user"; edits: UserEdit[] }
+type Run = (command: string, args: string[]) => Promise<void>;
+const runCli: Run = (command, args) => new Promise((done, failed) => execFile(command, args, { timeout: 30000 }, (error, _out, stderr) => error ? failed(new Error(`${command} ${args.slice(0, 2).join(" ")} failed: ${(stderr || error.message).trim().slice(0, 500)}`)) : done()));
+
+/**
+ * Registers Code Flow once per user: one `codeflow` MCP connection per CLI plus its skill, all in the user's own settings.
+ * The connection works on the repository the CLI was started in, so repositories stay free of personal paths.
+ */
+export async function installUser(providers: Provider[], dryRun = false, options: { home?: string; env?: NodeJS.ProcessEnv; run?: Run } = {}) {
+  const home = options.home ?? CODEFLOW_HOME, env = options.env ?? process.env, run = options.run ?? runCli, paths = userPaths(env);
+  const manifestPath = join(home, "cli-teams-installations", "user.json");
+  const release = dryRun ? () => {} : await acquireStateLock(`${manifestPath}.lock`, 2000, () => "Another Code Flow installer is running");
   try {
-    const priorText = await read(manifestPath); let prior = priorText ? JSON.parse(priorText) as Manifest : undefined;
-    if (prior && (prior.version !== 1 || prior.repo !== repo)) fail("installation_conflict", "Invalid private installation manifest");
-    // An interrupted transaction rolls back only files still equal to our exact written text.
-    if (prior?.state === "installing") {
-      if (dryRun) fail("installation_conflict", "An interrupted installation needs recovery; rerun init without --dry-run");
-      for (const e of [...prior.edits].reverse()) { await checkPath(repo, e.path); if (await read(e.path) === e.after) { if (e.before === undefined) await rm(e.path); else await atomic(e.path, e.before); } }
-      prior = prior.previous;
-      if (prior) await atomic(manifestPath, JSON.stringify(prior)); else await rm(manifestPath, { force: true });
-    }
-    const owned = prior?.state === "installed" ? prior.edits : [];
+    const manifestText = await read(manifestPath), prior = manifestText ? JSON.parse(manifestText) as UserManifest : undefined;
+    if (prior && (prior.version !== 1 || prior.scope !== "user")) fail("installation_conflict", "Invalid private installation manifest");
+    const owned = (kind: UserEdit["kind"], path?: string) => prior?.edits.find(e => e.kind === kind && (!path || "path" in e && e.path === path))?.owned;
     const managed = await managedLauncher(home);
-    const edits: Edit[] = [], mcp = managed ? { command: process.execPath, args: [managed, "mcp", "--project-root", repo] } : { command: "codeflow", args: ["mcp", "--project-root", "."] };
-    const workflow = await readFile(fileURLToPath(new URL("../../integrations/cli-teams/SKILL.md", import.meta.url)), "utf8");
-    // Managed connections deliver the versioned contract at MCP initialization.
-    // A small stable skill avoids pinning a second, stale copy in each repository.
-    const skill = managed ? `${workflow.match(/^---\r?\n[\s\S]*?\r?\n---/)![0]}\n\n# Code Flow\n\nUse the connected Code Flow MCP tools and the workflow instructions supplied by that server during initialization. Those instructions and tool schemas come from the active shared runtime release. Before opening approval, show the team, steps, and full proposal link in the conversation. A plain plan uses a finish node with outcome \`plan_ready\` and inputs pointing to the plan task; it needs no agreement gate. Respect the connection's bound repository and obtain explicit approval of the exact proposal before starting work. Managed workers must never recursively start Code Flow runs. If the tools are unavailable, ask the user to reload this project's MCP connection; do not bypass it by launching provider CLIs.\n` : workflow;
-    const prepare = async (file: string, kind: Edit["kind"], after: (before: string | undefined, previous?: Edit) => { text: string; owned: string }) => {
-      const path = join(repo, file); await checkPath(repo, path);
-      const before = await read(path), previous = owned.find(e => e.path === path), next = after(before, previous);
-      if (before !== next.text) edits.push({ path, before, after: next.text, kind, owned: next.owned });
-    };
+    const explicitHome = env.CODEFLOW_HOME ? { CODEFLOW_HOME: resolve(env.CODEFLOW_HOME) } : undefined;
+    const entry = { type: "stdio", command: managed ? process.execPath : "codeflow", args: managed ? [managed, "mcp"] : ["mcp"], ...(explicitHome ? { env: explicitHome } : {}) };
+    const skill = await skillText(!!managed);
+    const files: { path: string; before?: string; after: string; kind: "codex-mcp" | "skill"; owned: string }[] = [];
+    const changes: { host: string; path: string }[] = [], kept: UserEdit[] = [];
+    let claude: "add" | "replace" | undefined;
     if (providers.includes("claude")) {
-      await prepare(".mcp.json", "json", (before, previous) => {
-        const data = before ? JSON.parse(before) : {};
-        if (!data || typeof data !== "object" || Array.isArray(data) || data.mcpServers !== undefined && (!data.mcpServers || typeof data.mcpServers !== "object" || Array.isArray(data.mcpServers))) fail("installation_conflict", "Invalid .mcp.json; repair it before installing");
-        data.mcpServers ??= {};
-        if (Object.hasOwn(data.mcpServers, "codeflow") && (!previous || digest(data.mcpServers.codeflow) !== previous.owned)) fail("installation_conflict", "An existing or modified codeflow MCP entry is preserved; rename it before installing");
-        data.mcpServers.codeflow = mcp; return { text: JSON.stringify(data, null, 2) + "\n", owned: digest(mcp) };
-      });
+      const config = await read(paths.claudeConfig), current = config ? JSON.parse(config)?.mcpServers?.codeflow : undefined;
+      // A connection with the exact same settings is ours whether or not an earlier run finished recording it.
+      if (current !== undefined && digest(current) !== digest(entry) && digest(current) !== owned("claude-mcp")) fail("installation_conflict", "Your Claude user settings already have a `codeflow` MCP server that Code Flow did not create. Remove it with `claude mcp remove -s user codeflow`, then run init again.");
+      if (current === undefined) claude = "add"; else if (digest(current) !== digest(entry)) claude = "replace"; else kept.push({ kind: "claude-mcp", owned: digest(entry) });
+      if (claude) changes.push({ host: "Claude Code", path: `${paths.claudeConfig} (user MCP server "codeflow")` });
     }
     if (providers.includes("codex")) {
-      await prepare(".codex/config.toml", "toml", (before = "", previous) => {
-        const data = parseToml(before) as any;
-        const section = `${BEGIN}\n[mcp_servers.codeflow]\ncommand = ${JSON.stringify(mcp.command)}\nargs = ${JSON.stringify(mcp.args)}\nenv_vars = ["CODEFLOW_HOME"]\nstartup_timeout_sec = 60\ntool_timeout_sec = 420\n${END}`;
-        const start = before.indexOf(BEGIN), end = before.indexOf(END);
-        if (data.mcp_servers?.codeflow && (!previous || start < 0 || end < start || digest(before.slice(start, end + END.length)) !== previous.owned)) fail("installation_conflict", "An existing or modified Codex codeflow entry is preserved; rename it before installing");
-        const updated = start >= 0 ? before.slice(0, start) + section + before.slice(end + END.length) : `${before}${before && !before.endsWith("\n") ? "\n" : ""}\n${section}\n`;
-        parseToml(updated); return { text: updated, owned: digest(section) };
-      });
+      const existing = await read(paths.codexConfig), before = existing ?? "", data = parseToml(before) as any;
+      const section = `${BEGIN}\n[mcp_servers.codeflow]\ncommand = ${JSON.stringify(entry.command)}\nargs = ${JSON.stringify(entry.args)}\nenv_vars = ["CODEFLOW_HOME"]\nstartup_timeout_sec = 60\ntool_timeout_sec = 420\n${END}`;
+      const start = before.indexOf(BEGIN), end = before.indexOf(END), block = start >= 0 && end > start ? before.slice(start, end + END.length) : undefined;
+      if (data.mcp_servers?.codeflow && (!block || digest(block) !== digest(section) && digest(block) !== owned("codex-mcp", paths.codexConfig))) fail("installation_conflict", `Your Codex settings (${paths.codexConfig}) already have a \`codeflow\` MCP server that Code Flow did not create. Rename or remove it, then run init again.`);
+      const after = block ? before.slice(0, start) + section + before.slice(end + END.length) : `${before}${before && !before.endsWith("\n") ? "\n" : ""}\n${section}\n`;
+      parseToml(after);
+      if (after !== before) files.push({ path: paths.codexConfig, before: existing, after, kind: "codex-mcp", owned: digest(section) }); else kept.push({ kind: "codex-mcp", path: paths.codexConfig, owned: digest(section) });
     }
-    for (const provider of providers) await prepare(`${provider === "claude" ? ".claude" : ".agents"}/skills/codeflow/SKILL.md`, "skill", (before, previous) => {
-      if (before !== undefined && (!previous || digest(before) !== previous.owned)) fail("installation_conflict", "An existing or modified codeflow skill is preserved; move it before installing");
-      return { text: skill, owned: digest(skill) };
-    });
-    await prepare(".codeflow/cli-teams.json", "preferences", before => ({ text: before ?? '{\n  "schemaVersion": 1,\n  "preferences": {}\n}\n', owned: "preferences-preserved" }));
-    if (!dryRun && edits.length) {
-      await atomic(manifestPath, JSON.stringify({ version: 1, repo, state: "installing", edits, ...(prior ? { previous: prior } : {}) } satisfies Manifest));
+    for (const [provider, path] of [["claude", paths.claudeSkill], ["codex", paths.codexSkill]] as const) {
+      if (!providers.includes(provider)) continue;
+      const before = await read(path);
+      if (before !== undefined && before !== skill && digest(before) !== owned("skill", path)) fail("installation_conflict", `${path} was changed by you; move it, then run init again.`);
+      if (before !== skill) files.push({ path, before, after: skill, kind: "skill", owned: digest(skill) }); else kept.push({ kind: "skill", path, owned: digest(skill) });
+    }
+    for (const f of files) changes.push({ host: f.kind === "skill" ? "Skill" : "Codex", path: f.path });
+    if (!dryRun && (files.length || claude)) {
+      const written: typeof files = [];
       try {
-        for (const e of edits) { if (await read(e.path) !== e.before) fail("installation_conflict", "Configuration changed during installation; rerun init"); await atomic(e.path, e.after); }
-        const combined = [...owned.filter(e => !edits.some(next => next.path === e.path)), ...edits.map(e => { const old = owned.find(old => old.path === e.path); return { ...e, before: old ? old.before : e.before }; })];
-        await atomic(manifestPath, JSON.stringify({ version: 1, repo, state: "installed", edits: combined } satisfies Manifest));
+        for (const f of files) { if (await read(f.path) !== f.before) fail("installation_conflict", "Configuration changed during setup; run init again"); await atomic(f.path, f.after); written.push(f); }
+        if (claude === "replace") await run("claude", ["mcp", "remove", "-s", "user", "codeflow"]);
+        if (claude) {
+          await run("claude", ["mcp", "add-json", "-s", "user", "codeflow", JSON.stringify(entry)]);
+          const stored = JSON.parse(await read(paths.claudeConfig) ?? "{}")?.mcpServers?.codeflow;
+          if (digest(stored) !== digest(entry)) fail("installation_conflict", "Claude did not record the Code Flow connection as expected; run `claude mcp list` to check it");
+        }
       } catch (error) {
-        for (const e of [...edits].reverse()) if (await read(e.path) === e.after) { if (e.before === undefined) await rm(e.path); else await atomic(e.path, e.before); }
-        if (prior?.state === "installed") await atomic(manifestPath, JSON.stringify(prior)); else await rm(manifestPath, { force: true });
+        for (const f of written.reverse()) if (await read(f.path) === f.after) { if (f.before === undefined) await rm(f.path); else await atomic(f.path, f.before); }
         throw error;
       }
+      const edits: UserEdit[] = [...kept, ...(claude ? [{ kind: "claude-mcp" as const, owned: digest(entry) }] : []), ...files.map(f => ({ kind: f.kind, path: f.path, owned: f.owned }))];
+      await atomic(manifestPath, JSON.stringify({ version: 1, scope: "user", edits } satisfies UserManifest));
     }
-    return { repo, dryRun, changes: edits.map(e => ({ path: relative(repo, e.path), content: e.after })), message: "Trust this project in your CLI, approve the project MCP connection, and reload the host if the skill/connection does not appear. Start with a plain-language Code Flow task. No agent calls were made." };
+    return { dryRun, changes, connection: entry, message: "Start claude or codex inside any Git repository and ask for a Code Flow task. Code Flow works on the repository you start the CLI in; open sessions need /mcp reconnect. No agent calls were made." };
   } finally { release(); }
+}
+
+export async function uninstallUser(options: { home?: string; env?: NodeJS.ProcessEnv; run?: Run } = {}) {
+  const home = options.home ?? CODEFLOW_HOME, run = options.run ?? runCli, paths = userPaths(options.env ?? process.env);
+  const manifestPath = join(home, "cli-teams-installations", "user.json");
+  const release = await acquireStateLock(`${manifestPath}.lock`, 2000, () => "Installer is busy");
+  try {
+    const text = await read(manifestPath); if (!text) return { removed: [], preserved: [], message: "No user-level Code Flow setup found" };
+    const manifest = JSON.parse(text) as UserManifest, removed: string[] = [], preserved: string[] = [];
+    for (const e of manifest.edits) {
+      if (e.kind === "claude-mcp") {
+        const current = JSON.parse(await read(paths.claudeConfig) ?? "{}")?.mcpServers?.codeflow;
+        if (current === undefined) continue;
+        if (digest(current) !== e.owned) { preserved.push(`${paths.claudeConfig} (codeflow)`); continue; }
+        await run("claude", ["mcp", "remove", "-s", "user", "codeflow"]); removed.push(`${paths.claudeConfig} (codeflow)`); continue;
+      }
+      const current = await read(e.path); if (current === undefined) continue;
+      if (e.kind === "skill") { if (digest(current) !== e.owned) { preserved.push(e.path); continue; } await rm(e.path); await rmdir(dirname(e.path)).catch(() => undefined); removed.push(e.path); continue; }
+      const start = current.indexOf(BEGIN), end = current.indexOf(END);
+      if (start < 0 || end < start || digest(current.slice(start, end + END.length)) !== e.owned) { preserved.push(e.path); continue; }
+      await atomic(e.path, (current.slice(0, start).replace(/\n+$/, "\n") + current.slice(end + END.length).replace(/^\n+/, "")).replace(/^\n$/, "")); removed.push(e.path);
+    }
+    await rm(manifestPath, { force: true });
+    return { removed, preserved, message: "Run history, branches, worktrees and anything you edited are kept. Reconnect open CLI sessions." };
+  } finally { release(); }
+}
+
+/** Earlier versions wrote connections into the repository. Remove the ones Code Flow owns; keep anything the user changed. */
+export async function hasProjectInstall(path: string, home = CODEFLOW_HOME) {
+  const repo = await realpath(await repoRoot(path)).catch(() => undefined);
+  return !!repo && (await read(join(home, "cli-teams-installations", `${digest(repo)}.json`))) !== undefined;
+}
+/** Remove folders the installer left empty, stopping at the repository root or the first folder with other files. */
+async function pruneEmpty(repo: string, folder: string) {
+  for (let dir = folder; dir !== repo && relative(repo, dir) && !relative(repo, dir).startsWith(".."); dir = dirname(dir)) {
+    if ((await readdir(dir).catch(() => ["?"])).length) return;
+    await rmdir(dir).catch(() => undefined);
+  }
 }
 export async function uninstallProject(path: string, home = CODEFLOW_HOME) {
   const repo = await realpath(await repoRoot(path)), manifestPath = join(home, "cli-teams-installations", `${digest(repo)}.json`);
@@ -94,7 +150,8 @@ export async function uninstallProject(path: string, home = CODEFLOW_HOME) {
     for (const e of manifest.edits) {
       await checkPath(repo, e.path);
       const current = await read(e.path); if (current === undefined) continue;
-      if (e.kind === "preferences") { preserved.push(relative(repo, e.path)); continue; }
+      // The preferences file is kept unless it is still the empty default Code Flow created.
+      if (e.kind === "preferences") { if (e.before === undefined && current === e.after) { await rm(e.path); await pruneEmpty(repo, dirname(e.path)); removed.push(relative(repo, e.path)); } else preserved.push(relative(repo, e.path)); continue; }
       let next: string | undefined;
       if (e.kind === "skill") { if (digest(current) !== e.owned) { preserved.push(relative(repo, e.path)); remaining.push(e); continue; } next = e.before; }
       else if (e.kind === "json") {
@@ -107,7 +164,7 @@ export async function uninstallProject(path: string, home = CODEFLOW_HOME) {
         if (start < 0 || end < start || digest(current.slice(start, end + END.length)) !== e.owned) { preserved.push(relative(repo, e.path)); remaining.push(e); continue; }
         next = current === e.after ? e.before : current.slice(0, start) + current.slice(end + END.length);
       }
-      if (next === undefined) await rm(e.path); else await atomic(e.path, next);
+      if (next === undefined) { await rm(e.path); await pruneEmpty(repo, dirname(e.path)); } else await atomic(e.path, next);
       removed.push(relative(repo, e.path));
     }
     if (remaining.length) await atomic(manifestPath, JSON.stringify({ ...manifest, edits: remaining })); else await rm(manifestPath);

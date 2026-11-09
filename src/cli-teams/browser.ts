@@ -5,12 +5,14 @@ import { spawn } from "node:child_process";
 export class WorkspaceHandoffs {
   private tickets = new Map<string, { path: string; expires: number }>();
   constructor(private now = () => Date.now()) {}
-  issue(path: string) {
+  /** Default: a 60-second ticket for an immediate `codeflow open`. Approval links live for the confirmation's lifetime. */
+  issue(path: string, ttlMs = 60_000, bytes = 32) {
     if (!/^\/\?team=local#\/(?:chat\/[a-f0-9]{32}|run\/[a-zA-Z0-9-]+)$/.test(path)) throw new Error("Invalid workspace destination");
     for (const [id, t] of this.tickets) if (t.expires <= this.now()) this.tickets.delete(id);
     if (this.tickets.size >= 100) throw new Error("Too many pending browser handoffs; try again shortly");
-    const id = randomBytes(32).toString("hex"); this.tickets.set(id, { path, expires: this.now() + 60_000 }); return id;
+    const id = randomBytes(bytes).toString("hex"); this.tickets.set(id, { path, expires: this.now() + ttlMs }); return id;
   }
+  revoke(id: string) { this.tickets.delete(id); }
   consume(id: string) { const ticket = this.tickets.get(id); this.tickets.delete(id); return ticket && ticket.expires > this.now() ? ticket.path : undefined; }
 }
 export async function openWorkspaceBrowser(url: string): Promise<boolean> {

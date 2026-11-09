@@ -144,7 +144,8 @@ test("packed conversational teams install, bootstrap one owner, execute through 
     const bin = join(install, "node_modules/.bin/codeflow");
     const env = { ...process.env, HOME: directory, CODEX_HOME: join(directory, ".codex"), CODEFLOW_HOME: home, PATH: [join(install, "node_modules/.bin"), join(root, "test/fake-bin"), process.env.PATH].join(delimiter) };
     const initialized = JSON.parse(execFileSync(bin, ["init", "--providers", "claude,codex", "--json"], { cwd: repo, env, encoding: "utf8" }));
-    assert.ok(initialized.changes.some(c => c.path === ".agents/skills/codeflow/SKILL.md"));
+    assert.ok(initialized.changes.some(c => c.path === join(directory, ".codex", "skills", "codeflow", "SKILL.md")));
+    assert.equal(execFileSync("git", ["status", "--porcelain"], { cwd: repo, encoding: "utf8" }), "", "setup writes nothing into the repository");
     const humanSetup = execFileSync(bin, ["init", "--providers", "claude,codex"], { cwd: repo, env, encoding: "utf8" });
     assert.match(humanSetup, /No configuration changes needed/);
     assert.doesNotMatch(humanSetup, /mcpServers|## Prepare/);
@@ -156,9 +157,9 @@ test("packed conversational teams install, bootstrap one owner, execute through 
     const managed = JSON.parse(execFileSync(bin, ["updates", "enable", "--json"], { cwd: repo, env, encoding: "utf8" }));
     execFileSync(bin, ["updates", "disable"], { cwd: repo, env, stdio: "pipe" }); // Fixture tests never poll the real registry.
     execFileSync(bin, ["init", "--providers", "claude,codex"], { cwd: repo, env, stdio: "pipe" });
-    const projectMcp = JSON.parse(await readFile(join(repo, ".mcp.json"), "utf8")).mcpServers.codeflow;
-    assert.equal(projectMcp.args[0], join(home, "integration-runtime", "launcher.mjs"));
-    assert.match(await readFile(join(repo, ".codex/config.toml"), "utf8"), /integration-runtime/);
+    const userMcp = JSON.parse(await readFile(join(directory, ".claude.json"), "utf8")).mcpServers.codeflow;
+    assert.deepEqual(userMcp.args, [join(home, "integration-runtime", "launcher.mjs"), "mcp"]);
+    assert.match(await readFile(join(directory, ".codex", "config.toml"), "utf8"), /integration-runtime/);
     const desktopHosts = process.platform === "darwin" ? "claude-desktop,codex-app" : "codex-app";
     const desktopArgs = ["--hosts", desktopHosts, "--project-root", repo, "--json"];
     const desktopSetup = JSON.parse(execFileSync(bin, ["desktop", "setup", ...desktopArgs], { cwd: directory, env, encoding: "utf8" }));
@@ -194,7 +195,7 @@ test("packed conversational teams install, bootstrap one owner, execute through 
       assert.equal(result.isError, false, JSON.stringify(result)); return result.structuredContent.data;
     };
     assert.equal((await rpc("initialize", { protocolVersion: "2025-11-25", capabilities: { elicitation: { form: {} } }, clientInfo: { name: "package-test", version: "1" } })).serverInfo.name, "code-flow");
-    assert.equal((await rpc("tools/list", {})).tools.length, 14);
+    assert.equal((await rpc("tools/list", {})).tools.length, 15);
     ownerPid = JSON.parse(await readFile(join(home, "server.lock"), "utf8")).pid;
     const candidate = { scope: "plan", participants: [{ id: "author", provider: "claude" }, { id: "reviewer", provider: "codex" }], completion: ["The plan has independent review"], steps: [
       { id: "draft", type: "task", operation: "propose", participant: "author", instructions: "Draft the login plan" },
@@ -212,7 +213,7 @@ test("packed conversational teams install, bootstrap one owner, execute through 
     execFileSync(process.execPath, [join(nextInstall, "bin/codeflow.mjs"), "updates", "enable", "--json"], { cwd: repo, env, stdio: "pipe" });
     execFileSync(bin, ["updates", "disable"], { cwd: repo, env, stdio: "pipe" });
     assert.equal(JSON.parse(await readFile(join(home, "server.lock"), "utf8")).pid, ownerPid, "staging never restarts the live owner");
-    assert.equal(approvals.length, 1); assert.match(approvals[0].message, new RegExp(proposal.proposalHash));
+    assert.equal(approvals.length, 1); assert.match(approvals[0].message, /^Plan only, no file changes · /); assert.match(approvals[0].message, /Decline starts nothing\.$/); assert.doesNotMatch(approvals[0].message, new RegExp(proposal.proposalHash), "the form shows the readable card, not the hash");
     let run, cursor = 0;
     for (let i = 0; i < 20; i++) {
       run = await call("get_run", { runId, afterCursor: cursor, waitMs: 1000 }); cursor = run.afterCursor;
@@ -240,9 +241,10 @@ test("packed conversational teams install, bootstrap one owner, execute through 
     assert.equal(afterUpdate.outcome, "agreed_plan"); assert.equal(afterUpdate.status, "done");
     const desktopRemoved = JSON.parse(execFileSync(bin, ["desktop", "remove", ...desktopArgs], { cwd: directory, env, encoding: "utf8" }));
     assert.equal(desktopRemoved.changes.length, desktopHosts.split(",").length);
-    execFileSync(bin, ["uninstall", "--project"], { cwd: repo, env, stdio: "pipe" });
+    execFileSync(bin, ["uninstall", "--user"], { cwd: repo, env, stdio: "pipe" });
+    assert.equal(JSON.parse(await readFile(join(directory, ".claude.json"), "utf8")).mcpServers.codeflow, undefined);
     assert.equal(await readFile(join(repo, "README.md"), "utf8"), "Fixture login project\n");
-    await access(join(home, "runs", `${runId}.journal.jsonl`)); await access(join(repo, ".codeflow/cli-teams.json"));
+    await access(join(home, "runs", `${runId}.journal.jsonl`));
   } finally {
     if (child && child.exitCode === null) { const done = once(child, "exit"); child.stdin.end(); const exited = await Promise.race([done.then(() => true), pause(5000).then(() => false)]); if (!exited) { child.kill("SIGTERM"); await done; } }
     if (!ownerPid) ownerPid = await readFile(join(home, "server.lock"), "utf8").then(t => JSON.parse(t).pid, () => undefined);

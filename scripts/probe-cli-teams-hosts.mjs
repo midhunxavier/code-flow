@@ -19,12 +19,13 @@ const { findPattern } = await import("../src/patterns/index.js");
 const { CliTeamsService } = await import("../src/cli-teams/service.js");
 const { startCliTeamsTransport } = await import("../src/cli-teams/transport.js");
 const { CLI_TOOLS } = await import("../src/cli-teams/tools.js");
-const { installProject } = await import("../src/cli-teams/install.js");
 const { acquireLock, flushWrites } = await import("../src/store.js");
 const release = await acquireLock(0);
 const manager = new RunManager(findPattern), service = new CliTeamsService(manager);
 await service.load(); const bridge = await startCliTeamsTransport(service);
-await installProject(repo, ["claude", "codex"]);
+// The probe uses your real CLI settings, so it never installs there; its temporary repository carries the skill instead.
+const skill = await readFile(join(root, "integrations/cli-teams/SKILL.md"), "utf8");
+for (const dir of [".claude/skills/codeflow", ".agents/skills/codeflow"]) { await mkdir(join(repo, dir), { recursive: true }); await writeFile(join(repo, dir, "SKILL.md"), skill); }
 const capabilityFile = join(temporary, "mcp-capabilities.jsonl"), proxy = join(temporary, "mcp-proxy.mjs");
 const serverArgs = ["--import", import.meta.resolve("tsx"), join(root, "src/cli-teams/cli.ts"), "mcp", "--project-root", repo];
 // Observe only handshake capabilities, never credentials or tool arguments/results.
