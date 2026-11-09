@@ -282,6 +282,7 @@ export const composerRunOptions = signal<{
   verificationProfile?: import("../src/verification.js").VerificationProfile | null;
   toolApprovals?: boolean;
   antigravityExecution?: import("../src/run-permissions.js").AntigravityExecution;
+  acpExecution?: import("../src/run-permissions.js").AcpExecution;
   permissionRequirements?: import("../src/run-permissions.js").PermissionRequirement[];
 }>({});
 export const projectsOpen = signal(false);

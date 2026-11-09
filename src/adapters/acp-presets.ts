@@ -16,7 +16,7 @@ export const acpPresets = [
     key: "cline", name: "Cline", command: "cline", args: ["--acp"],
     install: "npm install -g cline", login: "cline auth",
     docs: "https://docs.cline.bot/usage/acp",
-    help: "Cline asks before edits and commands by default. Code Flow currently supports connection checks only; Cline cannot start a managed run.",
+    help: "Cline asks before edits and commands by default. It runs only with the per-run unrestricted ACP opt-in; choose Ask for approval to answer its requests.",
   },
 ] as const;
 

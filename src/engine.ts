@@ -17,7 +17,7 @@ import { modelCatalogStore, modelEnvironment, resolveModelAssignment, assignment
 import { inheritRunEnvironment } from "./run-environment.js";
 import { teamTemplateStore } from "./team-template-store.js";
 import { fillTeamTemplate, validateTeamTemplate, type TeamTemplate, type TemplateSelection } from "./team-templates.js";
-import { runProviderProblem, antigravityExecution, AGY_NATIVE_LIMITATION, type AntigravityExecution, createRunPermissions, validateRunPermissions, narrowerTrust, resolveRunPermissions, type RunPermissionPolicy, type EffectivePermissions, type PermissionRequirement } from "./run-permissions.js";
+import { runProviderProblem, antigravityExecution, AGY_NATIVE_LIMITATION, acpExecution, ACP_NATIVE_LIMITATION, isAcpProvider, type AcpExecution, type AntigravityExecution, createRunPermissions, validateRunPermissions, narrowerTrust, resolveRunPermissions, type RunPermissionPolicy, type EffectivePermissions, type PermissionRequirement } from "./run-permissions.js";
 import { PersistenceTracker } from "./persistence-status.js";
 import { RunIndex, runSearchText, historyOffset } from "./run-history.js";
 import { chatHandoffContext, portableConversation } from "./chat-handoff.js";
@@ -1303,7 +1303,7 @@ export class TeamContext {
       at: Date.now(),
       providers: availability.map(({ id, available }, index) => ({
         id, available, blockedReason: permissionProblem(id) ?? runtimeProblems[index] ?? exhausted(id, this.manager.quotaForWorker(remote?.workerId)), quotaKnown: !!this.manager.quotaForWorker(remote?.workerId)[id],
-        limitations: this.run.permissions ? id === "agy" && this.run.permissions.antigravityExecution === "native" ? [AGY_NATIVE_LIMITATION] : getAdapter(id).managedLimitations : undefined,
+        limitations: this.run.permissions ? id === "agy" && this.run.permissions.antigravityExecution === "native" ? [AGY_NATIVE_LIMITATION] : isAcpProvider(id) && this.run.permissions.acpExecution === "native" ? [ACP_NATIVE_LIMITATION] : getAdapter(id).managedLimitations : undefined,
         models: catalogs[index]?.models,
         efforts: catalogs[index]?.efforts,
         catalog: catalogs[index] && "capability" in catalogs[index]! ? catalogs[index]!.capability : undefined,
@@ -3318,6 +3318,8 @@ export interface StartRunInput {
   teamTemplate?: TemplateSelection;
   permissionRequirements?: PermissionRequirement[];
   antigravityExecution?: AntigravityExecution;
+  /** Explicit opt-in for ACP agents, which run outside the managed permission policy. */
+  acpExecution?: AcpExecution;
   intent?: import("./experience.js").TaskIntent;
   journeyId?: string;
   projectTeam?: ProjectTeamRun;
@@ -4434,7 +4436,7 @@ export class RunManager {
           (corrections.length ? `\n\nLatest user corrections (authoritative):\n${corrections.map(note => note.text).join("\n\n")}\nThe previous execution stopped before applying its result. Replan and independently verify the affected work. Preserve compatible completed work. Inspect current browser/computer state before acting; never replay completed external actions.\nPrior execution evidence:\n${earlier.map(id => { const prior = this.require(id); return `${id}: ${prior.summary ?? prior.error ?? prior.status}\nBranches: ${prior.worktrees.map(tree => tree.branch).join(", ")}\nRecorded shared actions: ${JSON.stringify(prior.steps.flatMap(step => step.sharedToolActions ?? []))}`; }).join("\n")}` : ""),
         taskExecution: { taskId: owner.id, chatId: run.id, key },
         teamTemplate: template, roles, options: { ...Object.fromEntries(pattern.options.map(option => [option.id, option.default])), ...template?.template.preferences?.options, eventDriven: true, maxMembers: config.maxMembers },
-        agentSettings: config.settings, roleSettings: pattern.roles.some(role => role.id === "pool") ? taskTeamRoleSettings(config) : undefined, trust: run.trust, antigravityExecution: run.permissions?.antigravityExecution,
+        agentSettings: config.settings, roleSettings: pattern.roles.some(role => role.id === "pool") ? taskTeamRoleSettings(config) : undefined, trust: run.trust, antigravityExecution: run.permissions?.antigravityExecution, acpExecution: run.permissions?.acpExecution,
         approvals: { plan: config.approvePlan, tools: !!run.approvals.tools },
         // These commands are already resolved for the conversation. An absent command
         // means it was disabled, not permission to reload the repository default.
@@ -4636,7 +4638,7 @@ export class RunManager {
       const review = await this.start({ pattern: this.findPattern("task-review")!, repo: run.repo, project: run.project, baseRef: checkpoint,
         context: await chatHandoffContext(run, checkpoint, false),
         task: `Current delegated task to review:\n${execution.task}\n\nLatest user corrections (take precedence over earlier instructions):\n${run.notes.filter(note => !note.control).map(note => note.text).join("\n\n")}\n\nReview the full combined workspace including the user's edits. Previous team report (historical evidence):\n${turn.report ?? ""}\n\nEarlier conversation (historical context; preserve applicable ongoing constraints, but turn-local requests such as a no-tools acknowledgement belong to their original replies):\n${JSON.stringify([run.task, ...run.followUps.filter(turn => !turn.side).map(turn => turn.message)])}`,
-        roles: { reviewer: providers }, options: {}, agentSettings: config.settings, trust: run.trust, antigravityExecution: run.permissions?.antigravityExecution,
+        roles: { reviewer: providers }, options: {}, agentSettings: config.settings, trust: run.trust, antigravityExecution: run.permissions?.antigravityExecution, acpExecution: run.permissions?.acpExecution,
         approvals: { plan: false, tools: !!run.approvals.tools }, loop: { ...run.loop, setup: "", check: "", verification: undefined, maxSteps: 6, maxInvocations: 6, maxMinutes: config.maxMinutes },
         parentRunId: run.id, taskExecution: { taskId: chatTaskId(run), chatId: run.id, key: `review:${turn.key}` },
         beforeDispatch: async child => { turn.resolutionReview = { executionId: child.id, checkpoint }; this.emitRun(run); await waitForRunWrites(id); },
@@ -4702,7 +4704,7 @@ export class RunManager {
       if (problem) throw new Error(problem);
     }
     if (run.loop.remoteWorker || run.loop.agentContainer) throw new Error("Shared chat tabs currently require a local workspace");
-    const providerProblem = runProviderProblem(input.agent, getAdapter(input.agent).displayName);
+    const providerProblem = runProviderProblem(input.agent, getAdapter(input.agent).displayName, run.permissions);
     if (providerProblem) throw new Error(providerProblem);
     // The new chat runs with the access chosen in the fork dialog, which may only narrow the source's:
     // a child is capped by its parent, so a higher request is refused rather than silently lowered.
@@ -5832,13 +5834,14 @@ export class RunManager {
     const fullCapped = trust === "full" && !!input.trigger;
     if (fullCapped) trust = "trusted";
     const selectedProviders = input.pattern.id === "auto-team" ? input.roles.coordinator ?? [] : Object.values(input.roles).flat();
+    const acpMode = acpExecution(input.acpExecution, parent?.permissions);
     for (const provider of selectedProviders) {
-      const problem = runProviderProblem(provider, getAdapter(provider).displayName);
+      const problem = runProviderProblem(provider, getAdapter(provider).displayName, { acpExecution: acpMode });
       if (problem) throw new Error(problem);
     }
     const inheritedTools = parent?.permissions ? parent.permissions.toolApprovals && !!parent.approvals.tools && input.approvals?.tools !== false : input.approvals?.tools === true;
     const requiredPermissions = [...new Set([...(parent?.permissions?.required ?? []), ...(input.permissionRequirements ?? [])])];
-    const runPermissions = createRunPermissions(trust, !input.trigger && !lockdown && inheritedTools, input.pattern.id === "solo", requiredPermissions, antigravityExecution(input.antigravityExecution, parent?.permissions));
+    const runPermissions = createRunPermissions(trust, !input.trigger && !lockdown && inheritedTools, input.pattern.id === "solo", requiredPermissions, antigravityExecution(input.antigravityExecution, parent?.permissions), acpMode);
     if (input.taskTeam?.enabled) for (const provider of new Set([input.taskTeam.coordinator, ...input.taskTeam.providers])) {
       resolveRunPermissions({ policy: runPermissions, provider, mode: "write", currentTrust: trust, currentTools: runPermissions.toolApprovals });
     }

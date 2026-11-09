@@ -211,6 +211,9 @@ export function createAcpAdapter(connection: AcpConnection): AgentAdapter {
 export async function runAcp(connection: AcpConnection, opts: RunOptions, event: (event: AgentEvent) => void): Promise<RunResult> {
   if (opts.signal?.aborted) return { ok: false, finalText: "", error: "ACP turn was cancelled", errorKind: "cancelled" };
   if (opts.agentContainer || opts.trust !== "full") return { ok: false, finalText: "", error: "ACP connections require Full access on the current host; sandbox and container profiles are not supported", errorKind: "cli_incompatible" };
+  // A run policy reaches this adapter only through the explicit unrestricted opt-in (acp-native-v1).
+  const p = opts.permissions;
+  if (p && (p.implementation !== "acp-native-v1" || p.provider !== connection.id || p.nativeDelegation !== true || p.isolation !== "none" || p.trust !== "full" || p.mode !== opts.mode || p.required.length || p.toolApprovals !== !!opts.interactiveApprovals)) return { ok: false, finalText: "", error: "ACP options do not match an explicit unrestricted permission receipt", errorKind: "cli_incompatible" };
   let finalText = "", client: AcpClient | undefined;
   const calls = new Map<string, { name: string; input: string; output: string }>(), finished = new Set<string>();
   try {
