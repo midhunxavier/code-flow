@@ -1,4 +1,3 @@
-import { StoreIndicator } from "./store-indicator.js";
 import { chatAutomationAttention } from "../src/conversational/attention.js";
 import { activeChatContext } from "./chat-context.js";
 import { quotaReason } from "../src/quota-status.js";
@@ -232,7 +231,6 @@ function TopBar() {
       </button>
       {!hostInComposer ? <HostControl /> : null}
       <Crumbs />
-      <StoreIndicator />
       {connection.value.state !== "connected" ? <span class={`connection-status ${connection.value.state}`} role="status" title={connection.value.detail ?? "Live updates are unavailable; displayed run information may be out of date"}>
         <span class="cs-dot" aria-hidden="true" />
         <span class="cs-label">{connection.value.state === "offline" ? "Offline" : connection.value.state === "reconnecting" ? "Reconnecting…" : "Connecting…"}</span>

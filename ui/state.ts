@@ -1063,14 +1063,16 @@ async function loadRepoCheck() {
   repoConfig.value = result && { ...result, ref };
   const config = repoConfig.value?.config ?? {};
   deriveDefaults(config);
+  // The repository's file is the source of truth. A command an older version saved in this
+  // browser fills in only where the file has none.
   const saved = store.get(`check:${r}`), savedSetup = store.get(`setup:${r}`);
-  if (!ownSetup() && (savedSetup !== null || config.setup || !again)) setupCmd.value = savedSetup ?? config.setup ?? "";
+  if (!ownSetup() && (savedSetup !== null || config.setup || !again)) setupCmd.value = config.setup ?? savedSetup ?? "";
   // A detected setup (`uv sync`, `poetry install`) fills an empty setup you haven't edited.
   const detectSetup = !ownSetup() && savedSetup === null && !config.setup;
   if (saved !== null || config.check) {
     if (!ownCheck()) {
-      checkCmd.value = saved ?? config.check!;
-      checkHint.value = saved !== null ? "" : "From .codeflow/config.json.";
+      checkCmd.value = config.check ?? saved!;
+      checkHint.value = config.check ? "From .codeflow/config.json." : "";
       checkWarning.value = "";
     }
     if (!detectSetup) {

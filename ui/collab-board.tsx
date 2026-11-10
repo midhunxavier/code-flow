@@ -71,7 +71,7 @@ export function TeamBoardView({ project, shared = false, embedded = false, navig
     {shared ? <TeamTerminalPanel board={b} project={chosen} /> : null}
     {!ssh && (shared || link && !link.linked) ? <HostQueue board={b} project={chosen} compact={embedded} /> : null}
     {!embedded && !shared && !ssh && link && !link.linked && !b.tasks.length ? <div class="settings-callout team-callout"><Icon name="people" /><div><strong>Not connected to a team server</strong><p>Connect this computer in Connections → Share access to work on a shared board, or create tasks here to use this computer as the team server.</p><a href="#/settings/connections/sharing">Open Connections → Share access <span aria-hidden="true">→</span></a></div></div> : null}
-    {b.projects.length > 1 || chosen ? <div class="team-chips" role="group" aria-label="Project">
+    {!(embedded && chosen) && (b.projects.length > 1 || chosen) ? <div class="team-chips" role="group" aria-label="Project">
       <button type="button" class="chip-tpl" aria-pressed={!chosen} onClick={() => navigate({ view: "team" })}>All projects</button>
       {b.projects.map((entry) => <button key={entry.id} type="button" class="chip-tpl" aria-pressed={chosen === entry.id} onClick={() => navigate({ view: "team", project: entry.id })}>{entry.name}</button>)}
     </div> : null}

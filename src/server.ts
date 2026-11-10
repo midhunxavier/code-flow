@@ -68,7 +68,7 @@ import {
 } from "./adapters/index.js";
 import { listTree, readRepoFile, readRepoImage, searchFiles } from "./repo-tree.js";
 import { checkGit, doctor } from "./doctor.js";
-import { readRepoConfig, readRepoConfigAt, type Trust } from "./repo-config.js";
+import { readRepoConfig, readRepoConfigAt, saveRepoCommands, type Trust } from "./repo-config.js";
 import { openFolder } from "./serve.js";
 import { appCommand } from "./app-command.js";
 import { LaunchProfiles, LaunchProfileError, readLaunchProfiles } from "./launch-profiles.js";
@@ -2512,6 +2512,13 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     // ?ref=: the defaults a run from that branch gets (readRepoConfigAt), as the composer shows them.
     const repo = await requestedRepo(url), ref = url.searchParams.get("ref")?.trim();
     return send(res, 200, ref ? await readRepoConfigAt(repo, ref) : await readRepoConfig(repo));
+  }
+  if (req.method === "PUT" && parts[1] === "repo-config") {
+    // The repository's defaults live in its own file: saving them writes .codeflow/config.json in your checkout.
+    const body = await readJson(req), repo = await validRepo(typeof body.repo === "string" ? body.repo : "");
+    // A repository under a filesystem restriction is refused at the boundary (ownerGate reads body.repo).
+    for (const key of ["check", "setup"] as const) if (body[key] !== undefined && typeof body[key] !== "string") throw new HttpError(400, `The ${key} command must be text`);
+    return send(res, 200, await attempt(() => saveRepoCommands(repo, { check: body.check, setup: body.setup })));
   }
   if (req.method === "GET" && parts[1] === "check") {
     const repo = await requestedRepo(url);

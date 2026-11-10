@@ -25,6 +25,8 @@ Appearance, run defaults and sidebar preferences save in this browser, separatel
 
 Commit `.codeflow/config.json` and every run in that repo (and every teammate) gets the same defaults. Anything you set in the UI wins.
 
+- The check and setup commands live in this file. **Project → Settings → Advanced → Run defaults** reads them from it and **Save project defaults** writes them back into your checkout's file (your other settings in it are kept), for you to commit. A detected command is shown but never saved for you. A command an older version saved in your browser is used only while the file has none, and moves into the file the next time you save.
+
 - The defaults come from the commit the run starts on: choose another start branch in New run and its committed file supplies the check, setup, limits and models (the note in **Run options** names the branch). `trust` and `copy` always come from your checkout's file, since they concern this computer and a branch mustn't widen them. Runs from an issue, a pull request or an imported source, and continuations of a run, use your checkout's file.
 - A draft keeps only what you set for it: a check or setup you typed, limits you changed in **Advanced**, a permission you picked, or what **Edit & run again** restored. Everything else is read again from **Settings** and this file whenever the draft opens, so a changed file applies to drafts you saved earlier. **Run details** names where each value came from.
 - Limits saved in **Settings → Run defaults** count as set in the UI and win over this file's `limits`. Until you save some there, the file's `maxMinutes` and `maxSteps` are the composer's limits.

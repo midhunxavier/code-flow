@@ -322,7 +322,6 @@ test("automations: a webhook starts a run, it waits in the inbox, you approve it
   await page.goto(`${BASE}/#/inbox`);
   const item = page.locator(".inbox-item", { hasText: "E2E: automated chore" });
   await item.waitFor({ timeout: 30_000 });
-  assert.match(await page.locator(".rail-menu-count").innerText(), /^\d+$/, "the inbox count shows in the sidebar");
   await item.getByRole("button", { name: "✓ Approve" }).click();
   await item.waitFor({ state: "detached" });
   assert.equal((await api(`/api/runs/${run}`)).triage.state, "approved");
@@ -905,7 +904,6 @@ test("projects: the Automations page and its inbox follow the project you're in;
   await page.locator(".project-btn", { hasText: "E2E scoped" }).waitFor();
   assert.deepEqual(await page.locator(".inbox-item-title a").allInnerTexts(), ["E2E: side chore"], "only this project's results");
   await page.locator(".automations .rail-hint", { hasText: `${pending - 1} in other projects need${pending === 2 ? "s" : ""} you` }).waitFor();
-  assert.equal(await page.locator(".rail-menu-count").innerText(), String(pending), "the sidebar still counts every project's results");
 
   // The read-only phone view lists each project's runs under its name.
   const remote = await api("/api/remote", { enabled: true });

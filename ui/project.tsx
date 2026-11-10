@@ -63,9 +63,10 @@ export function ProjectView({ id, section, repository, tool, kind }: { id: strin
       </div>
     </header>
     <nav ref={navigation} class="project-tabs" aria-label="Project navigation">
-      {([[undefined, "Overview"], ["runs", "History"], ["repositories", "Repositories"], ["connections", "Connections"], ["board", "Board"], ["people", "People"], ["automation", "Automation"], ["ml", "ML"], ["settings", "Project settings"]] as const)
-        .filter(([value]) => value !== "ml" || features.ml || section === "ml")
-        .map(([value, label]) => <a key={value ?? "overview"} class={`btn ${section === value ? "primary" : ""}`} href={destination(value)} aria-current={section === value ? "page" : undefined}>{label}</a>)}
+      {/* The work first (what is happening, what happened, what runs by itself), then how the project is set up. */}
+      {([[undefined, "Overview"], ["board", "Board"], ["runs", "History"], ["automation", "Automation"], ["ml", "ML"], "setup", ["repositories", "Repositories"], ["connections", "Connections"], ["people", "People"], ["settings", "Project settings"]] as const)
+        .filter(entry => entry === "setup" || entry[0] !== "ml" || features.ml || section === "ml")
+        .map(entry => entry === "setup" ? <span key="setup" class="project-tabs-divider" aria-hidden="true" /> : <a key={entry[0] ?? "overview"} class={`btn ${section === entry[0] ? "primary" : ""}`} href={destination(entry[0])} aria-current={section === entry[0] ? "page" : undefined}>{entry[1]}</a>)}
     </nav>
     {!section ? <>
       <section class="project-start pp-card" aria-label="Start work"><h2>{draftTask.trim() ? "Continue your draft" : "What would you like to work on?"}</h2><p>{p.repos.length ? "Describe the outcome, choose your agents, and review the result here." : "Add a repository to work with code in this project."}</p>
