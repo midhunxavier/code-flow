@@ -54,3 +54,25 @@ test("new engine runs reject ACP when managed delegation cannot be enforced", as
     assert.equal(manager.list().length, 0, "provider rejection happens before creating a run");
   } finally { await manager.shutdown(); }
 });
+test("an explicit unrestricted opt-in runs ACP locally with Full access and records its receipt", async () => {
+  const store = new AcpConnections(publish, home); await store.load(); await store.save(store.snapshot().revision, connection);
+  const repo = mkdtempSync(join(home, "repo-"));
+  execFileSync("git", ["init", "-q", "-b", "main"], { cwd: repo }); writeFileSync(join(repo, "README.md"), "fixture\n");
+  execFileSync("git", ["add", "."], { cwd: repo }); execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base"], { cwd: repo });
+  const { RunManager } = await import("../src/engine.js"), { findPattern } = await import("../src/patterns/index.js");
+  const manager = new RunManager(findPattern), input = { pattern: findPattern("solo")!, repo, task: "Create the fixture result", roles: { agent: [connection.id] }, options: {}, trust: "full" as const, acpExecution: "native" as const };
+  try {
+    await assert.rejects(manager.start({ ...input, trust: "standard" }), /require Full access/);
+    await assert.rejects(manager.start({ ...input, permissionRequirements: ["workspace-writes"] }), /without mandatory boundaries/);
+    assert.equal(manager.list().length, 0, "refusals happen before creating a run");
+    const run = await manager.start(input);
+    assert.equal(run.permissions?.acpExecution, "native");
+    const deadline = Date.now() + 20_000;
+    while (run.status === "running") { if (Date.now() > deadline) throw new Error("Fixture timed out"); await new Promise((done) => setTimeout(done, 20)); }
+    const step = run.steps.find((item) => item.kind === "agent" && item.agent === connection.id);
+    assert.equal(step?.status, "done", JSON.stringify(run.steps.map((item) => [item.title, item.status, item.error])));
+    assert.equal(step?.permissions?.implementation, "acp-native-v1"); assert.equal(step?.permissions?.nativeDelegation, true);
+    assert.match(step!.permissions!.limitations.join(" "), /own subagents/);
+    await assert.rejects(manager.start({ ...input, parentRunId: run.id, trust: "trusted" }), /require Full access/);
+  } finally { await manager.shutdown(); }
+});

@@ -7,9 +7,9 @@ export type PermissionChoice = { trust: Trust; tools: boolean };
 const LEVELS: Record<Trust, string> = { safe: "Safe", standard: "Approve for me", trusted: "Trusted", full: "Full access" };
 
 /** Providers that can put tool requests in the approval inbox. Auto resolves to one of them when approvals are on. */
-export const canAskForApproval = (id: string): boolean => id === "auto" || id === "claude" || id === "codex";
+export const canAskForApproval = (id: string): boolean => id === "auto" || id === "claude" || id === "codex" || id.startsWith("acp:");
 
-/** "Ask for approval" is Standard with approvals (Full in legacy ACP snapshots). */
+/** "Ask for approval" is Standard with approvals (Full for ACP agents, which need Full access). */
 export const asksForApproval = ({ trust, tools }: PermissionChoice, acp = false): boolean => tools && (trust === "standard" || acp && trust === "full");
 
 /** The Permissions control's name for a choice. Approvals at another level name both, so neither is hidden. */
@@ -37,7 +37,8 @@ export function toolApprovalState({ choice, trust, p, roles, remote = false, con
     : providers.length && !providers.some(canAskForApproval) ? providers.includes("agy") ? "Antigravity can't ask for approval" : "The selected provider can't ask for approval"
     : "";
   const solo = p?.id === "solo" ? roles.agent?.[0] : undefined;
-  const wanted = choice ?? (trust === "standard" && (solo === "claude" || solo === "codex"));
+  // An ACP agent declines its own permission requests unless someone answers them: ask by default.
+  const wanted = choice ?? (trust === "standard" && (solo === "claude" || solo === "codex") || trust === "full" && !!solo?.startsWith("acp:"));
   const tools = !unavailable && wanted;
   const source = unavailable || (choice !== undefined ? "Explicit choice" : wanted ? "Default for Claude and Codex conversations" : "Application default");
   const blocked = tools && p ? p.roles.filter((role) => (p.id !== "auto-team" || role.id === "coordinator") && roles[role.id]?.includes("agy")).map((role) => role.label) : [];

@@ -1,6 +1,11 @@
 import { createHash } from "node:crypto";
 
-export type Provider = "claude" | "codex";
+export type Provider = "claude" | "codex" | "agy";
+export const PROVIDERS = ["claude", "codex", "agy"] as const satisfies readonly Provider[];
+export const PROVIDER_NAMES: Record<Provider, string> = { claude: "Claude", codex: "Codex", agy: "Antigravity" };
+export const isProvider = (value: unknown): value is Provider => (PROVIDERS as readonly unknown[]).includes(value);
+/** Managed Antigravity runs in Code Flow's sandbox unless the user explicitly asks for their normal, unrestricted agy setup. */
+export type AntigravityMode = "isolated" | "unrestricted";
 export interface Participant {
   id: string; provider: Provider; model?: string; effort?: string;
   binding?: "managed" | "current_session";
@@ -21,6 +26,7 @@ export interface Candidate {
   scope: "plan" | "review" | "write";
   source?: "head" | "working_changes";
   check?: string; setup?: string;
+  antigravity?: AntigravityMode;
   limits?: { maxInvocations?: number; maxMinutes?: number; concurrency?: number; maxAttempts?: number };
 }
 export interface Settings { model?: string; effort?: string }
@@ -101,12 +107,12 @@ export const TASK_SCHEMA = { type: "object", additionalProperties: false, requir
 export const CANDIDATE_SCHEMA = {
   type: "object", additionalProperties: false, required: ["participants", "steps", "completion", "scope"],
   properties: {
-    participants: { type: "array", minItems: 1, maxItems: 8, items: { type: "object", additionalProperties: false, required: ["id", "provider"], properties: { id, provider: { enum: ["claude", "codex"] }, ...settings.properties, binding: { enum: ["managed", "current_session"] } } } },
-    steps: { type: "array", minItems: 1, maxItems: 64, items: { type: "object" } }, completion: { type: "array", minItems: 1, maxItems: 20, items: text }, scope: { enum: ["plan", "review", "write"] }, source: { enum: ["head", "working_changes"] }, check: { ...text, maxLength: 2000 }, setup: { ...text, maxLength: 2000 },
+    participants: { type: "array", minItems: 1, maxItems: 8, items: { type: "object", additionalProperties: false, required: ["id", "provider"], properties: { id, provider: { enum: [...PROVIDERS] }, ...settings.properties, binding: { enum: ["managed", "current_session"] } } } },
+    steps: { type: "array", minItems: 1, maxItems: 64, items: { type: "object" } }, completion: { type: "array", minItems: 1, maxItems: 20, items: text }, scope: { enum: ["plan", "review", "write"] }, source: { enum: ["head", "working_changes"] }, check: { ...text, maxLength: 2000 }, setup: { ...text, maxLength: 2000 }, antigravity: { enum: ["isolated", "unrestricted"] },
     limits: { type: "object", additionalProperties: false, properties: { maxInvocations: { type: "integer", minimum: 1, maximum: 256 }, maxMinutes: { type: "number", minimum: 1, maximum: 720 }, concurrency: { type: "integer", minimum: 1, maximum: 4 }, maxAttempts: { type: "integer", minimum: 1, maximum: 3 } } },
   },
 };
-export const PREFERENCES_SCHEMA = { type: "object", additionalProperties: false, properties: { preferredProvider: { enum: ["claude", "codex"] }, providers: { type: "object", additionalProperties: false, properties: { claude: settings, codex: settings } } } };
+export const PREFERENCES_SCHEMA = { type: "object", additionalProperties: false, properties: { preferredProvider: { enum: [...PROVIDERS] }, providers: { type: "object", additionalProperties: false, properties: { claude: settings, codex: settings, agy: settings } } } };
 export function validatePreferences(value: unknown): Preferences {
   const problem = shapeProblem(PREFERENCES_SCHEMA, value);
   if (problem) fail("validation_failed", `Invalid preferences: ${problem}`);
@@ -119,6 +125,7 @@ export function validateCandidate(value: unknown): Candidate {
   const ids = new Set<string>(), participants = new Map(c.participants.map(p => [p.id, p]));
   if (participants.size !== c.participants.length) fail("validation_failed", "Participant IDs must be unique");
   if (c.participants.filter(p => p.binding === "current_session").length > 1) fail("validation_failed", "One current conversation can represent only one participant; use managed workers for independent reviewers");
+  if (c.antigravity === "unrestricted" && !c.participants.some(p => p.provider === "agy" && p.binding !== "current_session")) fail("validation_failed", "Unrestricted Antigravity applies only to managed agy participants; remove it or add one");
   const contracts = new Map<string, { kind: Artifact["kind"]; target?: string; participant?: string; policy?: string }>();
   let nodes = 0, expanded = 0, writes = new Set<string>(), finished = false;
   const visit = (steps: Node[], previous: Set<string>, multiplier: number, inLoop: boolean, parallel = false): Set<string> => {

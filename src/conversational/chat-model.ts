@@ -2,7 +2,7 @@ import type { AgentId } from "../adapters/index.js";
 import type { Candidate } from "../cli-teams/model.js";
 
 export type ChatMode = "agent" | "team";
-export interface ChatDefaults { mode: ChatMode; provider: AgentId; model?: string; effort?: string; trust: "safe" | "standard" | "trusted" | "full"; tools: boolean; maxCalls?: number; maxMinutes?: number }
+export interface ChatDefaults { mode: ChatMode; provider: AgentId; model?: string; effort?: string; trust: "safe" | "standard" | "trusted" | "full"; tools: boolean; maxCalls?: number; maxMinutes?: number; /** Explicit opt-in: Agent turns may use a connected ACP agent outside the managed permission policy. */ acpExecution?: "native" }
 export interface ChatAttachment { name: string; data: string }
 export interface ChatFile { name: string; sha256: string; bytes: number }
 export interface ProjectExecutionDefaults { check?: string; setup?: string; maxCalls?: number; maxMinutes?: number; trust?: "safe" | "standard" | "trusted" | "full" }

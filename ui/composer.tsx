@@ -157,6 +157,7 @@ export function Composer() {
   const [profileLoading, setProfileLoading] = useState(false);
   const profileRequest = useRef(0);
   const [nativeAntigravity, setNativeAntigravity] = useState(initialOptions.current.antigravityExecution === "native");
+  const [nativeAcp, setNativeAcp] = useState(initialOptions.current.acpExecution === "native");
   const [permissionRequirements, setPermissionRequirements] = useState<PermissionRequirement[]>(initialOptions.current.permissionRequirements ?? []);
   // Only an explicit choice is kept (and saved with the draft); without one the default follows the workflow and provider.
   const [toolApprovals, setToolApprovals] = useState<boolean | undefined>(initialOptions.current.toolApprovals ?? storedToolApprovals());
@@ -211,8 +212,8 @@ export function Composer() {
     // An option equal to the project's default isn't the draft's own: the draft follows a later default.
     const defaults = readProjectDefaults(repo.value), container = { enabled: containerEnabled, image: containerImage, authVolume: containerVolume };
     const ownContainer = container.enabled !== defaults.container.enabled || container.image !== defaults.container.image || container.authVolume !== defaults.container.authVolume;
-    if (!composerLoading.value) composerRunOptions.value = { taskTeam, remoteWorker, container: ownContainer ? container : undefined, verification: verificationPreset === defaults.verification ? undefined : verificationPreset, verificationProfile, toolApprovals, antigravityExecution: nativeAntigravity ? "native" : "isolated", permissionRequirements };
-  }, [taskTeam, remoteWorker, containerEnabled, containerImage, containerVolume, verificationPreset, verificationProfile, toolApprovals, nativeAntigravity, permissionRequirements]);
+    if (!composerLoading.value) composerRunOptions.value = { taskTeam, remoteWorker, container: ownContainer ? container : undefined, verification: verificationPreset === defaults.verification ? undefined : verificationPreset, verificationProfile, toolApprovals, antigravityExecution: nativeAntigravity ? "native" : "isolated", acpExecution: nativeAcp ? "native" : undefined, permissionRequirements };
+  }, [taskTeam, remoteWorker, containerEnabled, containerImage, containerVolume, verificationPreset, verificationProfile, toolApprovals, nativeAntigravity, nativeAcp, permissionRequirements]);
   const [error, setError] = useState("");
   const [starting, setStarting] = useState(false);
   const startError = useRef<HTMLDivElement>(null);
@@ -243,7 +244,7 @@ export function Composer() {
   // Both "Save as template…" and "Save task preset" save through one dialog, so they share one guard.
   const templateBlocked = verificationPreset === "restored" ? "Choose a verification preset before saving a template" : "";
   const canSaveTemplate = !!p && projectsLoaded.value && !!task.value.trim() && !templateBlocked;
-  const problem = (p?.id === "auto-team" && teamRollout.value?.enabled === false ? "Team is disabled on this server. Choose Agent or a template in Advanced." : "") || (remoteWorker ? remoteError || (!remoteAgents ? "Checking remote worker…" : startProblem(p, roles, true, remoteAgents)) : startProblem(p, roles, true, undefined, nativeAntigravity ? "native" : "isolated")) || approvals.conflict || (containerEnabled && !remoteWorker && !containerImage.trim() ? "Choose a prebuilt agent image in Run options → Agent isolation." : "") || (automaticChecks && profileLoading ? "Loading verification profile…" : automaticChecks && profileError ? "Verification profile unavailable. Choose another profile in Run options." : "");
+  const problem = (p?.id === "auto-team" && teamRollout.value?.enabled === false ? "Team is disabled on this server. Choose Agent or a template in Advanced." : "") || (remoteWorker ? remoteError || (!remoteAgents ? "Checking remote worker…" : startProblem(p, roles, true, remoteAgents)) : startProblem(p, roles, true, undefined, nativeAntigravity ? "native" : "isolated", nativeAcp ? "native" : undefined)) || approvals.conflict || (containerEnabled && !remoteWorker && !containerImage.trim() ? "Choose a prebuilt agent image in Run options → Agent isolation." : "") || (automaticChecks && profileLoading ? "Loading verification profile…" : automaticChecks && profileError ? "Verification profile unavailable. Choose another profile in Run options." : "");
 
   const [scheduling, setScheduling] = useState(false);
   const [savingTemplate, setSavingTemplate] = useState(false);
@@ -291,7 +292,8 @@ export function Composer() {
     // Unrestricted Antigravity is an opt-in for the run just started, never a default for the next
     // one. Written straight to the run options too: the draft is saved before this composer renders again.
     setNativeAntigravity(false);
-    composerRunOptions.value = { ...composerRunOptions.value, antigravityExecution: "isolated" };
+    setNativeAcp(false);
+    composerRunOptions.value = { ...composerRunOptions.value, antigravityExecution: "isolated", acpExecution: undefined };
   });
 
   if (projectsLoaded.value && projectsStatus.value.available && !projectsStatus.value.recovery && !composerProject.value && !Object.keys(unreadableDrafts.value).length && !projects.value.length && !repo.value && !task.value.trim()) return <div class="composer project-welcome">
@@ -349,11 +351,12 @@ export function Composer() {
           onPermissions={choosePermissions}
           restricted={!!externalSource.value} approvalsAvailable={!remoteWorker && !containerEnabled}
           unrestricted={soloAgent === "agy" && nativeAntigravity}
+          acpAllowed={nativeAcp}
         /> : <Menu above label="Provider" icon="layers" class="chat-choice" trigger={<><span>{soloAgent === "auto" ? "Auto provider" : "Choose provider"}</span><Icon name="chevron" /></>}>
           {(close) => <>{(remoteAgents ?? agents.value).map((entry) => <MenuItem key={entry.id} disabled={!!providerProblem(entry, remoteAgents ? null : health.value)} sub={providerProblem(entry, remoteAgents ? null : health.value) || undefined} onClick={() => { setRoles(p!.id, "agent", [entry.id]); close(); }}>{entry.displayName}</MenuItem>)}</>}
         </Menu>}
         </> : <span class="help">{selectedTeamTemplate.value ? `Template: ${selectedTeamTemplate.value.template.name} v${selectedTeamTemplate.value.template.version}` : p?.id === "auto-team" ? "Plans and delegates dynamically" : `Template: ${p?.name}`}</span>}
-        {!single ? <><button type="button" class="btn ghost" onClick={() => { setMoreOptions(true); setAdvancedOpen(true); store.set("composerAdvanced", "1"); }}>Advanced</button><PermissionMenu permissions={{ trust: runTrust, tools: approvals.tools }} onPermissions={choosePermissions} restricted={!!externalSource.value} approvalsAvailable={!remoteWorker && !containerEnabled && Object.values(roles).flat().some(canAskForApproval)} agent={Object.values(roles).flat().find((id) => id.startsWith("acp:")) as AgentId | undefined} unrestricted={nativeAntigravity && Object.values(roles).flat().some(id => id === "agy" || id === "auto")} /></> : null}
+        {!single ? <><button type="button" class="btn ghost" onClick={() => { setMoreOptions(true); setAdvancedOpen(true); store.set("composerAdvanced", "1"); }}>Advanced</button><PermissionMenu permissions={{ trust: runTrust, tools: approvals.tools }} onPermissions={choosePermissions} restricted={!!externalSource.value} approvalsAvailable={!remoteWorker && !containerEnabled && Object.values(roles).flat().some(canAskForApproval)} agent={Object.values(roles).flat().find((id) => id.startsWith("acp:")) as AgentId | undefined} unrestricted={nativeAntigravity && Object.values(roles).flat().some(id => id === "agy" || id === "auto")} acpAllowed={nativeAcp} /></> : null}
         <button class="btn primary task-start" disabled={!!problem || starting} onClick={start} title={problem || "Start run (⌘↵)"}>{starting ? "Starting…" : single ? "Send" : "Start run"}<Icon name="send" /></button>
         <Menu above label="Run actions" icon="more" class="chat-choice">{(close) => <>
           <MenuItem disabled={!p || !projectsLoaded.value} onClick={() => { close(); setUsingTemplate(true); }}><Icon name="files" />Use template…</MenuItem>
@@ -380,6 +383,7 @@ export function Composer() {
         {problem ? <span class="composer-problem" role="status">{problem}{/Settings/.test(problem) ? <> <a href="#/settings/agents">Open provider settings</a></> : null}</span> : null}
         {trust.value === "full" ? <span class="warn">Full access · no provider sandbox</span> : null}
         {nativeAntigravity ? <span class="warn">Unrestricted Antigravity · no Code Flow sandbox</span> : null}
+        {nativeAcp ? <span class="warn">Unrestricted ACP agents · no Code Flow sandbox</span> : null}
         <button class="btn small ghost" onClick={() => setMoreOptions(!moreOptions)} aria-expanded={moreOptions}>Edit run options</button>
       </div>
       <WorkflowRecommendation repository={repo.value} intent={journeyDraft.value?.repo === repo.value ? "bug" : intentDraft.value} />
@@ -415,7 +419,7 @@ export function Composer() {
       {/* The optional controls read as one accordion: a card whose rows open in place. */}
       <div class="composer-more">
       <details class="settings advanced-controls" open={advancedOpen} onToggle={(e) => { setAdvancedOpen(e.currentTarget.open); store.set("composerAdvanced", e.currentTarget.open ? "1" : "0"); }}>
-        <summary><span class="st">Advanced{nativeAntigravity ? " · Unrestricted Antigravity" : ""}</span><span class="ss">Templates, roles, models, permissions and limits</span></summary>
+        <summary><span class="st">Advanced{nativeAntigravity ? " · Unrestricted Antigravity" : ""}{nativeAcp ? " · Unrestricted ACP" : ""}</span><span class="ss">Templates, roles, models, permissions and limits</span></summary>
         <div class="settings-body">
         <label class="lbl" for="workflow-select">Built-in workflow templates</label>
         <select class="field" id="workflow-select" aria-label="Workflow" value={p?.id ?? "auto-team"} onChange={event => setPattern(event.currentTarget.value)}>
@@ -428,6 +432,10 @@ export function Composer() {
           <label class="checkpoint"><input type="checkbox" checked={nativeAntigravity} onChange={e => setNativeAntigravity(e.currentTarget.checked)} /><span>Use unrestricted Antigravity with my existing login</span></label>
           <p class="help">Opt-in for this run; the next run starts isolated again. Antigravity uses your normal profile without Code Flow's sandbox. Terminal, browser, MCP, hooks and native agents follow provider settings. Read-only requests are advisory and native child usage is outside the worker budget. Claude and Codex keep their run permissions. Requires a valid saved login, local attended execution, and no mandatory boundaries, Safe mode or tool approvals.</p>
         </fieldset>
+        {agents.value.some(agent => agent.id.startsWith("acp:")) || nativeAcp ? <fieldset class="section"><legend>ACP agents</legend>
+          <label class="checkpoint"><input type="checkbox" checked={nativeAcp} onChange={e => setNativeAcp(e.currentTarget.checked)} /><span>Allow unrestricted ACP agents (OpenCode, Kilo, Cline and other connected CLIs)</span></label>
+          <p class="help">Opt-in for this run; the next run starts without it. ACP agents use their own login, tools and settings: Code Flow cannot stop them from starting their own subagents, using the network or running external tools, and that usage is outside the worker budget. Read-only requests are advisory. Claude, Codex and Antigravity keep their run permissions. Requires Full access, local attended execution and no mandatory boundaries. Choose Ask for approval to answer the permission requests the CLI makes; without it they are declined.</p>
+        </fieldset> : null}
         <fieldset class="section"><legend>Required permission enforcement</legend>
           {([ ["workspace-writes", "Require an agent workspace write boundary"], ["no-command-network", "Block network access from agent commands"], ["no-external-tools", "Disable external browser and MCP tools"] ] as [PermissionRequirement, string][]).map(([id, label]) => <label class="checkpoint" key={id}><input type="checkbox" checked={permissionRequirements.includes(id)} onChange={e => setPermissionRequirements(e.currentTarget.checked ? [...permissionRequirements, id] : permissionRequirements.filter(p => p !== id))} /><span>{label}</span></label>)}
           <p class="help">Only providers that enforce these requirements can run. Command network restrictions do not cover provider inference or external tools. With none selected, the existing provider-specific permission profile applies.</p>
@@ -503,7 +511,7 @@ export function CompareDialog({ base, onClose, onStarted }: { base: Record<strin
   const [error, setError] = useState("");
   const choices = patterns.value.map((p) => {
     const roles = rolesFor(p);
-    return { p, roles, problem: startProblem(p, roles, true, undefined, base.antigravityExecution) };
+    return { p, roles, problem: startProblem(p, roles, true, undefined, base.antigravityExecution, base.acpExecution) };
   });
   const runs = picked.size * repeat;
   const go = async () => {
@@ -582,7 +590,8 @@ export function CompareDialog({ base, onClose, onStarted }: { base: Record<strin
 }
 
 /** Why the run can't start yet ("" when it can); `needsTask: false` for sweeps, whose items bring their tasks. */
-export function startProblem(p: PatternInfo | undefined, roles: Record<string, RoleValue[]>, needsTask = true, inventory?: AgentInfo[], antigravityExecution: "isolated" | "native" = "isolated"): string {
+export function startProblem(p: PatternInfo | undefined, roles: Record<string, RoleValue[]>, needsTask = true, inventory?: AgentInfo[], antigravityExecution: "isolated" | "native" = "isolated", acpExecution?: "native"): string {
+  const acpPolicy = acpExecution ? { acpExecution } : undefined;
   const invalid = numberInputProblem("composer:") || numberInputProblem("context:") || executionLimitsProblem(limits.value) || (needsTask ? acceptanceCriteriaProblem(acceptanceCriteria.value) : "");
   if (invalid) return invalid;
   if (p?.id === "solo" && composerRunOptions.value.taskTeam?.enabled) { const problem = taskTeamLimitsProblem(composerRunOptions.value.taskTeam as unknown as Record<string, unknown>); if (problem) return problem; }
@@ -607,15 +616,22 @@ export function startProblem(p: PatternInfo | undefined, roles: Record<string, R
   if (configChecking.value) return "Loading repository configuration…";
   if (needsTask && !task.value.trim()) return "Describe the task to start";
   if (!p) return "Pick how the agents work together";
-  if (!inventory) { const readiness = providerSetupProblem(agents.value, health.value); if (readiness) return readiness; }
+  if (!inventory) { const readiness = providerSetupProblem(agents.value, health.value, acpPolicy); if (readiness) return readiness; }
   for (const [role, ids] of Object.entries(roles)) for (const id of ids) {
     if (id === "auto") continue;
     const settings = { ...agentSettings.value[id], ...roleModels.value[p.id]?.[role]?.[id] };
     const invalid = [settings, ...(settings.variants ?? [])].find(value => modelIdProblem(id, value.model));
     if (invalid) return `${(inventory ?? agents.value).find(entry => entry.id === id)?.displayName ?? id}: ${modelIdProblem(id, invalid.model)}`;
   }
-  const unsupported = (p.id === "auto-team" ? roles.coordinator ?? [] : Object.values(roles).flat()).find(id => id !== "auto" && !supportsRunPermissions(id));
-  if (unsupported) return runProviderProblem(unsupported, (inventory ?? agents.value).find(agent => agent.id === unsupported)?.displayName)!;
+  const chosen = p.id === "auto-team" ? roles.coordinator ?? [] : Object.values(roles).flat();
+  const unsupported = chosen.find(id => id !== "auto" && runProviderProblem(id, id, acpPolicy));
+  if (unsupported) return runProviderProblem(unsupported, (inventory ?? agents.value).find(agent => agent.id === unsupported)?.displayName, acpPolicy)!;
+  const acpChosen = chosen.find(id => id.startsWith("acp:"));
+  if (acpChosen) {
+    const name = (inventory ?? agents.value).find(agent => agent.id === acpChosen)?.displayName ?? acpChosen;
+    if (inventory || composerRunOptions.value.remoteWorker || composerRunOptions.value.container?.enabled) return `${name} runs only on this computer without Docker isolation`;
+    if ((externalSource.value ? "safe" : trust.value) !== "full") return `${name} needs Full access. Choose Ask for approval or Full access in Permissions.`;
+  }
   for (const role of p.roles) if (!role.optional && !roles[role.id]?.length) return p.roles.length === 1 ? "Choose a provider" : `Choose a provider for ${role.label}`;
   const unavailableHint = !inventory && health.value?.some(item => item.installed && item.signedIn === false) ? " Some providers are signed out; open Settings → Providers." : "";
   if (p.id === "race" && participantCount(p.id, "contestants", roles.contestants ?? []) < 2) return "A race needs at least two contestants." + unavailableHint;
@@ -634,8 +650,8 @@ export function startProblem(p: PatternInfo | undefined, roles: Record<string, R
   }
   const signedOut = health.value?.find((h) => used.has(h.id) && h.installed && h.signedIn === false);
   if (signedOut) return `${signedOut.name} isn't signed in — open Settings → Providers`;
-  const unready = agents.value.find(entry => used.has(entry.id) && providerProblem(entry, health.value));
-  if (unready) return `${unready.displayName}: ${providerProblem(unready, health.value)}`;
+  const unready = agents.value.find(entry => used.has(entry.id) && providerProblem(entry, health.value, acpPolicy));
+  if (unready) return `${unready.displayName}: ${providerProblem(unready, health.value, acpPolicy)}`;
   // Runs use isolated Antigravity unless the run opts out; the doctor knows whether this computer can.
   const needsIsolation = used.has("agy") && antigravityExecution !== "native";
   const agyHealth = health.value?.find((h) => h.id === "agy");

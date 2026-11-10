@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { antigravityExecution, createRunPermissions, validateRunPermissions, narrowerTrust, resolveRunPermissions } from "../src/run-permissions.js";
+import { acpExecution, runProviderProblem, antigravityExecution, createRunPermissions, validateRunPermissions, narrowerTrust, resolveRunPermissions } from "../src/run-permissions.js";
 
 test("workers inherit run authority, while turn overrides can only narrow it", () => {
   const policy = createRunPermissions("standard", false, false);
@@ -86,4 +86,24 @@ test("native Antigravity requires explicit run authority and leaves other provid
   assert.equal(antigravityExecution("isolated", policy), "isolated");
   assert.throws(() => antigravityExecution(true));
   assert.throws(() => validateRunPermissions({ ...policy, antigravityExecution: "automatic" }));
+});
+
+test("ACP agents run only with the explicit unrestricted opt-in, locally, attended and with Full access", () => {
+  const base = { provider: "acp:opencode" as const, mode: "write" as const, currentTrust: "full" as const, currentTools: true };
+  assert.match(runProviderProblem("acp:opencode", "OpenCode")!, /OpenCode is unavailable for runs.*Allow unrestricted ACP agents/);
+  assert.throws(() => resolveRunPermissions({ ...base, policy: createRunPermissions("full", true, true) }), /unavailable for runs/);
+  const policy = createRunPermissions("full", true, true, undefined, undefined, "native");
+  assert.equal(runProviderProblem("acp:opencode", "OpenCode", policy), undefined);
+  assert.match(runProviderProblem("plugin:x/local", "Plugin", policy)!, /unavailable for runs/, "the opt-in covers ACP only");
+  const worker = resolveRunPermissions({ ...base, policy });
+  assert.deepEqual([worker.implementation, worker.nativeDelegation, worker.isolation, worker.toolApprovals, worker.trust], ["acp-native-v1", true, "none", true, "full"]);
+  assert.equal(resolveRunPermissions({ ...base, policy, tools: false }).toolApprovals, false);
+  assert.equal(resolveRunPermissions({ ...base, policy, provider: "claude" }).nativeDelegation, false, "other providers keep the managed policy");
+  for (const extra of [{ remote: true }, { container: true }, { unattended: true }]) assert.throws(() => resolveRunPermissions({ ...base, policy, ...extra }), /local attended run/);
+  assert.throws(() => resolveRunPermissions({ ...base, policy, turnTrust: "trusted" }), /require Full access/);
+  assert.throws(() => resolveRunPermissions({ ...base, policy: createRunPermissions("full", false, true, ["no-external-tools"], undefined, "native") }), /mandatory boundaries/);
+  assert.throws(() => acpExecution("isolated"), /Invalid ACP execution mode/);
+  assert.throws(() => acpExecution("native", createRunPermissions("full", false, true)), /child run cannot enable/);
+  assert.equal(acpExecution(undefined, policy), "native", "children inherit the parent's opt-in");
+  assert.equal(validateRunPermissions(JSON.parse(JSON.stringify(policy))).acpExecution, "native");
 });

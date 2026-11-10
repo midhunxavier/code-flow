@@ -1,6 +1,6 @@
 import { launchTerminal } from "./terminal.js";
 import { formatStatus, formatToolResult } from "./presentation.js";
-import { catalog } from "./providers.js";
+import { antigravitySandboxProblem, catalog } from "./providers.js";
 import { readFile, mkdir, writeFile, rename, lstat } from "node:fs/promises";
 import { createInterface } from "node:readline/promises";
 import { resolve, join, dirname } from "node:path";
@@ -11,12 +11,12 @@ import { connectRuntime } from "./client.js";
 import { hasProjectInstall, installUser, uninstallProject, uninstallUser } from "./install.js";
 import { serveMcp } from "./mcp.js";
 import { configureDesktop, inspectDesktop, DESKTOP_HOSTS, type DesktopHost } from "./desktop.js";
-import { fail, validatePreferences, type Provider } from "./model.js";
+import { fail, isProvider, PROVIDERS, validatePreferences, type Provider } from "./model.js";
 
 const usage = `Code Flow conversational teams
 
-  codeflow terminal claude|codex -- [provider arguments]
-  codeflow init [--providers claude,codex] [--dry-run]
+  codeflow terminal claude|codex|agy -- [provider arguments]
+  codeflow init [--providers claude,codex,agy] [--dry-run]
   codeflow desktop setup|enable|disable|doctor|remove [--hosts claude-desktop,codex-app] [--project-root PATH] [--dry-run] [--json]
   codeflow doctor [--catalog] [--json]
   codeflow mcp [--project-root PATH]
@@ -28,10 +28,10 @@ const usage = `Code Flow conversational teams
   codeflow apply RUN_ID
   codeflow pause|resume|cancel RUN_ID
   codeflow attach RUN_ID --connection CONNECTION_ID
-  codeflow preferences [--provider claude|codex --model ID --effort VALUE] [--preferred-provider claude|codex] [--personal]
+  codeflow preferences [--provider claude|codex|agy --model ID --effort VALUE] [--preferred-provider claude|codex|agy] [--personal]
   codeflow uninstall --user | --project
 
-Use the codeflow skill in your Claude or Codex conversation to describe a task.
+Use the codeflow skill in your Claude, Codex or Antigravity (agy) conversation to describe a task.
 Teams and processes are generated for that task. No presets or saved teams.
 Run approval uses your host's native confirmation form when available.
 Browser or terminal approval is a fallback. Host reattachment requires an interactive terminal.
@@ -65,9 +65,9 @@ export async function launchCli(args = process.argv.slice(2)) {
   }
   const providers = async () => {
     const requested = option("--providers");
-    if (requested) { const values = requested.split(","); if (!values.length || values.some(p => p !== "claude" && p !== "codex")) throw new Error("Choose --providers claude,codex or one provider"); return [...new Set(values)] as Provider[]; }
-    const installed = await Promise.all((["claude", "codex"] as const).map(async p => await getAdapter(p).available() ? p : undefined));
-    const chosen = installed.filter((p): p is Provider => !!p); if (!chosen.length) throw new Error("Install Claude Code or Codex, or explicitly choose --providers before connecting it later"); return chosen;
+    if (requested) { const values = requested.split(","); if (!values.length || values.some(p => !isProvider(p))) throw new Error("Choose --providers claude,codex,agy or some of them"); return [...new Set(values)] as Provider[]; }
+    const installed = await Promise.all(PROVIDERS.map(async p => await getAdapter(p).available() ? p : undefined));
+    const chosen = installed.filter((p): p is Provider => !!p); if (!chosen.length) throw new Error("Install Claude Code, Codex or Antigravity CLI (agy), or explicitly choose --providers before connecting it later"); return chosen;
   };
   if (command === "init") {
     const dryRun = args.includes("--dry-run");
@@ -79,7 +79,7 @@ export async function launchCli(args = process.argv.slice(2)) {
       result.changes.length ? result.changes.map(c => `  ${c.host}: ${c.path}`).join("\n") : "No configuration changes needed.",
       ...(legacy?.removed.length ? [`Removed the old in-repository setup: ${legacy.removed.join(", ")}`] : []),
       ...(legacy?.preserved.length ? [`Kept in the repository (changed since setup): ${legacy.preserved.join(", ")}`] : []),
-      "Nothing is written into your repositories. Start claude or codex inside any Git repository and ask for a Code Flow task; it works on that repository. Reconnect open sessions from /mcp. No agent calls were made.",
+      "Nothing is written into your repositories. Start claude, codex or agy inside any Git repository and ask for a Code Flow task; it works on that repository. Reconnect open sessions from /mcp. No agent calls were made.",
     ].join("\n")); return;
   }
   if (command === "uninstall") {
@@ -90,11 +90,13 @@ export async function launchCli(args = process.argv.slice(2)) {
   if (command === "mcp") { await serveMcp(root, option("--project-root") !== undefined); return; }
   if (command === "doctor") {
     const repo = await repoRoot(root);
-    const installed = await Promise.all((["claude", "codex"] as const).map(async provider => {
+    const installed = await Promise.all(PROVIDERS.map(async provider => {
       const available = await getAdapter(provider).available();
       let models: { state: string; count?: number; issue?: string } | undefined;
       if (available && args.includes("--catalog")) {
-        try { const c = await catalog(provider, true); models = { state: "available", count: c.models.length }; }
+        // Doctor reports what agy can list at all; where its sandbox is unavailable the models still show, with the reason.
+        const sandbox = provider === "agy" ? await antigravitySandboxProblem() : undefined;
+        try { const c = await catalog(provider, true, sandbox ? "unrestricted" : "isolated"); models = { state: "available", count: c.models.length, ...(sandbox ? { issue: `Sandbox unavailable: ${sandbox}` } : {}) }; }
         catch (error) { models = { state: "unavailable", issue: error instanceof Error ? error.message : "Catalog unavailable" }; }
       }
       return { provider, installed: available, authentication: "Not verified; catalog discovery is not an execution or permission probe.", catalog: models };
@@ -103,7 +105,7 @@ export async function launchCli(args = process.argv.slice(2)) {
     let connection: { live: boolean; message: string };
     try {
       const client = await connectRuntime(root, false);
-      try { await client.call("codeflow_list_providers", {}); connection = { live: true, message: "Owner bridge is reachable. Ask /codeflow (Claude) or $codeflow (Codex) to check the connection inside your host." }; }
+      try { await client.call("codeflow_list_providers", {}); connection = { live: true, message: "Owner bridge is reachable. Ask /codeflow (Claude or Antigravity) or $codeflow (Codex) to check the connection inside your host." }; }
       finally { await client.close(); }
     } catch (e) { connection = { live: false, message: `Owner bridge: ${e instanceof Error ? e.message : "unavailable"}. The MCP connection can start the owner when enabled in your host.` }; }
     const result = { repo, providers: installed, connection, node: process.version, pendingFiles: configuration.changes.map(c => c.path), notes: ["No agent inference was performed.", "Project trust, authentication, and tool permissions must be verified in the native CLI."] };
@@ -116,9 +118,9 @@ export async function launchCli(args = process.argv.slice(2)) {
     const prefs = validatePreferences(existing.preferences ?? existing), provider = option("--provider"), model = option("--model"), effort = option("--effort");
     const preferredProvider = option("--preferred-provider");
     if (provider || model || effort || preferredProvider) {
-      if (preferredProvider) { if (!["claude", "codex"].includes(preferredProvider)) throw new Error("Choose --preferred-provider claude or codex"); prefs.preferredProvider = preferredProvider as Provider; }
+      if (preferredProvider) { if (!isProvider(preferredProvider)) throw new Error("Choose --preferred-provider claude, codex or agy"); prefs.preferredProvider = preferredProvider; }
       if (provider || model || effort) {
-        if (provider !== "claude" && provider !== "codex") throw new Error("Choose --provider claude or codex");
+        if (!isProvider(provider)) throw new Error("Choose --provider claude, codex or agy");
         prefs.providers ??= {}; prefs.providers[provider] = { ...prefs.providers[provider], ...(model ? { model } : {}), ...(effort ? { effort } : {}) }; validatePreferences(prefs);
       }
       await mkdir(dirname(file), { recursive: true }); const temp = `${file}.${process.pid}.tmp`;

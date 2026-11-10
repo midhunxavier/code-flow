@@ -14,7 +14,7 @@ import { composerRunOptions, repo, projectsStatus, composerProject, task, accept
 /** Build the current saved draft independently of which screen happens to be mounted. */
 export function composerRunBody(p: PatternInfo, profile?: VerificationProfile | null): Record<string, any> {
   const options = composerRunOptions.value, restored = rerunDraft.value;
-  const { taskTeam, remoteWorker, permissionRequirements = [], antigravityExecution } = options;
+  const { taskTeam, remoteWorker, permissionRequirements = [], antigravityExecution, acpExecution } = options;
   const nativeAntigravity = antigravityExecution === "native";
   const container = options.container ?? readProjectDefaults(repo.value).container;
   const { enabled: containerEnabled, image: containerImage, authVolume: containerVolume } = container;
@@ -50,6 +50,7 @@ export function composerRunBody(p: PatternInfo, profile?: VerificationProfile | 
     trust: trust.value,
     permissionRequirements,
     antigravityExecution: nativeAntigravity ? "native" : "isolated",
+    acpExecution: acpExecution === "native" ? "native" : undefined,
     roleSettings: roleModels.value[p.id] ?? {},
     loop: {
       ...restored?.loop,

@@ -466,7 +466,7 @@ test("managed participants work directly and attribute inputs using durable disp
     assert.equal(identity.model, opts.model);
     assert.equal(identity.effort, opts.effort);
     assert.match(opts.prompt, /ALREADY launched you/);
-    assert.match(opts.prompt, /Do not launch claude, codex, codeflow/);
+    assert.match(opts.prompt, /Do not launch claude, codex, agy, codeflow/);
     assert.match(opts.prompt, /background, not a delegation instruction/);
     if (opts.jsonSchema) {
       const receipt = JSON.parse(opts.prompt.match(/Code Flow execution receipt: (.*)\n/)![1]!);
@@ -717,6 +717,67 @@ test("setup refuses to replace a codeflow connection the user created and change
   writeFileSync(u.codexConfig, "");
   await assert.rejects(installUser(["claude", "codex"], false, { ...u.options, run: async () => { throw new Error("claude unavailable"); } }), /claude unavailable/);
   assert.equal(readFileSync(u.codexConfig, "utf8"), ""); assert.ok(!existsSync(u.claudeSkill) && !existsSync(u.codexSkill));
+});
+
+test("setup registers Antigravity through agy mcp, keeps the user's on/off switch and removes only its own entry", async () => {
+  const u = userSetup(), folder = join(u.user, ".gemini", "config"), agyConfig = join(folder, "mcp_config.json"), agySkill = join(folder, "skills", "codeflow", "SKILL.md");
+  mkdirSync(folder, { recursive: true });
+  // agy accepts comments and trailing commas in its own settings.
+  writeFileSync(agyConfig, '{\n  // mine\n  "mcpServers": { "other": { "command": "other", "args": ["a,}"], }, },\n}\n');
+  const dry = await installUser(["agy"], true, u.options);
+  assert.deepEqual(dry.changes.map(c => c.host), ["Antigravity", "Skill"]); assert.equal(u.calls.length, 0); assert.ok(!existsSync(agySkill));
+  await installUser(["agy"], false, u.options);
+  assert.deepEqual(u.calls, [["agy", "mcp", "add", "codeflow", "--", "codeflow", "mcp"]]);
+  const servers = JSON.parse(readFileSync(agyConfig, "utf8")).mcpServers;
+  assert.deepEqual(servers.codeflow, { args: ["mcp"], command: "codeflow", disabled: false }); assert.deepEqual(servers.other.args, ["a,}"], "other servers are kept");
+  assert.match(readFileSync(agySkill, "utf8"), /^---\nname: codeflow\n[\s\S]*Code Flow/);
+  // Turning Code Flow off in agy is the user's choice: setup leaves it alone.
+  writeFileSync(agyConfig, JSON.stringify({ mcpServers: { ...servers, codeflow: { ...servers.codeflow, disabled: true } } })); u.calls.length = 0;
+  assert.equal((await installUser(["agy"], false, u.options)).changes.length, 0); assert.equal(u.calls.length, 0);
+  // A different Code Flow home updates the entry in place.
+  const moved = { ...u.options, env: { ...u.env, CODEFLOW_HOME: join(u.user, "elsewhere") } };
+  await installUser(["agy"], false, moved);
+  assert.deepEqual(u.calls.at(-1), ["agy", "mcp", "add", "--env", `CODEFLOW_HOME=${join(u.user, "elsewhere")}`, "codeflow", "--", "codeflow", "mcp"]);
+  const removed = await uninstallUser(moved);
+  assert.ok(removed.removed.some(r => r.startsWith(agyConfig)) && !existsSync(agySkill));
+  assert.deepEqual(Object.keys(JSON.parse(readFileSync(agyConfig, "utf8")).mcpServers), ["other"]);
+});
+
+test("setup refuses an Antigravity codeflow server it did not create and restores agy's settings when agy fails", async () => {
+  const u = userSetup(), folder = join(u.user, ".gemini", "config"), agyConfig = join(folder, "mcp_config.json"), agySkill = join(folder, "skills", "codeflow", "SKILL.md");
+  mkdirSync(folder, { recursive: true }); writeFileSync(agyConfig, JSON.stringify({ mcpServers: { codeflow: { command: "my-own", args: [] } } }));
+  await assert.rejects(installUser(["claude", "agy"], false, u.options), /did not create/);
+  assert.equal(u.calls.length, 0); assert.ok(!existsSync(u.claudeSkill) && !existsSync(agySkill), "nothing is written");
+  // agy writes its settings, then reports failure: everything goes back to how it was.
+  writeFileSync(agyConfig, "");
+  await assert.rejects(installUser(["agy"], false, { ...u.options, run: async (command, args) => { await u.options.run(command, args); throw new Error("agy mcp add failed: timed out"); } }), /timed out/);
+  assert.equal(readFileSync(agyConfig, "utf8"), ""); assert.ok(!existsSync(agySkill));
+});
+
+test("agy workers stay sandboxed unless the proposal asks for unrestricted Antigravity, which every view of it shows", async () => {
+  const f = await setup();
+  const plan = (antigravity?: "unrestricted"): Candidate => ({ scope: "plan", ...(antigravity ? { antigravity } : {}), participants: [{ id: "planner", provider: "agy" }], completion: ["Return a plan"], steps: [
+    { id: "plan", type: "task", participant: "planner", operation: "propose", instructions: "Write the plan" },
+    { id: "result", type: "finish", outcome: "plan_ready", inputs: ["plan"] },
+  ] });
+  // The fake agy (1.3.6) is not a version Code Flow's sandbox has verified, so the default mode is unavailable and says why.
+  const agy = (await f.call("list_providers")).providers.find((p: any) => p.id === "agy");
+  assert.equal(agy.installed, true); assert.equal(agy.antigravity.isolated.available, false); assert.match(agy.antigravity.unrestricted, /explicitly asks/);
+  await assert.rejects(f.call("propose_run", { task: "Plan", candidate: plan() }), /agy: [\s\S]*unrestricted/);
+  assert.throws(() => validateCandidate({ ...plan("unrestricted"), participants: [{ id: "planner", provider: "claude" }] }), /only to managed agy/);
+  const models = await f.call("list_models", { providerId: "agy", antigravity: "unrestricted" });
+  assert.deepEqual(models.models.map((m: any) => m.id), ["model-one", "model-two"]);
+  const original = adapters.agy.run; let seen: any;
+  adapters.agy.run = async opts => { seen = opts; return { ok: true, finalText: "Antigravity plan" }; };
+  try {
+    const proposal = await f.call("propose_run", { task: "Plan with my normal agy setup", candidate: plan("unrestricted") });
+    assert.match(proposal.headline, /Antigravity \(unrestricted\)/); assert.match(proposal.summary, /Antigravity: UNRESTRICTED/); assert.match(proposal.preview, /Antigravity: unrestricted, as requested/);
+    await f.service.accept(f.connection, proposal.proposalId, proposal.revision, proposal.proposalHash);
+    const { runId } = await f.call("start_run", { proposalId: proposal.proposalId, expectedRevision: proposal.revision, proposalHash: proposal.proposalHash });
+    const run = f.manager.get(runId)!; await finished(run);
+    assert.equal(run.status, "done", run.error); assert.equal(run.permissions?.antigravityExecution, "native");
+    assert.equal(seen.permissions.implementation, "agy-native-v1"); assert.equal(seen.mode, "read");
+  } finally { adapters.agy.run = original; }
 });
 
 test("init moves an old in-repository setup out of the repository", async () => {

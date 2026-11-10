@@ -10,7 +10,17 @@ export interface RunPermissionPolicy {
   delegation: "managed" | "none";
   required: PermissionRequirement[];
   antigravityExecution?: AntigravityExecution;
+  /** Explicit opt-in: ACP agents run with their own tools and settings, outside the managed policy. */
+  acpExecution?: AcpExecution;
 }
+export type AcpExecution = "native";
+export const isAcpProvider = (provider: string): boolean => provider.startsWith("acp:");
+export function acpExecution(value: unknown, parent?: RunPermissionPolicy): AcpExecution | undefined {
+  if (value !== undefined && value !== "native") throw new Error("Invalid ACP execution mode");
+  if (parent && value === "native" && parent.acpExecution !== "native") throw new Error("A child run cannot enable unrestricted ACP agents");
+  return (value as AcpExecution | undefined) ?? parent?.acpExecution;
+}
+export const ACP_NATIVE_LIMITATION = "Unrestricted ACP agents use their own login, tools and settings. Code Flow cannot stop them from starting their own subagents, using the network or running external tools, and that usage is outside Code Flow's worker budget. Read-only requests are advisory. With Ask for approval on, Code Flow answers the permission requests the CLI sends; without it those requests are declined, and anything the CLI approves by itself runs unasked.";
 export type AntigravityExecution = "isolated" | "native";
 export function antigravityExecution(value: unknown, parent?: RunPermissionPolicy): AntigravityExecution | undefined {
   if (value !== undefined && value !== "isolated" && value !== "native") throw new Error("Invalid Antigravity execution mode");
@@ -47,16 +57,18 @@ export function permissionRequirements(value: unknown): PermissionRequirement[] 
 /** Persisted authority is untrusted input on recovery and remote receipt replay. */
 export function validateRunPermissions(value: unknown): RunPermissionPolicy {
   const p = value as RunPermissionPolicy;
-  if (!p || typeof p !== "object" || Array.isArray(p) || Object.keys(p).some(k => !["version", "revision", "trust", "toolApprovals", "delegation", "required", "antigravityExecution"].includes(k)) || p.version !== 1 || !Number.isSafeInteger(p.revision) || p.revision < 1 || !levels.includes(p.trust) || typeof p.toolApprovals !== "boolean" || !["managed", "none"].includes(p.delegation) || !Array.isArray(p.required)) throw new Error("Invalid run permission policy");
+  if (!p || typeof p !== "object" || Array.isArray(p) || Object.keys(p).some(k => !["version", "revision", "trust", "toolApprovals", "delegation", "required", "antigravityExecution", "acpExecution"].includes(k)) || p.version !== 1 || !Number.isSafeInteger(p.revision) || p.revision < 1 || !levels.includes(p.trust) || typeof p.toolApprovals !== "boolean" || !["managed", "none"].includes(p.delegation) || !Array.isArray(p.required)) throw new Error("Invalid run permission policy");
   antigravityExecution(p.antigravityExecution);
+  acpExecution(p.acpExecution);
   return { ...p, required: permissionRequirements(p.required) };
 }
-export function createRunPermissions(trust: Trust, tools: boolean, solo: boolean, required?: unknown, execution?: AntigravityExecution): RunPermissionPolicy {
-  return validateRunPermissions({ version: 1, revision: 1, trust, toolApprovals: tools, delegation: solo ? "none" : "managed", required: permissionRequirements(required), ...(execution !== undefined ? { antigravityExecution: antigravityExecution(execution) } : {}) });
+export function createRunPermissions(trust: Trust, tools: boolean, solo: boolean, required?: unknown, execution?: AntigravityExecution, acp?: AcpExecution): RunPermissionPolicy {
+  return validateRunPermissions({ version: 1, revision: 1, trust, toolApprovals: tools, delegation: solo ? "none" : "managed", required: permissionRequirements(required), ...(execution !== undefined ? { antigravityExecution: antigravityExecution(execution) } : {}), ...(acp !== undefined ? { acpExecution: acpExecution(acp) } : {}) });
 }
 export const supportsRunPermissions = (provider: string): boolean => provider === "claude" || provider === "codex" || provider === "agy";
 /** Connections may be inspected before their adapter can enforce a run's policy. */
-export function runProviderProblem(provider: string, displayName = provider): string | undefined {
+export function runProviderProblem(provider: string, displayName = provider, policy?: Pick<RunPermissionPolicy, "acpExecution">): string | undefined {
+  if (isAcpProvider(provider)) return policy?.acpExecution === "native" ? undefined : `${displayName} is unavailable for runs: this adapter cannot enforce Code Flow's native-delegation restriction. Turn on Allow unrestricted ACP agents for a new run, or choose Claude Code, Codex or Antigravity.`;
   if (!supportsRunPermissions(provider)) return `${displayName} is unavailable for runs: this adapter cannot enforce Code Flow's native-delegation restriction. Choose Claude Code, Codex or Antigravity.`;
 }
 /** A sandbox flag or a custom-agent tool list alone is not an inherited run policy. */
@@ -65,7 +77,7 @@ export const AGY_MANAGED_PERMISSION_PROBLEM = "Antigravity managed execution req
 export const AGY_APPROVALS_PROBLEM = "Antigravity can't take interactive approvals. Turn off Ask for approval for this run, or choose Claude or Codex instead of Antigravity.";
 export function permissionProviderProblem(provider: AgentId, policy?: RunPermissionPolicy, displayName: string = provider): string | undefined {
   if (policy && provider === "agy" && policy.antigravityExecution !== "native" && (typeof process === "undefined" || process.platform !== "darwin")) return AGY_MANAGED_PERMISSION_PROBLEM;
-  if (policy) return runProviderProblem(provider, displayName);
+  if (policy) return runProviderProblem(provider, displayName, policy);
 }
 export function resolveRunPermissions(input: {
   policy: RunPermissionPolicy; provider: AgentId; mode: AccessMode; currentTrust: Trust;
@@ -83,6 +95,17 @@ export function resolveRunPermissions(input: {
       provider, trust: "full", mode, nativeDelegation: true, toolApprovals: false,
       isolation: "none", implementation: "agy-native-v1", commandNetwork: "allowed", externalTools: "provider-configured",
       limitations: [AGY_NATIVE_LIMITATION, "Each managed turn starts fresh using portable context; native sessions are not resumed."] };
+  }
+  if (isAcpProvider(provider)) {
+    // Reached only with the run's explicit acpExecution opt-in (permissionProviderProblem above).
+    if (input.remote || input.container || input.unattended || policy.required.length) throw new Error("Unrestricted ACP agents require a local attended run without mandatory boundaries");
+    if (trust !== "full") throw new Error("ACP connections require Full access on the current host");
+    return { required: [], delegation: policy.delegation, policyRevision: policy.revision,
+      provider, trust, mode, nativeDelegation: true,
+      // The adapter itself refuses edits and commands in read turns; approvals there cover read tools only.
+      toolApprovals: policy.toolApprovals && input.currentTools && input.tools !== false,
+      isolation: "none", implementation: "acp-native-v1", commandNetwork: "allowed", externalTools: "provider-configured",
+      limitations: [ACP_NATIVE_LIMITATION] };
   }
   if (provider === "agy") {
     if (input.remote || input.container) throw new Error(AGY_MANAGED_PERMISSION_PROBLEM);

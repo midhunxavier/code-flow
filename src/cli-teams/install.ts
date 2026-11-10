@@ -28,13 +28,38 @@ async function skillText(managed: boolean) {
   return managed ? `${workflow.match(/^---\r?\n[\s\S]*?\r?\n---/)![0]}\n\n# Code Flow\n\nUse the connected Code Flow MCP tools. They work on the Git repository you started this session in. Follow the short rules the server supplies at initialization, and call \`codeflow_get_guide\` with section \`candidate\` before your first proposal (section \`all\` for the full guide). The guide and tool schemas come from the active shared runtime release. Before opening approval, show the team, steps, and full proposal link in the conversation. A plain plan uses a finish node with outcome \`plan_ready\` and inputs pointing to the plan task; it needs no agreement gate. Obtain explicit approval of the exact proposal before starting work. Managed workers must never recursively start Code Flow runs. If the tools are unavailable, ask the user to run \`codeflow init\` and reconnect Code Flow from /mcp; do not bypass it by launching provider CLIs.\n` : workflow;
 }
 
-export interface UserPaths { claudeConfig: string; claudeSkill: string; codexConfig: string; codexSkill: string }
+export interface UserPaths { claudeConfig: string; claudeSkill: string; codexConfig: string; codexSkill: string; agyConfig: string; agySkill: string }
 /** Where each CLI keeps per-user settings. Nothing here is inside a repository. */
 export function userPaths(env: NodeJS.ProcessEnv = process.env): UserPaths {
   const home = env.HOME || homedir(), claudeDir = env.CLAUDE_CONFIG_DIR ? resolve(env.CLAUDE_CONFIG_DIR) : undefined, codexHome = env.CODEX_HOME ? resolve(env.CODEX_HOME) : join(home, ".codex");
-  return { claudeConfig: join(claudeDir ?? home, ".claude.json"), claudeSkill: join(claudeDir ?? join(home, ".claude"), "skills", "codeflow", "SKILL.md"), codexConfig: join(codexHome, "config.toml"), codexSkill: join(codexHome, "skills", "codeflow", "SKILL.md") };
+  // agy (Antigravity CLI) keeps user MCP servers and global skills in its shared ~/.gemini/config folder.
+  const agyHome = join(home, ".gemini", "config");
+  return { claudeConfig: join(claudeDir ?? home, ".claude.json"), claudeSkill: join(claudeDir ?? join(home, ".claude"), "skills", "codeflow", "SKILL.md"), codexConfig: join(codexHome, "config.toml"), codexSkill: join(codexHome, "skills", "codeflow", "SKILL.md"), agyConfig: join(agyHome, "mcp_config.json"), agySkill: join(agyHome, "skills", "codeflow", "SKILL.md") };
 }
-type UserEdit = { kind: "claude-mcp"; owned: string } | { kind: "codex-mcp" | "skill"; path: string; owned: string };
+/** agy's mcp_config.json may contain comments and trailing commas, which agy itself accepts. */
+export function parseJsonc(text: string): any {
+  if (!text.trim()) return {};
+  let plain = "", clean = "";
+  for (let i = 0, quoted = false; i < text.length; i++) {
+    const c = text[i]!;
+    if (quoted) { plain += c; if (c === "\\") plain += text[++i] ?? ""; else if (c === '"') quoted = false; }
+    else if (c === '"') { quoted = true; plain += c; }
+    else if (c === "/" && text[i + 1] === "/") { while (i + 1 < text.length && text[i + 1] !== "\n") i++; }
+    else if (c === "/" && text[i + 1] === "*") { const end = text.indexOf("*/", i + 2); i = end < 0 ? text.length : end + 1; plain += " "; }
+    else plain += c;
+  }
+  for (let i = 0, quoted = false; i < plain.length; i++) {
+    const c = plain[i]!;
+    if (quoted) { clean += c; if (c === "\\") clean += plain[++i] ?? ""; else if (c === '"') quoted = false; continue; }
+    if (c === '"') quoted = true;
+    if (c === "," && /^\s*[}\]]/.test(plain.slice(i + 1))) continue;
+    clean += c;
+  }
+  return JSON.parse(clean);
+}
+/** agy adds its own on/off switch to each server; whether the user turned Code Flow off is theirs, not part of the connection. */
+const agyServer = (value: unknown) => { if (!value || typeof value !== "object" || Array.isArray(value)) return value; const { disabled: _disabled, ...connection } = value as Record<string, unknown>; return connection; };
+type UserEdit = { kind: "claude-mcp"; owned: string } | { kind: "agy-mcp"; owned: string } | { kind: "codex-mcp" | "skill"; path: string; owned: string };
 interface UserManifest { version: 1; scope: "user"; edits: UserEdit[] }
 type Run = (command: string, args: string[]) => Promise<void>;
 const runCli: Run = (command, args) => new Promise((done, failed) => execFile(command, args, { timeout: 30000 }, (error, _out, stderr) => error ? failed(new Error(`${command} ${args.slice(0, 2).join(" ")} failed: ${(stderr || error.message).trim().slice(0, 500)}`)) : done()));
@@ -58,6 +83,9 @@ export async function installUser(providers: Provider[], dryRun = false, options
     const files: { path: string; before?: string; after: string; kind: "codex-mcp" | "skill"; owned: string }[] = [];
     const changes: { host: string; path: string }[] = [], kept: UserEdit[] = [];
     let claude: "add" | "replace" | undefined, previousClaude: unknown;
+    // agy stores what `agy mcp add` is given: the command, its arguments and the environment, without Claude's type field.
+    const agyEntry = { command: entry.command, args: entry.args, ...(entry.env ? { env: entry.env } : {}) };
+    let agy: "add" | "replace" | undefined, agyBefore: string | undefined;
     if (providers.includes("claude")) {
       const config = await read(paths.claudeConfig), current = config ? JSON.parse(config)?.mcpServers?.codeflow : undefined;
       previousClaude = current;
@@ -75,18 +103,35 @@ export async function installUser(providers: Provider[], dryRun = false, options
       parseToml(after);
       if (after !== before) files.push({ path: paths.codexConfig, before: existing, after, kind: "codex-mcp", owned: digest(section) }); else kept.push({ kind: "codex-mcp", path: paths.codexConfig, owned: digest(section) });
     }
-    for (const [provider, path] of [["claude", paths.claudeSkill], ["codex", paths.codexSkill]] as const) {
+    if (providers.includes("agy")) {
+      agyBefore = await read(paths.agyConfig);
+      let data: any;
+      try { data = parseJsonc(agyBefore ?? ""); } catch { fail("installation_conflict", `Antigravity's MCP settings (${paths.agyConfig}) could not be read. Check them with \`agy mcp list\`, then run init again.`); }
+      const current = data?.mcpServers?.codeflow;
+      if (current !== undefined && digest(agyServer(current)) !== digest(agyEntry) && digest(agyServer(current)) !== owned("agy-mcp")) fail("installation_conflict", "Your Antigravity settings already have a `codeflow` MCP server that Code Flow did not create. Remove it with `agy mcp remove codeflow`, then run init again.");
+      if (current === undefined) agy = "add"; else if (digest(agyServer(current)) !== digest(agyEntry)) agy = "replace"; else kept.push({ kind: "agy-mcp", owned: digest(agyEntry) });
+      if (agy) changes.push({ host: "Antigravity", path: `${paths.agyConfig} (MCP server "codeflow")` });
+    }
+    for (const [provider, path] of [["claude", paths.claudeSkill], ["codex", paths.codexSkill], ["agy", paths.agySkill]] as const) {
       if (!providers.includes(provider)) continue;
       const before = await read(path);
       if (before !== undefined && before !== skill && digest(before) !== owned("skill", path)) fail("installation_conflict", `${path} was changed by you; move it, then run init again.`);
       if (before !== skill) files.push({ path, before, after: skill, kind: "skill", owned: digest(skill) }); else kept.push({ kind: "skill", path, owned: digest(skill) });
     }
     for (const f of files) changes.push({ host: f.kind === "skill" ? "Skill" : "Codex", path: f.path });
-    if (!dryRun && (files.length || claude)) {
+    if (!dryRun && (files.length || claude || agy)) {
       const written: typeof files = [];
-      let removed = false;
+      let removed = false, agyTouched = false;
       try {
         for (const f of files) { if (await read(f.path) !== f.before) fail("installation_conflict", "Configuration changed during setup; run init again"); await atomic(f.path, f.after); written.push(f); }
+        if (agy) {
+          if (await read(paths.agyConfig) !== agyBefore) fail("installation_conflict", "Configuration changed during setup; run init again");
+          // `agy mcp add` adds or updates in place. Flags go before the name, and `--` keeps the command's own arguments apart.
+          agyTouched = true;
+          await run("agy", ["mcp", "add", ...Object.entries(agyEntry.env ?? {}).flatMap(([key, value]) => ["--env", `${key}=${value}`]), "codeflow", "--", agyEntry.command, ...agyEntry.args]);
+          const stored = parseJsonc(await read(paths.agyConfig) ?? "")?.mcpServers?.codeflow;
+          if (digest(agyServer(stored)) !== digest(agyEntry)) fail("installation_conflict", "Antigravity did not record the Code Flow connection as expected; run `agy mcp list` to check it");
+        }
         if (claude === "replace") { await run("claude", ["mcp", "remove", "-s", "user", "codeflow"]); removed = true; }
         if (claude) {
           await run("claude", ["mcp", "add-json", "-s", "user", "codeflow", JSON.stringify(entry)]);
@@ -95,6 +140,8 @@ export async function installUser(providers: Provider[], dryRun = false, options
         }
       } catch (error) {
         for (const f of written.reverse()) if (await read(f.path) === f.after) { if (f.before === undefined) await rm(f.path); else await atomic(f.path, f.before); }
+        // agy's settings go back to exactly what they were, including anything else in that file.
+        if (agyTouched && await read(paths.agyConfig).catch(() => undefined) !== agyBefore) { if (agyBefore === undefined) await rm(paths.agyConfig, { force: true }); else await atomic(paths.agyConfig, agyBefore); }
         // A failed replacement must not leave Claude without the connection that was working before.
         if (removed) {
           const stored = JSON.parse(await read(paths.claudeConfig).catch(() => undefined) ?? "{}")?.mcpServers?.codeflow;
@@ -107,12 +154,12 @@ export async function installUser(providers: Provider[], dryRun = false, options
     if (!dryRun) {
       // Recorded even when nothing had to be written, so an entry that already matches stays ours
       // (a run interrupted before saving this would otherwise leave it unowned). Hosts not set up now keep their record.
-      const edits: UserEdit[] = [...kept, ...(claude ? [{ kind: "claude-mcp" as const, owned: digest(entry) }] : []), ...files.map(f => ({ kind: f.kind, path: f.path, owned: f.owned }))];
+      const edits: UserEdit[] = [...kept, ...(claude ? [{ kind: "claude-mcp" as const, owned: digest(entry) }] : []), ...(agy ? [{ kind: "agy-mcp" as const, owned: digest(agyEntry) }] : []), ...files.map(f => ({ kind: f.kind, path: f.path, owned: f.owned }))];
       const same = (a: UserEdit, b: UserEdit) => a.kind === b.kind && ("path" in a ? "path" in b && a.path === b.path : true);
       const all = [...(prior?.edits.filter(e => !edits.some(n => same(n, e))) ?? []), ...edits];
       if (!prior || digest(prior.edits) !== digest(all)) await atomic(manifestPath, JSON.stringify({ version: 1, scope: "user", edits: all } satisfies UserManifest));
     }
-    return { dryRun, changes, connection: entry, message: "Start claude or codex inside any Git repository and ask for a Code Flow task. Code Flow works on the repository you start the CLI in; open sessions need /mcp reconnect. No agent calls were made." };
+    return { dryRun, changes, connection: entry, message: "Start claude, codex or agy inside any Git repository and ask for a Code Flow task. Code Flow works on the repository you start the CLI in; open sessions need /mcp reconnect. No agent calls were made." };
   } finally { release(); }
 }
 
@@ -129,6 +176,13 @@ export async function uninstallUser(options: { home?: string; env?: NodeJS.Proce
         if (current === undefined) continue;
         if (digest(current) !== e.owned) { preserved.push(`${paths.claudeConfig} (codeflow)`); continue; }
         await run("claude", ["mcp", "remove", "-s", "user", "codeflow"]); removed.push(`${paths.claudeConfig} (codeflow)`); continue;
+      }
+      if (e.kind === "agy-mcp") {
+        let current: unknown;
+        try { current = parseJsonc(await read(paths.agyConfig) ?? "")?.mcpServers?.codeflow; } catch { preserved.push(`${paths.agyConfig} (codeflow)`); continue; }
+        if (current === undefined) continue;
+        if (digest(agyServer(current)) !== e.owned) { preserved.push(`${paths.agyConfig} (codeflow)`); continue; }
+        await run("agy", ["mcp", "remove", "codeflow"]); removed.push(`${paths.agyConfig} (codeflow)`); continue;
       }
       const current = await read(e.path); if (current === undefined) continue;
       if (e.kind === "skill") { if (digest(current) !== e.owned) { preserved.push(e.path); continue; } await rm(e.path); await rmdir(dirname(e.path)).catch(() => undefined); removed.push(e.path); continue; }
