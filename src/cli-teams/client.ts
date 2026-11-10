@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile, rename, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer } from "node:net";
@@ -6,6 +6,8 @@ import { spawn } from "node:child_process";
 import { existsSync, mkdirSync } from "node:fs";
 import { CODEFLOW_HOME } from "../config.js";
 import { CliTeamError } from "./model.js";
+import { randomUUID } from "node:crypto";
+import { ensureStore, OWNER_PROTOCOL_VERSION, type OwnerIdentity, type OwnerStartedBy, type OwnerLifetime } from "../store-identity.js";
 import { RUNTIME_FILE, type RuntimeDescriptor } from "./transport.js";
 
 export async function runtimeRequest(runtime: RuntimeDescriptor, path: string, body: unknown, token = runtime.bootstrap): Promise<any> {
@@ -14,12 +16,31 @@ export async function runtimeRequest(runtime: RuntimeDescriptor, path: string, b
   if (!response.ok || !value.ok) throw new CliTeamError(value.error?.code ?? "runtime_unavailable", value.error?.message ?? "CLI runtime unavailable", value.error?.details);
   return value.data;
 }
-async function descriptor(): Promise<RuntimeDescriptor | undefined> {
+export type OwnerDescriptor = RuntimeDescriptor & Partial<OwnerIdentity>;
+export async function readOwnerDescriptor(home = CODEFLOW_HOME): Promise<OwnerDescriptor | undefined> {
   try {
-    const r = JSON.parse(await readFile(join(CODEFLOW_HOME, RUNTIME_FILE), "utf8"));
+    const r = JSON.parse(await readFile(join(home, RUNTIME_FILE), "utf8"));
     if (r.version !== 1 || !Number.isInteger(r.pid) || !/^http:\/\/127\.0\.0\.1:\d+$/.test(r.endpoint) || !/^[a-f0-9]{64}$/.test(r.bootstrap)) return;
     process.kill(r.pid, 0); return r;
   } catch { return; }
+}
+/** Enrich the existing transport record without changing fields used by older clients. */
+export async function publishOwnerDescriptor(runtime: RuntimeDescriptor, options: { home?: string; origin: string; startedBy?: OwnerStartedBy; lifetime?: OwnerLifetime }): Promise<RuntimeDescriptor & OwnerIdentity> {
+  const home = options.home ?? CODEFLOW_HOME, store = await ensureStore(home);
+  const descriptor = { ...runtime, storeId: store.storeId, environment: store.environment, origin: new URL(options.origin).origin,
+    protocol: OWNER_PROTOCOL_VERSION, startedBy: options.startedBy ?? ownerStartedBy(), lifetime: options.lifetime ?? ownerLifetime() };
+  const file = join(home, RUNTIME_FILE), temp = `${file}.${randomUUID()}.tmp`;
+  try { await writeFile(temp, JSON.stringify(descriptor) + "\n", { mode: 0o600, flag: "wx" }); await rename(temp, file); }
+  finally { await rm(temp, { force: true }); }
+  return descriptor;
+}
+export function ownerStartedBy(): OwnerStartedBy {
+  const value = process.env.CODEFLOW_STARTED_BY;
+  if (value === "desktop" || value === "cli" || value === "start" || value === "service") return value;
+  return process.env.CODEFLOW_CLI_HEADLESS === "1" ? "cli" : "start";
+}
+export function ownerLifetime(): OwnerLifetime {
+  return process.env.CODEFLOW_OWNER_LIFETIME === "service" || process.env.CODEFLOW_CLI_HEADLESS === "1" ? "service" : "attached";
 }
 async function startOwner() {
   const probe = createServer();
@@ -29,10 +50,10 @@ async function startOwner() {
   const js = fileURLToPath(new URL("../server.js", import.meta.url));
   const args = existsSync(js) ? [js] : ["--import", import.meta.resolve("tsx"), fileURLToPath(new URL("../server.ts", import.meta.url))];
   mkdirSync(resolve(CODEFLOW_HOME), { recursive: true });
-  const child = spawn(process.execPath, args, { detached: true, stdio: "ignore", cwd: resolve(CODEFLOW_HOME), env: { ...process.env, CODEFLOW_HOME: resolve(CODEFLOW_HOME), PORT: String(port), CODEFLOW_CLI_HEADLESS: "1" } });
+  const child = spawn(process.execPath, args, { detached: true, stdio: "ignore", cwd: resolve(CODEFLOW_HOME), env: { ...process.env, CODEFLOW_HOME: resolve(CODEFLOW_HOME), PORT: String(port), CODEFLOW_CLI_HEADLESS: "1", CODEFLOW_STARTED_BY: "cli", CODEFLOW_OWNER_LIFETIME: "service" } });
   child.unref();
   let spawnError: Error | undefined, runtime: RuntimeDescriptor | undefined; child.once("error", e => { spawnError = e; });
-  for (let i = 0; i < 200 && !runtime; i++) { await new Promise(resolve => setTimeout(resolve, 100)); runtime = await descriptor(); if (spawnError) throw spawnError; }
+  for (let i = 0; i < 200 && !runtime; i++) { await new Promise(resolve => setTimeout(resolve, 100)); runtime = await readOwnerDescriptor(); if (spawnError) throw spawnError; }
   if (!runtime) throw new Error("Code Flow could not start or the running owner has no CLI bridge. Restart the owner with this version; for a source checkout run npm run build first.");
   return runtime;
 }
@@ -55,7 +76,7 @@ const gone = (error: unknown) => unsent(error) || error instanceof TypeError && 
  */
 export async function connectRuntime(projectRoot: string, start = true, kind: "mcp" | "terminal" = "terminal") {
   const attach = async (runtime: RuntimeDescriptor) => ({ runtime, ...await runtimeRequest(runtime, "/connect", { projectRoot, kind }) as { token: string; connectionId: string } });
-  let runtime = await descriptor();
+  let runtime = await readOwnerDescriptor();
   if (!runtime && start) runtime = await startOwner();
   if (!runtime) throw new Error("No compatible Code Flow owner is running");
   let current = await attach(runtime), reconnecting: Promise<typeof current> | undefined, closed = false;
@@ -65,7 +86,7 @@ export async function connectRuntime(projectRoot: string, start = true, kind: "m
     // The same owner also answers here when only this connection expired (the computer slept).
     const deadline = Date.now() + 60_000;
     while (Date.now() < deadline) {
-      const found = await descriptor();
+      const found = await readOwnerDescriptor();
       if (found) try { return current = await attach(found); } catch (error) { if (!gone(error)) throw error; }
       await new Promise(resolve => setTimeout(resolve, 500));
     }

@@ -7,7 +7,8 @@ import { resolve, join, dirname } from "node:path";
 import { CODEFLOW_HOME } from "../config.js";
 import { getAdapter } from "../adapters/index.js";
 import { repoRoot } from "../git.js";
-import { connectRuntime } from "./client.js";
+import { ensureStore, separateStore } from "../store-identity.js";
+import { connectRuntime, readOwnerDescriptor } from "./client.js";
 import { hasProjectInstall, installUser, uninstallProject, uninstallUser } from "./install.js";
 import { serveMcp } from "./mcp.js";
 import { configureDesktop, inspectDesktop, DESKTOP_HOSTS, type DesktopHost } from "./desktop.js";
@@ -128,6 +129,23 @@ export async function launchCli(args = process.argv.slice(2)) {
     }
     console.log(json ? JSON.stringify({ file, preferences: prefs, note: "Settings are validated against the actual catalog when a proposal is created." }, null, 2) : [`Preferences: ${file}`, `Preferred provider: ${prefs.preferredProvider ?? "not set"}`, ...Object.entries(prefs.providers ?? {}).map(([provider, value]) => `${provider}: ${value.model ?? "default model"} · ${value.effort ?? "default"} effort`), "Settings are validated when preparing an approach."].join("\n")); return;
   }
+  if (command === "status" && !positional.length) {
+    // Identity never starts an owner; recent tasks are listed only when one is already running.
+    const store = await ensureStore(), owner = await readOwnerDescriptor();
+    let recent: { runs: any[] } | undefined;
+    if (owner) try {
+      const client = await connectRuntime(root, false);
+      try { recent = await client.call("codeflow_list_runs", { unfinishedOnly: args.includes("--unfinished") }); } finally { await client.close(); }
+    } catch { /* outside a repository, or the owner cannot answer: identity is still reported */ }
+    const result = { ...recent, store, path: resolve(CODEFLOW_HOME), owner: owner ? { pid: owner.pid, origin: owner.origin ?? null, startedBy: owner.startedBy ?? "unknown", lifetime: owner.lifetime ?? "unknown", protocol: owner.protocol ?? 1 } : null };
+    console.log(json ? JSON.stringify(result, null, 2) : [
+      `Store: ${store.name} (${store.storeId})`, `Store path: ${result.path}`,
+      `Environment: ${store.environment}${separateStore(store.environment) ? " · separate store" : ""}`,
+      `Owner PID: ${owner?.pid ?? "not running"}`, `Origin: ${owner?.origin ?? "unknown"}`, `Started by: ${owner?.startedBy ?? "unknown"}`, "",
+      ...(!recent ? [owner ? "Recent tasks are unavailable here." : "Recent tasks are listed while Code Flow is running."]
+        : recent.runs.length ? recent.runs.map((r: any) => `${r.task} · ${r.outcome ?? r.status}\n  codeflow status ${r.runId}`) : ["No Code Flow tasks found in this repository."]),
+    ].join("\n")); return;
+  }
   if (!CLI_COMMANDS.has(command)) throw new Error(usage);
   if (["approve", "attach", "apply"].includes(command!) && (!process.stdin.isTTY || !process.stdout.isTTY)) fail("acceptance_required", "Use your own interactive terminal; unattended approval is unavailable");
   if (command === "open" && !args[0]) throw new Error("Choose a proposal or run ID");
@@ -182,10 +200,6 @@ export async function launchCli(args = process.argv.slice(2)) {
       return;
     }
     const runId = positional[0];
-    if (command === "status" && !runId) {
-      const recent = await client.call("codeflow_list_runs", { unfinishedOnly: args.includes("--unfinished") });
-      console.log(json ? JSON.stringify(recent, null, 2) : recent.runs.length ? recent.runs.map((r: any) => `${r.task} · ${r.outcome ?? r.status}\n  codeflow status ${r.runId}`).join("\n") : "No Code Flow tasks found in this repository."); return;
-    }
     if (!runId) throw new Error("Choose a run ID");
     if (["pause", "resume", "cancel"].includes(command)) { const result = await client.call("codeflow_control_run", { operationId: `${command}-${Date.now()}`, runId, action: command }); console.log(json ? JSON.stringify(result, null, 2) : formatToolResult("codeflow_control_run", { ok: true, data: result })); return; }
     const run = await client.call("codeflow_get_run", { runId });

@@ -46,14 +46,14 @@ export async function serveMcp(projectRoot: string, explicit = true) {
     const result = await new Promise<any>((resolve, reject) => {
       const id = `codeflow-approval-${randomBytes(16).toString("hex")}`;
       const settle = (value: any) => { if (!prompts.has(id)) return; const pending = prompts.get(id)!; prompts.delete(id); clearTimeout(pending.timer); pending.resolve(value); };
-      const timer = setTimeout(() => { prompts.delete(id); reject(new CliTeamError("acceptance_cancelled", "This confirmation timed out without starting work. Check the shared task before requesting start again.")); }, 5 * 60_000);
+      const timer = setTimeout(() => { prompts.delete(id); reject(new CliTeamError("acceptance_cancelled", handoff ? "This confirmation timed out; this request did not apply the changes. Review the task before requesting apply again." : `This confirmation timed out without starting work. Check the shared task; if it has not started, request a fresh approval link or run \`codeflow open ${args.proposalId}\` in a terminal.`)); }, 5 * 60_000);
       prompts.set(id, { parent, resolve, reject, timer });
       send({ jsonrpc: "2.0", id, method: "elicitation/create", params: {
         mode: "form", message: handoff ? `Apply these task changes to your checkout?\n\n${preview.summary}\n\nAccept stages the changes (no commit or push). Decline changes nothing.` : [
           // Claude Code shows about three lines before "+N more lines": lead with the decision.
           preview.headline ?? "Start this Code Flow task?",
-          link.url ? "Accept starts it here. Or open the full plan and press Start there:" : "Accept starts it. Decline starts nothing.",
-          // Single-use sign-in link: a plain link would land on the sign-in page.
+          link.url ? "Accept starts it here. Or open the approval link, sign in if needed, and press Start:" : "Accept starts it. Decline starts nothing.",
+          // The approval link never signs anyone in; an owner session is required.
           link.url ?? `Details: run \`codeflow open ${args.proposalId}\` in a terminal`,
           "", preview.card ?? preview.preview,
           "", "Decline starts nothing.",

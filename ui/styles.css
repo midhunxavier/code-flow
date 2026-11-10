@@ -409,6 +409,12 @@
   /* Commands: a quiet bordered button, a search glass and the shortcut drawn as a key */
   .topbar .command-btn { height: 30px; padding: 0 5px 0 9px; gap: 8px; margin: 0 2px; border-color: var(--border); color: var(--muted); }
   .topbar .command-btn .icon { width: 14px; height: 14px; }
+  /* which store this window shows: shrinks before it can cover its neighbours, and is an icon in a narrow bar */
+  .store-indicator { position: relative; flex: 0 1 auto; min-width: 30px; max-width: 28vw; }
+  .store-btn { width: 100%; height: 30px; padding: 0 8px; gap: 6px; justify-content: flex-start; overflow: hidden; }
+  .store-btn .icon { flex: none; width: 14px; height: 14px; }
+  .store-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; line-height: 1.4; }
+  .store-panel { position: absolute; right: 0; top: 100%; z-index: 20; width: min(400px, 80vw); padding: 12px; font-size: 12px; overflow-wrap: anywhere; background: var(--raised); border: 1px solid var(--border-strong); border-radius: var(--radius-sm); box-shadow: var(--shadow); }
   .command-btn .kbd-key { min-width: 0; padding: 0 5px; font: 500 11px/18px var(--sans); color: var(--muted); background: var(--sunken); border: 1px solid var(--border); border-radius: 4px; box-shadow: none; }
   .command-btn:hover .kbd-key { color: var(--text-2); }
 
@@ -427,6 +433,10 @@
     .topbar .host-switcher { min-width: 0; max-width: 110px; }
     .topbar .host-switcher > .icon-btn { max-width: 100%; }
     .topbar .crumbs-bar { overflow: hidden; }
+    .store-indicator { position: static; flex: none; }
+    .store-btn { width: 30px; padding: 0; justify-content: center; }
+    .store-label { display: none; }
+    .store-panel { right: 8px; max-width: calc(100% - 16px); }
   }
   @container main (max-width: 320px) {
     .topbar .host-switcher { max-width: 82px; }

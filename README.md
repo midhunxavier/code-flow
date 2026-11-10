@@ -61,7 +61,7 @@ Open [localhost:4317](http://localhost:4317), or use the owner link printed in t
 
 Each chat can contain multiple independently approved tasks. Agent/Team and model changes apply to future messages; accepted executions retain their reviewed settings. **Task details** shows participation receipts, allowances, preserved worktrees and history. No preset or saved agent team is needed.
 
-Changes live in separate Git worktrees. The [chat guide](docs/conversational-tasks.md) explains guidance, queued messages, source handoffs and recovery. **Existing workflows** retains the workflow composer and its saved drafts, including remote, template and automation workflows.
+Changes live in separate Git worktrees. The [chat guide](docs/conversational-tasks.md) explains guidance, queued messages, chat context import and recovery. **Existing workflows** retains the workflow composer and its saved drafts, including remote, template and automation workflows.
 
 Prefer working in your Claude Code or Codex CLI conversation? The experimental [conversational teams integration](docs/cli-conversational-teams.md) creates a task-specific team and process through a project MCP connection. Run `codeflow init` in your target repository using an installed launcher; no preset or saved-team setup is required. Existing web workflows remain available.
 

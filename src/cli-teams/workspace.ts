@@ -1,4 +1,3 @@
-import { basename } from "node:path";
 import type { Projects } from "../projects.js";
 import type { TaskConversations } from "../conversational/service.js";
 import type { Conversations } from "../conversational/chats.js";
@@ -20,9 +19,10 @@ export function connectCliWorkspace(core: CliTeamsService, tasks: TaskConversati
         if (context.projectId && context.projectId !== chat.project) fail("scope_denied", "Chat belongs to another project");
         return { ...chat, taskId: proposalId };
       }
-      let project = context.projectId ? projects.get(context.projectId) : projects.forRepo(repo);
-      if (context.projectId && !project?.repos.includes(repo)) fail("scope_denied", "Choose a project containing this repository");
-      project ??= await projects.create({ name: basename(repo), repos: [repo] });
+      const project = await projects.resolveRepo(repo, context.projectId).catch((err) => {
+        if (context.projectId && err instanceof Error && err.message === "Choose a project containing this repository") fail("scope_denied", err.message);
+        throw err;
+      });
       return { project: project.id, taskId: proposalId, chatId: digest(["cli-chat", proposalId]).slice(0, 32) };
     },
     async sync(proposal, event) {

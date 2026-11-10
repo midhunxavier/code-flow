@@ -18,7 +18,7 @@ function launchArguments({ workspace, port, image, id }) {
     '--publish', `127.0.0.1:${port}:${port}`, '--env', `PORT=${Number(port)}`,
     '--mount', `type=bind,source=${workspace},target=/workspace`,
     '--mount', `type=volume,source=codeflow-desktop-home-${id}-${identity(workspace)},target=/home/node`,
-    '--env', 'CODEFLOW_TOKEN', image];
+    '--env', 'CODEFLOW_STARTED_BY=desktop', '--env', `CODEFLOW_DOCKER_ID=${id}/${identity(workspace)}`, '--env', 'CODEFLOW_TOKEN', image];
 }
 
 class DockerBackend extends EventEmitter {

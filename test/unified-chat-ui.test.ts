@@ -623,7 +623,7 @@ test("CLI workspace: real MCP proposal opens an authenticated chat, browser appr
         await p.reload(); await p.getByRole("button", { name: "Start planning", exact: true }).waitFor();
         const native = await call("start_run", { operationId: "native-start-ui", proposalId: next.proposalId, expectedRevision: next.revision, proposalHash: next.proposalHash });
         assert.equal(elicited, 1);
-        assert.match(approvalMessage, /^Plan only, no file changes · .* · up to \d+ calls?, \d+ min\nAccept starts it here\. Or open the full plan and press Start there:\nhttp:\/\/localhost:\d+\/cli-workspace\/[a-f0-9]{32}\n\nTask: [\s\S]*\n\nDecline starts nothing\.$/);
+        assert.match(approvalMessage, /^Plan only, no file changes · .* · up to \d+ calls?, \d+ min\nAccept starts it here\. Or open the approval link, sign in if needed, and press Start:\nhttp:\/\/localhost:\d+\/cli-workspace\/[a-f0-9]{32}\n\nTask: [\s\S]*\n\nDecline starts nothing\.$/);
         await until(() => api(`/api/chats/${proposal.workspace.chatId}`), s => s.tasks[1]?.execution?.outcome === "agreed_plan", "native-approved run visible in browser");
         const status = await call("get_run", { runId: native.runId }); assert.equal(status.workspace.chatId, proposal.workspace.chatId);
         assert.equal(status.conversation.latestProposal.runId, native.runId);

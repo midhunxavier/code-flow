@@ -74,7 +74,7 @@ An accepted task keeps its scope, settings and allowance. Changing the chat's mo
 
 Tracked working-copy changes, including staged additions/deletions, are included by default without changing your index. In a new chat, **+ → Project and source** can select committed code instead or explicitly include non-ignored new files. Fresh Git repositories are supported without creating a commit on the main branch.
 
-Completed tasks in the same chat can pass their preserved implementation to later tasks. References from another chat/project cannot authorize that handoff. Interrupted or uncertain writes require inspection before continuation.
+Completed tasks in the same chat can pass their preserved implementation to later tasks. References from another chat/project cannot authorize that continuation. Interrupted or uncertain writes require inspection before continuation.
 
 Attach up to ten files, 1 MB each and 4 MB total. Files stay available across modes. **Chat files** removes a file from future context; accepted tasks keep their pinned copies. Draft file bytes use browser storage; submitted files are stored privately with content hashes. Credential filenames and invalid paths are rejected. Storage failures are visible, and an unrestored draft attachment blocks Send until restored or removed.
 

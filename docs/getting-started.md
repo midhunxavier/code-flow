@@ -85,7 +85,7 @@ Both modes use http://localhost:4318 and `.codeflow-dev` as their home directory
 4. Review the proposed approach. **Adjust approach** changes models, efforts, commands and limits without another inference call. **Start task** approves and starts that exact revision once.
 5. Follow progress and ask questions in the same chat. Completed plans, implementations and later tasks remain in order. Inspect evidence and changes before applying or publishing them.
 
-The composer remains visible while you read. Enter sends; Shift + Enter adds a line. Messages sent while a turn runs queue with their selected settings. Files and unsent drafts survive reload. Mode changes affect future work, and accepted Team tasks keep their original scope and settings. See the [chat guide](conversational-tasks.md) for source selection, handoffs, allowances and recovery.
+The composer remains visible while you read. Enter sends; Shift + Enter adds a line. Messages sent while a turn runs queue with their selected settings. Files and unsent drafts survive reload. Mode changes affect future work, and accepted Team tasks keep their original scope and settings. See the [chat guide](conversational-tasks.md) for source selection, chat context import, allowances and recovery.
 
 Initial Team preparation supports local Git repositories with Claude/Codex managed participants. Other providers remain available in Agent mode; remote and container execution use **Existing workflows**.
 
