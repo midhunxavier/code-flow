@@ -12,6 +12,13 @@ const quoteUnit = (value, command = false) => {
   if (/[\x00-\x1f\x7f]/.test(value)) throw new Error('The service path contains unsupported control characters');
   return '"' + value.replaceAll('\\', '\\\\').replaceAll('"', '\\"').replaceAll('%', '%%').replaceAll('$', () => command ? '$$' : '$') + '"';
 };
+// systemd reads WorkingDirectory= as a bare path: it expands % specifiers but does not unquote,
+// so a quoted value is rejected as "not absolute" and the unit never loads.
+const pathUnit = (value) => {
+  if (/[\x00-\x1f\x7f]/.test(value)) throw new Error('The service path contains unsupported control characters');
+  if (!value.startsWith('/') || value !== value.trim()) throw new Error('The service path must be absolute without surrounding spaces');
+  return value.replaceAll('%', '%%');
+};
 export function serviceUnit(root, node, path) {
   return `${marker}
 [Unit]
@@ -21,7 +28,7 @@ StartLimitIntervalSec=0
 [Service]
 Type=simple
 ExecStart=${quoteUnit(node, true)} ${quoteUnit(join(root, 'service-bootstrap.mjs'), true)} --team-server --service
-WorkingDirectory=${quoteUnit(root)}
+WorkingDirectory=${pathUnit(root)}
 Environment=${quoteUnit('PATH=' + path)}
 Restart=on-failure
 RestartSec=10s
