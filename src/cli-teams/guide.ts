@@ -15,6 +15,7 @@ const body = async () => (await text("SKILL.md")).replace(/^---\r?\n[\s\S]*?\r?\
 export async function startupInstructions(projectRoot: string, nativeForm: boolean) {
   return [
     `This connection is bound exclusively to repository ${JSON.stringify(projectRoot)}. Show this repository when proposing work; never assume it is the current chat's working directory. Tools cannot switch repositories.`,
+    "Surfaces share state only when they use the same Code Flow store; WSL and Docker may use separate stores. Chat context import, apply to checkout, team handover, and open in browser link are distinct operations.",
     nativeForm ? "Call codeflow_start_run to show native approval in this session." : "This host has no form elicitation; use the Code Flow workspace or terminal confirmation returned by codeflow_propose_run.",
     "",
     (await text("CORE.md")).trim(),

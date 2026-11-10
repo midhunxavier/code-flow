@@ -2,7 +2,7 @@
 
 The conversational CLI integration builds a team and process from your task. You can choose Claude Code, Codex, individual models, and supported effort values in the same instruction. Existing web workflows and saved web teams are unchanged.
 
-This integration is experimental. Automated tests exercise the project installer, public MCP protocol, worktrees, checks, agreement loops, host participation, and recovery with fixture providers. The current surface has fourteen tools, including exact diff preview and checkout handoff. Native-host compatibility and real-provider evidence are recorded separately in the QA reports; fixture checks do not certify model behavior or every CLI version.
+This integration is experimental. Automated tests exercise the project installer, public MCP protocol, worktrees, checks, agreement loops, host participation, and recovery with fixture providers. The current surface has fourteen tools, including exact diff preview and apply to checkout. Native-host compatibility and real-provider evidence are recorded separately in the QA reports; fixture checks do not certify model behavior or every CLI version.
 
 For Claude Desktop and the Codex app, use the [desktop MCP setup](desktop-mcp.md). It reuses this bridge and supplies the workflow instructions without requiring project skill discovery.
 
@@ -162,7 +162,7 @@ Approve in either surface, then watch recorded agent participation, checks, revi
 
 Only Code Flow task data is synchronized. Ordinary messages or work outside Code Flow in the native CLI are not mirrored. Managed workers can continue when the CLI closes; assignments bound to that CLI show **Waiting for CLI** until the host returns. Reopening the browser does not take over that assignment.
 
-The browser is opened only on explicit request. Opening uses a short-lived, one-use local handoff; stable task links and MCP responses contain no login token. In SSH/headless environments, Code Flow returns the stable link instead. Forward the runtime's port to your computer and sign in to that owner before opening it. Full MCP Apps rendering inside hosts is not part of this integration.
+The browser is opened only on explicit request. The open in browser link uses a short-lived, one-use local ticket; stable task links and MCP responses contain no login token. In SSH/headless environments, Code Flow returns the stable link instead. Forward the runtime's port to your computer and sign in to that owner before opening it. Full MCP Apps rendering inside hosts is not part of this integration.
 
 After upgrading, rebuild/restart the Code Flow owner once existing work has settled, rerun `codeflow init` to refresh the installed skill, and reconnect the MCP session. Existing saved workflows and historical runs remain available.
 

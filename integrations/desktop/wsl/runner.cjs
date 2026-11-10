@@ -44,7 +44,7 @@ async function main() {
   await stopPrevious('SIGTERM', true);
   await writeFile(recordFile, JSON.stringify({ pid: process.pid, runner: __filename }), { mode: 0o600 });
   const child = fork(join(__dirname, 'backend/src/server.js'), [], { cwd: homedir(), detached: true,
-    env: { ...process.env, PATH: config.path, PORT: String(config.port), CODEFLOW_HOME: join(state, 'state'), CODEFLOW_TOKEN: config.token, CODEFLOW_LAUNCHER: '1', CODEFLOW_DESKTOP_CONTAINER: '' },
+    env: { ...process.env, PATH: config.path, PORT: String(config.port), CODEFLOW_HOME: join(state, 'state'), CODEFLOW_TOKEN: config.token, CODEFLOW_LAUNCHER: '1', CODEFLOW_STARTED_BY: 'desktop', CODEFLOW_DESKTOP_CONTAINER: '' },
     stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
   for (const stream of [child.stdout, child.stderr]) createInterface({ input: stream }).on('line', line => process.stderr.write(line.replaceAll(config.token, '[redacted]').replace(/([?&]token=)[^\s]+/g, '$1[redacted]') + '\n'));
   child.on('message', message => {

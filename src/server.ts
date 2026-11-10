@@ -1,3 +1,5 @@
+import { ensureStore, OWNER_PROTOCOL_VERSION } from "./store-identity.js";
+import { publishOwnerDescriptor, ownerStartedBy, ownerLifetime } from "./cli-teams/client.js";
 import { connectCliWorkspace } from "./cli-teams/workspace.js";
 import { WorkspaceHandoffs, openWorkspaceBrowser } from "./cli-teams/browser.js";
 import { assertChatSubscriptions } from "./conversational/stream-access.js";
@@ -156,8 +158,9 @@ const releaseLock = await acquireLock().catch((err: Error) => {
   console.error(err.message);
   process.exit(1);
 });
-const reviewThreads = new GithubReviewThreads();
 process.once("exit", releaseLock);
+const storeIdentity = await ensureStore();
+const reviewThreads = new GithubReviewThreads();
 
 // A stray rejection or throw must not take every live run down with it: log it and keep
 // serving. A burst of uncaught exceptions means state is likely broken, so then stop cleanly
@@ -1739,6 +1742,13 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
   }
   if (via === "lan" && !phoneControl()) throw new HttpError(404, "Not found");
   if (!owner) throw Object.assign(new HttpError(401, "Not signed in: use the owner link or sign in to shared projects"), { signIn: true });
+  if (parts.join("/") === "api/store" && req.method === "GET") {
+    const address = server.address();
+    return send(res, 200, { store: storeIdentity, path: resolvePath(CODEFLOW_HOME), owner: {
+      pid: process.pid, origin: `http://localhost:${address && typeof address !== "string" ? address.port : PORT}`,
+      startedBy: ownerStartedBy(), lifetime: ownerLifetime(), protocol: OWNER_PROTOCOL_VERSION,
+    } });
+  }
   if (parts.join("/") === "api/ssh-context" && req.method === "GET") return send(res, 200, { kind: process.env.CODEFLOW_SSH_HOST ? "host" : "local", connections: via === "local" && !!sshProjects });
   if (process.env.CODEFLOW_TEAM_HOST && parts.join("/") === "api/team-host-runtime" && req.method === "GET") return send(res, 200, { instance: process.env.CODEFLOW_TEAM_HOST });
   if (process.env.CODEFLOW_SSH_HOST && parts.join("/") === "api/ssh-runtime" && req.method === "GET") return send(res, 200, { instance: process.env.CODEFLOW_SSH_HOST });
@@ -3097,6 +3107,9 @@ const cliTransport = cliReady ? await startCliTeamsTransport(cliTeams, () => !st
 const stopChatWatch = taskConversationsReady ? conversations.watch() : async () => {};
 if (!fileAccess.hasRestrictions()) startPolicyBackground();
 const server = createServer({ maxHeaderSize: MAX_HEADER_SIZE }, listener("local")).listen(PORT, HOST, async () => {
+  const address = server.address();
+  const ownerOrigin = `http://localhost:${address && typeof address !== "string" ? address.port : PORT}`;
+  if (cliTransport) await publishOwnerDescriptor(cliTransport.descriptor, { origin: ownerOrigin });
   const agents = fileAccess.hasRestrictions() ? [] : await trackPolicyPreparation(() => agentAvailability());
   const runs = manager.list();
   console.log(`code-flow running at http://localhost:${PORT}  (${runs.length} runs loaded from ${CODEFLOW_HOME})`);
@@ -3104,7 +3117,7 @@ const server = createServer({ maxHeaderSize: MAX_HEADER_SIZE }, listener("local"
   // The installed launcher opens the owner link only after this listener is ready.
   // Send it over a private parent/child channel; never persist the session token.
   if (process.env.CODEFLOW_LAUNCHER === "1" && process.connected)
-    process.send?.({ type: "codeflow-ready", url: `http://localhost:${PORT}/?token=${auth.token}` });
+    process.send?.({ type: "codeflow-ready", store: storeIdentity, url: `http://localhost:${PORT}/?token=${auth.token}` });
   for (const a of agents) console.log(`  ${a.available ? "✓" : "✗"} ${a.displayName} (${a.binary})`);
   const gitHealth = await checkGit();
   if (!gitHealth.ok) {

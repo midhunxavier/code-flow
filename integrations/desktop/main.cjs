@@ -16,6 +16,7 @@ const node = join(__dirname, 'node/bin/node');
 const home = process.env.CODEFLOW_HOME || join(homedir(), '.codeflow');
 const dockerDesktop = process.env.CODEFLOW_DESKTOP_DOCKER === '1';
 const wslDesktop = process.platform === 'win32' && !dockerDesktop;
+let storeTitle = "Code Flow";
 let backend, window, startingWindow, startupAbort, tray, origin, ownerURL, updates, quitting = false, exitApproved = false, checkingQuit = false, ready;
 const token = process.env.CODEFLOW_TOKEN || randomBytes(32).toString('hex');
 const freePort = () => new Promise((resolve, reject) => {
@@ -41,9 +42,10 @@ async function createWindow() {
       bounds = { width: Math.max(800, Math.min(saved.width, area.width)), height: Math.max(600, Math.min(saved.height, area.height)) };
     }
   } catch {}
-  window = new BrowserWindow({ ...bounds, minWidth: 800, minHeight: 600, title: 'Code Flow', show: false, backgroundColor: '#181914',
+  window = new BrowserWindow({ ...bounds, minWidth: 800, minHeight: 600, title: storeTitle, show: false, backgroundColor: '#181914',
     webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true, webviewTag: false, safeDialogs: true, spellcheck: true,
       preload: join(__dirname, 'preload.cjs'), additionalArguments: [`--codeflow-origin=${origin}`] } });
+  window.on('page-title-updated', event => { event.preventDefault(); window.setTitle(storeTitle); });
   window.webContents.session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
   window.webContents.session.setPermissionCheckHandler(() => false);
   window.webContents.setWindowOpenHandler(({ url }) => { external(url); return { action: 'deny' }; });
@@ -88,7 +90,7 @@ async function startBackend() {
     const path = await loginPath();
     if (quitting) return;
     backend = fork(join(runtime, 'src/server.js'), [], { execPath: node, cwd: runtime,
-      env: { ...process.env, PATH: path, PORT: String(port), HOST: '127.0.0.1', CODEFLOW_HOME: home, CODEFLOW_TOKEN: token, CODEFLOW_LAUNCHER: '1' },
+      env: { ...process.env, PATH: path, PORT: String(port), HOST: '127.0.0.1', CODEFLOW_HOME: home, CODEFLOW_TOKEN: token, CODEFLOW_LAUNCHER: '1', CODEFLOW_STARTED_BY: 'desktop' },
       stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
   }
   let diagnostics = '';
@@ -116,6 +118,18 @@ async function startBackend() {
           }
           if (!reachable) throw new Error('The local service is not reachable. Check that WSL localhost forwarding is enabled, then reopen Code Flow.');
         } catch (error) { clearTimeout(timer); reject(error); return; }
+      }
+      if (!message.store) {
+        try {
+          const response = await fetch(`${origin}/api/store`, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(5000) });
+          if (response.ok) message.store = (await response.json()).store;
+        } catch {}
+      }
+      if (message.store && typeof message.store.name === 'string' && typeof message.store.environment === 'string') {
+        const store = message.store;
+        storeTitle = `Code Flow · ${store.name} · ${store.environment}${/^(wsl|docker):/.test(store.environment) ? ' · separate store' : ''}`;
+        tray?.setToolTip(storeTitle);
+        if (window && !window.isDestroyed()) window.setTitle(storeTitle);
       }
       ownerURL = message.url; diagnostics = ''; clearTimeout(timer); resolve();
     });
@@ -158,7 +172,7 @@ async function agentSetup() {
 function setupTray() {
   if (process.platform !== 'win32') return;
   tray = new Tray(join(__dirname, 'icon.png'));
-  tray.setToolTip('Code Flow');
+  tray.setToolTip(storeTitle);
   tray.on('double-click', () => { void ready?.then(createWindow); });
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: 'Show Code Flow', click: () => { void ready?.then(createWindow); } },

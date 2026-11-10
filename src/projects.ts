@@ -1,9 +1,9 @@
 import { randomBytes } from "node:crypto";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, realpath, rename, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import type { AgentSettings } from "./adapters/types.js";
 import { CODEFLOW_HOME } from "./config.js";
-import { repoRoot } from "./git.js";
+import { git, repoRoot } from "./git.js";
 import { logError } from "./log.js";
 
 /**
@@ -36,6 +36,8 @@ export interface Project {
   /** Metadata revision. Older project files begin at zero. */
   revision?: number;
   defaults?: ProjectDefaults;
+  /** Canonical repositories for which this project is the default. */
+  defaultRepos?: string[];
 }
 
 export interface ProjectsStatus {
@@ -166,6 +168,28 @@ export class Projects {
   forRepo(repo: string): Project | undefined {
     const p = (this.committedWhileWriting ?? this.projects).find((x) => x.repos.includes(repo));
     return p && copy(p);
+  }
+
+  /** Resolve and persist a repository's default atomically, including linked worktrees. */
+  resolveRepo(path: string, requested?: string): Promise<Project> {
+    return this.change(async () => {
+      const repo = await canonicalRepo(path);
+      const matches: Project[] = [];
+      for (const project of this.projects) {
+        for (const member of project.repos) {
+          if (await canonicalRepo(member).catch(() => undefined) === repo) { matches.push(project); break; }
+        }
+      }
+      if (requested) {
+        const project = matches.find(p => p.id === requested);
+        if (!project) throw new Error("Choose a project containing this repository");
+        return copy(project);
+      }
+      const order = (a: Project, b: Project) => a.createdAt - b.createdAt || a.id.localeCompare(b.id);
+      const project = matches.filter(p => p.defaultRepos?.includes(repo)).sort(order)[0] ?? matches.sort(order)[0] ?? this.add(repo);
+      if (!project.defaultRepos?.includes(repo)) project.defaultRepos = [...(project.defaultRepos ?? []), repo];
+      return copy(project);
+    });
   }
 
   create(input: { name: unknown; repos?: unknown[] }): Promise<Project> {
@@ -325,6 +349,18 @@ export class Projects {
     if (this.projects.some((p) => p.id !== self && p.name.toLowerCase() === name.toLowerCase())) throw new Error(`There's already a project called “${name}”`);
     return name;
   }
+}
+
+async function canonicalRepo(path: string): Promise<string> {
+  const root = await realpath(await repoRoot(await realpath(path)));
+  const common = await git(["rev-parse", "--path-format=absolute", "--git-common-dir"], root);
+  if (common.code !== 0) throw new Error(`${path} isn't a git repository`);
+  const commonDir = await realpath(common.stdout.trim());
+  // Git's first worktree is the main checkout, including when the git dir is external.
+  const worktrees = await git(["worktree", "list", "--porcelain"], root);
+  const main = worktrees.code === 0 ? worktrees.stdout.match(/^worktree (.+)$/m)?.[1] : undefined;
+  if (main) return realpath(main);
+  return basename(commonDir) === ".git" ? dirname(commonDir) : root;
 }
 
 /** Repository roots for a project; repos it already has are kept as they are (even if moved since). */

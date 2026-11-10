@@ -7,7 +7,8 @@ import { resolve, join, dirname } from "node:path";
 import { CODEFLOW_HOME } from "../config.js";
 import { getAdapter } from "../adapters/index.js";
 import { repoRoot } from "../git.js";
-import { connectRuntime } from "./client.js";
+import { ensureStore, separateStore } from "../store-identity.js";
+import { connectRuntime, readOwnerDescriptor } from "./client.js";
 import { hasProjectInstall, installUser, uninstallProject, uninstallUser } from "./install.js";
 import { serveMcp } from "./mcp.js";
 import { configureDesktop, inspectDesktop, DESKTOP_HOSTS, type DesktopHost } from "./desktop.js";
@@ -125,6 +126,15 @@ export async function launchCli(args = process.argv.slice(2)) {
       await writeFile(temp, JSON.stringify({ schemaVersion: 1, preferences: prefs }, null, 2) + "\n", { mode: 0o600, flag: "wx" }); await rename(temp, file);
     }
     console.log(json ? JSON.stringify({ file, preferences: prefs, note: "Settings are validated against the actual catalog when a proposal is created." }, null, 2) : [`Preferences: ${file}`, `Preferred provider: ${prefs.preferredProvider ?? "not set"}`, ...Object.entries(prefs.providers ?? {}).map(([provider, value]) => `${provider}: ${value.model ?? "default model"} · ${value.effort ?? "default"} effort`), "Settings are validated when preparing an approach."].join("\n")); return;
+  }
+  if (command === "status" && !positional.length) {
+    const store = await ensureStore(), owner = await readOwnerDescriptor();
+    const result = { store, path: resolve(CODEFLOW_HOME), owner: owner ? { pid: owner.pid, origin: owner.origin ?? null, startedBy: owner.startedBy ?? "unknown", lifetime: owner.lifetime ?? "unknown", protocol: owner.protocol ?? 1 } : null };
+    console.log(json ? JSON.stringify(result, null, 2) : [
+      `Store: ${store.name} (${store.storeId})`, `Store path: ${result.path}`,
+      `Environment: ${store.environment}${separateStore(store.environment) ? " · separate store" : ""}`,
+      `Owner PID: ${owner?.pid ?? "not running"}`, `Origin: ${owner?.origin ?? "unknown"}`, `Started by: ${owner?.startedBy ?? "unknown"}`,
+    ].join("\n")); return;
   }
   if (!CLI_COMMANDS.has(command)) throw new Error(usage);
   if (["approve", "attach", "apply"].includes(command!) && (!process.stdin.isTTY || !process.stdout.isTTY)) fail("acceptance_required", "Use your own interactive terminal; unattended approval is unavailable");
