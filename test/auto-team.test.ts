@@ -800,3 +800,39 @@ test("Auto team accepts host-observed browser effects without source edits and s
     await agentToolBridge.close(); await new Promise<void>(resolve => server.close(() => resolve()));
   }
 });
+
+test("a task that breaks the check while teammates are still working is not merged, and they are not blamed for it", async () => {
+  const release = join(home, "gate-release");
+  process.env.FAKE_AUTO_SLOW_RELEASE = release;
+  const safety = setTimeout(() => writeFileSync(release, "release"), 25000);
+  let item: Awaited<ReturnType<typeof start>> | undefined;
+  try {
+    // Only alpha's file fails this check.
+    item = await start("AUTO-EVENT Implement the sample", { options: { maxWaves: 1, maxRepairs: 0 }, loop: { check: `node -e "process.exit(require('fs').existsSync('claude-alpha.txt')?1:0)"`, maxSteps: 20 } });
+    const { run, manager } = item;
+    assert.equal(run.options.checkBeforeIntegration, true, "new team runs check a task before it joins the shared result");
+    await waitFor(run, manager, () => run.team?.tasks.find((task) => task.id === "alpha")?.status === "failed" || run.status !== "running");
+    const integration = run.worktrees.find((tree) => tree.name === "integration")!;
+    const files = () => execFileSync("git", ["ls-tree", "--name-only", integration.branch], { cwd: run.repo }).toString();
+    assert.match(run.team!.tasks.find((task) => task.id === "alpha")!.error!, /not merged/);
+    assert.ok(!files().includes("claude-alpha.txt"), "the shared result never held the failing change");
+    assert.ok(!run.steps.some((step) => step.title === "Check after alpha"), "nothing was merged, so the shared result was not checked for it");
+    assert.ok(readdirSync(run.worktrees.find((tree) => tree.name === "auto-alpha")!.path).includes("claude-alpha.txt"), "the task keeps its work for a retry");
+    writeFileSync(release, "release");
+    await waitFor(run, manager, () => run.status !== "running");
+    const slow = run.team!.tasks.find((task) => task.id === "slow")!;
+    assert.ok(["submitted", "completed"].includes(slow.status!), `${slow.status}: ${slow.error}`);
+    assert.ok(files().includes("claude-slow.txt") && !files().includes("claude-alpha.txt"));
+    assert.equal(run.lastCheck?.ok, true, "the final check judges the shared result, which the failing task never reached");
+  } finally {
+    clearTimeout(safety); writeFileSync(release, "release"); delete process.env.FAKE_AUTO_SLOW_RELEASE;
+    if (item?.run.status === "running") await item.manager.shutdown();
+  }
+});
+
+test("a saved team run without the option keeps checking after each merge", async () => {
+  const { run } = await finish("AUTO-EVENT Implement the sample", { options: { checkBeforeIntegration: false } });
+  assert.equal(run.status, "done", run.error);
+  assert.ok(run.steps.some((step) => step.title === "Check after alpha"));
+  assert.ok(!run.steps.some((step) => / before integration$/.test(step.title)));
+});

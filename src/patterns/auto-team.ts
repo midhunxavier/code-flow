@@ -92,6 +92,8 @@ export const autoTeamPattern: Pattern = {
     // Old saved runs have no option and retain their deterministic wave history.
     const discovery = ctx.run.projectTeam?.phase === "discovery";
     const eventDriven = ctx.option("eventDriven", false);
+    // Stamped on new runs only: a saved run replays the integration order it recorded.
+    const checkFirst = ctx.option("checkBeforeIntegration", false);
     const selected = ctx.run.teamTemplate;
     const catalog = [...(ctx.run.templateCatalog ?? [])];
     if (selected && !selected.template.workflow && !catalog.some(t => t.id === selected.template.id && t.version === selected.template.version)) catalog.push(selected.template);
@@ -552,16 +554,40 @@ export const autoTeamPattern: Pattern = {
           teamFindingRefs.set(task.id, findingRefs);
           projectFindings.set(task.id, value.findings.map((f) => ({ title: f.title, body: f.body, paths: f.paths, evidenceRefs: [result.stepId, ...f.evidence], derivedFrom: memoryRefs })));
           if (changed.length) {
+            // While other work is still in flight, a merge that breaks the shared result would fail
+            // every later task's check and be blamed on them. Such a task is first brought up to
+            // the shared result in its own workspace and checked there: only a passing task joins
+            // it, and a failing one keeps its work for a retry. The last task standing is checked
+            // on the shared result itself, which the final check then reuses.
+            const gated = checkFirst && await ctx.remember("team-gate", `${task.id}:${task.attempts}`, async () => state.tasks.some((other) => other.id !== task.id && other.status !== "submitted" && other.status !== "completed"));
+            if (gated) {
+              const current = await ctx.merge(wt, await ctx.head(integration));
+              if (!current.ok) {
+                const fix = await teamAsk({ ...callFields(member), taskId: task.id, identity: `task:${task.id}:attempt:${task.attempts}:update`, title: `Update ${task.title} to the shared result`, mode: "write", cwd: wt,
+                  prompt: memberPrompt(member, "write") + section("User goal", userGoal()) + section("Shared contracts", json(state.contracts)) + `Teammates' accepted work was merged into your workspace and conflicts with yours in: ${current.conflicts.join(", ")}. Resolve every conflict, preserving both your task's intent and the accepted work. Do not abort or commit the merge.` });
+                rememberSession(member, wt, fix);
+                await ctx.drainTeamCommands(state, `task:${task.id}:attempt:${task.attempts}:update:after-turn`);
+                if (await hasConflictMarkers(await ctx.gitAt(wt))) throw new Error(`Conflict markers remain after updating ${task.id} to the shared result`);
+                await ctx.commit(wt, `Auto team: update ${task.id} to the shared result`);
+              }
+              const own = await ctx.check(wt, `Check ${task.id} before integration`);
+              if (own && !own.ok) {
+                task.status = "failed";
+                task.error = "This task failed the configured check in its own workspace, so it was not merged. The shared result is unchanged and the task's work is kept for a retry.\n" + checkEvidence(ctx, own, 3_000);
+              }
+            }
+            if (task.status === "submitted") {
             await integrateBranch(ctx, integration, wt.branch, async (conflicts) => {
               const fix = await teamAsk({ ...callFields(member), taskId: task.id, identity: `task:${task.id}:integrate`, title: `Integrate ${task.title}`, mode: "write", cwd: integration,
                 prompt: memberPrompt(member, "write") + section("User goal", userGoal()) + section("Shared contracts", json(state.contracts)) + `Resolve every conflict merging ${wt.branch}: ${conflicts.join(", ")}. Preserve both accepted tasks' intent. Do not abort or commit the merge.` });
               rememberSession(member, integration, fix);
               await ctx.drainTeamCommands(state, `task:${task.id}:integrate:after-turn`);
             }, `Auto team: integrate ${task.id}`);
-            const check = await ctx.check(integration, `Check after ${task.id}`);
+            const check = gated ? null : await ctx.check(integration, `Check after ${task.id}`);
             if (check && !check.ok) {
               task.status = "failed";
               task.error = "Integrated artifact failed the configured check; downstream work is blocked until repaired.\n" + checkEvidence(ctx, check, 3_000);
+            }
             }
           }
           task.head = await ctx.head(integration);

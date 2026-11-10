@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -202,5 +202,44 @@ for (const checkCase of ["profile", "changed-files"] as const) test(`resolved ch
     assert.equal(turn.state, "applied"); assert.equal(turn.resolutionCheck!.ok, false); assert.equal(parent.lastCheck!.ok, false); assert.equal(parent.verification, undefined);
     if (checkCase === "profile") { assert.match(turn.resolutionCheck!.output, /primary passed/); assert.match(turn.resolutionCheck!.output, /secondary failed/); assert.equal(readFileSync(join(parent.worktrees[0]!.path, "result.txt"), "utf8"), "combined\n"); }
     else assert.match(turn.resolutionCheck!.output, /changed during verification/);
+  } finally { await manager.shutdown(); }
+});
+
+test("a finished team's checkouts go once its result is applied; branches and unsaved work stay, and the next team starts from the result", { timeout: 60000 }, async () => {
+  const repo = repository(); let turnNo = 0;
+  const team = { ...findPattern("auto-team")!, run: async (ctx: import("../src/engine.js").TeamContext) => {
+    const n = ++turnNo;
+    const integration = await ctx.worktree("integration");
+    if (n === 2) assert.equal(readFileSync(join(integration.path, "one.txt"), "utf8"), "Team 1\n", "the second team builds on the first team's applied result");
+    const task = await ctx.worktree("auto-task");
+    writeFileSync(join(task.path, n === 1 ? "one.txt" : "two.txt"), `Team ${n}\n`); await ctx.commit(task, `Team ${n} task`);
+    assert.equal((await ctx.merge(integration, task.branch)).ok, true);
+    if (n === 1) writeFileSync(join((await ctx.worktree("auto-draft")).path, "unsaved.txt"), "Not committed\n");
+    return "The implementation is complete; no automated check was run.";
+  } };
+  const manager = new RunManager(id => id === "auto-team" ? team : findPattern(id));
+  try {
+    const run = await manager.start({ pattern: findPattern("solo")!, repo, roles: { agent: ["claude"] }, options: {}, task: "Remember the task", trust: "standard" }); await done(run);
+    const tree = run.worktrees[0]!;
+    await manager.configureTaskTeam(run.id, config);
+    await manager.followUp(run.id, { kind: "reply", agent: "claude", worktree: "solo", message: "Implement the first part" }); await done(run);
+    const first = run.teamTurns![0]!, child = manager.get(first.executionId)!;
+    assert.equal(first.state, "applied");
+    assert.equal(readFileSync(join(tree.path, "one.txt"), "utf8"), "Team 1\n");
+    const at = (name: string) => child.worktrees.find(w => w.name === name)!;
+    assert.equal(first.workspaces!.removed, 2);
+    assert.ok(!existsSync(at("integration").path) && !existsSync(at("auto-task").path), "merged checkouts are removed");
+    assert.equal(readFileSync(join(at("auto-draft").path, "unsaved.txt"), "utf8"), "Not committed\n", "a checkout with uncommitted work stays");
+    assert.equal(first.workspaces!.kept.length, 1);
+    assert.match(first.workspaces!.kept[0]!, /uncommitted changes/);
+    for (const w of child.worktrees) assert.ok(git(repo, "rev-parse", "--verify", `refs/heads/${w.branch}`), "every branch is kept");
+    assert.match(first.report!, /checkouts were removed/);
+    assert.ok(existsSync(tree.path), "the conversation workspace is untouched");
+    await manager.followUp(run.id, { kind: "reply", agent: "claude", worktree: "solo", message: "Implement the second part" }); await done(run);
+    const second = run.teamTurns![1]!;
+    assert.equal(second.state, "applied");
+    assert.equal(readFileSync(join(tree.path, "two.txt"), "utf8"), "Team 2\n");
+    assert.equal(second.workspaces!.removed, 2);
+    assert.equal(git(repo, "worktree", "list").split("\n").length, 3, "the repository, the conversation workspace and the one checkout with unsaved work");
   } finally { await manager.shutdown(); }
 });
