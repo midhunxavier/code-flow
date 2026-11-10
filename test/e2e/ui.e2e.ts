@@ -7,7 +7,7 @@ import { prioritizedReviewRuns } from "../../src/review-inbox.js";
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { createServer, type AddressInfo } from "node:net";
 import { join } from "node:path";
@@ -1254,9 +1254,10 @@ test("project defaults stay repository-scoped and a run creates its worktree fro
     await fresh.getByRole("checkbox", { name: "Run agents in a prebuilt Docker image" }).uncheck();
     assert.equal(await fresh.getByLabel("Worktree setup command", { exact: true }).inputValue(), "node -e \"process.exit(0)\"");
     await fresh.getByLabel("Worktree setup command", { exact: true }).fill("node -e \"process.exit(0); /* setup override */\"");
-    assert.equal(await fresh.evaluate((path) => localStorage.getItem(`setup:${path}`), realpathSync(repo)), "node -e \"process.exit(0)\"", "setup overrides do not overwrite the project default");
+    assert.equal(JSON.parse(readFileSync(join(repo, ".codeflow", "config.json"), "utf8")).setup, "node -e \"process.exit(0)\"", "setup overrides do not overwrite the project default");
     await fresh.getByLabel("Check command for merge validation", { exact: true }).fill("node -e \"process.exit(0); /* run override */\"");
-    assert.equal(await fresh.evaluate((path) => localStorage.getItem(`check:${path}`), realpathSync(repo)), "node -e \"process.exit(0)\"", "run overrides do not overwrite the project default");
+    assert.equal(JSON.parse(readFileSync(join(repo, ".codeflow", "config.json"), "utf8")).check, "node -e \"process.exit(0)\"", "run overrides do not overwrite the project default");
+    assert.equal(await fresh.evaluate((path) => localStorage.getItem(`check:${path}`), realpathSync(repo)), null, "the default lives in the repository's file, not in this browser");
     await fresh.getByLabel("Task", { exact: true }).fill("Verify selected branch and project defaults");
     await fresh.locator(".taskbox").getByRole("button", { name: "Run actions", exact: true }).click();
     await fresh.getByRole("menuitem", { name: "Schedule…", exact: true }).click();
@@ -1275,7 +1276,11 @@ test("project defaults stay repository-scoped and a run creates its worktree fro
     assert.equal(run.loop.agentContainer, undefined);
     assert.ok(!run.loop.verification);
     await fresh.getByRole("button", { name: /^Provider:/ }).waitFor({ timeout: 30000 });
-  } finally { await fresh.close(); }
+  } finally {
+    await fresh.close();
+    // The saved defaults are a file in the shared fixture repository: later tests start without it.
+    rmSync(join(repo, ".codeflow", "config.json"), { force: true });
+  }
 });
 
 test("chatbox saves templates to the chosen library and makes them immediately reusable", async () => {
