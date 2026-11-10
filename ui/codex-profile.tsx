@@ -1,12 +1,17 @@
 import { useEffect, useState } from "preact/hooks";
 import { api } from "./lib.js";
+import { executionPaused } from "./state.js";
 
 type Status = { profile: string; source: "environment" | "settings" | null; problem: string | null; available: string[]; codexHome: string };
 
 /** Settings → Agents & models: which Codex profile runs use. Saved on this computer's server, read on every turn. */
 export function CodexProfileSetting() {
   const [status, setStatus] = useState<Status>(), [error, setError] = useState(""), [busy, setBusy] = useState(false);
-  useEffect(() => { let live = true; void api<Status>("/api/codex-profile").then(value => { if (live) setStatus(value); }, err => { if (live) setError((err as Error).message); }); return () => { live = false; }; }, []);
+  // Under a filesystem restriction the server refuses provider settings, so nothing is asked for
+  // (the notice at the top of the page says why); it loads once the restriction is lifted.
+  const paused = executionPaused.value;
+  useEffect(() => { if (paused) { setStatus(undefined); return; } let live = true; void api<Status>("/api/codex-profile").then(value => { if (live) setStatus(value); }, err => { if (live) setError((err as Error).message); }); return () => { live = false; }; }, [paused]);
+  if (paused) return null;
   if (!status) return error ? <section class="settings-card" aria-label="Codex profile"><h3>Codex profile</h3><p class="msg err" role="alert">Could not load the Codex profile: {error}</p></section> : null;
   const fromEnvironment = status.source === "environment";
   const choose = async (profile: string) => {
