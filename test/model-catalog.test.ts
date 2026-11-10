@@ -118,3 +118,29 @@ test('real discovery protocol parsing with mocked CLIs retains exact IDs and ali
         process.env.PATH = original;
     }
 });
+
+test('Claude default model keeps its own name, e.g. Fable 5.2, rather than "Default (recommended)"', { timeout: 10_000 }, async () => {
+    const original = { path: process.env.PATH, models: process.env.FAKE_DISCOVERY_MODELS };
+    process.env.PATH = `${fileURLToPath(new URL('./fake-bin', import.meta.url))}:${original.path}`;
+    const effort = { supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max'] };
+    // Same shape as Claude Code 2.1.319: the fake prepends {...models[0], value: "default"}.
+    process.env.FAKE_DISCOVERY_MODELS = JSON.stringify([
+        { value: 'claude-fable-5-2', resolvedModel: 'claude-fable-5-2', displayName: 'Default (recommended)', ...effort },
+        { value: 'opus', resolvedModel: 'claude-opus-5-5', displayName: 'Opus 5.5', ...effort },
+        { value: 'claude-fable-5-2', resolvedModel: 'claude-fable-5-2', displayName: 'Fable 5.2', ...effort },
+        { value: 'fable', resolvedModel: 'claude-fable-5-1', displayName: 'Fable 5.1', ...effort },
+    ]);
+    try {
+        const catalog = await discoverModels('claude');
+        assert.equal(catalog.defaultModel, 'claude-fable-5-2');
+        const fable = catalog.models.find(model => model.id === 'claude-fable-5-2');
+        assert.equal(fable?.label, 'Fable 5.2');
+        assert.ok(fable?.aliases?.includes('default'));
+        assert.equal(catalog.models.find(model => model.id === 'claude-fable-5-1')?.label, 'Fable 5.1');
+    }
+    finally {
+        process.env.PATH = original.path;
+        if (original.models === undefined) delete process.env.FAKE_DISCOVERY_MODELS;
+        else process.env.FAKE_DISCOVERY_MODELS = original.models;
+    }
+});
