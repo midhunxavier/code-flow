@@ -1,7 +1,7 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, execFileSync, type ChildProcess } from "node:child_process";
-import { mkdtempSync, writeFileSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, writeFileSync, mkdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -71,6 +71,8 @@ for (const [lead, worker] of (live ? [["claude", "codex"], ["codex", "agy"], ["a
   console.log(lead, "team completed with", worker, child.id);
   const activity = page.getByRole("region", { name: "Team activity" });
   assert.equal(await activity.locator("details[open]").count(), 0, "team internals stay collapsed by default");
+  assert.ok(turn.workspaces.removed >= 1 && child.worktrees.every((w: any) => !existsSync(w.path)), "a finished team's working folders go once its result is applied");
+  assert.match((await activity.textContent())!, /working folders? (was|were) removed now that its result is here\. Its branches are kept\./);
   const workMessage = main.getByText(live ? "Change result.txt to contain exactly team cobalt-731 followed by a newline. Preserve draft.txt byte for byte. This is a tiny plain text edit: one implementation worker and an independent reviewer suffice. No packages, external services or publishing. The configured node check verifies the content. Keep the other files unchanged." : "AUTO-MINIMAL implement the requested result", { exact: true });
   assert.ok(await activity.evaluate((element, message) => !!(message.compareDocumentPosition(element) & Node.DOCUMENT_POSITION_FOLLOWING), await workMessage.elementHandle()), "progress belongs after the request that launched the team");
   await main.getByRole("textbox", { name: "Message agent", exact: true }).fill("What changed?");

@@ -42,6 +42,11 @@ export interface TaskTeamTurn {
    */
   teamEvidence?: { tree: string; check?: { ok: boolean; command: string; at: number }; review?: { approved: boolean } };
   executionStatus?: "running" | "done" | "failed" | "cancelled" | "stopped" | "interrupted";
+  /**
+   * The team's own checkouts once its result was applied: how many folders were removed, and
+   * which stayed and why (uncommitted work). Their branches are always kept.
+   */
+  workspaces?: { removed: number; kept: string[]; at: number };
 }
 export interface TaskReconciliation { current: string; result: string; merged: string; conflicts: string[] }
 export class TaskTeamConflict extends Error {
