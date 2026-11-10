@@ -74,12 +74,14 @@ export const claudeAdapter: AgentAdapter = {
   binary: "claude",
   available: () => commandExists("claude"),
 
-  // The CLI has no model-listing command; it accepts these aliases (always the latest
-  // model of each family) or any full model name.
+  // Fallback when discovery (the CLI's initialize models) is unavailable. The CLI accepts these
+  // aliases or any full model name. Its `fable` alias can trail the newest Fable (it resolved to
+  // 5.1 while 5.2 was the default), so the newest Fable is listed by its full name too.
   async catalog(): Promise<ModelCatalog> {
     return {
       models: [
-        { id: "fable", label: "Fable (latest)" },
+        { id: "claude-fable-5-2", label: "Fable 5.2" },
+        { id: "fable", label: "Fable" },
         { id: "opus", label: "Opus (latest)" },
         { id: "sonnet", label: "Sonnet (latest)" },
         { id: "haiku", label: "Haiku (latest)" },

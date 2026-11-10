@@ -77,6 +77,7 @@ export async function discoverModels(provider: AgentId, context: DiscoveryContex
             throw new Error("Invalid model discovery response");
         const models: ModelInfo[] = [];
         let defaultModel: string | undefined;
+        const placeholderLabels = new Set<string>();
         for (const m of raw) {
             if (m.hidden === true)
                 continue;
@@ -86,16 +87,31 @@ export async function discoverModels(provider: AgentId, context: DiscoveryContex
             const effortList = provider === "claude" ? m.supportedEffortLevels : m.supportedReasoningEfforts?.map((e: any) => e.reasoningEffort);
             const efforts = Array.isArray(effortList) ? effortList.filter((e: any) => typeof e === "string" && /^[a-z]{2,12}$/.test(e) && e !== "ultracode") : m.supportsEffort === false ? [] : undefined;
             const entry: ModelInfo = { id, label: typeof m.displayName === "string" ? m.displayName.slice(0, 120) : id, efforts, defaultEffort: m.defaultReasoningEffort, aliases: provider === "claude" && m.value !== id ? [m.value] : [], discovery: { source, confidence: "reported", verifiedAt: Date.now() } };
+            // Claude reports its default model twice: as "Default (recommended)" (value "default") and under its own
+            // name (e.g. "Fable 5.2"). Keep the model's own name so the newest model is recognisable in pickers.
+            const placeholder = provider === "claude" && m.value === "default";
             const existing = models.find(x => x.id === id);
-            if (existing)
+            if (existing) {
                 existing.aliases = [...new Set([...(existing.aliases ?? []), ...(entry.aliases ?? [])])];
-            else
+                if (!placeholder && placeholderLabels.has(id) && entry.label !== existing.label) {
+                    existing.label = entry.label;
+                    placeholderLabels.delete(id);
+                }
+            }
+            else {
                 models.push(entry);
+                if (placeholder)
+                    placeholderLabels.add(id);
+            }
             if (m.isDefault || m.value === "default")
                 defaultModel = id;
         }
         if (!models.length)
             throw new Error("Provider reported no selectable models");
+        // A default with no named entry of its own: say which model it is.
+        for (const model of models)
+            if (placeholderLabels.has(model.id) && !model.label.includes(model.id))
+                model.label = `${model.label} · ${model.id}`;
         return { models, efforts: [...new Set(models.flatMap(m => m.efforts ?? []))], defaultModel, allowCustom: true, discovery: { source, confidence: "reported", verifiedAt: Date.now() }, accountKey: account ? createHash("sha256").update(JSON.stringify(account)).digest("hex") : undefined };
     }
     finally {

@@ -156,7 +156,7 @@ After signing in, signing out or changing an installed CLI, use **Refresh provid
 
 | Provider | Model list | Flags passed |
 |---|---|---|
-| Claude Code | aliases `fable`, `opus`, `sonnet`, `haiku`, or any full model name via *Other…* | `--model`, `--effort` (low … max) |
+| Claude Code | models reported by the installed CLI (e.g. `claude-fable-5-2`), aliases `fable`, `opus`, `sonnet`, `haiku`, or any full model name via *Other…* | `--model`, `--effort` (low … max) |
 | Codex | `codex debug models`, with each model's supported efforts; the default comes from `~/.codex/config.toml` | `-m`, `-c model_reasoning_effort=…` |
 | Antigravity | `agy models` | `--model`, `--effort` (low … max) |
 
