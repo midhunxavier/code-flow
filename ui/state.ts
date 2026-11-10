@@ -1063,14 +1063,24 @@ async function loadRepoCheck() {
   repoConfig.value = result && { ...result, ref };
   const config = repoConfig.value?.config ?? {};
   deriveDefaults(config);
+  // A start branch without commands of its own uses the ones saved in your checkout's file: the
+  // defaults you set for the repository apply whichever branch a run starts from.
+  let checkout: { check?: string; setup?: string } = {};
+  if (ref && (!config.check || !config.setup)) {
+    try { checkout = (await api<RepoConfiguration>(`/api/repo-config?repo=${encodeURIComponent(r)}`)).config; } catch { /* the branch's own values still apply */ }
+    if (!current()) return;
+  }
+  const commands = { check: config.check ?? checkout.check, setup: config.setup ?? checkout.setup };
+  // The repository's file is the source of truth. A command an older version saved in this
+  // browser fills in only where the file has none.
   const saved = store.get(`check:${r}`), savedSetup = store.get(`setup:${r}`);
-  if (!ownSetup() && (savedSetup !== null || config.setup || !again)) setupCmd.value = savedSetup ?? config.setup ?? "";
+  if (!ownSetup() && (savedSetup !== null || commands.setup || !again)) setupCmd.value = commands.setup ?? savedSetup ?? "";
   // A detected setup (`uv sync`, `poetry install`) fills an empty setup you haven't edited.
-  const detectSetup = !ownSetup() && savedSetup === null && !config.setup;
-  if (saved !== null || config.check) {
+  const detectSetup = !ownSetup() && savedSetup === null && !commands.setup;
+  if (saved !== null || commands.check) {
     if (!ownCheck()) {
-      checkCmd.value = saved ?? config.check!;
-      checkHint.value = saved !== null ? "" : "From .codeflow/config.json.";
+      checkCmd.value = commands.check ?? saved!;
+      checkHint.value = config.check ? "From .codeflow/config.json." : commands.check ? "From your checkout’s .codeflow/config.json; this branch has none." : "";
       checkWarning.value = "";
     }
     if (!detectSetup) {
@@ -1086,7 +1096,7 @@ async function loadRepoCheck() {
     // A late result fills only fields nobody touched during the lookup: it must neither replace
     // what you typed meanwhile nor land in the input while you are typing into it.
     if (detectSetup && !ownSetup() && store.get(`setup:${r}`) === null) setupCmd.value = d.setup ?? "";
-    if (ownCheck() || saved !== null || config.check || store.get(`check:${r}`) !== null) return;
+    if (ownCheck() || saved !== null || commands.check || store.get(`check:${r}`) !== null) return;
     checkCmd.value = d.command ?? "";
     checkHint.value = d.command ? `Detected from ${d.source}${d.setup ? `; each worktree is set up with “${d.setup}” (Settings)` : ""}.` : "No test command found in this repo.";
     checkWarning.value = d.warning ? `Detection: ${d.warning}.` : "";
@@ -1094,7 +1104,7 @@ async function loadRepoCheck() {
     if (!current()) return;
     // Detection only suggests a command: say why there's none, and the field stays yours to fill.
     // As a first read would have left them: what is no longer configured isn't kept.
-    if (!ownCheck() && saved === null && !config.check) {
+    if (!ownCheck() && saved === null && !commands.check) {
       checkHint.value = "Couldn't detect a test command.";
       checkWarning.value = `Couldn't detect a test command: ${(err as Error).message}`;
       if (again) checkCmd.value = "";

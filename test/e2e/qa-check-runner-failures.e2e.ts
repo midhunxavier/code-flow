@@ -4,7 +4,7 @@
 import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
-import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -65,6 +65,10 @@ test("an invalid package.json leaves project defaults saveable and says why noth
   await page.reload();
   await page.getByLabel("Project", { exact: true }).selectOption(brokenProject);
   await page.waitForFunction(() => (document.querySelector('[aria-label="Default check command"]') as HTMLInputElement)?.value === "node -e 1");
+  // The command is saved in the repository's own file, not in this browser.
+  assert.equal(JSON.parse(await readFile(join(broken, ".codeflow", "config.json"), "utf8")).check, "node -e 1");
+  assert.equal(await page.evaluate(() => Object.keys(localStorage).some(key => /(^|:)check:/.test(key))), false);
+  await rm(join(broken, ".codeflow"), { recursive: true, force: true });
   assert.deepEqual(errors, []);
   await page.context().close();
 });

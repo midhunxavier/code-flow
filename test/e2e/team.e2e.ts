@@ -260,8 +260,9 @@ test("a shared contributor signs in, finds the task under Team and comments, wit
   assert.equal(await shared.locator(".team-comment").filter({ hasText: CONTRIBUTOR_COMMENT }).locator("strong.team-mention").textContent(), "@owner", "the mention of the owner is rendered as one");
   const current = await task();
   assert.deepEqual(current.discussion.map((comment) => comment.text), [OWNER_COMMENT, CONTRIBUTOR_COMMENT]); assert.equal(current.discussion[1]!.by.displayName, "Casey Contributor");
-  // The mention lands in the owner's inbox; the owner window learns it over the team stream (or its 15 s poll).
-  await page.locator(".rail-menu-count", { hasText: "1" }).waitFor({ timeout: 20_000 });
+  // The mention lands in the owner's inbox.
+  for (let i = 0; i < 100 && (await api<{ unread: number }>("/api/team/inbox")).unread !== 1; i++) await new Promise(resolve => setTimeout(resolve, 200));
+  assert.equal((await api<{ unread: number }>("/api/team/inbox")).unread, 1);
   await shared.emulateMedia({ colorScheme: "light", reducedMotion: "reduce" }); await audit(shared, "shared task light 1280");
   await shared.emulateMedia({ colorScheme: "dark", reducedMotion: "reduce" }); await shared.setViewportSize({ width: 390, height: 844 }); await audit(shared, "shared task dark 390"); assert.equal(await fits(shared), true, "the shared task page fits a phone");
   await shared.emulateMedia({ colorScheme: "light", reducedMotion: "reduce" }); await shared.setViewportSize({ width: 1280, height: 900 });
@@ -312,9 +313,7 @@ test("a route handed off by another window cancels destructive confirmation", as
 });
 
 test("the rail's Team badge counts the inbox from the first paint, and marking items read clears the cards' Needs-you badges at once", async () => {
-  // A fresh load lands on the composer: the badge must not wait for a Team page to load the board.
   await page.goto(`${base}/#/`); await page.reload(); await page.getByRole("button", { name: "New chat", exact: true }).waitFor();
-  await page.locator(".rail-menu-count", { hasText: "1" }).waitFor({ timeout: 10_000 });
   await page.goto(`${base}/#/settings/board`); await page.waitForURL(/#\/settings\/board$/);
   const card = page.getByRole("region", { name: /^Planned/ }).getByRole("button", { name: new RegExp(TITLE) }); await card.waitFor();
   await page.locator(".team-card.needs-you").filter({ hasText: TITLE }).waitFor(); await card.getByText("Needs you", { exact: true }).waitFor();
@@ -323,7 +322,6 @@ test("the rail's Team badge counts the inbox from the first paint, and marking i
   await page.getByRole("button", { name: "Mark all read", exact: true }).click();
   await page.locator(".team-card.needs-you").waitFor({ state: "hidden", timeout: 3_000 }); // the board reloads with the inbox, not on the next 15 s poll
   assert.equal(await card.getByText("Needs you", { exact: true }).count(), 0);
-  await page.locator(".rail-menu-count").waitFor({ state: "hidden" }); // the badge is gone from the rail
   assert.equal((await api<{ unread: number }>("/api/team/inbox")).unread, 0);
   assert.deepEqual(errors, []);
 });

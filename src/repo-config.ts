@@ -67,6 +67,40 @@ export async function readRepoConfigAt(repo: string, ref: string): Promise<RepoC
   return { ...committed, config: { ...config, ...(checkout.config.trust ? { trust: checkout.config.trust } : {}), ...(checkout.config.copy ? { copy: checkout.config.copy } : {}) } };
 }
 
+/**
+ * Save the check and setup commands into the checkout's `.codeflow/config.json`, the one place a
+ * repository's defaults live. Every other key in the file is kept as written; an empty command
+ * removes its key. The file is yours to commit, so teammates and every way of starting a run
+ * (the app, a CLI, an automation) read the same commands.
+ */
+export async function saveRepoCommands(repo: string, commands: { check?: string; setup?: string }): Promise<RepoConfigFile> {
+  const file = join(repo, CONFIG_PATH), folder = dirname(file);
+  // Never write through a link: it could point outside the repository.
+  for (const path of [folder, file]) if (statIfPresent(path)?.isSymbolicLink()) throw new Error(`${CONFIG_PATH} is reached through a symbolic link, so it can't be saved from here`);
+  let raw: Record<string, unknown> = {};
+  if (existsSync(file)) {
+    let parsed: unknown;
+    try { parsed = JSON.parse((await readFile(file, "utf8")).replace(/^\uFEFF/, "")); }
+    catch (err) { throw new Error(`${CONFIG_PATH} is not valid JSON (${(err as Error).message}). Fix the file, then save again`); }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error(`${CONFIG_PATH} must hold a JSON object`);
+    raw = parsed as Record<string, unknown>;
+  }
+  for (const key of ["check", "setup"] as const) {
+    const value = commands[key];
+    if (value === undefined) continue;
+    if (typeof value !== "string" || value.length > 4000 || value.includes("\0")) throw new Error(`The ${key} command must be text of at most 4000 characters`);
+    // Rebuilding keeps the file's key order, with a new command placed first.
+    if (value.trim()) raw = key in raw ? { ...raw, [key]: value.trim() } : { [key]: value.trim(), ...raw };
+    else delete raw[key];
+  }
+  if (!existsSync(file) && !Object.keys(raw).length) return { config: {}, found: false };
+  mkdirSync(folder, { recursive: true });
+  const temporary = join(folder, `.config.${randomBytes(6).toString("hex")}.tmp`);
+  try { await writeFile(temporary, `${JSON.stringify(raw, null, 2)}\n`, { flag: "wx" }); renameSync(temporary, file); }
+  catch (err) { try { unlinkSync(temporary); } catch {} throw err; }
+  return readRepoConfig(repo);
+}
+
 function parseRepoConfig(text: string, where: string): RepoConfigFile {
   try {
     const raw = JSON.parse(text);

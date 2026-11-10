@@ -48,7 +48,7 @@ test("fresh loads and reloads never notify an already-waiting old approval", asy
 });
 
 test("authoritative badges and Inbox disclose partial history and stop claiming pagination when complete", async () => {
-  await page.locator(".rail-menu-count").waitFor(); assert.match(await page.title(), /^\(207\)/);
+  await page.waitForFunction(() => /^\(207\)/.test(document.title));
   await page.getByRole("status").filter({ hasText: "Showing 100 of 101 review items" }).waitFor(); assert.match(await page.getByRole("region", { name: "Needs you", exact: true }).innerText(), /Needs you\s+207/); await shot("partial-inbox-authoritative-counts");
   await page.getByRole("button", { name: /^Application menu:/ }).click(); const menu = page.getByRole("menu"); assert.equal(await menu.getByRole("menuitem", { name: /Inbox|Scheduling/ }).count(), 0); await page.keyboard.press("Escape");
   await page.getByRole("searchbox", { name: "Search chats (press / to focus)", exact: true }).fill("no-such-attention-fixture");
@@ -59,8 +59,7 @@ test("authoritative badges and Inbox disclose partial history and stop claiming 
 
 test("collapsed badges remain visible, search peek preserves storage and mobile labels remain readable", async () => {
   await page.getByRole("button", { name: "Collapse sidebar", exact: true }).click();
-  assert.ok(await page.locator(".rail-menu-count").isVisible());
-  await shot("collapsed-attention-badge");
+  await shot("collapsed-sidebar");
   await page.keyboard.press("/"); const search = page.getByRole("searchbox", { name: "Search chats (press / to focus)", exact: true }); await search.waitFor(); assert.equal(await search.evaluate(el => document.activeElement === el), true); assert.equal(await page.evaluate(() => localStorage.getItem("railCollapsed")), "1"); await page.keyboard.press("Escape"); await page.getByRole("button", { name: "Expand sidebar", exact: true }).waitFor();
   await page.getByRole("button", { name: "Search chats", exact: true }).click(); await search.waitFor(); await page.keyboard.press("Escape"); await page.reload(); await page.getByRole("button", { name: "Expand sidebar", exact: true }).waitFor(); assert.equal(await page.evaluate(() => localStorage.getItem("railCollapsed")), "1");
   await page.getByRole("button", { name: /^Application menu:/ }).click();

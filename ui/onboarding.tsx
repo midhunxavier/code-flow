@@ -295,8 +295,8 @@ export function EffectiveSettings({ p, checkMode = p.id === "solo" ? "conversati
     ["Project", target.value.project?.name ?? "Created from repository on start", "Project selection / repository membership"],
     ["Workflow", p.name, composerOrigins.value.pattern ?? "Workflow default"],
     ["Team", Object.entries(rolesFor(p)).map(([role, ids]) => `${role}: ${ids.join(", ") || "skipped"}`).join(" · "), composerOrigins.value.roles ?? "Workflow defaults"],
-    ["Verification command", checkCmd.value || "No automated command", (origins.check ?? (rememberedCheck !== null ? "Project Settings (this browser)" : config.check ? fromConfig : checkHint.value || "Not configured")) + (checkMode === "conversation" ? " · Merge validation; not automatic after Agent replies" : "")],
-    ["Worktree setup", setupCmd.value || "None", origins.setup ?? (rememberedSetup !== null ? "Repository preference (this browser)" : config.setup ? fromConfig : setupCmd.value ? "Repository detection" : "Not configured")],
+    ["Verification command", checkCmd.value || "No automated command", (origins.check ?? (config.check ? fromConfig : rememberedCheck !== null ? "Older setting saved in this browser" : checkHint.value || "Not configured")) + (checkMode === "conversation" ? " · Merge validation; not automatic after Agent replies" : "")],
+    ["Worktree setup", setupCmd.value || "None", origins.setup ?? (config.setup ? fromConfig : rememberedSetup !== null ? "Older setting saved in this browser" : setupCmd.value ? "Repository detection" : "Not configured")],
     // A start branch's file never sets permissions: they always come from your checkout's (readRepoConfigAt).
     ["Permissions", trust.value, origins.trust ?? (store.get("trust") !== null ? "Explicit browser preference" : config.trust ? ".codeflow/config.json" : "Application default")],
     ["Plan approval", planApprovalFor(p.id) ? "Required" : "Automatic", "Per-workflow browser preference / workflow default"],

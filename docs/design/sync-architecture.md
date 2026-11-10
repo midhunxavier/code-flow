@@ -87,6 +87,8 @@ The owner publishes one **owner descriptor**, extending the existing `cli-teams-
 
 Every surface shows the store name and environment in a persistent indicator: the browser header, the desktop title bar and tray, and a CLI status line or `codeflow status`. A click (or `codeflow status`) shows the full identity: store path, environment, owner PID, origin and who started it. This is the UX answer to S1: when a different environment shows different history, the indicator says so up front.
 
+> Update, 2026-11-10: the browser header indicator was removed again at the owner's request, to keep the top bar clear. The browser no longer shows the store; `GET /api/store` still reports the full identity. The desktop and CLI parts of this section stand.
+
 ### 3.2 Attach-or-start, for every entry point
 
 There is one discovery routine, extracted from `connectRuntime` (`src/cli-teams/client.ts:56-72`) and shared by desktop (`integrations/desktop/main.cjs:66-92`), `codeflow start` (`bin/launcher.mjs:120-127`), `codeflow mcp`/`terminal` and VS Code:

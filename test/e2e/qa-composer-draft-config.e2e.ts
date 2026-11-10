@@ -238,7 +238,8 @@ test("project defaults refresh saved drafts for both an inactive and the current
     assert.equal(await page.getByLabel("Verification gates", { exact: true }).inputValue(), "standard");
     await page.reload(); await newRun("echo CURRENT");
     assert.equal(await page.getByLabel("Verification gates", { exact: true }).inputValue(), "standard");
-    assert.match(await row("Verification command").innerText(), /Project Settings/);
+    // Saved defaults live in the repository's file, and that is where the draft says they came from.
+    assert.match(await row("Verification command").innerText(), /\.codeflow\/config\.json/);
     assert.deepEqual(errors, []);
   } finally { await context.close(); page = previous; }
 });

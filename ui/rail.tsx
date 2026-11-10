@@ -9,7 +9,6 @@ import { DesktopUpdateNotice } from "./desktop-updates.js";
 import { chats, watchChats, openChat, chatQuery, chatSearchTarget } from "./chat-state.js";
 import { ComputerProjects, useComputerProjects } from "./connected-projects.js";
 import { useCallback, useEffect, useRef, useState } from "preact/hooks";
-import { inbox } from "./automations.js";
 import { pendingApprovals } from "./approval-inbox.js";
 import { Icon } from "./icons.js";
 import { Menu, MenuItem } from "./panel-bits.js";
@@ -64,7 +63,6 @@ import {
 } from "./state.js";
 import type { Project, RunSummary } from "./types.js";
 import { teamAwaitingAnswer, teamNeedsResume } from "./team-state.js";
-import { inboxUnread } from "./collab-state.js";
 
 /** A project lists this many runs until you ask for the rest. */
 const PER_PROJECT = 5;
@@ -200,8 +198,6 @@ export function Rail() {
     setBulkError(failures.join("\n")); setBulkBusy(false);
   };
   const waiting = list.filter(taskNeedsYou);
-  const pending = projectCounts.value?.[ALL]?.inboxRuns ?? inbox().length;
-  const unread = inboxUnread.value;
   const collapsed = railIsCollapsed.value;
   // Paused by a filesystem restriction isn't something to set up: the CLIs are there, just not probed.
   const agentsPaused = agents.value.some((agent) => agent.unavailableReason === "filesystem-policy");
@@ -517,7 +513,6 @@ export function Rail() {
         <Menu class="rail-menu" label="Application menu" icon="more" trigger={<>
           <span class="rail-menu-avatar"><Icon name="layers" /></span>
           <span class="rail-menu-label"><strong>Code Flow</strong></span>
-          {unread + pending ? <span class="rail-menu-count" aria-label={`${unread + pending} items need attention`}>{unread + pending > 99 ? "99+" : unread + pending}</span> : null}
           <Icon name="more" />
         </>}>
           {(close) => <>
