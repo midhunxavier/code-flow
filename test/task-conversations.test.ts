@@ -429,6 +429,15 @@ test("project scope, managed bindings, and optimistic conversation revisions are
     await assert.rejects(f.service.get(f.created.id), /membership changed/);
     assert.equal(f.counts().workers, 0);
 });
+test("browser tasks plan with Claude and Codex and cannot add unrestricted Antigravity", async () => {
+    const f = await fixture(), first = await f.prepare();
+    const listed = await f.core.operateWeb(f.scope, "codeflow_list_providers", {});
+    assert.deepEqual(listed.providers.map((p: { id: string }) => p.id), ["claude", "codex"], "the browser lead is not offered agy workers");
+    const unrestricted = { ...plan(), antigravity: "unrestricted" as const, participants: [...plan().participants, { id: "gemini", provider: "agy" as const }] };
+    await assert.rejects(f.action("edit", { candidate: unrestricted }), /only be requested from a CLI conversation/);
+    assert.equal((await f.service.get(f.created.id)).proposal!.revision, first.proposal!.revision, "no revision was recorded");
+    assert.equal(f.counts().workers, 0);
+});
 test("rejecting a design checkpoint stops before implementation and retains the exact plan", async () => {
     const candidate = build();
     candidate.steps.unshift({ id: "design", type: "task", operation: "propose", participant: "reviewer", instructions: "Propose a design for human review" }, { id: "approval", type: "user_decision", question: "Review this design before editing", options: ["Approve design", "Revise design"], inputs: ["design"], continueOn: "Approve design" });

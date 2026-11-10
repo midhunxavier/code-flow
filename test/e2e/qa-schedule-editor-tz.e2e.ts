@@ -144,6 +144,26 @@ test("two windows: an untouched editor follows the saved schedule; a stale edit 
   await context.close();
 });
 
+test("an edit made while the last save is still reloading is not a conflict with that save", { timeout: 60_000 }, async () => {
+  const saved = await api("/api/automations", { name: "Slow reload QA", enabled: false, run: run(), schedule: { at: "03:00", timezone: "Europe/Stockholm" } });
+  const context = await browserIn("Europe/Stockholm");
+  const { page, errors } = await open(context, "#/settings/automations");
+  const row = await editor(page, "Slow reload QA");
+  // A busy server: the list reload that follows a save takes a while to come back.
+  let slow = true;
+  await page.route("**/api/automations/storage", async (route) => { if (slow) await new Promise((resolve) => setTimeout(resolve, 1500)); await route.continue(); });
+  await row.getByLabel("Time", { exact: true }).fill("04:00");
+  await row.getByRole("button", { name: "Save schedule", exact: true }).click();
+  await until(() => automation(saved.id), (t) => t.schedule.at === "04:00");
+  await row.getByLabel("Time", { exact: true }).fill("05:00");
+  await row.getByRole("button", { name: "Save schedule", exact: true }).click();
+  await until(() => automation(saved.id), (t) => t.schedule.at === "05:00");
+  assert.equal(await row.getByRole("alert").count(), 0, "its own save is not another window's change");
+  slow = false;
+  assert.deepEqual(errors, []);
+  await context.close();
+});
+
 test("the row editor refuses fields it can't save with one reason, and shows what was saved", { timeout: 60_000 }, async () => {
   const saved = await api("/api/automations", { name: "Fields QA", enabled: true, run: run(), schedule: { at: "03:00", timezone: "Europe/Stockholm" } });
   const context = await browserIn("Europe/Stockholm");

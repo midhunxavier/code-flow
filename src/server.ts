@@ -19,7 +19,7 @@ import { runProviderProblem, permissionProviderProblem, createRunPermissions as 
 import { inheritRunEnvironment } from "./run-environment.js";
 import { TemplateConflictError, teamTemplateStore } from "./team-template-store.js";
 import { fillTeamTemplate, validateTeamTemplate, type TemplateSelection } from "./team-templates.js";
-import { antigravityExecution, AGY_NATIVE_LIMITATION, type AntigravityExecution, createRunPermissions, narrowerTrust, resolveRunPermissions, permissionRequirements, type PermissionRequirement } from "./run-permissions.js";
+import { antigravityExecution, AGY_NATIVE_LIMITATION, acpExecution, type AcpExecution, type AntigravityExecution, createRunPermissions, narrowerTrust, resolveRunPermissions, permissionRequirements, type PermissionRequirement } from "./run-permissions.js";
 import { TeamTerminals, handleTeamTerminals } from "./collab/terminals.js";
 import { HostExecution, handleHostExecution } from "./collab/host-execution.js";
 import { closeCodeIntelligence, codeIntelligenceHealth } from "./code-intelligence.js";
@@ -688,7 +688,7 @@ function requestedRoles(pattern: Pattern, input: unknown): Record<string, string
 }
 
 /** Who fills each role; "auto" picks an installed agent whose plan has room (see routing.ts). */
-async function validateRoles(pattern: Pattern, input: unknown, repo?: string, remoteWorker?: LoopSettings["remoteWorker"], requestedTrust?: string, policy?: { required: PermissionRequirement[]; container: boolean; tools: boolean; antigravityExecution?: AntigravityExecution }): Promise<{ roles: Record<string, AgentId[]>; notes: string[] }> {
+async function validateRoles(pattern: Pattern, input: unknown, repo?: string, remoteWorker?: LoopSettings["remoteWorker"], requestedTrust?: string, policy?: { required: PermissionRequirement[]; container: boolean; tools: boolean; antigravityExecution?: AntigravityExecution; acpExecution?: AcpExecution }): Promise<{ roles: Record<string, AgentId[]>; notes: string[] }> {
   assertPolicyExecution(await fileAccess.execution(repo ?? ""), "Provider selection");
   const requested = requestedRoles(pattern, input);
   const inventory = remoteWorker ? (await manager.remoteInventory(remoteWorker)).providers : await agentAvailability();
@@ -699,7 +699,7 @@ async function validateRoles(pattern: Pattern, input: unknown, repo?: string, re
     if (runtimeProblems.get(id)) return false;
     if (policy) {
       try {
-        const runPolicy = createRunPermissions((trust ?? "standard") as Trust, policy.tools, pattern.id === "solo", policy.required, policy.antigravityExecution);
+        const runPolicy = createRunPermissions((trust ?? "standard") as Trust, policy.tools, pattern.id === "solo", policy.required, policy.antigravityExecution, policy.acpExecution);
         resolveRunPermissions({ policy: runPolicy, provider: id, mode: "write", currentTrust: runPolicy.trust, currentTools: policy.tools, remote: !!remoteWorker, container: policy.container });
         return true;
       } catch { return false; }
@@ -987,9 +987,10 @@ async function validatedStartInput(body: Record<string, any>): Promise<StartRunI
   if (inheritedLoop.agentContainer) loop.agentContainer = await attempt(async () => validateAgentContainer(inheritedLoop.agentContainer));
   const requiredPermissions = [...new Set([...(parent?.permissions?.required ?? []), ...permissionRequirements(body.permissionRequirements)])];
   const agyExecution = antigravityExecution(body.antigravityExecution, parent?.permissions);
+  const acpMode = await attempt(async () => acpExecution(body.acpExecution, parent?.permissions));
   const runTrust = parent?.permissions ? narrowerTrust(narrowerTrust(parent.permissions.trust, parent.trust), body.trust ?? parent.trust) : body.trust;
   const runTools = parent?.permissions ? parent.permissions.toolApprovals && !!parent.approvals.tools && body.approvals?.tools !== false : body.approvals?.tools === true;
-  const { roles, notes } = await validateRoles(pattern, body.roles, await repoRoot(repo).catch(() => repo), loop.remoteWorker, runTrust, { required: requiredPermissions, container: !!loop.agentContainer, tools: runTools, antigravityExecution: agyExecution });
+  const { roles, notes } = await validateRoles(pattern, body.roles, await repoRoot(repo).catch(() => repo), loop.remoteWorker, runTrust, { required: requiredPermissions, container: !!loop.agentContainer, tools: runTools, antigravityExecution: agyExecution, acpExecution: acpMode });
   let externalSource = typeof body.externalSourceId === "string" ? await attempt(async () => integrations.resolveSource(body.externalSourceId)) : undefined;
   if (body.externalSourceRef) {
     const ref = body.externalSourceRef;
@@ -1036,6 +1037,7 @@ async function validatedStartInput(body: Record<string, any>): Promise<StartRunI
     trust: ["safe", "standard", "trusted", "full"].includes(runTrust) ? runTrust : undefined,
     permissionRequirements: requiredPermissions,
     antigravityExecution: agyExecution,
+    acpExecution: acpMode,
     roleSettings,
     agentSettings,
     source: validateSource(body.source),

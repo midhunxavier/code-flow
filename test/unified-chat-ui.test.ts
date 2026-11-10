@@ -318,7 +318,8 @@ test("long history loads in bounded pages, preserves the visible message and sea
     await p.goto(`${base}/#/chat/${created.id}`); const scroller = p.locator(".task-chat-scroll"); await p.getByText("Historical message 2100", { exact: true }).waitFor();
     await scroller.evaluate(el => el.scrollTop = 0); const anchor = p.locator('[data-chat-sequence="2051"]'); const before = (await anchor.boundingBox())!.y;
     await p.getByRole("button", { name: "Load earlier messages", exact: true }).click(); await p.getByText("Historical message 2001", { exact: true }).waitFor();
-    assert.ok(Math.abs((await anchor.boundingBox())!.y - before) < 5, "prepending history preserves the visible message");
+    // The page restores the scroll position on the frame after the earlier messages render.
+    await until(async () => Math.abs((await anchor.boundingBox())!.y - before), moved => moved < 5, "prepending history preserves the visible message", 5000);
     assert.ok(await p.locator(".chat-event").count() <= 150);
     await p.getByRole("button", { name: "Back to latest", exact: true }).click(); await p.getByText("Historical message 2100", { exact: true }).waitFor();
     await p.getByRole("searchbox", { name: "Search chats (press / to focus)" }).fill("Archived needle");

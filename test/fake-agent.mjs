@@ -30,6 +30,24 @@ if (vendor === "claude" && args[0] === "mcp" && ["add-json", "remove"].includes(
   process.exit(0);
 }
 
+// agy 1.5's user MCP servers: flags before the name, `--` before the command, and an added `disabled` switch.
+if (vendor === "agy" && args[0] === "mcp" && ["add", "remove"].includes(args[1])) {
+  const { join, dirname } = await import("node:path"), { mkdirSync } = await import("node:fs");
+  const file = join(process.env.HOME, ".gemini", "config", "mcp_config.json");
+  // Like agy, read comments and trailing commas (outside strings).
+  const jsonc = text => { let out = ""; for (let i = 0, q = false; i < text.length; i++) { const c = text[i]; if (q) { out += c; if (c === "\\") out += text[++i] ?? ""; else if (c === '"') q = false; } else if (c === '"') { q = true; out += c; } else if (c === "/" && text[i + 1] === "/") { while (i + 1 < text.length && text[i + 1] !== "\n") i++; } else if (c === "," && /^\s*[}\]]/.test(text.slice(i + 1).replace(/^\s*\/\/[^\n]*/gm, ""))) {} else out += c; } return JSON.parse(out || "{}"); };
+  let config = {}; try { config = jsonc(readFileSync(file, "utf8")); } catch {}
+  config.mcpServers ??= {};
+  if (args[1] === "add") {
+    const env = {}; let i = 2;
+    for (; args[i] === "--env"; i += 2) { const [key, ...value] = args[i + 1].split("="); env[key] = value.join("="); }
+    const name = args[i++]; if (args[i] === "--") i++;
+    config.mcpServers[name] = { args: args.slice(i + 1), command: args[i], disabled: false, ...(Object.keys(env).length ? { env } : {}) };
+  } else { if (!config.mcpServers[args[2]]) { process.stderr.write(`MCP server "${args[2]}" not found\n`); process.exit(1); } delete config.mcpServers[args[2]]; }
+  mkdirSync(dirname(file), { recursive: true }); writeFileSync(file, JSON.stringify(config, null, 2));
+  process.exit(0);
+}
+
 if (vendor === "claude" && args.includes("--input-format") && args.includes("--tools") && args[args.indexOf("--tools") + 1] === "") {
   const {createInterface} = await import("node:readline");
   for await (const line of createInterface({input:process.stdin})) {

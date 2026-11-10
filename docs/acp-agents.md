@@ -1,6 +1,18 @@
 # ACP coding agents
 
-ACP connections can be saved and checked in Settings → Agents & models, but cannot start new runs or provider forks. Code Flow cannot enforce their managed permission policy, including native delegation restrictions. The provider menus show this limitation. Use Claude Code, Codex or Antigravity for runs; Full access does not enable ACP execution.
+ACP connections can be saved and checked in Settings → Agents & models. They start runs only with an explicit per-run opt-in, because Code Flow cannot enforce its managed permission policy on them, including native delegation restrictions. Without the opt-in the provider menus show this limitation, and Full access alone does not enable ACP execution.
+
+## Unrestricted ACP runs
+
+In a chat, open Agent settings → Provider and turn on **Allow unrestricted ACP agents**, choose the connected CLI, then pick **Ask for approval** or **Full access** in Permissions. The workflow composer has the same switch under Advanced. A chat needs a project repository and Agent mode; a reply to work that started without the opt-in is refused, so start a new chat. The opt-in applies to that run and the chats started from it; the next new run starts without it.
+
+- The CLI uses its own login, tools and settings. Code Flow cannot stop it from starting its own subagents, using the network or running external tools, and that usage is outside the worker budget. Read-only turns are a request in the prompt.
+- With Ask for approval, the permission requests the CLI sends appear in the approval inbox. Without it those requests are declined; anything the CLI approves by its own settings runs unasked.
+- It requires Full access on this computer. Remote workers, Docker isolation, automations, sweeps, project teams, read-only side chats and mandatory boundaries stay unavailable, and Auto never picks an ACP agent as a default.
+- Claude, Codex and Antigravity in the same run keep their managed permissions.
+- Each step records the `acp-native-v1` permission receipt, and the run shows an **Unrestricted ACP** badge.
+
+The API field is `acpExecution: "native"` on `POST /api/runs` and in a chat's `defaults`. A child run inherits it from its parent and cannot turn it on by itself.
 
 ## Connect your CLI
 
@@ -21,7 +33,7 @@ Use a current CLI version with native ACP support. The Kilo preset uses the curr
 1. Install and sign in with the commands above. Complete provider/model setup in the CLI.
 2. Open Settings → Agents & models and choose the CLI's **Connect** button. If code-flow cannot find it, enter its absolute executable path. Reopening a saved preset edits its existing settings, preserving custom paths and arguments.
 3. Choose **Check connection**. This initializes ACP and creates a session in a temporary directory without sending a prompt. The result shows protocol compatibility, available models and advertised session loading. It does not verify inference, account quota or access to every advertised model.
-4. Choose **Save connection**. The connection and discovered models are retained immediately; no server restart is needed. The provider remains disabled for runs.
+4. Choose **Save connection**. The connection and discovered models are retained immediately; no server restart is needed. The provider stays disabled for runs until a run opts in (see Unrestricted ACP runs).
 
 The CLI keeps its own authentication. code-flow does not read or copy its credential files. A connection check can perform the CLI's normal startup work, including loading the user's configured plugins. Use executable invocations you trust.
 
@@ -35,9 +47,9 @@ Models and effort options are discovered from ACP session configuration; legacy 
 
 ## Execution boundaries
 
-- Every new ACP run is refused before a run is created, at every permission level. Provider forks and automatic selection follow the same restriction. Connection availability and model discovery do not imply run support.
+- Without the run's unrestricted opt-in, every new ACP run is refused before a run is created, at every permission level. Provider forks follow the run's opt-in. Connection availability and model discovery do not imply run support.
 - **Check connection** initializes the protocol and creates a temporary session without sending a coding prompt. It can perform the CLI's normal startup work. It does not establish model access, inference quality or managed permission enforcement.
-- The retained adapter implementation is covered by process fixtures for streaming, model discovery, session loading, approvals and cancellation. Those adapter-level checks do not bypass the engine's execution restriction.
+- The adapter is covered by process fixtures for streaming, model discovery, session loading, approvals and cancellation, and an engine fixture covers an opted-in run. The adapter refuses a run policy that is not the `acp-native-v1` receipt.
 
 ## Storage and API
 
@@ -58,11 +70,11 @@ Validation includes process fixtures for streaming, session replay, model select
 
 ## Real CLI acceptance test
 
-`npm run test:acp:live` currently exits with the managed-permission explanation before it looks for or starts a provider, creates a repository, or consumes model usage. `--help` describes this state. The historical inference harness remains in the script for a future verified adapter contract; it does not run under the current restriction.
+`CODEFLOW_LIVE_ACP=1 npm run test:acp:live -- --agent opencode|kilo|cline` starts the installed CLI as an unrestricted ACP run in a temporary repository and consumes model usage. Without `CODEFLOW_LIVE_ACP=1` it exits before looking for a provider. It has not been rerun since the opt-in was added.
 
 ## Historical acceptance evidence
 
-The following October 19 observations predate the managed-permission restriction and do not establish current run availability.
+The following October 19 observations predate the managed-permission restriction and the opt-in; they do not establish that current CLI versions pass.
 
 This two-turn test passed locally on October 19, 2026 with OpenCode 1.18.30 and `opencode/big-pickle`, including session loading after restart and two committed changes. This establishes compatibility for the observed installation, not every ACP agent or OpenCode release.
 

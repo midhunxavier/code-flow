@@ -11,9 +11,10 @@ import { getAdapter } from "../adapters/index.js";
 import { repoRoot, assertWorktree, git } from "../git.js";
 import { flushWrites, journalEntry, loadJournal, RUNS_DIR } from "../store.js";
 import { cliTeamPattern } from "./pattern.js";
-import { catalog, resolveParticipant } from "./providers.js";
+import { antigravitySandboxProblem, catalog, resolveParticipant } from "./providers.js";
+import { AGY_NATIVE_LIMITATION } from "../run-permissions.js";
 import { captureSource, type SourceSnapshot } from "./snapshots.js";
-import { canonical, digest, fail, validateCandidate, validateWebCandidate, validatePreferences, type Definition, type Node, type PendingAssignment, type Preferences } from "./model.js";
+import { canonical, digest, fail, validateCandidate, validateWebCandidate, validatePreferences, PROVIDERS, PROVIDER_NAMES, type Definition, type Node, type PendingAssignment, type Preferences } from "./model.js";
 import { validateTool, CLI_TOOLS } from "./tools.js";
 import { registerHostHandlers } from "./host.js";
 import { recoverCliAccounting } from "./accounting.js";
@@ -41,6 +42,13 @@ async function preferences(path: string, projectRoot?: string): Promise<Preferen
     return validatePreferences(parsed.preferences ?? parsed);
   }
   catch (e) { if ((e as NodeJS.ErrnoException).code === "ENOENT") return {}; throw e; }
+}
+const providerName = (provider: string) => PROVIDER_NAMES[provider as keyof typeof PROVIDER_NAMES] ?? provider;
+const managedAgy = (d: Definition) => d.participants.some(a => a.provider === "agy" && a.binding !== "current_session");
+/** One plain line on how managed agy runs, or nothing when the team has no managed agy participant. */
+function antigravityLine(d: Definition) {
+  if (!managedAgy(d)) return undefined;
+  return d.antigravity === "unrestricted" ? "Antigravity: UNRESTRICTED. agy uses your normal profile and settings, outside Code Flow's sandbox." : "Antigravity: sandboxed. agy gets workspace file tools only; Code Flow runs the checks.";
 }
 export class CliTeamsService {
   workspace?: {
@@ -162,6 +170,7 @@ export class CliTeamsService {
       `Setup: ${p.definition.setup || "none"}; check: ${p.definition.check || "none"}`,
       `Limits: ${p.definition.limits.maxInvocations} lifetime managed calls; ${p.definition.limits.maxMinutes} execution minutes; ${p.definition.limits.concurrency} concurrent workers; ${p.definition.limits.maxAttempts} managed attempts per assignment, including transport/schema repair; ${p.definition.limits.attemptTimeoutMs / 60000} minutes per attempt. Host usage unobserved; waiting time excluded.`,
       `Permissions: Standard managed tools, native delegation disabled; current-session assignments remain read-only cooperative work. Existing provider/file access boundaries apply. No merge/push/deploy.`,
+      ...(managedAgy(p.definition) ? [p.definition.antigravity === "unrestricted" ? `Antigravity: unrestricted, as requested. ${AGY_NATIVE_LIMITATION}` : "Antigravity: isolated macOS sandbox with workspace file tools only. Terminal, browser, MCP, hooks and native delegation are disabled; Code Flow runs setup and checks separately."] : []),
       `Completion: ${p.definition.completion.map(s => compact ? s.slice(0, 300) : s).join("; ")}`, `Work sequence:\n${describe(p.definition.steps).join("\n\n")}`,
       ...(compact ? ["This is a compact preview. The interactive confirmation shows the full request, instructions, inputs, and configuration."] : [`Context notes: ${p.context.notes ?? "none"}\nSelected untracked files: ${p.context.untracked?.join(", ") || "none"}\nContinuation of: ${p.context.continueRunId ?? p.context.sourceRunId ?? "none"}\nAttached files: ${p.context.attachments?.map(file => `${file.name} (${Buffer.byteLength(file.data, "base64")} bytes)`).join("; ") || "none"}\nReferenced artifacts: ${p.context.artifacts?.map(a => `${a.artifactId} (${a.sha256}) from ${a.runId}`).join("; ") || "none"}`]),
       `Proposal ${p.id} revision ${p.revision}; hash ${p.hash}`,
@@ -171,16 +180,14 @@ export class CliTeamsService {
   }
   /** One line with what matters most: hosts show only the first few lines of a confirmation. */
   proposalHeadline(p: Proposal) {
-    const names: Record<string, string> = { claude: "Claude", codex: "Codex", agy: "Antigravity" };
     const what = { plan: "Plan only, no file changes", review: "Review only, no file changes", write: "Writes code in a separate worktree" }[p.definition.scope];
-    const team = p.definition.participants.map(a => [names[a.provider] ?? a.provider, a.model, a.effort].filter(Boolean).join(" ")).join(" + ");
+    const team = p.definition.participants.map(a => [providerName(a.provider), a.model, a.effort, a.provider === "agy" && a.binding !== "current_session" && p.definition.antigravity === "unrestricted" ? "(unrestricted)" : ""].filter(Boolean).join(" ")).join(" + ");
     const { maxInvocations: calls, maxMinutes: minutes } = p.definition.limits;
     return `${what} · ${team} · up to ${calls} call${calls === 1 ? "" : "s"}, ${minutes} min`;
   }
   /** A short card in plain words for the chat and the native form. The full exact proposal stays behind the link and in the terminal. */
   proposalSummary(p: Proposal) {
     const what = { plan: "Plan only. Your files are not changed.", review: "Review only. Your files are not changed.", write: "Writes code in a separate worktree. Nothing reaches your branch until you apply it." }[p.definition.scope];
-    const names: Record<string, string> = { claude: "Claude", codex: "Codex", agy: "Antigravity" };
     const verbs: Record<string, string> = { propose: "drafts a plan", revise_proposal: "revises the plan", synthesize: "combines the proposals", review_plan: "reviews the plan", implement: "writes the code", repair: "fixes the findings", review_code: "reviews the changes" };
     const steps = (nodes: Definition["steps"], indent = ""): string[] => nodes.flatMap(n => {
       if (n.type === "task") return n.operation === "capture_snapshot" ? [`${indent}Snapshot your current files`] : n.operation === "verify" ? [`${indent}Run the check`] : [`${indent}${n.participant} ${verbs[n.operation]}`];
@@ -196,7 +203,8 @@ export class CliTeamsService {
     return [
       `Task: ${p.task.length > 240 ? `${p.task.slice(0, 240).trimEnd()}…` : p.task}`,
       `What it does: ${what}`,
-      "Team:", ...p.definition.participants.map(a => `  • ${a.id}: ${names[a.provider] ?? a.provider} · ${a.model ?? "default model"} · ${a.effort ?? "default"} effort${a.binding === "current_session" ? " (this CLI session)" : ""}`),
+      "Team:", ...p.definition.participants.map(a => `  • ${a.id}: ${providerName(a.provider)} · ${a.model ?? "default model"} · ${a.effort ?? "default"} effort${a.binding === "current_session" ? " (this CLI session)" : ""}`),
+      ...(antigravityLine(p.definition) ? [antigravityLine(p.definition)!] : []),
       "Steps:", ...numbered,
       `Commands it runs: ${commands || "none"}`,
       `Limit: up to ${p.definition.limits.maxInvocations} agent call${p.definition.limits.maxInvocations === 1 ? "" : "s"} · ${p.definition.limits.maxMinutes} minutes`,
@@ -347,10 +355,12 @@ export class CliTeamsService {
         if (old?.origin !== "cli" || !old.definition.participants.some(p => p.id === participant.id && p.provider === participant.provider && p.binding === "current_session")) fail("validation_failed", "The browser is not an agent session; choose a managed participant for new assignments");
       }
       validateWebCandidate({ ...candidate, participants: candidate.participants.map(p => ({ ...p, binding: "managed" })) });
+      // Like a CLI-bound reviewer, the browser may keep unrestricted Antigravity that a CLI proposal asked for, but never adds it.
+      if (candidate.antigravity === "unrestricted" && old?.definition.antigravity !== "unrestricted") fail("validation_failed", "Unrestricted Antigravity can only be requested from a CLI conversation; keep agy sandboxed here");
     }
     if (old && (old.revision !== a.expectedRevision || old.runId)) fail("revision_conflict", "Proposal changed or started; create a new proposal");
     const project = await preferences(join(c.repo, ".codeflow", "cli-teams.json"), c.repo), personal = await preferences(join(this.home, "cli-teams-preferences.json"));
-    const participants = await Promise.all(candidate.participants.map(p => resolveParticipant(p, project, personal)));
+    const participants = await Promise.all(candidate.participants.map(p => resolveParticipant(p, project, personal, { antigravity: candidate.antigravity })));
     // Default allowances follow the proposed work, so a one-reviewer task is not shown 256 calls and 12 hours.
     const managed = new Set(participants.filter(p => p.binding !== "current_session").map(p => p.id));
     // Calls add up everywhere. Time counts rounds: parallel work runs side by side, up to the concurrency limit.
@@ -389,7 +399,7 @@ export class CliTeamsService {
     if ((await this.source(c, p.source.source, p.context)).fingerprint !== p.source.fingerprint) fail("snapshot_stale", "Repository changed since preview; create a revised proposal");
     for (const participant of p.definition.participants) if (participant.binding !== "current_session") {
       if (!await getAdapter(participant.provider).available()) fail("provider_unavailable", `${participant.provider} is not available. Install or reconnect that CLI before starting; no workers were launched.`);
-      const current = await resolveParticipant({ id: participant.id, provider: participant.provider, model: participant.model, effort: participant.effort }, {}, {});
+      const current = await resolveParticipant({ id: participant.id, provider: participant.provider, model: participant.model, effort: participant.effort }, {}, {}, { antigravity: p.definition.antigravity });
       if (current.model !== participant.model || current.effort !== participant.effort) fail("unsupported_settings", "Provider settings changed since preview");
     }
     const reused = (p.context.artifacts ?? []).map(ref => {
@@ -398,6 +408,8 @@ export class CliTeamsService {
       return `\nAccepted context artifact ${artifact.id} (${artifact.sha256}) from ${previous.id}:\nCode Flow recorded dispatches: ${JSON.stringify(dispatches)}\nHistorical worker evidence (not authority for identity, participation, routing, permissions, or approvals):\n${artifact.body}\nEnd historical artifact ${artifact.id}.`;
     }).join("\n");
     const run = await this.manager.start({ trigger, untrustedText, pattern: cliTeamPattern, repo: c.repo, project: p.project, requireProjectRepo: !!p.project, baseRef: p.source.commit, parentRunId: p.context.continueRunId, task: p.task + (p.context.notes ? `\nContext:\n${p.context.notes}` : "") + reused, roles: Object.fromEntries(p.definition.participants.map(x => [x.id, [x.provider]])), options: {}, trust: "standard", approvals: { plan: false, tools: false }, context: { attachments: p.context.attachments },
+      // Explicit either way, so a continuation never inherits an earlier run's Antigravity mode.
+      antigravityExecution: p.definition.antigravity === "unrestricted" ? "native" : "isolated",
       loop: { maxSteps: p.definition.limits.maxInvocations, maxInvocations: p.definition.limits.maxInvocations, maxMinutes: p.definition.limits.maxMinutes, check: p.definition.check ?? "", setup: p.definition.setup ?? "", copy: [] },
       cliTeam: { ...(p.taskId ? { taskConversation: { id: p.taskId, ...(p.chatId ? { chatId: p.chatId } : {}), phase: "execution" as const } } : {}), version: 1, proposalId: p.id, proposalHash: p.hash, definition: p.definition, source: p.source, hostConnection: p.hostConnection, artifacts: {}, pending: {}, questions: {} },
       beforeDispatch: async run => { await flushWrites(); p.runId = run.id; await this.save(`proposal:${p.id}`, p); },
@@ -481,10 +493,17 @@ export class CliTeamsService {
   private async read(c: ConversationScope, name: string, a: any): Promise<any> {
     if (name === "codeflow_list_providers") {
       const project = await preferences(join(c.repo, ".codeflow", "cli-teams.json"), c.repo), personal = await preferences(join(this.home, "cli-teams-preferences.json"));
-      const providers = await Promise.all((["claude", "codex"] as const).map(async provider => ({ id: provider, installed: await getAdapter(provider).available(), authentication: "unverified; catalog discovery does not prove execution permissions", preferences: { ...personal.providers?.[provider], ...project.providers?.[provider] } })));
+      // Browser task leads plan with Claude and Codex only; Antigravity reaches browser tasks through a CLI proposal.
+      const providers = await Promise.all(PROVIDERS.filter(provider => c.surface !== "web" || provider !== "agy").map(async provider => {
+        const installed = await getAdapter(provider).available();
+        // Managed agy has two modes; say up front whether the default sandbox works here.
+        const sandbox = provider === "agy" && installed ? await antigravitySandboxProblem() : undefined;
+        return { id: provider, installed, authentication: "unverified; catalog discovery does not prove execution permissions", preferences: { ...personal.providers?.[provider], ...project.providers?.[provider] },
+          ...(provider === "agy" && installed ? { antigravity: { isolated: sandbox ? { available: false, reason: sandbox } : { available: true }, unrestricted: "Only when the user explicitly asks: set candidate.antigravity to \"unrestricted\". agy then uses the user's normal profile and settings outside Code Flow's sandbox." } } : {}) };
+      }));
       return { connection: { live: true, kind: this.connections.get(c.id ?? "")?.kind ?? "web", tools: CLI_TOOLS.map(t => t.name), message: "Code Flow is connected to this repository and its running owner." }, preferredProvider: project.preferredProvider ?? personal.preferredProvider, providers };
     }
-    if (name === "codeflow_list_models") { const models = await catalog(a.providerId, a.refresh); const offset = a.cursor ?? 0, end = offset + (a.limit ?? 50); return { ...models, models: models.models.slice(offset, end), nextCursor: end < models.models.length ? end : undefined }; }
+    if (name === "codeflow_list_models") { const models = await catalog(a.providerId, a.refresh, a.antigravity); const offset = a.cursor ?? 0, end = offset + (a.limit ?? 50); return { ...models, models: models.models.slice(offset, end), nextCursor: end < models.models.length ? end : undefined }; }
     if (name === "codeflow_list_runs") {
       const runs = this.manager.list().filter(r => r.repo === c.repo && r.pattern === "cli-team").filter(r => {
         try { const run = this.run(c, r.id); return !a.unfinishedOnly || !["plan_ready", "agreed_plan", "verified_changes", "review_complete"].includes(run.cliTeam!.outcome ?? ""); } catch { return false; }
@@ -561,7 +580,7 @@ export class CliTeamsService {
       artifacts: page.map(({ id, kind, sha256, participant }) => ({ id, kind, sha256, participant })), artifactCount: artifacts.length, nextArtifactCursor: artifactEnd < artifacts.length ? artifactEnd : undefined,
       assignments: run.status === "running" && state.hostConnection === c.id ? Object.values(state.pending).filter(p => !p.output).map(p => ({ id: p.id, participant: p.participant, attemptId: p.attemptId, claimed: !!p.claimHash })) : [],
       questions: run.status === "running" ? Object.entries(state.questions).filter(([, q]) => !q.answer).map(([id, q]) => ({ id, ...q })) : [],
-      host: { connected: this.connections.get(state.hostConnection)?.active === true && this.connections.get(state.hostConnection)!.expiresAt > Date.now(), thisSession: state.hostConnection === c.id, ...(needsHost && state.hostConnection !== c.id ? persistent ? { attachCommand: `codeflow attach ${run.id} --connection ${c.id}` } : { reconnect: "Ask your Claude or Codex MCP session to inspect this run, then use the attachment command it returns. Terminal status connections are temporary." } : {}) },
+      host: { connected: this.connections.get(state.hostConnection)?.active === true && this.connections.get(state.hostConnection)!.expiresAt > Date.now(), thisSession: state.hostConnection === c.id, ...(needsHost && state.hostConnection !== c.id ? persistent ? { attachCommand: `codeflow attach ${run.id} --connection ${c.id}` } : { reconnect: "Ask your Claude, Codex or Antigravity MCP session to inspect this run, then use the attachment command it returns. Terminal status connections are temporary." } : {}) },
       limits: state.definition.limits, usage: { managedInvocations: state.managedInvocations ?? 0, accountedExecutionMs: Math.max(run.clockUsedMs ?? 0, state.accountedExecutionMs ?? 0), recoveryTimeChargeMs: state.recoveryTimeChargeMs, providerReported: run.usage, host: "unobserved", cost: "Provider usage may be incomplete or API-equivalent; this is not a billing total" },
     };
   }

@@ -2,7 +2,7 @@
 
 Open the macOS or Windows WSL2 desktop app, or start the local browser app with one command. You do not need to clone Code Flow or add it to your project. The preview uses your installed coding CLIs and their existing logins.
 
-**Desktop preview 0.1.0-preview.13.** Download a desktop app or use the exact release package below. Each published app release automatically updates the npm `latest` and `preview` channels after npm processing completes. See the [preview release notes and checksums](https://github.com/midhunxavier/code-flow/releases/tag/v0.1.0-preview.13).
+**Desktop preview 0.1.0-preview.14.** Download a desktop app or use the exact release package below. Each published app release automatically updates the npm `latest` and `preview` channels after npm processing completes. See the [preview release notes and checksums](https://github.com/midhunxavier/code-flow/releases/tag/v0.1.0-preview.14).
 
 ## Quick start: browser, terminal, or desktop
 
@@ -15,19 +15,19 @@ codeflow
 
 Code Flow opens in your browser. If it does not, open the private sign-in link printed in the terminal. Leave the terminal running; press Ctrl+C to stop.
 
-**Claude Code or Codex CLI.** Install the launcher above, then set up Code Flow once for your user account:
+**Claude Code, Codex or Antigravity CLI.** Install the launcher above, then set up Code Flow once for your user account:
 
 ```sh
 codeflow init
 codeflow doctor
 ```
 
-`init` adds one `codeflow` connection and skill to your own Claude Code and Codex settings. It writes nothing into your repositories. Start `claude` or `codex` inside any Git project; Code Flow works on the repository you start it in. Invoke `/codeflow` in Claude Code or `$codeflow` in Codex, then describe your task and review the proposed approach. This integration is experimental. See [terminal setup](cli-conversational-teams.md) for approval and troubleshooting details.
+`init` adds one `codeflow` connection and skill to your own Claude Code, Codex and Antigravity (`agy`) settings, for the CLIs you have installed. It writes nothing into your repositories. Start `claude`, `codex` or `agy` inside any Git project; Code Flow works on the repository you start it in. Invoke `/codeflow` in Claude Code or agy, or `$codeflow` in Codex, then describe your task and review the proposed approach. This integration is experimental. See [terminal setup](cli-conversational-teams.md) for approval and troubleshooting details.
 
 **Desktop preview.** Node is included; Git and a signed-in coding CLI are still required.
 
-- macOS 13+: [Apple Silicon DMG](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.13/code-flow-0.1.0-preview.13-macos-arm64-unnotarized.dmg) · [Intel DMG](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.13/code-flow-0.1.0-preview.13-macos-x64-unnotarized.dmg). Open the DMG and drag Code Flow to Applications. These preview builds are unnotarized and macOS may block them.
-- Windows: [x64 ZIP](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.13/code-flow-0.1.0-preview.13-windows-x64-unsigned.zip) · [ARM64 ZIP](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.13/code-flow-0.1.0-preview.13-windows-arm64-unsigned.zip). Extract the entire ZIP and open Code Flow.exe. WSL2 is required; install Git and sign in to your agent CLI inside WSL. These builds are unsigned.
+- macOS 13+: [Apple Silicon DMG](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.14/code-flow-0.1.0-preview.14-macos-arm64-unnotarized.dmg) · [Intel DMG](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.14/code-flow-0.1.0-preview.14-macos-x64-unnotarized.dmg). Open the DMG and drag Code Flow to Applications. These preview builds are unnotarized and macOS may block them.
+- Windows: [x64 ZIP](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.14/code-flow-0.1.0-preview.14-windows-x64-unsigned.zip) · [ARM64 ZIP](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.14/code-flow-0.1.0-preview.14-windows-arm64-unsigned.zip). Extract the entire ZIP and open Code Flow.exe. WSL2 is required; install Git and sign in to your agent CLI inside WSL. These builds are unsigned.
 
 On Windows, run web and terminal commands in WSL2, with your repository and CLIs in the Linux environment. See [Windows setup](windows-desktop.md).
 
@@ -43,12 +43,12 @@ On Windows, run web and terminal commands in WSL2, with your repository and CLIs
 <section id="install-unix" role="tabpanel" aria-labelledby="install-tab-unix" tabindex="0">
 <h3>Try it with one command</h3>
 <p>Install Node.js 22.13+ and Git 2.38+, then run:</p>
-<pre><code class="language-sh">npx --yes --package=https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.13/midhunxavier-code-flow-0.1.0-preview.13.tgz codeflow</code></pre>
+<pre><code class="language-sh">npx --yes --package=https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.14/midhunxavier-code-flow-0.1.0-preview.14.tgz codeflow</code></pre>
 <p>Code Flow starts locally and opens its sign-in link in your default browser. Keep the terminal open while you work. Press <strong>Ctrl+C</strong> to stop the server.</p>
 </section>
 <section id="install-windows" role="tabpanel" aria-labelledby="install-tab-windows" tabindex="0">
 <h3>Windows desktop with WSL2</h3>
-<p>The Windows desktop preview runs its backend and agents in your WSL2 distribution. Node is bundled; Git and agent CLIs are installed inside WSL. Docker is not required. Download the <a href="https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.13/code-flow-0.1.0-preview.13-windows-x64-unsigned.zip">x64 ZIP</a> or <a href="https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.13/code-flow-0.1.0-preview.13-windows-arm64-unsigned.zip">ARM64 ZIP</a>, extract the entire ZIP, and open <strong>Code Flow.exe</strong>. See the <a href="windows-desktop.md">Windows desktop guide</a> for setup and validation status. This portable preview is unsigned.</p>
+<p>The Windows desktop preview runs its backend and agents in your WSL2 distribution. Node is bundled; Git and agent CLIs are installed inside WSL. Docker is not required. Download the <a href="https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.14/code-flow-0.1.0-preview.14-windows-x64-unsigned.zip">x64 ZIP</a> or <a href="https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.14/code-flow-0.1.0-preview.14-windows-arm64-unsigned.zip">ARM64 ZIP</a>, extract the entire ZIP, and open <strong>Code Flow.exe</strong>. See the <a href="windows-desktop.md">Windows desktop guide</a> for setup and validation status. This portable preview is unsigned.</p>
 <h3>Use Windows Subsystem for Linux</h3>
 <p>This preview runs inside <strong>WSL2</strong>. Install Node.js 22.13+, Git 2.38+ and your agent CLIs inside WSL, sign in there, and keep your repository in the Linux filesystem. In your WSL terminal, run:</p>
 <pre><code class="language-sh">npx @midhunxavier/code-flow@preview</code></pre>
@@ -73,10 +73,10 @@ codeflow</code></pre>
 
 ## macOS app download
 
-Prefer an app you can open from Applications? Download **0.1.0-preview.13** for your Mac:
+Prefer an app you can open from Applications? Download **0.1.0-preview.14** for your Mac:
 
-- [Download Apple Silicon DMG (M1 or later)](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.13/code-flow-0.1.0-preview.13-macos-arm64-unnotarized.dmg)
-- [Download Intel DMG](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.13/code-flow-0.1.0-preview.13-macos-x64-unnotarized.dmg)
+- [Download Apple Silicon DMG (M1 or later)](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.14/code-flow-0.1.0-preview.14-macos-arm64-unnotarized.dmg)
+- [Download Intel DMG](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.14/code-flow-0.1.0-preview.14-macos-x64-unnotarized.dmg)
 
 1. Choose **arm64** for Apple Silicon, or **x64** for an Intel Mac. macOS 13 or later is required.
 2. Open the DMG and drag **Code Flow** to **Applications**.

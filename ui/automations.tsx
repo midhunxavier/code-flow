@@ -84,6 +84,8 @@ export function ScheduleEditor({ automation: a, save, onChange, zoneRequired = f
   const [refused, setRefused] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  // What this window last sent, until it shows up as the saved schedule (undefined: nothing sent).
+  const sent = useRef<Schedule | null | undefined>(undefined);
   const schedule = draftSchedule(draft);
   const problem = draft.mode === "off" && !allowOff ? "Enable a webhook before removing the schedule." : draftProblem(draft, zoneRequired);
   useEffect(() => { onValidityChange?.(problem); }, [problem]);
@@ -99,6 +101,11 @@ export function ScheduleEditor({ automation: a, save, onChange, zoneRequired = f
       return;
     }
     setRefused(false);
+    // This window's own save arriving. An edit typed while it was still reloading starts from it:
+    // it is not another window's change.
+    const own = sent.current !== undefined && sameSchedule(sent.current ?? undefined, a.schedule);
+    if (own) sent.current = undefined;
+    if (own && dirty && !sameSchedule(schedule, a.schedule)) { setBase({ json: incoming, revision: a.revision }); setConflict(false); return; }
     if (onChange) setBase({ json: incoming, revision: a.revision });
     // Untouched, or this edit is what was saved: show what's stored now (its zone's current name too).
     else if (!dirty || sameSchedule(schedule, a.schedule)) reseed();
@@ -113,8 +120,9 @@ export function ScheduleEditor({ automation: a, save, onChange, zoneRequired = f
   const submit = async (revision = base.revision) => {
     if (!save) return;
     setSaving(true); setError("");
+    sent.current = schedule ?? null;
     try { await save({ schedule: schedule ?? null, ...(revision !== undefined ? { revision } : {}) }); }
-    catch (err) { if (err instanceof ApiError && err.status === 409) { setConflict(true); setRefused(true); } else setError((err as Error).message); }
+    catch (err) { sent.current = undefined; if (err instanceof ApiError && err.status === 409) { setConflict(true); setRefused(true); } else setError((err as Error).message); }
     finally { setSaving(false); }
   };
   const zone = localTimezone();

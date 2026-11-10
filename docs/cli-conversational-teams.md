@@ -1,6 +1,6 @@
 # Agent teams in your CLI conversation
 
-The conversational CLI integration builds a team and process from your task. You can choose Claude Code, Codex, individual models, and supported effort values in the same instruction. Existing web workflows and saved web teams are unchanged.
+The conversational CLI integration builds a team and process from your task. You can choose Claude Code, Codex, Antigravity CLI (`agy`), individual models, and supported effort values in the same instruction. Existing web workflows and saved web teams are unchanged.
 
 This integration is experimental. Automated tests exercise the project installer, public MCP protocol, worktrees, checks, agreement loops, host participation, and recovery with fixture providers. The current surface has fourteen tools, including exact diff preview and apply to checkout. Native-host compatibility and real-provider evidence are recorded separately in the QA reports; fixture checks do not certify model behavior or every CLI version.
 
@@ -10,7 +10,7 @@ Claude Code and Codex CLI also support [automatic shared runtime updates](deskto
 
 ## Install and connect
 
-Use Node.js 22.13+, Git 2.38+, and at least one installed and signed-in Claude Code or Codex CLI. Use the installed Code Flow launcher on PATH. For a source build, run `npm ci`, `npm run package:npm`, then install the resulting `dist/npm` package using your normal local/global package installation method.
+Use Node.js 22.13+, Git 2.38+, and at least one installed and signed-in Claude Code, Codex or Antigravity CLI. Use the installed Code Flow launcher on PATH. For a source build, run `npm ci`, `npm run package:npm`, then install the resulting `dist/npm` package using your normal local/global package installation method.
 
 Install the launcher for regular use, then set up Code Flow once for your user account:
 
@@ -21,23 +21,24 @@ codeflow init
 codeflow doctor
 ```
 
-`init` detects installed providers. You can choose `--providers claude`, `--providers codex`, or `--providers claude,codex`; both providers are not required for a task using only one. Setup registers one user-level `codeflow` MCP connection per CLI and installs the `codeflow` skill in your user settings:
+`init` detects installed providers. You can choose any of them, for example `--providers claude`, `--providers codex,agy`, or `--providers claude,codex,agy`; a task using one provider does not need the others. Setup registers one user-level `codeflow` MCP connection per CLI and installs the `codeflow` skill in your user settings:
 
 - Claude Code: `claude mcp add-json -s user codeflow …` (stored in `~/.claude.json`) and `~/.claude/skills/codeflow/`.
 - Codex: a marked block in `$CODEX_HOME/config.toml` (default `~/.codex/config.toml`) and `$CODEX_HOME/skills/codeflow/`.
+- Antigravity CLI: `agy mcp add codeflow …` (stored in `~/.gemini/config/mcp_config.json`) and `~/.gemini/config/skills/codeflow/`. If you turn the connection off in agy's `/mcp` panel, setup leaves it off.
 
 Nothing is written into your repositories, so they never contain personal paths. The connection works on the Git repository the CLI was started in (a subfolder resolves to its repository root). Started outside a repository, it explains how to continue instead of failing. Setup does not run repository setup commands or agent inference. Unrelated MCP entries are preserved, and setup refuses to overwrite a `codeflow` entry or skill you created or edited.
 
 If a repository has the older in-repository setup (`.mcp.json`, `.codex/config.toml`, `.claude/skills` or `.agents/skills` written by an earlier `codeflow init`), running `codeflow init` inside it removes the entries Code Flow owns and keeps anything you edited. `codeflow uninstall --user` removes the user-level connections and skills; `codeflow uninstall --project` removes only an older in-repository setup.
 
-Start `claude` or `codex` from your project. Reload the CLI or reconnect from `/mcp` if the skill/connection does not appear.
+Start `claude`, `codex` or `agy` from your project. Reload the CLI or reconnect from `/mcp` if the skill/connection does not appear.
 
 Code Flow connects to the existing local owner. If none is running, it starts one without opening a browser. It does not start a competing execution store or take over an incompatible owner. Close/restart an older owner if it lacks the CLI bridge. Codex configuration explicitly forwards `CODEFLOW_HOME`; use an absolute path for a custom state directory shared across projects.
 
-## Start in Claude Code or Codex
+## Start in Claude Code, Codex or Antigravity
 
-1. In the same project directory, run `claude` or `codex` and trust the project. Approve the Code Flow MCP connection if prompted; restart the CLI if the skill or connection is missing.
-2. In Claude Code, invoke `/codeflow`. In Codex, invoke `$codeflow`. Native skill availability depends on your CLI version.
+1. In the same project directory, run `claude`, `codex` or `agy` and trust the project. Approve the Code Flow MCP connection if prompted; restart the CLI if the skill or connection is missing.
+2. In Claude Code or agy, invoke `/codeflow`. In Codex, invoke `$codeflow`. Native skill availability depends on your CLI version. When a CLI cannot show a native approval form, Code Flow gives you its link or a `codeflow approve` command instead.
 3. Describe the outcome, for example: “Use Claude to implement this bug fix and Codex to review it. Run the focused tests.” Both CLIs must be installed and signed in if you request both.
 4. Review the proposed participants, work, checks and limits. Approve the native confirmation, or open the provided Code Flow link and start the task there. Ask for changes before accepting if needed.
 
@@ -50,6 +51,8 @@ Invoke the installed `codeflow` skill in the host conversation. Examples of nati
 Or specify your preferred models and effort:
 
 > Use Claude Opus with high effort to draft the plan, Codex with my configured model and high effort to review it, and a fresh Claude Opus reviewer with the highest effort I select from its supported choices for final review.
+
+Antigravity workers run in Code Flow's isolated macOS sandbox with workspace file tools only, and Code Flow runs the checks. That sandbox supports only the agy versions Code Flow has verified; `codeflow_list_providers` says whether it works on your computer. To use your normal agy profile and settings instead, ask for it, for example “use agy unrestricted”. The proposal and approval card then say **Antigravity: UNRESTRICTED**. Code Flow never chooses that mode by itself, and the browser cannot add it to a proposal.
 
 Code Flow discovers the actual models/efforts before execution. Unsupported or ambiguous selections produce choices; there is no silent downgrade. You do not select a preset or create a named team.
 

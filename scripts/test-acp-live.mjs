@@ -14,13 +14,14 @@ import { runProviderProblem } from "../src/run-permissions.ts";
 import { approveLiveAcpRequest } from "./acp-live-approval.ts";
 
 const args = process.argv.slice(2);
-const usage = "Usage: npm run test:acp:live -- [--agent opencode|kilo|cline]\nCurrently unavailable while ACP providers cannot enforce managed run permissions. No CLI is launched.\nOverride its executable with CODEFLOW_LIVE_OPENCODE, CODEFLOW_LIVE_KILO or CODEFLOW_LIVE_CLINE; optionally set CODEFLOW_LIVE_MODEL.";
+const usage = "Usage: npm run test:acp:live -- [--agent opencode|kilo|cline]\nWith CODEFLOW_LIVE_ACP=1, starts the CLI as an unrestricted ACP run (Full access, approvals answered by this script) and consumes model usage. Without it, no CLI is launched.\nOverride its executable with CODEFLOW_LIVE_OPENCODE, CODEFLOW_LIVE_KILO or CODEFLOW_LIVE_CLINE; optionally set CODEFLOW_LIVE_MODEL.";
 if (args.length === 1 && args[0] === "--help") { console.log(usage); process.exit(0); }
 if (args.length && (args.length !== 2 || args[0] !== "--agent")) throw new Error(usage);
 const preset = acpPresets.find((item) => item.key === (args[1] ?? "opencode"));
 if (!preset) throw new Error(usage);
 const connection = acpPresetConnection(preset);
-const unavailable = runProviderProblem(connection.id, connection.name);
+// A live run uses the real account. It starts only on an explicit request, never from the test suite.
+const unavailable = process.env.CODEFLOW_LIVE_ACP !== "1" ? "Set CODEFLOW_LIVE_ACP=1 to start an unrestricted ACP run with the installed CLI and its account." : runProviderProblem(connection.id, connection.name, { acpExecution: "native" });
 if (unavailable) { console.error(`ACP live acceptance is unavailable. ${unavailable} No provider was started and no usage was consumed.`); process.exit(1); }
 const { commandExists } = await import("../src/adapters/process.ts");
 connection.command = process.env[`CODEFLOW_LIVE_${preset.key.toUpperCase()}`] ?? connection.command;
@@ -135,7 +136,7 @@ try {
   await api("/api/acp-connections", { revision: settings.revision, connection });
   const phrase = `orbit-marble-${randomBytes(8).toString("hex")}`;
   const created = await api("/api/runs", {
-    pattern: "solo", repo, roles: { agent: [connection.id] }, trust: "full", approvals: { tools: true },
+    pattern: "solo", repo, roles: { agent: [connection.id] }, trust: "full", acpExecution: "native", approvals: { tools: true },
     agentSettings: { [connection.id]: { model: model ?? probe.catalog.defaultModel } },
     task: `Implement slugify(value) in slugify.mjs: lowercase ASCII text, replace each run of non-alphanumeric characters with a hyphen, trim leading/trailing hyphens. Change only slugify.mjs; the existing tests are in slugify.test.mjs and must not be changed. Run node --test. ${toolInstructions} Remember the verification phrase ${phrase} in this conversation for a later reply; don't put it in files or your answer yet.`,
     loop: { setup: "", check: "node --test", copy: [] }, options: {},

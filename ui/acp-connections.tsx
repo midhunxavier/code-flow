@@ -24,7 +24,7 @@ export function AcpConnectionsPanel() {
   return <section class="settings-card" aria-label="ACP connections">
     <h3>Connect another coding agent</h3>
     <p class="help">Connect OpenCode, Kilo, Cline or another CLI that supports Agent Client Protocol (ACP). Install and sign in through the CLI on this machine first.</p>
-    <p class="help">Connections can be saved and checked for protocol and models. ACP providers are unavailable for runs because Code Flow cannot enforce their managed permission policy. Choose Claude Code, Codex or Antigravity for coding tasks; changing to Full access does not enable ACP runs.</p>
+    <p class="help">Connections can be saved and checked for protocol and models. ACP providers run only when a run opts in, because Code Flow cannot enforce its managed permission policy on them: turn on Allow unrestricted ACP agents in a chat's Provider menu. Full access alone does not enable ACP runs.</p>
     <div class="settings-actions">{acpPresets.map((item) => <button key={item.key} class="btn" disabled={busy || !document} onClick={() => { const existing = document?.connections.find((connection) => connection.id === `acp:${item.key}`); edit(existing ?? acpPresetConnection(item), !!existing); }}>Connect {item.name}</button>)}<button class="btn" disabled={busy || !document} onClick={() => edit({ id: "acp:", name: "", command: "", args: [], enabled: true }, false)}>Add compatible CLI</button><button class="btn" disabled={busy} onClick={() => void reload()}>Reload connections</button></div>
     {document?.connections.map((connection) => <article class="wb-item" key={connection.id}>
       <div class="wb-item-head"><strong>{connection.name}</strong><span class="badge">{connection.enabled ? "Enabled" : "Disabled"}</span></div>
