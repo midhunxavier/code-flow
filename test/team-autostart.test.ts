@@ -79,5 +79,7 @@ test("service paths and executable arguments remain literal without systemd spec
   const unit = serviceUnit('/home/a %u $USER "quote"', '/node %n $PATH/bin/node', '/custom/%u/$PATH:/usr/bin');
   assert.ok(unit.includes('ExecStart="/node %%n $$PATH/bin/node"'));
   assert.ok(unit.includes('Environment="PATH=/custom/%%u/$PATH:/usr/bin"'));
+  assert.ok(unit.includes('\nWorkingDirectory=/home/a %%u $USER "quote"\n'), "systemd rejects a quoted working directory");
+  assert.throws(() => serviceUnit("relative/root", "/node", "/bin"), /absolute/);
   assert.throws(() => serviceUnit("/home/a\nExecStart=bad", "/node", "/bin"), /control characters/);
 });
