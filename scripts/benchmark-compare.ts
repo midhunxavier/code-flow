@@ -107,28 +107,21 @@ async function transcriptRequest(address: string, legacy: boolean, events: numbe
 const processes: ChildProcess[] = [];
 let browser: Browser | undefined;
 try {
-  const baseline = join(temp, "baseline"), native = join(temp, "native"), repo = join(temp, "repo");
-  await mkdir(baseline); await mkdir(native); await mkdir(repo);
+  const baseline = join(temp, "baseline"), repo = join(temp, "repo");
+  await mkdir(baseline); await mkdir(repo);
   execFileSync("tar", ["-xf", "-", "-C", baseline], { input: execFileSync("git", ["archive", ref], { cwd: root, maxBuffer: 128 * 1024 * 1024 }) });
   assert.deepEqual(JSON.parse(await readFile(join(baseline, "package.json"), "utf8")).dependencies, JSON.parse(await readFile(join(root, "package.json"), "utf8")).dependencies, "baseline dependency versions must match");
   await symlink(join(root, "node_modules"), join(baseline, "node_modules"));
   execFileSync(process.execPath, ["scripts/build-ui.mjs"], { cwd: baseline, stdio: "inherit" });
   execFileSync(process.execPath, ["scripts/build-ui.mjs"], { cwd: root, stdio: "inherit" });
-  execFileSync("cargo", ["build", "--release", "--locked", "--manifest-path", "experiments/rust-transcript/Cargo.toml"], { cwd: root, stdio: "inherit" });
-  await cp(join(root, "src"), join(native, "src"), { recursive: true });
-  for (const name of ["node_modules", "public", "scripts", "experiments", "dist"]) await symlink(join(root, name), join(native, name));
-  await cp(join(root, "package.json"), join(native, "package.json"));
-  const source = await readFile(join(native, "src/transcript.ts"), "utf8");
-  assert.ok(source.includes("reader: typeof reverseLines = reverseLines"));
-  await writeFile(join(native, "src/transcript.ts"), 'import { rustReverseLines } from "../experiments/rust-transcript/reader.js";\n' + source.replace("reader: typeof reverseLines = reverseLines", "reader: typeof reverseLines = rustReverseLines"));
   execFileSync("git", ["init", "-q", "-b", "main"], { cwd: repo }); await writeFile(join(repo, "README.md"), "Benchmark fixture\n");
   execFileSync("git", ["add", "."], { cwd: repo }); execFileSync("git", ["-c", "user.name=Benchmark", "-c", "user.email=benchmark@example.invalid", "commit", "-qm", "fixture"], { cwd: repo });
   browser = await chromium.launch({ channel: "chrome", headless: true });
-  const result: any = { baseline: ref, optimized: execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim(), trials, apiRepeats, machine: { platform: platform(), arch: arch(), cpu: cpus()[0]?.model, cores: cpus().length, memoryBytes: totalmem(), node: process.version, browser: browser.version(), rust: execFileSync("rustc", ["--version"], { encoding: "utf8" }).trim(), loadAverage: loadavg() }, method: "One unmeasured browser warmup per variant, then fresh browser context per trial; OS filesystem caches are not flushed. Variant order rotates each round. Timings include HTTP, JS parsing, rendering and native process startup/IPC. Browser heap is collected after GC. API requests are warm. Synthetic data; no provider inference.", scenarios: [] };
+  const result: any = { baseline: ref, optimized: execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim(), trials, apiRepeats, machine: { platform: platform(), arch: arch(), cpu: cpus()[0]?.model, cores: cpus().length, memoryBytes: totalmem(), node: process.version, browser: browser.version(), loadAverage: loadavg() }, method: "One unmeasured browser warmup per variant, then fresh browser context per trial; OS filesystem caches are not flushed. Variant order rotates each round. Timings include HTTP, JS parsing, rendering and native process startup/IPC. Browser heap is collected after GC. API requests are warm. Synthetic data; no provider inference.", scenarios: [] };
   for (const scenario of [{ name: "small", runs: 20, events: 1000 }, { name: "medium", runs: 200, events: 5000 }, { name: "stress", runs: 200, events: 100_000 }].filter((entry) => arg("--scenarios", "small,medium,stress").split(",").includes(entry.name))) {
     const sourceHome = join(temp, `${scenario.name}-fixture`); await fixture(sourceHome, repo, scenario.runs, scenario.events);
     const variants: any[] = [];
-    for (const [name, directory] of [["baseline", baseline], ["typescript", root], ["rust", native]]) {
+    for (const [name, directory] of [["baseline", baseline], ["typescript", root]]) {
       const home = join(temp, `${scenario.name}-${name}`); await cp(sourceHome, home, { recursive: true });
       const server = await launch(directory!, home); processes.push(server.child);
       variants.push({ name, ...server, browser: [], historyMs: [], transcriptApiMs: [], transcriptApiBytes: [], failures: [], browserFailed: false, apiFailed: false });

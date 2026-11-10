@@ -107,4 +107,4 @@ MCP text now uses readable summaries alongside structured data. Progress disting
 
 `context.reuseRunId` resolves the prior deliverable, chat, source and matching participant settings while retaining source freshness checks. Verified results include check/review evidence and a handoff action. `codeflow diff` and `codeflow apply` preview and stage the exact task delta in a clean checkout after native/terminal confirmation. Retained implementation remains included across continuations; pre-existing user source changes are excluded. Durable effect receipts prevent duplicate application and fence interrupted writes.
 
-See [implementation plan](17-cli-ux-implementation.md) and the [2026-11-04 validation report](../qa-dogfood/cli-ux-2026-11-04.md).
+See [implementation plan](17-cli-ux-implementation.md).

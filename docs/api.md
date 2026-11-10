@@ -538,8 +538,7 @@ returned/visible group before retrying an interrupted request.
 | `DELETE /journeys/:id` | none | Delete the scenario and retained screenshots. Existing runs keep their original attached test context. |
 
 A replay receipt's `passed` status means only that the expected visible text
-appeared after the recorded interactions. It is separate from Git verification;
-see [result experiences](application-improvements.md#result-first-product-experiences).
+appeared after the recorded interactions. It is separate from Git verification.
 
 ## Documentation and help
 

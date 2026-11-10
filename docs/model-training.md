@@ -330,4 +330,4 @@ CODEFLOW_TEST_LLM_PYTHON=/absolute/path/to/llm-env/bin/python CODEFLOW_TEST_LLM_
 
 The test generates tiny random Llama weights and a tokenizer locally. It tests the training machinery and export contract without downloading a pretrained model. It does not establish quality on a real task. CUDA acceptance still requires an owned NVIDIA server.
 
-[Documentation library](README.md) · [ML implementation plan](ml-training-implementation-plan.md) · [SSH projects](ssh-projects.md)
+[Documentation library](README.md) · [SSH projects](ssh-projects.md)

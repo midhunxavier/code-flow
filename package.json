@@ -39,7 +39,6 @@
     "evaluate:project-teams": "tsx scripts/evaluate-project-teams.ts",
     "benchmark:performance": "tsx scripts/benchmark-performance.ts",
     "benchmark:compare": "tsx scripts/benchmark-compare.ts",
-    "test:rust": "cargo build --release --locked --manifest-path experiments/rust-transcript/Cargo.toml && CODEFLOW_TEST_RUST=1 tsx --test test/rust-transcript.test.ts",
     "build:docs": "node scripts/build-docs.mjs",
     "docs:preview": "node scripts/preview-docs.mjs",
     "test:docs": "tsx --test test/docs.test.ts test/docs-help.test.ts",
