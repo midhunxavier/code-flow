@@ -1,5 +1,6 @@
 import { useEffect, useState } from "preact/hooks";
 import { api } from "./lib.js";
+import { Icon } from "./icons.js";
 import type { StoreRecord } from "../src/store-identity.js";
 
 type Identity = { store: StoreRecord; path: string; owner: { pid: number; origin: string; startedBy: string } };
@@ -12,12 +13,17 @@ export function StoreIndicator() {
     window.addEventListener("focus", load);
     return () => { active = false; window.removeEventListener("focus", load); };
   }, []);
-  if (!identity) return <span class="muted" role="status">Store unavailable</span>;
+  // Shared contributors have no store to show, and an empty top bar slot is better than a placeholder crowding it.
+  if (!identity) return null;
   const { store, owner } = identity;
   const label = `${store.name} · ${store.environment}${/^(wsl|docker):/.test(store.environment) ? " · separate store" : ""}`;
-  return <div style={{ position: "relative", minWidth: 0 }}>
-    <button class="btn ghost" style={{ maxWidth: "28vw", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={label} aria-expanded={open} onClick={() => setOpen(!open)}>{label}</button>
-    {open ? <div role="region" aria-label="Store identity" style={{ position: "absolute", right: 0, top: "100%", zIndex: 20, padding: "12px", background: "var(--bg, #181914)", border: "1px solid var(--border, #666)", width: "min(400px, 80vw)", overflowWrap: "anywhere" }}>
+  return <div class="store-indicator">
+    {/* a narrow top bar keeps only the icon; the name stays in the accessible name and the panel */}
+    <button class="btn ghost store-btn" title={label} aria-label={`Store: ${label}`} aria-expanded={open} onClick={() => setOpen(!open)}>
+      <Icon name="layers" />
+      <span class="store-label">{label}</span>
+    </button>
+    {open ? <div class="store-panel" role="region" aria-label="Store identity">
       <strong>{store.name}</strong>
       <div>Store: {store.storeId}</div><div>Path: {identity.path}</div><div>Environment: {store.environment}</div>
       <div>Owner PID: {owner.pid}</div><div>Origin: {owner.origin}</div><div>Started by: {owner.startedBy}</div>
