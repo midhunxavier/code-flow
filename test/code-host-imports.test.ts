@@ -22,3 +22,18 @@ test("commits fetched by the removed code-host review workflow still cannot star
     assert.equal(await isCodeHostImport(repo, "missing-branch"), false);
   } finally { await rm(repo, { recursive: true, force: true }); }
 });
+
+test("a legacy import stays untrusted after its branch is deleted", async () => {
+  const repo = await mkdtemp(join(tmpdir(), "code-host-imports-"));
+  const git = (...args: string[]) => execFileSync("git", ["-c", "user.name=test", "-c", "user.email=test@test", "-c", "commit.gpgsign=false", ...args], { cwd: repo, encoding: "utf8" }).trim();
+  try {
+    git("init", "-q", "-b", "main"); await writeFile(join(repo, "a.txt"), "a\n"); git("add", "."); git("commit", "-qm", "trusted");
+    git("checkout", "-qb", "codeflow/external/pr-1/source"); await writeFile(join(repo, "a.txt"), "b\n"); git("commit", "-qam", "fetched");
+    const fetched = git("rev-parse", "HEAD");
+    git("checkout", "-q", "main");
+    assert.equal(await isCodeHostImport(repo, "main"), false);
+    git("branch", "-qD", "codeflow/external/pr-1/source");
+    assert.equal(await isCodeHostImport(repo, fetched), true);
+    assert.equal(await isCodeHostImport(repo, "main"), false);
+  } finally { await rm(repo, { recursive: true, force: true }); }
+});

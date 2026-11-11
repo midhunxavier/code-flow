@@ -90,7 +90,7 @@ export class IntegrationConnections {
         const decipher = createDecipheriv("aes-256-gcm", key, Buffer.from(sealed.iv, "base64"));
         decipher.setAAD(Buffer.from("code-flow-integrations-v1")); decipher.setAuthTag(Buffer.from(sealed.tag, "base64"));
         const state = JSON.parse(Buffer.concat([decipher.update(Buffer.from(sealed.data, "base64")), decipher.final()]).toString("utf8"));
-        if (state.version !== 1 || !Array.isArray(state.connections) || state.connections.length > 40 || !Array.isArray(state.bindings) || state.bindings.length > 500 || !state.secrets || typeof state.secrets !== "object") throw new Error("Invalid state");
+        if (state.version !== 1 || !Array.isArray(state.connections) || state.connections.length > 80 || state.connections.filter((c: { provider: string }) => supported(c.provider)).length > 40 || !Array.isArray(state.bindings) || state.bindings.length > 500 || !state.secrets || typeof state.secrets !== "object") throw new Error("Invalid state");
         this.state = state;
       } catch { throw new Error("Integration credentials could not be opened. Original files were preserved; restore the matching key and data"); }
     }
@@ -188,7 +188,7 @@ export class IntegrationConnections {
     if (binding && test.record.provider === "github" && binding.repository !== test.record.repository) throw new Error("Connect the GitHub repository that was tested");
     return this.change(next => {
       if (next.connections.find(c => c.id === test.record.id)?.updatedAt !== test.previous) throw new Error("Connection changed. Test again before reconnecting");
-      if (!test.previous && next.connections.length >= 40) throw new Error("Connection limit reached; disconnect an unused service");
+      if (!test.previous && next.connections.filter(c => supported(c.provider)).length >= 40) throw new Error("Connection limit reached; disconnect an unused service");
       next.connections = [...next.connections.filter(c => c.id !== test.record.id), test.record]; Object.assign(next.secrets, test.secrets);
       if (binding) this.setBinding(next, { ...binding, connectionId: test.record.id });
       this.tests.delete(testId); return { id: test.record.id };

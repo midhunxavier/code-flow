@@ -18,8 +18,14 @@ export async function isCodeHostImport(repo: string, ref: string): Promise<boole
   const legacy = await git(["for-each-ref", "--format=%(refname) %(objectname)", LEGACY], repo);
   if (legacy.code) throw new Error("Cannot inspect legacy code-host imports");
   const refs = legacy.stdout.split("\n").filter(Boolean).map(line => line.split(" "));
-  if (refs.length) return (await legacyImportedHistory(repo, refs)).commits.includes(head);
-  return false;
+  if (!refs.length) return false;
+  const { commits, anchor } = await legacyImportedHistory(repo, refs);
+  // Make the finding durable: once marked, deleting or renaming the legacy branches cannot launder their commits.
+  if (commits.length) {
+    const marked = await git(["update-ref", "--stdin"], repo, { input: commits.map(commit => `update ${CODE_HOST_PROVENANCE}${commit} ${anchor}\n`).join("") });
+    if (marked.code) throw new Error("Cannot retain imported code provenance");
+  }
+  return commits.includes(head);
 }
 
 /** Existing local trust; application preview/provenance refs grant none. */
