@@ -319,12 +319,17 @@ export async function loadProjects(fresh = false) {
   }
   if (completeProjectInventory) {
     const r = route.value;
-    const destination = r.view === "project" ? r.id : r.view === "composer" || r.view === "workspace" || r.view === "chat" && r.id === "new" ? r.project : undefined;
+    const destination = r.view === "project" ? r.id : r.view === "composer" || r.view === "chat" && r.id === "new" ? r.project : undefined;
     if (destination && !projects.value.some(project => project.id === destination)) route.value = { view: "projects" };
   }
 }
 
 /** The project a run belongs to, as the server decides it (projectOf in projects.ts). */
+/** Repository tools live in the open repository's project; without one, on their own page. */
+export function repositoryToolsRoute(): Route {
+  const project = repo.value ? projects.value.find((p) => p.repos.includes(repo.value)) : undefined;
+  return project ? { view: "project", id: project.id, section: "repositories", repository: repo.value } : { view: "workspace" };
+}
 export function projectFor(run: { project?: string; repo: string }): Project | undefined {
   if (run.project) return projects.value.find((p) => p.id === run.project);
   return projects.value.find((p) => p.repos.includes(run.repo));
@@ -421,9 +426,9 @@ export async function afterStart(project?: string) {
 
 /** Why a folder couldn't be opened: not a repository is only one of the reasons. */
 function repoProblem(name: string, err: unknown): string {
-  if (!(err instanceof ApiError)) return `Couldn't reach code-flow to open ${name}`;
+  if (!(err instanceof ApiError)) return `Couldn't reach Code Flow to open ${name}`;
   if (err.status === 400 && /not a git repository/i.test(err.message)) return `${name} isn't a git repository`;
-  if (err.status === 401) return "Not signed in to code-flow";
+  if (err.status === 401) return "Not signed in to Code Flow";
   if (err.status >= 500) return `Couldn't open ${name}: ${err.message}`;
   return err.message;
 }
@@ -472,15 +477,15 @@ const followed = computed<SideScope>(() => {
     if (run) return runScope(run);
     return projectScope(projects.value.find(project => project.id === chat.project), chat.repo);
   }
-  if (r.view === "project" || r.view === "workspace" && r.project) {
+  if (r.view === "project") {
     // A project's page: its repository you're working in, else the one its latest run used.
-    const p = projects.value.find((x) => x.id === (r.view === "project" ? r.id : r.project));
+    const p = projects.value.find((x) => x.id === r.id);
     if (p) {
-      const chosen = r.view === "project" ? r.repository : undefined;
+      const chosen = r.repository;
       const worktree = chosen && [...runs.value.values()].some(run => projectFor(run)?.id === p.id && p.repos.includes(run.repo) && run.worktrees.some(tree => tree.path === chosen));
       return projectScope(p, chosen ? p.repos.includes(chosen) || worktree ? chosen : "" : lastRepo(p));
     }
-    return waitingScope(`project:${r.view === "project" ? r.id : r.project}`, false);
+    return waitingScope(`project:${r.id}`, false);
   }
   if (r.view === "run" || r.view === "review") {
     const run = runs.value.get(r.id);
@@ -701,7 +706,7 @@ function handOff(h: HandOff) {
     forOpened.length = 0;
     openedReady = false;
     opened = window.open(`${location.origin}${location.pathname}${hashFor(h.route)}`, "_blank");
-    if (!opened) return showToast("The browser blocked the window: allow pop-ups for code-flow", 5000);
+    if (!opened) return showToast("The browser blocked the window: allow pop-ups for Code Flow", 5000);
   }
   forOpened.push(h);
 }
@@ -772,7 +777,7 @@ export const pattern = computed(() => patterns.value.find((p) => p.id === patter
 export type { RoleValue } from "./roles.js";
 export const roleSel = signal<Record<string, Record<string, RoleValue[]>>>(store.json("roleSel", {}));
 export const optionValues = signal<Record<string, Record<string, number | boolean>>>({});
-/** Settings > Agents & models: the saved provider models and efforts every fresh draft starts from. */
+/** Settings > Agents: the saved provider models and efforts every fresh draft starts from. */
 export const providerDefaults = signal<AgentSettings>(store.json("agentSettings", {}));
 /**
  * The current draft's provider models: the provider defaults, or what a project's remembered team,
@@ -932,7 +937,7 @@ export function setAgentSetting(id: AgentId, patch: { model?: string; effort?: s
   agentSettings.value = { ...agentSettings.value, [id]: { ...(agentSettings.value[id] ?? {}), ...patch } };
   composerOrigins.value = { ...composerOrigins.value, models: "This run" };
 }
-/** Settings > Agents & models: save one provider's default, and use it in the current draft too. */
+/** Settings > Agents: save one provider's default, and use it in the current draft too. */
 export function setProviderDefault(id: AgentId, patch: { model?: string; effort?: string }) {
   providerDefaults.value = { ...providerDefaults.value, [id]: { ...(providerDefaults.value[id] ?? {}), ...patch } };
   store.set("agentSettings", JSON.stringify(providerDefaults.value));
@@ -1599,7 +1604,7 @@ export function discardProjectDraft(id: string): Promise<void> {
     const r = route.value;
     const deletedChat = deletedRunNotice.value && deletedRunProjects.get(deletedRunNotice.value.id) === id;
     if (deletedChat) deletedRunNotice.value = null;
-    if (deletedChat || r.view === "project" && r.id === id || (r.view === "composer" || r.view === "workspace") && r.project === id || (r.view === "run" || r.view === "review") && runs.value.get(r.id)?.project === id) route.value = { view: "projects" };
+    if (deletedChat || r.view === "project" && r.id === id || r.view === "composer" && r.project === id || (r.view === "run" || r.view === "review") && runs.value.get(r.id)?.project === id) route.value = { view: "projects" };
     try { await removal; }
     catch { throw new Error("The project was deleted, but its saved draft could not be cleared. Reload to retry."); }
     draftError.value = unsavedDraftWarning();
@@ -1687,7 +1692,7 @@ function resetComposer(project?: Project) {
 /** Switch only the draft destination. Viewing a project or filtering lists never calls this. */
 export function openComposer(id?: string, options: { repository?: string; carryUnassigned?: boolean; stay?: boolean } = {}): Promise<boolean> {
   const r = route.value;
-  const destination = id ?? (r.view === "project" ? r.id : r.view === "workspace" && r.project ? r.project : composerProject.value);
+  const destination = id ?? (r.view === "project" ? r.id : composerProject.value);
   const remembered = store.get("lastComposerProject");
   const fallback = id === undefined && !destination && !task.value.trim() && !attachments.value.length ? projects.value.find(project => project.id === remembered)?.id ?? legacyDraftProject(projects.value, "", repo.value) ?? "" : "";
   const next = projectDraftDiscarded(destination) ? "" : destination || fallback;

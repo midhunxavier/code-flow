@@ -65,7 +65,7 @@ export function ProjectView({ id, section, repository, tool, kind }: { id: strin
     </header>
     <nav ref={navigation} class="project-tabs" aria-label="Project navigation">
       {/* The work first (what is happening, what happened, what runs by itself), then how the project is set up. */}
-      {([[undefined, "Overview"], ["board", "Board"], ["runs", "History"], ["automation", "Automation"], "setup", ["repositories", "Repositories"], ["connections", "Connections"], ["people", "People"], ["settings", "Project settings"]] as const)
+      {([[undefined, "Overview"], ["board", "Board"], ["runs", "History"], ["automation", "Automations"], "setup", ["repositories", "Repositories"], ["connections", "Connections"], ["people", "People"], ["settings", "Project settings"]] as const)
         .map(entry => entry === "setup" ? <span key="setup" class="project-tabs-divider" aria-hidden="true" /> : <a key={entry[0] ?? "overview"} class={`btn ${section === entry[0] ? "primary" : ""}`} href={destination(entry[0])} aria-current={section === entry[0] ? "page" : undefined}>{entry[1]}</a>)}
     </nav>
     {!section ? <>
@@ -81,7 +81,7 @@ export function ProjectView({ id, section, repository, tool, kind }: { id: strin
       {selectedRepository ? <WorkbenchView key={`${id}:${selectedRepository}`} projectId={id} initialFolder={selectedRepository} initialTool={tool} onNavigate={(folder, nextTool) => { route.value = { view: "project", id, section: "repositories", repository: folder, tool: nextTool }; }} /> : p.repos.length ? <p class="help">Choose a repository to inspect its files, checks, services and history.</p> : null}
     </> : <>
       <section class="pp-card project-start"><h2>Project settings</h2><p>Manage the project's name and repository membership.</p><button class="btn" onClick={() => editProject(id)}>Edit project</button></section>
-      <section class="pp-card project-settings-card"><h2>Defaults</h2><p>Optional instructions, files, check commands, permissions and limits for future work. Each approach shows the settings it will use.</p><button class="btn" disabled={!p.repos.length} onClick={() => setContextOpen(true)}>Edit project defaults</button><p class="help">Provider connections and authentication live in <a href="#/settings/providers">App settings → Providers</a>.</p></section>
+      <section class="pp-card project-settings-card"><h2>Defaults</h2><p>Optional instructions, files, check commands, permissions and limits for future work. Each approach shows the settings it will use.</p><button class="btn" disabled={!p.repos.length} onClick={() => setContextOpen(true)}>Edit project defaults</button><p class="help">Provider connections and authentication live in <a href="#/settings/providers">Settings → Agents</a>.</p></section>
       <ProjectContextEditor project={id} repo={p.repos[0] ?? ""} open={contextOpen} onClose={() => setContextOpen(false)}/>
       <details class="pp-card project-advanced"><summary>Advanced · run defaults and repository configuration</summary><ProjectRunSettings projectId={id} repositories={p.repos}/><OutcomeMetrics project={id}/></details>
     </>}

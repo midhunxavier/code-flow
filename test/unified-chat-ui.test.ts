@@ -434,7 +434,7 @@ test("chat webhook setup stays disabled during testing and authenticated events 
     const once = await api("/api/automations", { ...request, operationId: crypto.randomUUID(), name: "One-time team", webhook: false, onceAt: Date.now()+86400000 });
     const { context, page: p } = await page();
     try {
-        await p.goto(`${base}/#/settings/automations`);
+        await p.goto(`${base}/#/automations/manage`);
         const row = p.locator(".auto-row").filter({has:p.getByText("One-time team",{exact:true})});
         await row.getByRole("button",{name:"Edit",exact:true}).click();
         const when = new Date(Date.now()+2*86400000);
@@ -560,7 +560,7 @@ test("project selection inherits a single repository and preserves explicit mult
         await p.goto(`${base}/#/automations`);
         await p.getByRole("button", { name: "Schedule task", exact: true }).waitFor();
         assert.equal(await p.locator(".automations, .automation-legacy, .automation-list-heading").count(),0);
-        await p.goto(`${base}/#/settings/automations`);
+        await p.goto(`${base}/#/automations/manage`);
         await p.locator(".automations").waitFor();
         assert.equal(await p.getByText("Advanced scheduling tools",{exact:true}).count(), 0);
         await p.goto(`${base}/#/project/${multi.id}/automation`);

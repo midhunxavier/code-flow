@@ -88,4 +88,4 @@ These documents record implementation decisions and evidence at a particular poi
 
 [Project README](../README.md) · [Getting started](getting-started.md)
 
-Project collaboration lives in **More → Board** and **More → People**. Scheduled tasks and backlogs live in **More → Automation**; configured Board and Automation tabs stay visible. Global Inbox and Scheduling cover the current computer.
+Project collaboration lives in **More → Board** and **More → People**. Scheduled tasks and backlogs live in **More → Automations**; configured Board and Automations tabs stay visible. Global Inbox and Automations cover the current computer.

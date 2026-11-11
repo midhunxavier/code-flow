@@ -7,7 +7,7 @@ import { useRef } from "preact/hooks";
 import type { ChatSnapshot } from "../src/conversational/chats.js";
 import { Icon } from "./icons.js";
 import { useState } from "preact/hooks";
-import { hashFor, AUTOMATION_KINDS } from "./navigation.js";
+import { hashFor, AUTOMATION_KINDS, AUTOMATION_MANAGEMENT } from "./navigation.js";
 import { computerLabel } from "./ssh-projects.js";
 import { AutomationsView } from "./automations.js";
 import { DeferredRunsPanel } from "./deferred-runs.js";
@@ -31,7 +31,7 @@ function LegacySchedulingView({ kind = "repeat", projectId }: { kind?: string; p
   const configure = () => openComposer(scope ?? (currentProject.value === NONE ? "" : undefined), chosen ? { repository: chosen } : {});
   if (projectId && !project) return <p role="alert">This project is unavailable. Choose an existing project to manage automation.</p>;
   return <div class="scheduling-hub">
-    <nav class="purpose-nav" aria-label="Scheduling purpose">{SCHEDULE_KINDS.map(item => <a class={`btn ${selected.id === item.id ? "primary" : ""}`} href={hashFor(projectId ? { view: "project", id: projectId, section: "automation", kind: item.id } : { view: "automations", kind: item.id })} aria-current={selected.id === item.id ? "page" : undefined}>{item.label}</a>)}</nav>
+    <nav class="purpose-nav" aria-label="Automation purpose">{SCHEDULE_KINDS.map(item => <a class={`btn ${selected.id === item.id ? "primary" : ""}`} href={hashFor(projectId ? { view: "project", id: projectId, section: "automation", kind: item.id } : { view: "automations", kind: item.id })} aria-current={selected.id === item.id ? "page" : undefined}>{item.label}</a>)}</nav>
     <p>{selected.description}</p>
     <p class="help">{project ? `${project.name} · ` : "Across projects · "}Computer: {computerLabel()}. The host must be running. Results return to the Inbox for review.</p>
     {!projectId ? <ProjectButton /> : null}
@@ -43,7 +43,7 @@ function LegacySchedulingView({ kind = "repeat", projectId }: { kind?: string; p
 }
 
 export function SchedulingView({ kind, projectId }: { kind?: string; projectId?: string }) {
-  if (kind) return <><a class="btn ghost" href="#/settings/automations">Back to scheduling</a><LegacySchedulingView kind={kind} projectId={projectId}/></>;
+  if (kind) return <><a class="btn ghost" href={hashFor({ view: "automations", kind: AUTOMATION_MANAGEMENT })}>Back to automations</a><LegacySchedulingView kind={kind} projectId={projectId}/></>;
   return <ChatPage id="new" project={projectId} automation />;
 }
 

@@ -7,7 +7,8 @@ import { useEffect, useRef, useState } from "preact/hooks";
 import { useDialog } from "./app.js";
 import { Icon, type IconName } from "./icons.js";
 import { api, baseName, STATUS_TEXT, collaborationHref } from "./lib.js";
-import { commandPaletteOpen, healthOpen, openSide, pickerOpen, projects, projectsOpen, route, runs, patternName, openComposer } from "./state.js";
+import { commandPaletteOpen, healthOpen, openSide, pickerOpen, projects, projectsOpen, repositoryToolsRoute, route, runs, patternName, openComposer } from "./state.js";
+import { AUTOMATION_MANAGEMENT } from "./navigation.js";
 
 /** A palette row: an icon (or, for a run, its status dot), the label, and what kind of thing it is (`detail`, which
  *  searches match; `shown` when the row says it shorter, as a run's repository by its folder name). */
@@ -41,8 +42,8 @@ export function CommandPalette() {
     { id: "docs", label: "Help & documentation", detail: "Guides, search and Ask code-flow using your local CLI", icon: "help", run: () => { window.open("/docs/", "_blank", "noopener"); } },
     { id: "settings", label: "Settings", detail: "Preferences, agents and remote connections", icon: "sliders", run: () => (route.value = { view: "settings" }) },
     { id: "inbox", label: "Inbox", detail: "Questions, failures and results needing review", icon: "bell", run: () => (route.value = { view: "inbox" }) },
-    { id: "automations", label: "Scheduling", detail: "Schedules and deferred runs", icon: "clock", run: () => (route.value = { view: "automations" }) },
-    { id: "workspace", label: "Repository tools", detail: "Workspace · code, checks and repositories", icon: "files", run: () => (route.value = { view: "workspace" }) },
+    { id: "automations", label: "Automations", detail: "Schedules, saved automations and deferred runs", aliases: ["scheduling"], icon: "clock", run: () => (route.value = { view: "automations", kind: AUTOMATION_MANAGEMENT }) },
+    { id: "workspace", label: "Repository tools", detail: "Workspace · code, checks and repositories", icon: "files", run: () => (route.value = repositoryToolsRoute()) },
     { id: "insights", label: "Insights", detail: "Run results and usage", icon: "chart", run: () => (route.value = { view: "insights" }) },
     { id: "team", label: "Board", detail: "People team collaboration tasks, hand-overs and your team inbox", icon: "people", run: () => (route.value = { view: "team" }) },
     { id: "repo", label: "Choose repository", detail: "Actions", icon: "folder", run: () => (pickerOpen.value = true) },
@@ -50,9 +51,9 @@ export function CommandPalette() {
     { id: "health", label: "Check provider and Git health", detail: "Actions", icon: "alert", run: () => (healthOpen.value = true) },
     { id: "files", label: "Open files panel", detail: "Actions", icon: "files", run: () => openSide("files") },
     { id: "terminal", label: "Open terminal", detail: "Actions", icon: "terminal", run: () => openSide("terminal") },
-    ...SETTINGS_SECTIONS.filter(section => !["workspace", "automations", "insights", "inbox", "board"].includes(section.id)).map((section): Command => ({ id: `settings:${section.id}`, label: section.label, detail: `Settings · ${section.keywords}`, icon: section.icon, run: () => (route.value = { view: "settings", section: section.id }) })),
+    ...SETTINGS_SECTIONS.map((section): Command => ({ id: `settings:${section.id}`, label: section.label, detail: `Settings · ${section.keywords}`, icon: section.icon, run: () => (route.value = { view: "settings", section: section.id }) })),
     ...projects.value.map((p): Command => ({ group: "project", id: `project:${p.id}`, label: p.name, detail: "Project", icon: "project", run: () => { route.value = { view: "project", id: p.id }; } })),
-    ...projects.value.flatMap(p => (["board", "people", "automation"] as const).map((section): Command => ({ group: "project-section", id: `project:${p.id}:${section}`, label: `${p.name} · ${{ board: "Board", people: "People", automation: "Automation" }[section]}`, detail: section === "automation" ? "Project schedules backlog" : "Project collaboration team members access", icon: section === "automation" ? "clock" : "people", run: () => { if (section === "board" || section === "people") location.assign(collaborationHref(`#/project/${encodeURIComponent(p.id)}/${section}`, "local")); else route.value = { view: "project", id: p.id, section }; } }))),
+    ...projects.value.flatMap(p => (["board", "people", "automation"] as const).map((section): Command => ({ group: "project-section", id: `project:${p.id}:${section}`, label: `${p.name} · ${{ board: "Board", people: "People", automation: "Automations" }[section]}`, detail: section === "automation" ? "Project schedules backlog" : "Project collaboration team members access", icon: section === "automation" ? "clock" : "people", run: () => { if (section === "board" || section === "people") location.assign(collaborationHref(`#/project/${encodeURIComponent(p.id)}/${section}`, "local")); else route.value = { view: "project", id: p.id, section }; } }))),
     ...[...allRuns.values()].filter(r => !r.archived).sort((a, b) => b.createdAt - a.createdAt).map((r): Command => {
       const variant = r.group?.label || patternName(r.pattern);
       return { id: `run:${r.id}`, group: "run", label: r.task.split("\n")[0] || r.id, detail: `Run · ${r.status} · ${STATUS_TEXT[r.status] ?? r.status} · ${runSearchText(r)} · ${variant}`, shown: `Run · ${variant} · ${STATUS_TEXT[r.status] ?? r.status} · ${baseName(r.repo)}`, serverMatch: serverMatches.has(r.id), status: r.status, run: () => (route.value = { view: "run", id: r.id }) };

@@ -119,7 +119,7 @@ export function TeamTaskView({ id, shared = false, navigate }: { id: string; sha
             {!task.owner && canEdit && meId ? <button type="button" class="btn small" disabled={!!busy || !!ownerProblem(task, role, meId, now)} title={ownerProblem(task, role, meId, now)} onClick={() => void save({ owner: meId }, "Taking the task…")}>Take this task</button> : null}
           </div>
           {offered ? <p class="msg warn" role="status">Hand-over offered to {whoLabel(offered.to, meId)} by {whoLabel(offered.from, meId)} {ago(offered.offeredAt)}{offered.note ? `: ${offered.note}` : ""}</p> : null}
-          {offeredToMe && !onThisComputer ? <p class="help">To accept, open this task in code-flow on your own computer, connected to this team, and choose Accept and download: the checkpoint is imported into your clone before the task becomes yours.</p> : null}
+          {offeredToMe && !onThisComputer ? <p class="help">To accept, open this task in Code Flow on your own computer, connected to this team, and choose Accept and download: the checkpoint is imported into your clone before the task becomes yours.</p> : null}
           {shared && canEdit ? <HostTaskControl key={task.id} task={task} meId={meId} projectName={project?.name} /> : null}
           {!shared && isOwner && link === null ? <p class="help">This computer's team link is not available here, so the task cannot be run from this page.</p> : null}
         </section>

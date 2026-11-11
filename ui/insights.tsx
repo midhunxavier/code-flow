@@ -289,7 +289,7 @@ export function InsightsView({ group }: { group?: string }) {
   );
 }
 
-const PROOF_TITLE = "Proven: a test in the result fails on the base code without the change (code-flow ran the change's tests there)";
+const PROOF_TITLE = "Proven: a test in the result fails on the base code without the change (Code Flow ran the change's tests there)";
 
 function Card({ label, value, note }: { label: string; value: string; note?: string }) {
   return (

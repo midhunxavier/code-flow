@@ -62,7 +62,7 @@ Your messages display exactly as typed, including code identifiers such as `__in
 
 Reply drafts, including attached browser screenshots, are saved for the run and the connected computer in this browser. They survive new tabs and browser restarts; legacy tab-only text is migrated when opened. Another tab's edits warn before replacing your local text, and a successful send clears the saved draft. If storage is unavailable, a warning explains that the draft remains only in the open tab. Draft-dependent actions wait for saved content to load.
 
-For a local provider known to be signed out, the reply box links to **Settings → Agents & models** and offers **Recheck sign-in**. The warning does not lock out a fresh retry after signing in. A failed reply is marked beside the reply box; it does not erase a previously completed conversation. Send another reply to continue. Provider errors appear once in the finished turn, with recovery actions below; **Show work** retains the full transcript.
+For a local provider known to be signed out, the reply box links to **Settings → Agents** and offers **Recheck sign-in**. The warning does not lock out a fresh retry after signing in. A failed reply is marked beside the reply box; it does not erase a previously completed conversation. Send another reply to continue. Provider errors appear once in the finished turn, with recovery actions below; **Show work** retains the full transcript.
 
 <kbd>↵</kbd> sends and <kbd>⇧</kbd><kbd>↵</kbd> adds a line.
 

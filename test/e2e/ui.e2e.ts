@@ -480,7 +480,7 @@ test("sign-in: the first browser claims code-flow; once agents have run, others 
 });
 
 test("insights and run search", async () => {
-  await page.goto(`${BASE}/#/settings/insights`);
+  await page.goto(`${BASE}/#/insights`);
   await page.getByRole("heading", { name: "Insights" }).waitFor();
   await page.getByRole("heading", { name: "Agents" }).waitFor();
   assert.ok(await page.getByRole("table").first().isVisible());
@@ -728,7 +728,7 @@ test("side panel: follows the run you open, side chats in its worktree, its chan
 
   // Pinned, the panel stays on the run while you look at something else.
   await side.getByRole("button", { name: "Pin the panel to this run" }).click();
-  await page.goto(`${BASE}/#/settings/insights`);
+  await page.goto(`${BASE}/#/insights`);
   await scope.getByText("Pinned").waitFor();
   await side.getByRole("tab", { name: "Chat" }).click();
   assert.match(await side.locator("#side-pane-chat .sess.on").innerText(), /E2E: what did this run change\?/, "still the run's side chat");
@@ -914,10 +914,10 @@ test("projects: the Automations page and its inbox follow the project you're in;
   await api("/api/remote", { enabled: false });
 
   // Schedules are a separate destination but keep the same project scope.
-  await page.goto(`${BASE}/#/settings/automations`);
+  await page.goto(`${BASE}/#/automations/manage`);
   await page.locator(".auto-row b", { hasText: "E2E side hook" }).waitFor();
   assert.deepEqual(await page.locator(".auto-row b").allInnerTexts(), ["E2E side hook"]);
-  // Scheduling exposes its scope in the shared project picker. Legacy records
+  // Automations exposes its scope in the shared project picker. Legacy records
   // without a project have their own notice and do not imply another project.
   // On a busy runner the first click can land before the picker is ready; open it until its rows show.
   const allProjects = page.locator(".project-row", { hasText: "All projects" }).locator(".pr-main");

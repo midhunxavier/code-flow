@@ -69,7 +69,7 @@ test("finished work leads to review, commit-scoped coverage and publishing in on
   assert.equal(result.status, "done", result.error);
   await page.goto(base + `/#/project/${result.project}`);
   await page.goto(base + "/#/settings/inbox");
-  await page.waitForURL(url => url.hash === "#/settings/inbox");
+  await page.waitForURL(url => url.hash === "#/inbox");
   await page.locator(".inbox-item", { hasText: result.task }).getByRole("link", { name: "Open chat", exact: true }).click();
   const next = page.getByRole("region", { name: "Next action" });
   await page.locator(".result-compact").waitFor();

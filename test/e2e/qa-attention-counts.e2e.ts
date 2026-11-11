@@ -50,7 +50,7 @@ test("fresh loads and reloads never notify an already-waiting old approval", asy
 test("authoritative badges and Inbox disclose partial history and stop claiming pagination when complete", async () => {
   await page.waitForFunction(() => /^\(207\)/.test(document.title));
   await page.getByRole("status").filter({ hasText: "Showing 100 of 101 review items" }).waitFor(); assert.match(await page.getByRole("region", { name: "Needs you", exact: true }).innerText(), /Needs you\s+207/); await shot("partial-inbox-authoritative-counts");
-  await page.getByRole("button", { name: /^Application menu:/ }).click(); const menu = page.getByRole("menu"); assert.equal(await menu.getByRole("menuitem", { name: /Inbox|Scheduling/ }).count(), 0); await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: /^Application menu:/ }).click(); const menu = page.getByRole("menu"); assert.equal(await menu.getByRole("menuitem", { name: /Inbox|Automations/ }).count(), 0); await page.keyboard.press("Escape");
   await page.getByRole("searchbox", { name: "Search chats (press / to focus)", exact: true }).fill("no-such-attention-fixture");
   await page.getByRole("button", { name: "Clear sidebar filters to load older items", exact: true }).click(); await page.getByRole("button", { name: "Load older review items", exact: true }).waitFor();
   for (let i = 0; i < 4 && await page.getByRole("button", { name: "Load older chats", exact: true }).count(); i++) { await page.getByRole("button", { name: "Load older chats", exact: true }).click(); await page.getByRole("navigation", { name: "Workspace navigation", exact: true }).getByRole("button", { name: "Loading…", exact: true }).waitFor({ state: "hidden" }); }
@@ -67,13 +67,15 @@ test("collapsed badges remain visible, search peek preserves storage and mobile 
   await page.keyboard.press("Escape");
   await page.setViewportSize({ width: 390, height: 844 }); await page.getByRole("button", { name: "Show sidebar", exact: true }).click();
   assert.ok(await page.getByRole("link", { name: "Projects", exact: true }).locator(".nav-label").isVisible());
-  assert.equal(await page.getByRole("link", { name: /^(Inbox|Scheduling)$/ }).count(), 0);
+  for (const name of [/^Inbox/, "Automations", "Insights"]) assert.ok(await page.getByRole("link", { name, exact: true }).locator(".nav-label").isVisible());
   assert.equal(await page.evaluate(() => localStorage.getItem("railCollapsed")), "1"); await shot("mobile-destination-labels"); await page.setViewportSize({ width: 1440, height: 1000 });
 
 });
 
-test("Settings search opens automation management", async () => {
-  await page.goto(`${base}/#/settings`); await page.getByRole("searchbox", { name: "Search settings", exact: true }).fill("Scheduling"); await page.getByRole("button", { name: /Scheduling/ }).click(); await page.waitForURL(/#\/settings\/automations$/); await page.goto(`${base}/#/settings/automations`); await page.waitForURL(/#\/settings\/automations$/); assert.equal(await page.locator(".settings-tools").count(), 0);
+test("the sidebar and the old Settings address open automation management", async () => {
+  await page.goto(`${base}/#/settings`); assert.equal(await page.getByRole("navigation", { name: "Settings categories" }).getByRole("link").count(), 9);
+  await page.getByRole("link", { name: "Automations", exact: true }).click(); await page.waitForURL(/#\/automations\/manage$/); await page.getByRole("heading", { name: "Automations", exact: true }).waitFor();
+  await page.goto(`${base}/#/settings/automations`); await page.waitForURL(/#\/automations\/manage$/); assert.equal(await page.locator(".settings-tools").count(), 0);
 });
 
 test("sidebar width can be dragged, restored after collapse and reload, and adapted around the side panel", async () => {

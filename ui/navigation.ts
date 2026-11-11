@@ -8,6 +8,8 @@ export type RepositoryTool = typeof REPOSITORY_TOOLS[number];
 
 export const AUTOMATION_KINDS = ["once", "repeat", "backlog"] as const;
 export const validAutomationKind = (kind: string) => (AUTOMATION_KINDS as readonly string[]).includes(kind);
+/** Saved automations: `#/automations/manage`, beside the three kinds. */
+export const AUTOMATION_MANAGEMENT = "manage";
 
 export type Route =
   | { view: "composer"; project?: string; legacy?: boolean }
@@ -16,7 +18,7 @@ export type Route =
   | { view: "projects" }
   | { view: "inbox" }
   | { view: "automations"; kind?: string }
-  | { view: "workspace"; project?: string }
+  | { view: "workspace" }
   | { view: "insights"; group?: string }
   | { view: "settings"; section?: SettingsSection; group?: string; connection?: string }
   | { view: "project"; id: string; section?: ProjectSection; repository?: string; tool?: RepositoryTool; kind?: string }
@@ -46,16 +48,21 @@ export function parseRouteHash(hash: string): Route {
   if (view === "review" && id && rest.length) return { view: "review", id, branch: rest.join("/") };
   if (view === "settings" && id === "workspace") return { view: "workspace" };
   if (view === "settings" && ["ssh", "remote-access", "team"].includes(id ?? "")) return { view: "settings", section: "connections", group: id === "ssh" ? "workspace" : id === "remote-access" ? "devices" : "manage" };
-  if (view === "settings") return { view: "settings", ...(id ? { section: settingsSection(id) } : {}), ...((id === "insights" || id === "connections") && rest[0] ? { group: rest[0] } : {}) };
   // Everyday work has standalone destinations; old Settings bookmarks remain valid.
+  if (view === "settings" && id === "board") return { view: "team" };
+  if (view === "settings" && id === "inbox") return { view: "inbox" };
+  if (view === "settings" && id === "insights") return { view: "insights", ...(rest[0] ? { group: rest[0] } : {}) };
+  if (view === "settings" && id === "automations") return { view: "automations", kind: rest[0] && validAutomationKind(rest[0]) ? rest[0] : AUTOMATION_MANAGEMENT };
+  if (view === "settings") return { view: "settings", ...(id ? { section: settingsSection(id) } : {}), ...(id === "connections" && rest[0] ? { group: rest[0] } : {}) };
   if (view === "workspace") return { view: "workspace" };
-  if (view === "automations") return rest.length || id && !validAutomationKind(id) ? { view: "invalid", hash } : { view, ...(id ? { kind: id } : {}) };
+  if (view === "automations") return rest.length || id && id !== AUTOMATION_MANAGEMENT && !validAutomationKind(id) ? { view: "invalid", hash } : { view, ...(id ? { kind: id } : {}) };
   if (view === "inbox") return { view };
   if (view === "projects" && !id) return { view };
   if (view === "insights") return { view: "insights", ...(id ? { group: id } : {}) };
   if (view === "new" && id === "unassigned" && !rest.length) return { view: "composer", project: "" };
   if (view === "project" && id && rest[0] === "new" && rest.length === 1) return { view: "composer", project: id };
-  if (view === "project" && id && rest[0] === "workspace" && rest.length === 1) return { view: "workspace", project: id };
+  // Repository tools live in the project's Repositories tab.
+  if (view === "project" && id && rest[0] === "workspace" && rest.length === 1) return { view: "project", id, section: "repositories" };
   if (view === "project" && id) {
     if (!rest.length) return { view: "project", id };
     const [section, repository, tool, ...extra] = rest;
@@ -77,12 +84,12 @@ export function hashFor(r: Route): string {
   if (r.view === "inbox") return "#/inbox";
   if (r.view === "projects") return "#/projects";
   if (r.view === "automations") return `#/automations${r.kind ? `/${encodeURIComponent(r.kind)}` : ""}`;
-  if (r.view === "workspace") return r.project ? `#/project/${encodeURIComponent(r.project)}/workspace` : "#/workspace";
+  if (r.view === "workspace") return "#/workspace";
   if (r.view === "insights") return `#/insights${r.group ? `/${encodeURIComponent(r.group)}` : ""}`;
   if (r.view === "task") return `#/task/${encodeURIComponent(r.id)}`;
   if (r.view === "run") return `#/run/${encodeURIComponent(r.id)}`;
   if (r.view === "settings" && r.connection && r.section === "connections" && r.group === "join") return `#/settings/connections/join?connection=${encodeURIComponent(r.connection)}`;
-  if (r.view === "settings") return r.section ? `#/settings/${r.section}${(r.section === "insights" || r.section === "connections") && r.group ? `/${encodeURIComponent(r.group)}` : ""}` : "#/settings";
+  if (r.view === "settings") return r.section ? `#/settings/${r.section}${r.section === "connections" && r.group ? `/${encodeURIComponent(r.group)}` : ""}` : "#/settings";
   if (r.view === "project") return `#/project/${encodeURIComponent(r.id)}${r.section ? `/${r.section}` : ""}${r.section === "automation" && r.kind ? `/${encodeURIComponent(r.kind)}` : ""}${r.section === "repositories" && (r.repository || r.tool) ? `/${encodeURIComponent(r.repository ?? "")}${r.tool ? `/${r.tool}` : ""}` : ""}`;
   if (r.view === "team-people") return `#/team/people${r.project ? `/${encodeURIComponent(r.project)}` : ""}`;
   if (r.view === "team") return r.project ? `#/team/project/${encodeURIComponent(r.project)}` : "#/team";

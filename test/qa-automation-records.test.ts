@@ -65,7 +65,7 @@ test("global and project automation links validate the same purpose and reject e
     assert.equal(parseRouteHash(`#/project/p-a/automation/${suffix}`).view, "invalid");
   }
   assert.deepEqual(parseRouteHash("#/automations"), { view: "automations" });
-  assert.deepEqual(parseRouteHash("#/settings/automations/repeat"), { view: "settings", section: "automations" });
+  assert.deepEqual(parseRouteHash("#/settings/automations/repeat"), { view: "automations", kind: "repeat" });
   assert.deepEqual(parseRouteHash("#/foo"), { view: "composer" });
   assert.deepEqual(parseRouteHash("#/settings/bogus"), { view: "settings", section: "general" });
 });

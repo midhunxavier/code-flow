@@ -545,7 +545,7 @@ export function CompareDialog({ base, onClose, onStarted }: { base: Record<strin
         <div class="picker-foot">
           <span class="ps">
             {runs} run{runs === 1 ? "" : "s"}
-            {runs > MAX_COMPARE_RUNS ? ` — at most ${MAX_COMPARE_RUNS}` : ""}; they share code-flow's agent slots, so some may wait their turn.
+            {runs > MAX_COMPARE_RUNS ? ` — at most ${MAX_COMPARE_RUNS}` : ""}; they share Code Flow's agent slots, so some may wait their turn.
           </span>
           <button class="btn" onClick={onClose}>
             Cancel
@@ -608,13 +608,13 @@ export function startProblem(p: PatternInfo | undefined, roles: Record<string, R
   // the coordinator before building its roster, so one signed-out candidate needn't block it.
   const used = new Set<RoleValue>(p.id === "auto-team" ? roles.coordinator ?? [] : Object.values(roles).flat());
   const signedOut = health.value?.find((h) => used.has(h.id) && h.installed && h.signedIn === false);
-  if (signedOut) return `${signedOut.name} isn't signed in — open Settings → Providers`;
+  if (signedOut) return `${signedOut.name} isn't signed in — open Settings → Agents`;
   const unready = agents.value.find(entry => used.has(entry.id) && providerProblem(entry, health.value, acpPolicy));
   if (unready) return `${unready.displayName}: ${providerProblem(unready, health.value, acpPolicy)}`;
   // Runs use isolated Antigravity unless the run opts out; the doctor knows whether this computer can.
   const needsIsolation = used.has("agy") && antigravityExecution !== "native";
   const agyHealth = health.value?.find((h) => h.id === "agy");
-  if (needsIsolation && !agyHealth) return healthError.value ? "Antigravity compatibility could not be checked. Refresh providers in Settings → Providers." : "Checking whether Antigravity can run isolated…";
+  if (needsIsolation && !agyHealth) return healthError.value ? "Antigravity compatibility could not be checked. Refresh providers in Settings → Agents." : "Checking whether Antigravity can run isolated…";
   const isolatedAgy = needsIsolation && agyHealth?.installed && agyHealth.managedCompatible === false ? agyHealth : undefined;
   if (isolatedAgy) return `Antigravity${isolatedAgy.version ? ` ${isolatedAgy.version}` : ""} can't run isolated on this computer (it needs macOS, a verified CLI version and an existing Keychain login). Update Antigravity, or turn on Advanced → Use unrestricted Antigravity.`;
   return "";
@@ -1028,7 +1028,7 @@ function Team({ p, roles }: { p: PatternInfo; roles: Record<string, RoleValue[]>
                   type="button"
                   class="pill auto"
                   aria-pressed={selected.includes("auto")}
-                  title="code-flow picks an installed agent when the run starts, skipping plans that are near their usage limit"
+                  title="Code Flow picks an installed agent when the run starts, skipping plans that are near their usage limit"
                   onClick={() => {
                     const on = selected.includes("auto");
                     setRoles(p.id, role.id, role.multiple ? (on ? selected.filter((x) => x !== "auto") : [...selected, "auto"]) : ["auto"]);
@@ -1244,7 +1244,7 @@ function Settings({ p, roles, budgetRevision }: { p: PatternInfo; roles: Record<
 
 export function ModelRow({ agent, used, settings, onChange }: { agent: AgentInfo; used: boolean; settings?: { model?: string; effort?: string }; onChange?: (patch: { model?: string; effort?: string }) => void }) {
   const cat = catalogs.value[agent.id];
-  // Without its own settings, the row edits the saved provider defaults (Settings > Providers).
+  // Without its own settings, the row edits the saved provider defaults (Settings > Agents).
   const s = settings ?? providerDefaults.value[agent.id] ?? {};
   const changeSetting = (patch: { model?: string; effort?: string }) => onChange ? onChange(patch) : setProviderDefault(agent.id, patch);
   // Hooks before any early return; null = "derive from the saved model".

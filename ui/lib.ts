@@ -81,7 +81,7 @@ async function fetchJson<T = any>(path: string, opts: RequestInit = {}): Promise
     res = await fetch(path, { ...opts, headers: { "content-type": "application/json", ...(opts.headers || {}) } });
   } catch {
     // The browser only says "Failed to fetch": the server is down or restarting.
-    throw new ApiError("Can't reach code-flow. Is the server still running?", 0);
+    throw new ApiError("Can't reach Code Flow. Is the server still running?", 0);
   }
   const body = (await res.json().catch(() => ({}))) as { error?: string; confirm?: string; code?: string; signIn?: boolean };
   if (res.status === 401 && body.signIn) signInAgain();

@@ -79,14 +79,14 @@ test("scheduling shares four purposes and comparisons live in Insights", { timeo
   await page.getByRole("dialog", { name: "Start later", exact: true }).waitFor();
   await page.getByRole("dialog", { name: "Start later", exact: true }).getByRole("button", { name: "Close", exact: true }).click();
   await page.goto(`${base}/#/automations/once`);
-  await page.getByRole("navigation", { name: "Scheduling purpose" }).waitFor();
-  assert.equal(await page.getByRole("navigation", { name: "Scheduling purpose" }).getByRole("link").count(), 3);
+  await page.getByRole("navigation", { name: "Automation purpose" }).waitFor();
+  assert.equal(await page.getByRole("navigation", { name: "Automation purpose" }).getByRole("link").count(), 3);
   await page.getByRole("region", { name: "Deferred runs", exact: true }).waitFor();
   await page.getByRole("link", { name: "Process a backlog", exact: true }).click();
   await page.getByRole("heading", { name: "Scheduled backlog work", exact: true }).waitFor();
   await page.goto(`${base}/#/workflows`);
   await page.getByLabel("Task", { exact: true }).fill("Compare this task");
-  await page.goto(`${base}/#/settings/insights`);
+  await page.goto(`${base}/#/insights`);
   await page.getByText("Experiments", { exact: true }).click();
   await page.getByRole("button", { name: "Compare setups…", exact: true }).click();
   await page.getByRole("dialog", { name: "Compare setups", exact: true }).waitFor();

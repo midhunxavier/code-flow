@@ -122,7 +122,7 @@ test("old non-solo deep links restore breadcrumbs and side scope, and destinatio
   await fresh("run/big-006"); const crumbs = page.getByRole("navigation", { name: "Where you are", exact: true });
   await crumbs.getByText("Big history", { exact: true }).waitFor(); await crumbs.getByText("Ancient hidden loop", { exact: true }).waitFor(); await shot("deep-link-crumbs");
   await page.goto(base + "/#/settings"); await crumbs.getByText("General", { exact: true }).waitFor();
-  await page.goto(base + "/#/workspace"); await crumbs.getByText("Repository tools", { exact: true }).waitFor();
+  await page.goto(base + "/#/workspace"); await crumbs.getByText(/^(Repository tools|Repositories)$/).waitFor();
 });
 
 test("sidebar keeps row actions without a bulk selection toolbar", async () => {

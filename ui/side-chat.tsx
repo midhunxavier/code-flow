@@ -369,7 +369,7 @@ function SideComposer({ run, chat }: { run: RunSummary; chat?: SideChat }) {
           </div>
         </div>
         <div class="side-hint help">
-          {run.pattern !== "solo" && mode === "change" ? `Edits ${wt?.branch ?? "the run's worktree"}; code-flow commits it and runs the check.` : "Reads the run's worktree; changes nothing."}
+          {run.pattern !== "solo" && mode === "change" ? `Edits ${wt?.branch ?? "the run's worktree"}; Code Flow commits it and runs the check.` : "Reads the run's worktree; changes nothing."}
           {run.status === "running" && run.pattern !== "solo" ? " Waits for the team to finish." : ""}
         </div>
       </div>
@@ -523,7 +523,7 @@ function NewChat({ scope }: { scope: SideScope }) {
               ? `${blocked ? `${whyNoSideChat(run)} ` : ""}${name} works on a branch of its own${base ? ", starting from the run's result" : ""}, and you keep talking to it; the chat is a run like any other.`
               : `Ask a question or ask for a change. ${name} works on its own branch of ${where} and you keep talking to it; its reply shows here and the chat is a run like any other.`}
           </p>
-          {!solo ? <p class="msg warn">This code-flow has no Single-agent pattern, which the chat needs.</p> : null}
+          {!solo ? <p class="msg warn">This Code Flow has no Single-agent pattern, which the chat needs.</p> : null}
         </div>
       </div>
       <div class="convo">

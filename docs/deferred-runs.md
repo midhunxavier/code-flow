@@ -4,7 +4,7 @@ Configure a task in the composer and choose a time, provider capacity, or both a
 
 ## Queue a one-time task
 
-Inspect and manage the queue in **Scheduling → Run once later**. Save a new deferred request from the composer after configuring its task. **AI team** works only in a live Agent conversation, so a request with it switched on is refused: turn it off to defer one agent, or choose **Team — dynamic plan** in Advanced to defer a team.
+Inspect and manage the queue in **Automations → Run once later**. Save a new deferred request from the composer after configuring its task. **AI team** works only in a live Agent conversation, so a request with it switched on is refused: turn it off to defer one agent, or choose **Team — dynamic plan** in Advanced to defer a team.
 
 Deferred runs save one explicit run request for later execution. They are separate from recurring automations. A job can start at or after a chosen local time, when selected providers have capacity, or after both conditions are satisfied. The application must be running; closing it preserves the queue for the next launch.
 

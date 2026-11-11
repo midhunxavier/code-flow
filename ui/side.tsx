@@ -169,7 +169,7 @@ function ScopeHeader({ popped }: { popped: boolean }) {
           </>
         ) : null}
       </span>
-      {currentChat ? null : popped ? <a class="btn ghost small" href="#/" target="_self">Open code-flow</a> : s.pinned ? (
+      {currentChat ? null : popped ? <a class="btn ghost small" href="#/" target="_self">Open Code Flow</a> : s.pinned ? (
         <button type="button" class="btn ghost small" title="Follow what you open again" onClick={() => pinSide(false)}>
           Follow
         </button>

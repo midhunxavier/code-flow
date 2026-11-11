@@ -108,7 +108,7 @@ async function modelSource(page: Page, row: string) {
   return details.locator("tbody tr", { has: page.locator("th", { hasText: row }) }).first().innerText();
 }
 
-test("templates and saved workflows set this draft's models without changing Settings > Agents & models", { timeout: 90_000 }, async () => {
+test("templates and saved workflows set this draft's models without changing Settings > Agents", { timeout: 90_000 }, async () => {
   const config = (agentSettings: object) => ({ pattern: "solo", roles: { agent: ["claude"] }, options: {}, agentSettings, roleSettings: {}, trust: "full", limits: { maxMinutes: 9, maxSteps: 4 }, approvePlan: false, toolApprovals: true, check: "true", setup: "" });
   const library = { schemaVersion: 1, presets: [{ id: "workflow", name: "Saved workflow", revision: 1, updatedAt: 1, config: config({}), history: [] }], templates: [
     { id: "plain", name: "Saved with defaults", pattern: "solo", task: "Review {{component}}", criteria: [], config: config({}), runOptions: { verification: "", container: { enabled: true, image: "qa-image:1", authVolume: "" } } },
@@ -167,7 +167,7 @@ test("a project's remembered team prefills only its own draft and Settings says 
     assert.match(await modelSource(page, "planner · claude"), /low[\s\S]*Project defaults/);
     assert.deepEqual(await page.evaluate(() => [localStorage.getItem("pattern"), localStorage.getItem("roleSel"), JSON.parse(localStorage.getItem("agentSettings")!)]), ["solo", null, SAVED_MODELS]);
 
-    assert.deepEqual(await settingsModels(page), { claude: "high", codex: "low", stored: SAVED_MODELS }, "Settings > Agents & models keeps the saved choices");
+    assert.deepEqual(await settingsModels(page), { claude: "high", codex: "low", stored: SAVED_MODELS }, "Settings > Agents keeps the saved choices");
     await page.goto(`${base}/#/settings/runs`);
     assert.equal(await page.getByLabel("Default chat mode").inputValue(), "solo", "Settings > Run defaults keeps its default workflow");
     assert.deepEqual(await page.getByLabel("Default chat mode").locator("option").allTextContents(), ["Agent", "Team"]);

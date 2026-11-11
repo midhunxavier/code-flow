@@ -9,10 +9,12 @@ import { chats, watchChats, openChat, chatQuery, chatSearchTarget } from "./chat
 import { ComputerProjects, useComputerProjects } from "./connected-projects.js";
 import { useCallback, useEffect, useRef, useState } from "preact/hooks";
 import { pendingApprovals } from "./approval-inbox.js";
+import { inbox } from "./automations.js";
+import { inboxUnread } from "./collab-state.js";
 import { Icon } from "./icons.js";
 import { Menu, MenuItem } from "./panel-bits.js";
 import { ArchiveDialog, DeleteRunsDialog } from "./run-actions.js";
-import { store, ownerOnLocalListener, collaborationConfigured, api, ago, baseName, fmtCost, fmtTokens, post, showToast, showError, STATUS_TEXT } from "./lib.js";
+import { store, collaborationConfigured, api, ago, baseName, fmtCost, fmtTokens, post, showToast, showError, STATUS_TEXT } from "./lib.js";
 import {
   NONE,
   lastAgentTabs,
@@ -198,6 +200,10 @@ export function Rail() {
   };
   const waiting = list.filter(taskNeedsYou);
   const collapsed = railIsCollapsed.value;
+  const pending = projectCounts.value?.[ALL]?.inboxRuns ?? inbox().length;
+  const unread = inboxUnread.value;
+  const onBoard = r.view === "team" || r.view === "team-task" || r.view === "team-people";
+  const badge = (count: number) => count ? <span class="count" aria-hidden="true">{collapsed && count > 99 ? "99+" : count}</span> : null;
   // Paused by a filesystem restriction isn't something to set up: the CLIs are there, just not probed.
   const agentsPaused = agents.value.some((agent) => agent.unavailableReason === "filesystem-policy");
   const agentProblems = agentsPaused ? 0 : agents.value.filter((agent) => !agent.available || health.value?.find((entry) => entry.id === agent.id)?.signedIn === false).length;
@@ -462,7 +468,11 @@ export function Rail() {
         <Icon name="compose" /> <span>New chat</span>
       </button>
       <div class="rail-destinations" role="group" aria-label="Work navigation">
-        <a class="nav-item" href="#/projects" title="Projects" aria-current={r.view === "projects" ? "page" : undefined}><Icon name="project" /><span class="nav-label">Projects</span></a>
+        <a class="nav-item" href="#/projects" title="Projects" aria-current={r.view === "projects" ? "page" : undefined} onClick={() => (railOpen.value = false)}><Icon name="project" /><span class="nav-label">Projects</span></a>
+        <a class="nav-item" href="#/inbox" title="Inbox" aria-label={pending ? `Inbox, ${pending} need attention` : "Inbox"} aria-current={r.view === "inbox" ? "page" : undefined} onClick={() => (railOpen.value = false)}><Icon name="bell" /><span class="nav-label">Inbox</span>{badge(pending)}</a>
+        <a class="nav-item" href="#/automations/manage" title="Automations" aria-label="Automations" aria-current={r.view === "automations" ? "page" : undefined} onClick={() => (railOpen.value = false)}><Icon name="clock" /><span class="nav-label">Automations</span></a>
+        {collaborationConfigured.value || unread || onBoard ? <a class="nav-item" href="#/team" title="Board" aria-label={unread ? `Board, ${unread} unread` : "Board"} aria-current={onBoard ? "page" : undefined} onClick={() => (railOpen.value = false)}><Icon name="people" /><span class="nav-label">Board</span>{badge(unread)}</a> : null}
+        <a class="nav-item" href="#/insights" title="Insights" aria-label="Insights" aria-current={r.view === "insights" ? "page" : undefined} onClick={() => (railOpen.value = false)}><Icon name="chart" /><span class="nav-label">Insights</span></a>
       </div>
       {collapsed ? <button type="button" class="icon-btn rail-search-button" aria-label="Search chats" title="Search chats (/)" onClick={() => { peekRail(); requestAnimationFrame(() => document.getElementById("run-search")?.focus()); }}><Icon name="search" /></button> : null}
       <div class="rail-search">

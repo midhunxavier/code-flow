@@ -1,6 +1,6 @@
 # Automations and away mode
 
-Open Project → More → Automation → Repeat for recurring work, Inbox for results that need attention, and Automation → Run once later for a single task that should start later. Keep the application running when a scheduled task is due.
+Open Project → More → Automations → Repeat for recurring work, Inbox for results that need attention, and Automations → Run once later for a single task that should start later. Keep the application running when a scheduled task is due.
 
 
 ![Project Automation keeps scheduled work and repository selection in the project (demo data)](images/project-automation-light.png)
@@ -9,7 +9,7 @@ Open Project → More → Automation → Repeat for recurring work, Inbox for re
 
 Set up a run in the composer (task, team, check, settings), then choose **More run actions → Schedule… → Repeat**. It runs unattended. **AI team** works only in a live Agent conversation, so a task with it switched on cannot be scheduled: turn it off to schedule one agent, or choose **Team — dynamic plan** in Advanced to schedule a team.
 
-Open **Scheduling** from the sidebar or press **a** to manage recurring tasks, deferred runs and backlog processing. **Inbox** is a separate sidebar destination for questions, blocked work, failures and results. Older `#/settings/automations` links open the Scheduling page.
+Open **Automations** in the sidebar to manage saved automations, recurring tasks, deferred runs and backlog processing; **Create automation** there, or pressing **a**, starts a new one. **Inbox** is a separate sidebar destination for questions, blocked work, failures and results. Older `#/settings/automations` links open the Automations page.
 
 ## Projects
 
@@ -17,13 +17,13 @@ An automation's runs start in the [project](runs.md#projects) you were in when y
 
 **Project → Automation** always lists that project’s saved work, regardless of the sidebar filter or composer draft. Choose its repository here before configuring a task or opening backlog items. Run once later and Repeat open the canonical project composer to describe the task; choosing backlog items restores that project’s saved agent workflow without leaving Automation. Multi-repository projects require a visible choice. Saved schedules for other repositories in the same project stay discoverable.
 
-Global **Scheduling → Repeat** uses the project filter beside its title. Inbox lists the results waiting for you. When other projects have some too, a line says how many, with **show all** to switch to *All projects*. The **Inbox** count in the sidebar counts attention items across projects, so nothing waiting for you is out of sight.
+Global **Automations → Repeat** uses the project filter beside its title. Inbox lists the results waiting for you. When other projects have some too, a line says how many, with **show all** to switch to *All projects*. The **Inbox** count in the sidebar counts attention items across projects, so nothing waiting for you is out of sight.
 
 ## When it runs
 
 - at a time on chosen weekdays (e.g. weekdays at 07:00), or every *N* minutes (at least 5, at most 10080: a week);
 - from a webhook;
-- or when you press **Run now** on the **Scheduling → Repeat** page.
+- or when you press **Run now** on the **Automations → Repeat** page.
 
 A time of day runs in the time zone you choose, your browser's by default. One saved without a zone (through the API, or by an older backlog sweep) runs in the server's local time; **Schedule and next times** keeps it that way, with its next runs in that zone, until you pick one.
 

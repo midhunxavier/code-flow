@@ -125,7 +125,7 @@ Authentication failures offer **Reconnect provider**. Exhausted allowances requi
 
 ## Automate a reviewed approach
 
-Open **Scheduling**, describe the goal and when it should happen, and select a project. **Create automation** opens a Team chat. Its lead prepares a standalone bounded approach; no task workers start during this preparation. Review the actual participants, models, effort, checks and finish condition in the approach card.
+Press **a** or choose **Automations → Create automation**, describe the goal and when it should happen, and select a project. **Create automation** opens a Team chat. Its lead prepares a standalone bounded approach; no task workers start during this preparation. Review the actual participants, models, effort, checks and finish condition in the approach card.
 
 Choose **Automate this** on a reviewed task. The setup shows the frozen task and team. Select **Once**, **Repeating** (with an explicit IANA time zone), or **On an event**. **More options** contains a one-item-at-a-time issues, dependency-update or security-alert list. Goals such as improving coverage use the same bounded graph; a continuation or a task depending on historical worktrees must be revised into a standalone approach before scheduling.
 
@@ -141,4 +141,4 @@ Results and their independent executions stay in the owning chat and history. Ta
 
 The new chat-based automation adapter is owner-local, as are chat and its private files. Historical scheduling and remote workflows remain under Advanced. Switching computers selects the computer that owns its own projects and automations; it does not migrate an existing automation to a different host.
 
-Scheduling focuses on describing new automation. **Manage automations** opens **App settings → Automations**, with project filtering, saved automations and advanced scheduling tools. Existing direct scheduling links remain available. The Changes side panel leads with changed files, followed by collapsed **File review** and **Comments** sections; review metadata and manual rework remain available inside File review.
+Creating an automation focuses on describing it. **Automations** in the sidebar lists saved automations with project filtering; older `#/settings/automations` links open it. Existing direct links to its kinds remain available. The Changes side panel leads with changed files, followed by collapsed **File review** and **Comments** sections; review metadata and manual rework remain available inside File review.

@@ -14,7 +14,7 @@ import { configureStreamSharing, type StreamSharing } from "./stream.js";
 import logo from "./brand/code-flow-mark.svg";
 import { api, localApi, ownerOnLocalListener, workspaceId, initializeTeamConnection, ensureCollaborationSource, showToast, showError, store, SHORT } from "./lib.js";
 import { chatAllowed } from "./chat-state.js";
-import { agents, composerProject, composerLoading, draftsReady, openBrowserPage, openComposer, hashFor, initializeProjectDrafts, listenForHandOffs, loadHealth, loadModels, loadProjects, patterns, refreshRuns, replaceRouteHistory, route, routeFromHash, setRepo, templates, watchAllRuns } from "./state.js";
+import { agents, composerProject, composerLoading, draftsReady, openBrowserPage, openComposer, hashFor, initializeProjectDrafts, listenForHandOffs, loadHealth, loadModels, loadProjects, patterns, refreshRuns, replaceRouteHistory, repositoryToolsRoute, route, routeFromHash, setRepo, templates, watchAllRuns } from "./state.js";
 
 // Reuse the sidebar's stacked-layers mark for the browser tab.
 const icon = Object.assign(document.createElement("link"), { rel: "icon", type: "image/svg+xml", href: logo });
@@ -49,7 +49,7 @@ function BootError({ message, seconds, onRetry }: { message: string; seconds: nu
   }, [left]);
   return (
     <div role="alert" class="boot-error">
-      <h3>code-flow couldn't load</h3>
+      <h3>Code Flow couldn't load</h3>
       <div class="msg err">{message}</div>
       <p class="help">{left > 0 ? `Trying again in ${left}s…` : "Trying again…"}</p>
       <button class="btn primary" disabled={left <= 0} onClick={() => setLeft(0)}>
@@ -109,6 +109,11 @@ async function boot() {
     untracked(() => {
       if (destination.project !== composerProject.value || composerLoading.value) void openComposer(destination.project, { stay: true });
     });
+  });
+  effect(() => {
+    if (route.value.view !== "workspace") return;
+    const destination = repositoryToolsRoute();
+    if (destination.view !== "workspace") { replaceRouteHistory.value = true; route.value = destination; }
   });
   render(<App />, root);
   shellReady();

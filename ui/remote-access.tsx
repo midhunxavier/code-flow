@@ -71,7 +71,7 @@ export function RemoteAccess() {
   const short = (url: string) => url.replace(/\/r\/(\w{6})\w+/, "/r/$1…");
   return <section class="section auto-card phone-card" aria-label="Remote access">
     <h2 class="section-title">Remote access</h2>
-    <p class="help">Open Codeflow from your phone, tablet or another computer. This computer must stay awake and Codeflow must remain running.</p>
+    <p class="help">Open Code Flow from your phone, tablet or another computer. This computer must stay awake and Code Flow must remain running.</p>
     <ol class="connection-checklist"><li>Choose Wi-Fi for nearby devices or Tailscale for access across networks.</li><li>Set up HTTPS to enable full control, then scan the QR code on your device.</li><li>Manage paired devices below. To invite a teammate with their own account, use <a href="#/settings/connections/host">Host a team</a>.</li></ol>
     {loadError ? <p class="msg err" role="alert">{loadError} <button class="btn small" disabled={busy} onClick={() => void refresh(true)}>Retry</button></p> : null}
     {actionError ? <p class="msg err" role="alert">{actionError} <button class="btn small" onClick={() => setActionError("")}>Dismiss</button></p> : null}
@@ -96,7 +96,7 @@ export function RemoteAccess() {
           <p class="help">{info.tailscale.message}{info.tailscale.ip ? ` ${info.tailscale.dnsName ? `${info.tailscale.dnsName} · ` : ""}${info.tailscale.ip}` : ""}</p>
           <button class="btn small" disabled={busy || checking} onClick={() => void refresh(true)}>{checking ? "Checking Tailscale…" : "Refresh Tailscale"}</button>{" "}
           {info.tailscale.state === "not-installed" ? <a class="btn small" href="https://tailscale.com/download" target="_blank" rel="noreferrer">Install Tailscale</a> : null}
-          <p class="help">Connect your other device to the same Tailscale network. Its access rules must allow this computer's remote port. Codeflow listens only on the Tailscale address in this mode.</p>
+          <p class="help">Connect your other device to the same Tailscale network. Its access rules must allow this computer's remote port. Code Flow listens only on the Tailscale address in this mode.</p>
         </div> : info.lan ? <p class="help">Your other device must be on the same trusted Wi-Fi network. HTTPS is required for full control.</p> : null}
         {info.lan ? <>
           <SecureRemoteSetup info={info} busy={busy} save={(body) => set(body, "/api/remote/tls", true)} />
@@ -112,7 +112,7 @@ export function RemoteAccess() {
         {links[0] ? <div class="phone-qr">
           <QrCode text={links[0]} />
           <div class="phone-qr-text"><b>Scan with your phone</b><span class="help">{full ? "Pairs this device with full control" : "Opens the read-only view"} at {short(links[0])}. {tailscale ? "Turn on Tailscale on the phone before opening the link." : "Connect your phone to the same Wi-Fi first."}</span></div>
-        </div> : info.lan && !expired && !loadError && !info.lanError ? <p class="help">No remote link until {tailscale ? "Tailscale is connected and Codeflow can listen on its address" : "Codeflow can listen on your network"}.</p> : null}
+        </div> : info.lan && !expired && !loadError && !info.lanError ? <p class="help">No remote link until {tailscale ? "Tailscale is connected and Code Flow can listen on its address" : "Code Flow can listen on your network"}.</p> : null}
         <div class="hook">
           {(info.lan ? links : [info.local]).map((url) => <div key={url}>
             <code>{short(url)}</code>{" "}<button class="btn small" onClick={() => copy(url, "Link copied")}>Copy link</button>{" "}
@@ -160,16 +160,16 @@ export function SecureRemoteSetup({ info, busy, save }: { info: RemoteInfo; busy
     {info.tls?.source === "environment" ? <p class="help">HTTPS is managed by this server's environment configuration.</p> : <>
       {info.tls?.hostname ? <p class="help">{info.tls.hostname}</p> : null}
       {!info.tls?.error && expiring && !renewal ? <p class="help">Renew the certificate before it expires to keep remote access available.</p> : null}
-      {renewal ? <div class="help"><b>Automatic renewal is on</b><p>{renewal.running ? "Renewing certificate…" : `Next renewal attempt: ${new Date(Math.max(Date.now(), renewal.nextAttempt)).toLocaleString()}`}{renewal.lastSuccess ? ` · Last renewed ${new Date(renewal.lastSuccess).toLocaleString()}` : ""}</p><p>Codeflow renews within 30 days of expiry while it is running and Tailscale access is enabled. Paired devices stay signed in.</p>{renewal.error ? <p role="status">{renewal.error}</p> : null}</div> : null}
-      <p class="help">Configure HTTPS here. Codeflow saves the certificate privately and applies it immediately without restarting your chats. Manually replacing a certificate turns full control off until you enable it below.</p>
-      {info.tls?.editable ? <button class="btn small" disabled={busy} aria-expanded={open} onClick={() => setOpen(!open)}>{open ? "Close setup" : info.secure ? "Renew or replace certificate" : "Set up secure remote access"}</button> : <p class="help">Open these settings on the computer running Codeflow to configure HTTPS.</p>}
+      {renewal ? <div class="help"><b>Automatic renewal is on</b><p>{renewal.running ? "Renewing certificate…" : `Next renewal attempt: ${new Date(Math.max(Date.now(), renewal.nextAttempt)).toLocaleString()}`}{renewal.lastSuccess ? ` · Last renewed ${new Date(renewal.lastSuccess).toLocaleString()}` : ""}</p><p>Code Flow renews within 30 days of expiry while it is running and Tailscale access is enabled. Paired devices stay signed in.</p>{renewal.error ? <p role="status">{renewal.error}</p> : null}</div> : null}
+      <p class="help">Configure HTTPS here. Code Flow saves the certificate privately and applies it immediately without restarting your chats. Manually replacing a certificate turns full control off until you enable it below.</p>
+      {info.tls?.editable ? <button class="btn small" disabled={busy} aria-expanded={open} onClick={() => setOpen(!open)}>{open ? "Close setup" : info.secure ? "Renew or replace certificate" : "Set up secure remote access"}</button> : <p class="help">Open these settings on the computer running Code Flow to configure HTTPS.</p>}
       {open ? <form class="secure-remote-form" onInput={() => setError("")} onChange={() => setError("")} onSubmit={(event) => { event.preventDefault(); void submit(); }}>
         <fieldset disabled={busy}>
           {canTailscale ? <label>Certificate setup<select class="field" value={method} onChange={(event) => setMethod(event.currentTarget.value)}><option value="tailscale">Use Tailscale · recommended</option><option value="import">Import certificate files</option></select></label> : null}
           {automatic ? <>
             <p class="help">Create or renew a certificate for <b>{info.tailscale.dnsName ?? "this computer's Tailscale name"}</b>. Enable HTTPS certificates in your <a href="https://login.tailscale.com/admin/dns" target="_blank" rel="noreferrer">Tailscale DNS settings</a> first.</p>
-            <p class="help">The computer's DNS name will appear in public certificate transparency logs. This does not make Codeflow public. <a href="https://tailscale.com/docs/how-to/set-up-https-certificates" target="_blank" rel="noreferrer">About Tailscale certificates</a></p>
-            <p class="help">Automatic renewal is included. Codeflow renews within 30 days of expiry while it is running and Tailscale access is enabled, and retries automatically if renewal fails.</p>
+            <p class="help">The computer's DNS name will appear in public certificate transparency logs. This does not make Code Flow public. <a href="https://tailscale.com/docs/how-to/set-up-https-certificates" target="_blank" rel="noreferrer">About Tailscale certificates</a></p>
+            <p class="help">Automatic renewal is included. Code Flow renews within 30 days of expiry while it is running and Tailscale access is enabled, and retries automatically if renewal fails.</p>
           </> : <>
             <label>Remote hostname or IP<input class="field" value={hostname} placeholder="codeflow.example.com" onInput={(event) => setHostname(event.currentTarget.value)} required /></label>
             <label>Certificate file (PEM)<input class="field" type="file" accept=".pem,.crt,.cer" ref={certFile} required /></label>

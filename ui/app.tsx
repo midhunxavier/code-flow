@@ -105,7 +105,7 @@ function PoppedSide({ tab }: { tab: SideTab }) {
     return () => document.removeEventListener("click", handOffLink);
   }, []);
   useEffect(() => {
-    document.title = `code-flow · ${tab}`;
+    document.title = `Code Flow · ${tab}`;
   }, [tab]);
   return (
     <div class="popped">
@@ -136,7 +136,7 @@ function MainApp() {
   const skipTarget = sideFullWidth.value ? "side-panel" : "main-content";
   useEffect(() => {
     const host = executionHost.value;
-    document.title = `${waitingCount.value ? `(${waitingCount.value}) ` : ""}code-flow${host.kind === "ssh" ? ` · SSH ${host.name}` : ""}`;
+    document.title = `${waitingCount.value ? `(${waitingCount.value}) ` : ""}Code Flow${host.kind === "ssh" ? ` · SSH ${host.name}` : ""}`;
   }, [waitingCount.value, executionHost.value]);
   useEffect(() => {
     const resetTraversal = () => runNavigation.reset();
@@ -175,8 +175,6 @@ function MainApp() {
               <ProjectsPage />
             ) : route.value.view === "project" ? (
               <ProjectView key={route.value.id} {...route.value} />
-            ) : route.value.view === "workspace" && route.value.project ? (
-              <ProjectView key={route.value.project} id={route.value.project} section="repositories" />
             ) : ["inbox", "automations", "workspace", "insights"].includes(route.value.view) ? (
               <ActivityView key={route.value.view} current={route.value} />
             ) : route.value.view === "settings" ? (
@@ -297,7 +295,7 @@ function Crumbs() {
     );
   } else if (r.view === "project") {
     trail = (
-      <><a class="crumb" href={`#/project/${encodeURIComponent(r.id)}`} aria-current={!r.section ? "page" : undefined}>{projects.value.find((p) => p.id === r.id)?.name ?? "Project"}</a>{r.section ? <>{sep}<span class="crumb here" aria-current="page">{{ runs: "History", repositories: "Repositories", settings: "Project settings", board: "Board", people: "People", automation: "Automation", connections: "Connections" }[r.section]}</span></> : null}</>
+      <><a class="crumb" href={`#/project/${encodeURIComponent(r.id)}`} aria-current={!r.section ? "page" : undefined}>{projects.value.find((p) => p.id === r.id)?.name ?? "Project"}</a>{r.section ? <>{sep}<span class="crumb here" aria-current="page">{{ runs: "History", repositories: "Repositories", settings: "Project settings", board: "Board", people: "People", automation: "Automations", connections: "Connections" }[r.section]}</span></> : null}</>
     );
   } else if (r.view === "team" || r.view === "team-task" || r.view === "team-people") {
     // The board, or a task under it: its title comes from the open task, else from the board's card.
@@ -329,7 +327,7 @@ function Crumbs() {
       </span>
     );
   } else if (r.view === "inbox" || r.view === "automations" || r.view === "workspace" || r.view === "insights") {
-    trail = <>{r.view === "workspace" && r.project ? <><a class="crumb" href={`#/project/${encodeURIComponent(r.project)}`}>{projects.value.find(p => p.id === r.project)?.name ?? "Project"}</a>{sep}</> : null}<span class="crumb here" aria-current="page">{{ inbox: "Inbox", automations: "Scheduling", workspace: r.view === "workspace" && r.project ? "Repositories" : "Repository tools", insights: "Insights" }[r.view]}</span></>;
+    trail = <span class="crumb here" aria-current="page">{{ inbox: "Inbox", automations: "Automations", workspace: "Repository tools", insights: "Insights" }[r.view]}</span>;
   } else if (r.view === "settings") {
     const section = SETTINGS_SECTIONS.find((item) => item.id === settingsSection(r.section));
     trail = section ? (
@@ -377,20 +375,20 @@ export function notifyFinished(run: RunSummary) {
   const watch = run.status !== "running" && !run.awaiting ? watchNeedingYou(run) : undefined;
   const leadTurn = run.pattern === "chat-lead" || run.pattern === "chat-discussion";
   const leadChat = leadTurn ? run.conversationId ?? run.cliTeam?.taskConversation?.chatId ?? run.cliTeam?.taskConversation?.id : undefined;
-  const title = leadTurn ? `code-flow: ${run.status === "done" ? chatLeadReplyLabel(run.patternSummary ?? run.summary ?? "").toLowerCase() : `conversation lead ${verbs[run.status] ?? run.status}`}` : run.awaiting
-    ? `code-flow: ${run.awaiting.title.toLowerCase()}`
-    : teamAwaitingAnswer(run) ? "code-flow: your team needs an answer" : watch
-      ? `code-flow: PR needs you — ${watch.detail}`
-      : `code-flow: run ${verbs[run.status] ?? run.status}`;
+  const title = leadTurn ? `Code Flow: ${run.status === "done" ? chatLeadReplyLabel(run.patternSummary ?? run.summary ?? "").toLowerCase() : `conversation lead ${verbs[run.status] ?? run.status}`}` : run.awaiting
+    ? `Code Flow: ${run.awaiting.title.toLowerCase()}`
+    : teamAwaitingAnswer(run) ? "Code Flow: your team needs an answer" : watch
+      ? `Code Flow: PR needs you — ${watch.detail}`
+      : `Code Flow: run ${verbs[run.status] ?? run.status}`;
   const body = leadTurn ? "Continue in chat to review the reply." : run.task.split("\n")[0]!;
-  announcement.value = `${title.replace(/^code-flow: /, "")}: ${body.slice(0, 120)}`;
+  announcement.value = `${title.replace(/^Code Flow: /, "")}: ${body.slice(0, 120)}`;
   if (!canNotify() || (viewing && !document.hidden)) return;
   let n: Notification;
   try {
     n = new Notification(title, { body, tag: run.id });
   } catch {
     // Android Chrome (the phone link) only shows notifications from a service worker: a toast instead.
-    return showToast(title.replace(/^code-flow: /, ""), 5000);
+    return showToast(title.replace(/^Code Flow: /, ""), 5000);
   }
   n.onclick = () => {
     window.focus();
@@ -407,9 +405,9 @@ const SHORTCUTS: [string, string][] = [
   ["j / k", "Next / previous run in the list"],
   ["[ / ]", "Previous / next step or agent turn"],
   ["n", "New chat"],
-  ["p", "Pick the project for new runs, Insights and Scheduling"],
+  ["p", "Pick the project for new runs, Insights and Automations"],
   ["i", "Insights"],
-  ["a", "Scheduling"],
+  ["a", "Automations"],
   ["⌘↵", "Start reviewed work, or send your message"],
   ["Esc", "Close a dialog, or leave the search box"],
   ["\\", "Show or hide the side panel"],
@@ -529,7 +527,7 @@ function HealthDialog() {
       <div class="picker-inner">
         <div class="picker-head">
           <h3 id="health-title">Health</h3>
-          <div class="help">What code-flow can see about each CLI — it uses the CLIs' own commands and never reads their credentials.</div>
+          <div class="help">What Code Flow can see about each CLI — it uses the CLIs' own commands and never reads their credentials.</div>
         </div>
         <div class="dialog-body">
           <PolicyPauseNotice what="Provider health checks are paused" />

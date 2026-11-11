@@ -1,5 +1,5 @@
 // Templates, saved workflows and a project's remembered team prefill one draft. They must not
-// rewrite the browser-wide choices in Settings > Agents & models and Settings > Run defaults,
+// rewrite the browser-wide choices in Settings > Agents and Settings > Run defaults,
 // which every other project's new draft starts from. The UI is bundled the way build-ui does it
 // and loaded with a stand-in window, as in ui-review.test.ts.
 import { test, before } from "node:test";
@@ -55,7 +55,7 @@ before(async () => {
   m.patterns.value = [solo, pipeline];
 });
 
-test("applying a template or saved workflow sets this draft's models and keeps Settings > Agents & models", () => {
+test("applying a template or saved workflow sets this draft's models and keeps Settings > Agents", () => {
   m.applyPreset(preset({}), "Template Saved before any defaults");
   assert.deepEqual(saved("agentSettings"), SAVED_MODELS, "a template saved with Default models doesn't erase the saved provider defaults");
   assert.deepEqual(m.providerDefaults.value, SAVED_MODELS);
@@ -94,7 +94,7 @@ test("a project's remembered team prefills only its own draft and leaves Setting
   assert.deepEqual([m.composerOrigins.value.pattern, m.composerOrigins.value.roles, m.composerOrigins.value.models], ["Project defaults", "Project defaults", "Project defaults"]);
   assert.equal(storage.get("pattern"), "solo", "Settings > Run defaults keeps its default workflow");
   assert.equal(m.defaultPattern.value, "solo");
-  assert.deepEqual(saved("agentSettings"), SAVED_MODELS, "Settings > Agents & models keeps the saved effort");
+  assert.deepEqual(saved("agentSettings"), SAVED_MODELS, "Settings > Agents keeps the saved effort");
   assert.deepEqual(m.providerDefaults.value, SAVED_MODELS);
   assert.equal(saved("roleSel")?.pipeline, undefined, "the project's team isn't saved for other projects");
 

@@ -9,6 +9,7 @@ import { useDialog } from "./app.js";
 import { AgentTag, CantRunNote } from "./bits.js";
 import { Icon } from "./icons.js";
 import { ago, api, ApiError, sharedGet, baseName, copy, post, showToast, showError, STATUS_TEXT } from "./lib.js";
+import { AUTOMATION_MANAGEMENT } from "./navigation.js";
 import { activeProject, projectCounts, filterActive, setRunFilter, historyNextCursor, historyLoadingMore, loadOlderRuns, ALL, currentProject, inScope, NONE, patternName, projectFor, projects, route, runs, selectProject } from "./state.js";
 import type { Project, RunSummary } from "./types.js";
 import { ProjectButton } from "./projects.js";
@@ -207,7 +208,7 @@ export function AutomationsView({ mode = "all", category, projectId, showScope =
           {category === "backlog" ? "Scheduled backlog work" : category === "repeat" ? "Repeating tasks and webhooks" : "Saved automations"} {list.length ? <span class="n">{list.length}</span> : null}
         </h2>
         {automationLoadError.value ? <p class="msg err automation-storage-note" role="alert">Automations could not be refreshed: {automationLoadError.value} <button class="btn small" onClick={() => void loadAutomations()}>Retry</button></p> : null}
-        {automationStorage.value?.state === "unavailable" ? <p class="msg err automation-storage-note" role="alert">Automation storage is unavailable: {automationStorage.value.reason}. Existing records have been preserved. Fix access to <code>{automationStorage.value.source}</code>, then restart CodeFlow.</p> : automationStorage.value?.state === "recovered" ? <p class="msg warn automation-storage-note" role="status">Automation storage was recovered: {automationStorage.value.reason}. Original records were preserved in <code>{automationStorage.value.backup}</code>; only readable records are shown.</p> : null}
+        {automationStorage.value?.state === "unavailable" ? <p class="msg err automation-storage-note" role="alert">Automation storage is unavailable: {automationStorage.value.reason}. Existing records have been preserved. Fix access to <code>{automationStorage.value.source}</code>, then restart Code Flow.</p> : automationStorage.value?.state === "recovered" ? <p class="msg warn automation-storage-note" role="status">Automation storage was recovered: {automationStorage.value.reason}. Original records were preserved in <code>{automationStorage.value.backup}</code>; only readable records are shown.</p> : null}
         {!projectId ? <><Elsewhere count={elsewhere.length - withoutProject} what={(n) => `${n} more in other projects`} />{withoutProject ? <p class="help automation-storage-note">{withoutProject} {withoutProject === 1 ? "automation has" : "automations have"} no project. <button class="linkish" onClick={() => selectProject(NONE, { defaults: false, repo: false })}>Show without a project</button></p> : null}</> : null}
         {list.length ? (
           list.map((a) => <AutomationRow key={a.id} a={a} scoped={scoped} />)
@@ -592,7 +593,7 @@ export function SaveAutomationDialog({ body, onClose }: { body: Record<string, a
       // Show the project it went in (from "No project", its repo's), as starting a run does.
       const p = automationProject(saved.run);
       if (currentProject.value !== ALL && p && p.id !== currentProject.value) selectProject(p.id, { defaults: false, repo: false });
-      route.value = { view: "settings", section: "automations" };
+      route.value = { view: "automations", kind: AUTOMATION_MANAGEMENT };
     } catch (err) {
       setError((err as Error).message);
     } finally {

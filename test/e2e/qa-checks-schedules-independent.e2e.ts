@@ -121,7 +121,7 @@ test("startup catch-up fires the retained occurrence past one hour and skipped r
   await page.goto("about:blank"); await stop();
   const file = join(data, "triggers.json"), triggers = JSON.parse(readFileSync(file, "utf8")), due = Date.now() - 3590000;
   triggers.find((t: any) => t.id === edge.id).nextAt = due; triggers.find((t: any) => t.id === missed.id).nextAt = Date.now() - 7200000; writeFileSync(file, JSON.stringify(triggers));
-  await start(); await open("#/settings/automations");
+  await start(); await open("#/automations/manage");
   const row = page.locator(".auto-row", { hasText: "Missed schedule" }); await row.getByRole("button", { name: "Preview and events", exact: true }).click();
   await row.getByText(/Missed the .*code-flow was closed or the computer asleep/).waitFor();
   for (let i = 0; i < 400; i++) { const events = (await api(`/api/automations/${edge.id}/events`)).body; if (events.some((e: any) => e.state === "started")) break; await new Promise(resolve => setTimeout(resolve, 100)); }

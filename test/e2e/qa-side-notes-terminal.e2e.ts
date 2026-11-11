@@ -247,10 +247,10 @@ test("legacy popped routes report missing scopes and return to the app in the sa
   for (const scope of ["run:deleted-run", "project:deleted-project"]) {
     await open(`#/side/files/${scope}`); await page.getByText(scope.startsWith("run") ? "This run no longer exists." : "Project not found.", { exact: true }).waitFor();
     assert.equal(await page.locator(".side-body").getByText("Choose a repository first.", { exact: true }).count(), 0);
-    await page.getByRole("link", { name: "Open code-flow", exact: true }).click(); await page.locator(".rail").waitFor(); assert.equal(page.context().pages().length, count);
+    await page.getByRole("link", { name: "Open Code Flow", exact: true }).click(); await page.locator(".rail").waitFor(); assert.equal(page.context().pages().length, count);
   }
   await open(`#/side/files/project:${alpha.id}`); await page.locator(".side-scope").getByText("Side Alpha", { exact: true }).waitFor();
-  await page.getByRole("link", { name: "Open code-flow", exact: true }).click(); await page.locator(".rail").waitFor();
+  await page.getByRole("link", { name: "Open Code Flow", exact: true }).click(); await page.locator(".rail").waitFor();
   await panel(alpha, "Files"); await page.getByRole("button", { name: "Expand side panel", exact: true }).click(); await page.getByRole("button", { name: "Restore side panel", exact: true }).waitFor(); await page.keyboard.press("Escape"); await page.getByRole("button", { name: "Expand side panel", exact: true }).waitFor();
 });
 

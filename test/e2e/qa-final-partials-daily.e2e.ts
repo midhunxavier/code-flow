@@ -113,7 +113,7 @@ test("RUN--GAP-05: actual webhook HTML and unsafe links stay inert in history an
   assert.equal(response.status,202);
   const events = await until(()=>api(`/api/automations/${a.id}/events`),rows=>rows.some((e:any)=>e.state==="started"));
   const id = events.find((e:any)=>e.state==="started").runIds[0]; await finished(id);
-  const p = await page("#/settings/automations"); let dialogs=0; p.on("dialog",async dialog=>{dialogs++;await dialog.dismiss();});
+  const p = await page("#/automations/manage"); let dialogs=0; p.on("dialog",async dialog=>{dialogs++;await dialog.dismiss();});
   const row = p.locator(".auto-row").filter({hasText:a.name}); await row.getByRole("button",{name:"Preview and events",exact:true}).click();
   const history = p.getByRole("region",{name:`Preview and events for ${a.name}`,exact:true});
   await history.getByText(/<script>window.dailyInjected=1/).waitFor(); await shot(p,"hostile-webhook-history");

@@ -49,8 +49,8 @@ after(async () => { await stop(); await browser?.close(); if (evidence) { await 
 test("global automation routes reject bad purposes and extra path segments; valid and legacy routes work", { timeout: 60_000 }, async () => {
   for (const suffix of ["bogus", "Once", "repeat/extra", "repeat/"]) { await open(`#/automations/${suffix}`); await page.getByRole("heading", { name: "This link is invalid" }).waitFor(); }
   await shot("01-invalid-route");
-  for (const kind of ["once", "repeat", "backlog"]) { await open(`#/automations/${kind}`); assert.equal(await page.getByRole("navigation", { name: "Scheduling purpose" }).locator('[aria-current="page"]').getAttribute("href"), `#/automations/${kind}`); }
-  await open("#/settings/automations"); await page.getByRole("heading", { name: "Scheduling", exact: true }).waitFor();
+  for (const kind of ["once", "repeat", "backlog"]) { await open(`#/automations/${kind}`); assert.equal(await page.getByRole("navigation", { name: "Automation purpose" }).locator('[aria-current="page"]').getAttribute("href"), `#/automations/${kind}`); }
+  await open("#/settings/automations"); await page.getByRole("heading", { name: "Automations", exact: true }).waitFor(); await page.waitForURL(url => url.hash === "#/automations/manage");
 });
 
 test("row editing preserves identity and requires a trigger; concurrent edits keep the draft", { timeout: 60_000 }, async () => {

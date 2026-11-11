@@ -289,10 +289,11 @@ test("all settings categories render; desktop and mobile preferences are accessi
 
 test("operational tools are direct destinations and old Settings links still work", async () => {
   await page.setViewportSize({ width: 1440, height: 1000 });
-  for (const [path, name] of [["workspace", "Repository tools"], ["automations", "Scheduling"], ["inbox", "Inbox"], ["insights", "Insights"]] as const) {
+  for (const [path, name] of [["workspace", "Repository tools"], ["automations", "Automations"], ["inbox", "Inbox"], ["insights", "Insights"]] as const) {
     await page.goto(`${base}/#/${path}`);
-    await page.getByRole("heading", { name: path === "automations" ? "What would you like to build?" : name, exact: true }).first().waitFor();
-    assert.ok(page.url().endsWith(`#/${path}`));
+    // Repository tools open in the repository's project when it has one.
+    if (path === "workspace") await page.getByRole("navigation", { name: "Repository tools" }).waitFor();
+    else { await page.getByRole("heading", { name: path === "automations" ? "What would you like to build?" : name, exact: true }).first().waitFor(); assert.ok(page.url().endsWith(`#/${path}`)); }
     assert.equal(await page.getByRole("navigation", { name: "Settings categories" }).count(), 0);
     await page.getByRole("button", { name: /^Open command palette/ }).click();
     await page.getByRole("combobox", { name: "Find a command, project or run" }).fill(name);

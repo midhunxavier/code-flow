@@ -244,7 +244,7 @@ export type TerminalGone = { type: "error"; status: number; message: string };
 /** Typed into a terminal's own screen, dimmed: a note from code-flow, not the shell's output. */
 const note = (text: string) => `\r\n\x1b[2m[${text}]\x1b[0m\r\n`;
 const exitNote = (code: number | null) => note(`shell exited${code === null ? "" : ` with ${code}`} — Restart opens a new one`);
-const GONE = "This terminal is gone (code-flow restarted?). Restart opens a new one in the same folder.";
+const GONE = "This terminal is gone (Code Flow restarted?). Restart opens a new one in the same folder.";
 
 /**
  * A real terminal (xterm): keystrokes go to the shell as typed, a few milliseconds' worth per
@@ -541,7 +541,7 @@ function ShellView({ id, gone, initial, places, split, focused, shown, onFocus, 
       <div class="term" onClick={(e) => (e.target as HTMLElement).closest("pre") && !window.getSelection()?.toString() && input.current?.focus()}>
         <pre class="term-out" ref={out} aria-live="polite" aria-label="Terminal output">
           {!lines.length ? (
-            <span class="help">{error || (shell ? `${shell.shell} in ${shell.cwd}. code-flow found no python3 for a real terminal, so commands run one at a time: no pagers, prompts or full-screen programs.` : "Connecting…")}</span>
+            <span class="help">{error || (shell ? `${shell.shell} in ${shell.cwd}. Code Flow found no python3 for a real terminal, so commands run one at a time: no pagers, prompts or full-screen programs.` : "Connecting…")}</span>
           ) : null}
           {lines.map((l, i) =>
             l.type === "input" ? (

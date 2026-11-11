@@ -68,13 +68,11 @@ const fits = (target: Page) => target.evaluate(() => { const main = document.get
 
 test("the People entry opens a useful empty board with a workflow summary", async () => {
   await page.goto(`${base}/#/settings/board`);
-  await page.waitForURL(/#\/settings\/board$/);
+  await page.waitForURL(/#\/team$/);
   await page.getByRole("heading", { name: "Board", exact: true }).waitFor();
   await page.getByRole("heading", { name: "Your board is ready for its first task", exact: true }).waitFor();
   assert.deepEqual(await page.locator(".team-workflow > span").evaluateAll(items => items.map(item => item.firstChild?.textContent)), ["Planned", "Working", "Blocked", "In review", "Done"]);
   assert.equal(await page.locator("section.team-column").count(), 0, "an empty board uses one actionable state instead of empty columns");
-  assert.equal(await page.getByText("Not connected to a team server", { exact: true }).count(), 0, "embedded board avoids a duplicate setup card");
-  await page.getByText("Activity inbox", { exact: true }).click();
   await page.getByRole("heading", { name: /^Inbox/ }).waitFor(); await page.getByText("Nothing yet.", { exact: false }).waitFor();
   assert.deepEqual(errors, []);
 });
@@ -313,10 +311,9 @@ test("a route handed off by another window cancels destructive confirmation", as
 
 test("the rail's Team badge counts the inbox from the first paint, and marking items read clears the cards' Needs-you badges at once", async () => {
   await page.goto(`${base}/#/`); await page.reload(); await page.getByRole("button", { name: "New chat", exact: true }).waitFor();
-  await page.goto(`${base}/#/settings/board`); await page.waitForURL(/#\/settings\/board$/);
+  await page.goto(`${base}/#/team`); await page.waitForURL(/#\/team$/);
   const card = page.getByRole("region", { name: /^Planned/ }).getByRole("button", { name: new RegExp(TITLE) }); await card.waitFor();
   await page.locator(".team-card.needs-you").filter({ hasText: TITLE }).waitFor(); await card.getByText("Needs you", { exact: true }).waitFor();
-  await page.getByText("Activity inbox", { exact: true }).click();
   await page.getByRole("heading", { name: /^Inbox/ }).getByText("1", { exact: true }).waitFor();
   await page.getByRole("button", { name: "Mark all read", exact: true }).click();
   await page.locator(".team-card.needs-you").waitFor({ state: "hidden", timeout: 3_000 }); // the board reloads with the inbox, not on the next 15 s poll

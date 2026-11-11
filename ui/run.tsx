@@ -577,7 +577,7 @@ function RunMeta({ run }: { run: RunSummary }) {
         From {run.baseLabel} @ <code>{run.baseRef.slice(0, 7)}</code>
       </span>
       {run.loop?.check ? (
-        <span title="code-flow runs this after every change">
+        <span title="Code Flow runs this after every change">
           Done when <code>{run.loop.check}</code> passes{run.checkCantRun ? " · can't run here" : run.lastCheck ? (run.lastCheck.ok ? " · last check ✓" : " · last check ✕") : ""}
         </span>
       ) : null}
@@ -763,7 +763,7 @@ export function FollowUpBadges({ f, run }: { f: FollowUp; run?: RunSummary }) {
     <>
       {halted ? (
         run!.status === "interrupted" ? (
-          <span class="note" title="code-flow stopped before this turn finished. Resume the run to continue it.">
+          <span class="note" title="Code Flow stopped before this turn finished. Resume the run to continue it.">
             Interrupted
           </span>
         ) : (
@@ -1484,7 +1484,7 @@ function MergePanel({ run, branch, worktree, steps, onMerged }: { run: RunSummar
       {mergedInto.has(target) ? <div class="help">Already merged into {target}: merging again brings only what's new on {branch} since.</div> : null}
       {resolving ? <div class="msg warn">Resolving the conflicts with {resolving.mergeFrom} failed{resolving.result ? `: ${resolving.result}` : "."}</div> : null}
       {warning ? <div class="msg warn" role="status">{warning}</div> : null}
-      <div class="help">If {target || "the branch"} is checked out, code-flow merges there only when it has no uncommitted changes, and aborts cleanly on conflicts.</div>
+      <div class="help">If {target || "the branch"} is checked out, Code Flow merges there only when it has no uncommitted changes, and aborts cleanly on conflicts.</div>
       {conflicts ? (
         <div class="conflicts">
           <div class="msg warn">
@@ -1661,7 +1661,7 @@ function PrMergePanel({ run, branch, worktree, steps }: { run: RunSummary; branc
         {open && info!.mergeable === "CONFLICTING" ? <div class="msg warn">GitHub says {name} conflicts with {info!.baseRefName}: merge {info!.baseRefName} into the branch and resolve them first.</div> : null}
         {open ? (
           <div class="help">
-            {CI_TEXT[info!.ci]}. code-flow merges it on GitHub only while it's exactly the branch you reviewed here, and deletes no branches.{" "}
+            {CI_TEXT[info!.ci]}. Code Flow merges it on GitHub only while it's exactly the branch you reviewed here, and deletes no branches.{" "}
             <button class="linkish" onClick={() => setLocal(!local)}>
               {local ? "Hide local merge" : "Merge into a local branch instead…"}
             </button>
@@ -1697,7 +1697,7 @@ function PrPanel({ run, branch, focusOnOpen = false }: { run: RunSummary; branch
               {b}
             </option>
           ))}
-          {targets?.runBranches?.length ? <optgroup label="Other code-flow run branches">{targets.runBranches.filter(b => b !== branch).map(b => <option key={b} value={b}>{b}</option>)}</optgroup> : null}
+          {targets?.runBranches?.length ? <optgroup label="Other Code Flow run branches">{targets.runBranches.filter(b => b !== branch).map(b => <option key={b} value={b}>{b}</option>)}</optgroup> : null}
         </select>
         <button
           class="btn primary small"
@@ -2107,7 +2107,7 @@ export function ConversationBar({ run, steps, chat, onOpenChat }: { run: RunSumm
         {running && pendingNotes.length ? <div class="notes">{pendingNotes.map(noteChip)}</div> : null}
         {!draftReady ? <p class="help" role="status">Restoring reply draft…</p> : draftWarning ? <p class="msg warn" role="status">{draftWarning}</p> : null}
         {undelivered.length ? <UndeliveredNotes notes={undelivered} onRestore={note => { setText(value => appendDraftText(value, [note.text])); area.current?.focus(); }} /> : null}
-        {signedOut || authFailed ? <p class="msg warn reply-provider-warning" role="alert">{latestReplyFailed ? "The latest reply didn't finish. " : ""}{signedOut ? `${signedOut.name} isn't signed in` : `The latest reply couldn't sign in to ${agentName(replyAgent)}`} — <a href="#/settings/providers">open Settings → Providers</a>. After signing in, send your reply again. <button type="button" class="btn small" disabled={providersRefreshing.value} onClick={() => void refreshProviders()}>{providersRefreshing.value ? "Checking…" : "Recheck sign-in"}</button></p> : latestReplyFailed ? <p class="help" role="status">The latest reply didn't finish. Work is saved; send another reply to continue.</p> : null}
+        {signedOut || authFailed ? <p class="msg warn reply-provider-warning" role="alert">{latestReplyFailed ? "The latest reply didn't finish. " : ""}{signedOut ? `${signedOut.name} isn't signed in` : `The latest reply couldn't sign in to ${agentName(replyAgent)}`} — <a href="#/settings/providers">open Settings → Agents</a>. After signing in, send your reply again. <button type="button" class="btn small" disabled={providersRefreshing.value} onClick={() => void refreshProviders()}>{providersRefreshing.value ? "Checking…" : "Recheck sign-in"}</button></p> : latestReplyFailed ? <p class="help" role="status">The latest reply didn't finish. Work is saved; send another reply to continue.</p> : null}
         <BrowserDraftCards text={text} onText={setText} images={images} onImages={setImages} />
         <DraftImages message={text} images={images} onRemove={(i) => setImages(images.filter((_, j) => j !== i))} />
         <div class="chatbox">
@@ -2218,7 +2218,7 @@ function Transcript({ run, step, data }: { run: RunSummary; step?: Step; data: R
       <div class="tr-head">
         {page ? <span class="row"><button class="btn small" disabled={page.loading || !page.before} onClick={() => { setShown(PAGE); void loadStepTranscript(run.id, step!.id, page.before); }}>Earlier events</button><button class="btn small" disabled={page.loading} onClick={() => { setShown(PAGE); void loadStepTranscript(run.id, step!.id); }}>Latest events</button>{page.loading ? <span role="status">Loading transcript…</span> : null}{page.historical ? <span>Viewing earlier events</span> : null}{page.error ? <span role="alert">{page.error}</span> : null}</span> : null}
         {model ? <span>{model}</span> : null}
-        <span>{(step.kind ?? "agent") === "agent" ? (step.mode === "write" ? "can edit files" : "read-only") : "run by code-flow"}</span>
+        <span>{(step.kind ?? "agent") === "agent" ? (step.mode === "write" ? "can edit files" : "read-only") : "run by Code Flow"}</span>
         <span>worktree {step.worktree}</span>
         {step.usage ? <span title={usageTitle(step.usage)}>{fmtTokens(step.usage.inputTokens + step.usage.outputTokens)} tokens{step.usage.costUsd ? ` · ≈${fmtCost(step.usage.costUsd)}` : ""}</span> : null}
         {step.contextInput ? <span title={`Measured assembled invocation input. Excludes: ${step.contextInput.excluded.join(", ")}. Input hash ${step.contextInput.hash}`}>{step.contextInput.bytes.toLocaleString()} input bytes · ≈{step.contextInput.approximateTokens.toLocaleString()} input tokens{step.contextInput.exceeded ? ` · ${step.contextInput.policy === "block" ? "blocked" : "budget warning"}` : ""}{step.contextInput.resumed ? " · earlier history excluded" : ""}</span> : null}

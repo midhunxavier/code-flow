@@ -3556,6 +3556,8 @@ dialog.picker.team-build-dialog { max-height: min(780px, calc(100dvh - 32px)); }
 .rail-destinations .nav-item { text-decoration: none; min-height: 40px; }
 .rail-destinations .count { margin-left: auto; }
 @media (min-width: 761px) {
+  .rail-destinations { gap: 1px; }
+  .rail-destinations .nav-item { min-height: 34px; }
   .rail-collapsed .rail-destinations .nav-item { justify-content: center; padding: 8px; position: relative; }
   .rail-collapsed .rail-destinations .nav-label { display: none; }
   .rail-collapsed .rail-destinations .count { position: absolute; top: 0; right: 0; margin: 0; min-width: 16px; font-size: 10px; padding: 1px 3px; }

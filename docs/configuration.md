@@ -7,8 +7,8 @@ Use Settings for application preferences and connections. Open a project’s Rep
 Open **Settings** at the bottom of the sidebar, press **⌘, / Ctrl+,**, or search for a settings category in the command palette. Categories have shareable addresses such as `#/settings/ssh`; browser Back and Forward preserve navigation. Search settings by a feature name such as “theme”, “permissions”, “VM”, or “Tailscale”.
 
 - **General:** light, dark, or system appearance; sidebar grouping; archived runs; keyboard shortcuts. Terminals follow the selected appearance.
-- **Agents & models:** provider health and usage, model and effort defaults. Sign in through the provider CLI on the current machine.
-- **Run defaults:** workflow, plan approval, agent permissions and run limits. These update the composer’s remembered choices and the current draft; running work is unchanged. A project that remembers the team of its last run starts its new drafts from that workflow, team and models instead; Run defaults lists those projects, and opening one doesn’t change these settings. Models chosen by a project’s remembered team, a template or a per-role choice apply to that draft only; the Agents & models defaults stay as saved.
+- **Agents:** provider health and usage, model and effort defaults. Sign in through the provider CLI on the current machine.
+- **Run defaults:** workflow, plan approval, agent permissions and run limits. These update the composer’s remembered choices and the current draft; running work is unchanged. A project that remembers the team of its last run starts its new drafts from that workflow, team and models instead; Run defaults lists those projects, and opening one doesn’t change these settings. Models chosen by a project’s remembered team, a template or a per-role choice apply to that draft only; the Agents defaults stay as saved.
 - **Notifications:** browser notifications and outbound notification destinations.
 - **SSH connections:** save and open remote VMs, with optional port and identity-file overrides. See [SSH projects](ssh-projects.md).
 - **Remote access:** Tailscale, Wi-Fi, pairing and device access to the local workspace.
@@ -19,7 +19,7 @@ Open **Settings** at the bottom of the sidebar, press **⌘, / Ctrl+,**, or sear
 
 Appearance, run defaults and sidebar preferences save in this browser, separately for each SSH workspace. SSH definitions and the team link with its repository mappings save on the local server; project, access, notification and retention settings save on the machine hosting that workspace; team board tasks, checkpoints and runner registrations save on the team server the link points to. Controls with a **Save** action keep their existing explicit save behavior. Numeric run limits save when you leave the field; invalid values restore the previous setting.
 
-**Project → Repository tools** contains verification, code editing, dependency and context inspection, checkpoints and coordinated changes. **Inbox** and **Automations** are sidebar destinations. Open **Insights** and the workspace from the application menu or command palette. Older Settings URLs redirect to the current destinations.
+**Project → Repository tools** contains verification, code editing, dependency and context inspection, checkpoints and coordinated changes. **Inbox**, **Automations** and **Insights** are sidebar destinations; **Board** joins them once a team is connected. Older Settings URLs such as `#/settings/inbox` redirect to the current destinations.
 
 ## Per-repo config
 
@@ -85,7 +85,7 @@ Whatever the mode, code-flow never merges or pushes on its own.
 
 ## Models
 
-Per provider in **Settings → Agents & models**, and per role right under each role's agents in the team. See [Getting started](getting-started.md#models-and-effort).
+Per provider in **Settings → Agents**, and per role right under each role's agents in the team. See [Getting started](getting-started.md#models-and-effort).
 
 ## Light or dark
 
@@ -124,7 +124,7 @@ Once an agent CLI reports its final result, it gets 10 seconds to exit; one that
 | `CODEFLOW_SCHEDULER_TICK_MS` | `30000` | How often due automations are checked |
 | `CODEFLOW_WATCH_INTERVAL_MS` | `60000` | How often watched PRs are checked for CI results and new comments. A PR that stays green with no new comments is checked less often, up to every 10 minutes |
 | `CODEFLOW_CODEX_TRANSPORT` | `auto` | `auto`: `codex app-server` when the installed Codex has it, else `codex exec`. A Codex without app-server is re-checked every 10 minutes; a slow or failed app-server start fails only that turn. `app-server`: require it. `exec`: always `codex exec` (your notes then wait for Codex's next turn) |
-| `CODEFLOW_CODEX_PROFILE` | none | The Codex profile every Codex turn uses: Codex layers `<name>.config.toml` from its home (`~/.codex`, or `CODEX_HOME`) over its own config, for example to use Ollama or another OpenAI-compatible provider. It wins over the profile chosen in **Settings → Agents & models → Codex profile**. With a profile, Codex turns always run through `codex exec` (`codex app-server` has no profile option), so a message sent during a turn waits for the next one and runs that need tool approvals can't use Codex. A profile whose file is missing fails the turn instead of running on your default account. |
+| `CODEFLOW_CODEX_PROFILE` | none | The Codex profile every Codex turn uses: Codex layers `<name>.config.toml` from its home (`~/.codex`, or `CODEX_HOME`) over its own config, for example to use Ollama or another OpenAI-compatible provider. It wins over the profile chosen in **Settings → Agents → Codex profile**. With a profile, Codex turns always run through `codex exec` (`codex app-server` has no profile option), so a message sent during a turn waits for the next one and runs that need tool approvals can't use Codex. A profile whose file is missing fails the turn instead of running on your default account. |
 | `CODEFLOW_PYTHON` | `python3` | The Python 3 that runs the side panel Terminal's pseudo-terminal (`scripts/pty.py`). It's found once and run by its full path, so a repository that pins another Python (pyenv, asdf, mise) still gets a terminal. Without a working one, terminals are line-based (`interactiveTerminal: false` in `/api/health`) |
 | `CODEFLOW_CHROME` | first one installed | Chrome, Chromium, Edge or Brave executable for the live Browser and visual-comparison captures. The legacy `CODEFLOW_CHROME_PATH` alias is accepted only when `CODEFLOW_CHROME` is unset |
 | `CODEFLOW_AGY_SKIP_PERMISSIONS` | `1` | Legacy agy calls only, the ones without a run permission policy (prompt improvement, docs help, runs saved before run policies): set to `0` to stop passing `--dangerously-skip-permissions` there, then configure `permissions.allow` in `~/.gemini/antigravity-cli/settings.json`. Runs ignore it: isolated Antigravity never passes the flag, and unrestricted Antigravity always does |

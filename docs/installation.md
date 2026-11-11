@@ -89,7 +89,7 @@ Files named **unnotarized** are developer preview builds. macOS may block them. 
 
 ## Connect an agent and start
 
-Install at least one supported CLI: `claude`, `codex` or `agy`. Run it interactively and sign in before starting a task. Open **Settings → Agents & models** in Code Flow to inspect availability. Additional ACP agents can be configured in Settings.
+Install at least one supported CLI: `claude`, `codex` or `agy`. Run it interactively and sign in before starting a task. Open **Settings → Agents** in Code Flow to inspect availability. Additional ACP agents can be configured in Settings.
 
 Choose a Git repository, describe your task, pick a workflow, and start your first run. Follow the [getting started guide](getting-started.md) for permissions and review.
 

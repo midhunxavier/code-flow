@@ -30,13 +30,12 @@ export function ConnectionsView({ purpose = "workspace", connection }: { purpose
         ].map(item => <a class="connection-journey" key={item.id} href={`#/settings/connections/${item.id}`} title={item.text} aria-current={purpose === item.id ? "page" : undefined}><b>{item.title}</b><span>{item.text}</span><span class="connection-action">{purpose === item.id ? "Selected" : "Get started →"}</span></a>)}
       </nav>
       {purpose === "devices" ? host.kind === "local" ? <RemoteAccess /> : <p class="help">Device access is configured on your local computer. {host.kind === "ssh" ? <a href="/#/settings/connections/devices">Open local access settings</a> : null}</p> : null}
-      {purpose === "join" ? host.kind === "local" ? ownerOnLocalListener.value ? <TeamJoinSettings connection={connection} /> : <p class="help">Team connections are managed in CodeFlow on your computer.</p> : <p class="help">Connect from CodeFlow on your own computer. <a href="/#/settings/connections/join">Open local team connections</a></p> : null}
+      {purpose === "join" ? host.kind === "local" ? ownerOnLocalListener.value ? <TeamJoinSettings connection={connection} /> : <p class="help">Team connections are managed in Code Flow on your computer.</p> : <p class="help">Connect from Code Flow on your own computer. <a href="/#/settings/connections/join">Open local team connections</a></p> : null}
       {purpose === "host" && managesConnections(host) ? <TeamServerWizard onClose={() => { location.hash = "#/settings/connections/sharing"; }} /> : null}
-      {purpose === "host" && !managesConnections(host) ? <p class="help">Open CodeFlow on the server’s owner computer to set up project access and invite teammates.</p> : null}
+      {purpose === "host" && !managesConnections(host) ? <p class="help">Open Code Flow on the server’s owner computer to set up project access and invite teammates.</p> : null}
       <a class={`btn small ${purpose === "manage" ? "primary" : ""}`} aria-current={purpose === "manage" ? "page" : undefined} href="#/settings/connections/manage">Manage existing connections and access</a>
       {purpose === "manage" ? <>
       <h3>Manage existing connections and access</h3>
-      {host.kind === "local" ? <RemoteAccess /> : null}
       <section class="settings-card"><h3>People</h3><p>Shared boards, reviews and handovers. Manage project membership in Project → People and access.</p></section>
       {<><a class="btn" href="#/team">{host.kind === "ssh" ? "Open computer board" : "Open Board"}</a><TeamSettings />{host.kind !== "ssh" ? <SharedAccountsPanel projects={projects.value} /> : null}</>}
       </> : null}

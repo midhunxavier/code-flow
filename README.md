@@ -67,7 +67,7 @@ Prefer working in your Claude Code or Codex CLI conversation? The experimental [
 
 Use the same bridge from **Claude Desktop or the Codex app** with `codeflow desktop setup` in your target repository. [Desktop setup, checks, and removal](docs/desktop-mcp.md) covers app-wide connections bound to a specific project.
 
-**Inbox** and **Scheduling** are in the sidebar. **Workflow run → Advanced** holds the team template library and every run option. Open **Repository tools** from a project; use **Settings → Connections** for remote work and sharing.
+**Inbox**, **Automations** and **Insights** are in the sidebar, with **Board** once a team is connected. **Workflow run → Advanced** holds the team template library and every run option. Open **Repository tools** from a project; use **Settings → Connections** for remote work and sharing.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/run-dark.png">

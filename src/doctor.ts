@@ -152,7 +152,7 @@ async function check(id: AgentId, quota: HealthEntry["quota"]): Promise<HealthEn
   if (id.startsWith("acp:")) {
     entry.installed = await adapter.available().catch(() => false);
     entry.warnings = [runProviderProblem(id, adapter.displayName)!, "Check connection in Settings probes protocol and models without sending a prompt. Authentication and inference are not verified."];
-    if (!entry.installed) entry.fix = "Install this CLI or edit its executable path in Settings → Agents & models.";
+    if (!entry.installed) entry.fix = "Install this CLI or edit its executable path in Settings → Agents.";
     return entry;
   }
   if (id.startsWith("plugin:")) {

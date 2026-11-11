@@ -2384,7 +2384,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     return send(res, 200, ref ? await readRepoConfigAt(repo, ref) : await readRepoConfig(repo));
   }
   if (parts[1] === "codex-profile" && parts.length === 2) {
-    // Which Codex profile runs use (Settings → Agents & models); read again on every turn.
+    // Which Codex profile runs use (Settings → Agents); read again on every turn.
     if (req.method === "GET") return send(res, 200, codexProfileStatus());
     if (req.method === "PUT") {
       const body = await readJson(req);
