@@ -75,11 +75,7 @@ untrusted sandboxed plugins.
 
 [SSH workers](remote-workers.md) use provisioned targets, strict host keys,
 worker-local credentials and durable private receipts. A disconnected accepted
-turn is uncertain; reconnecting does not execute it again. [GitLab/Bitbucket
-code workflows](code-hosts.md) require prepared agent containers for fetched PR
-code and use exact-ref Git leases for publication. Provider-native approval
-policy and PR closure cannot be transacted atomically with a Git push; unknown
-policies and unsupported queues fail closed.
+turn is uncertain; reconnecting does not execute it again.
 
 A check runs the agents' code (tests, scripts) on your machine, outside Codex's and agy's sandboxes, as your CI would. With **Full access** the agents themselves run without a sandbox too (see [What agents may do](configuration.md#what-agents-may-do-while-building)). Use code-flow on repos and tasks you trust, or run checks in Docker ([isolation](automations.md#isolation)), or code-flow itself inside a container or VM.
 

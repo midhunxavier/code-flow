@@ -5780,7 +5780,7 @@ export class RunManager {
     // from a branch you chose takes the defaults committed there; a run from an issue, a PR or an
     // imported source, and a continuation, keep your checkout's (a fork's commands never run here).
     const configRoot = await repoRoot(input.repo).catch(() => input.repo);
-    if (!input.externalSource?.code && !(parent?.repo === configRoot && parent.externalSource?.code) && await isCodeHostImport(configRoot, input.baseRef?.trim() || "HEAD")) throw new RunConflictError("This commit is untrusted fetched PR code. Load it through Connections and start an isolated code-host review run.");
+    if (await isCodeHostImport(configRoot, input.baseRef?.trim() || "HEAD")) throw new RunConflictError("This commit is untrusted pull request code fetched by an earlier code-host import. It cannot start an ordinary run.");
     const configRef = !input.source && !input.externalSource && !parent ? input.baseRef?.trim() : undefined;
     const { config } = configRef ? await readRepoConfigAt(configRoot, configRef) : await readRepoConfig(configRoot);
     const given = inheritRunEnvironment(input.loop ?? {}, parent);
@@ -5849,14 +5849,8 @@ export class RunManager {
     if (loop.remoteWorker) await assertTransferTree(repo, baseRef);
     const source = fromGitHub?.source ?? (parent?.repo === repo ? parent.source : undefined);
     const externalSource = input.externalSource ?? (parent?.repo === repo ? parent.externalSource : undefined);
-    if (fromGitHub && !externalSource?.code && await isCodeHostImport(repo, baseRef)) throw new RunConflictError("This commit is untrusted fetched PR code. Load it through Connections and start an isolated code-host review run.");
-    let reviewBase = source?.kind === "pr" ? await mergeBase(repo, `origin/${source.baseRefName}`, baseRef) : undefined;
-    if (externalSource?.code) {
-      if (!loop.agentContainer) throw new Error("Fetched external PR code requires an explicitly prepared agent container; native Safe mode is not filesystem isolation.");
-      const code = externalSource.code, sha = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
-      if (!["gitlab", "bitbucket"].includes(externalSource.provider) || externalSource.kind !== "pr" || externalSource.trusted !== false || externalSource.untrusted !== true || !/^[a-f0-9]{40}$/.test(code.previewId) || ![code.head, code.target, code.base].every((value) => typeof value === "string" && sha.test(value)) || baseRef !== code.head || externalSource.sha !== code.head || await resolveCommit(repo, code.target) !== code.target || await resolveCommit(repo, code.base) !== code.base || await mergeBase(repo, code.head, code.target) !== code.base) throw new Error("External code provenance no longer matches the fetched source, target and review base. Fetch a fresh server preview.");
-      reviewBase = code.base;
-    }
+    if (fromGitHub && await isCodeHostImport(repo, baseRef)) throw new RunConflictError("This commit is untrusted pull request code fetched by an earlier code-host import. It cannot start an ordinary run.");
+    const reviewBase = source?.kind === "pr" ? await mergeBase(repo, `origin/${source.baseRefName}`, baseRef) : undefined;
 
     // Text from outside the repo's maintainers can carry instructions aimed at the agents, and
     // its code (a fork's PR) runs when the check does. Lock the run down: Safe mode, no .env

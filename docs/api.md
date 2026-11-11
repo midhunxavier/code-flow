@@ -192,8 +192,9 @@ ID/ref inputs. Snapshots expire after 30 minutes and the server retains at most
 200. Imported context forces Safe permissions, removes secret-file copying, and
 requires network-disabled checks in a container or explicit host authorization.
 Forks and continuations inherit the trust boundary. Source text is task context;
-PR imports do not fetch or check out remote code. See [external source setup and
-provider limits](external-sources.md).
+PR imports do not fetch or check out remote code. No source providers are built
+in, so these routes list nothing unless a build adds a provider in code. See
+[external sources](external-sources.md).
 
 ## Outbound notifications
 
@@ -398,28 +399,6 @@ there is no atomic transaction across repositories. See [coordinated
 changes](coordinated-changes.md). Extension installation is server configuration,
 not an HTTP operation; immutable version/hash pins are rechecked before
 execution. See [trusted extension contracts](extensions.md).
-
-## Code-host review and publication
-
-Owner-only `GET /code-hosts` lists configured GitLab/Bitbucket code adapters and
-safe operation receipts. `POST /code-hosts/preview {integration,key,repo,project?}`
-creates a short-lived server snapshot. `POST /code-hosts/:id/fetch` imports exact
-source/target Git objects without executing them; `/:id/run` accepts the prepared
-agent container and required verification configuration. `/:id/review` performs
-an explicit supported comment, reply, thread resolution or GitLab approval.
-
-Push and merge each have distinct `/:id/push-preview` or `/:id/merge-preview`
-operations taking `runId` and an owned `branch`; their actions require the
-returned `planId`. `POST /code-hosts/create-preview` takes `integration`, `runId`,
-`branch`, `targetBranch`, `title`, and `body`; `/:id/create` explicitly creates
-the expected-absent source branch and native PR. An unknown receipt can only be
-acknowledged explicitly at `/code-hosts/history/:id/acknowledge` with
-`{acknowledge:true}`. No startup replay occurs.
-
-Git updates use exact expected-ref leases. Merge is a pinned Git merge and may
-leave provider PR closure pending; native merge queues and atomic provider-policy
-snapshots are not claimed. Unsupported/unknown protected-branch policies fail
-closed. See [provider-specific operations and limits](code-hosts.md).
 
 GitHub picker routes `GET /github/issues?repo=...&q=...` and
 `GET /github/prs?repo=...&q=...` return `{items,truncated}`, with up to 50 open

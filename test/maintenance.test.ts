@@ -118,11 +118,6 @@ test("encrypted restore disables coordinated dispatch while retaining exact unkn
   let launches = 0; const restored = new CoordinatedChanges({ ...options, file: join(destination, "coordinated-changes.json"), launch: async () => { launches++; return { runId: "unexpected" }; } }); await restored.load(); await restored.tick(); assert.equal(launches, 0); const job = (await restored.list())[0]!; assert.equal(job.status, "cancelled"); assert.equal(job.nodes[0]!.status, "unknown"); assert.equal(job.nodes[0]!.claimId, "crashed-owned-claim"); assert.equal(job.nodes[1]!.status, "cancelled");
 });
 
-test("encrypted restore retains code-host receipt facts but turns in-flight remote mutations into unknown non-replaying metadata", async (t) => {
-  const { root, home } = await fixture(t), receipt = { id: "a".repeat(40), previewId: "b".repeat(40), integration: "fixture", key: "new", kind: "create", status: "claimed", at: 1, commit: "c".repeat(40), target: "d".repeat(40), sourceBranch: `codeflow/pr/${"e".repeat(20)}`, runId: "owned-source", detail: "Native request may have reached provider" };
-  await writeFile(join(home, "code-host-operations.json"), JSON.stringify({ version: 1, operations: [receipt] })); const backup = join(root, "code-host.cfb"); await createEncryptedBackup({ home, output: backup, password: PASSWORD }); const destination = join(root, "restored-code-host"); await restoreEncryptedBackup({ input: backup, destination, password: PASSWORD }); const restored = JSON.parse(await readFile(join(destination, "code-host-operations.json"), "utf8")); assert.equal(restored.operations[0].status, "unknown"); assert.equal(restored.operations[0].runId, receipt.runId); assert.equal(restored.operations[0].sourceBranch, receipt.sourceBranch); assert.match(restored.operations[0].detail, /no automatic replay/);
-});
-
 test("incorrect passwords and tampered archives leave no restored directory", async (t) => {
   const { root, home } = await fixture(t);
   await writeFile(join(home, "memory.json"), "[]");

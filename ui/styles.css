@@ -2934,13 +2934,6 @@
   .coordination-node > .wb-item-head { margin: 0 0 4px; }
   .coordination-node > .wb-item-head > h3 { font-size: 13px; } /* a repository inside a change: a step below the change's name */
   .coordination-node > p { margin: 4px 0; }
-  /* Code hosts */
-  .code-host-preview { margin: 14px 0; }
-  .code-host-preview > h3:first-child { margin: 0 0 4px; font-size: 14px; }
-  .code-host-diff { max-height: 24rem; }
-  .code-host-discussion { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); }
-  .code-host-discussion blockquote { margin: 8px 0; padding: 8px 12px; border-left: 2px solid var(--border-strong); border-radius: 0 var(--radius-xs) var(--radius-xs) 0; background: var(--sunken); }
-  .code-host-comment { margin: 4px 0 0; white-space: pre-wrap; }
   /* Deferred runs (here and in the composer's settings) */
   .settings-body > .deferred-runs { margin-top: 0; }
   .deferred-providers > label { display: inline-flex; margin: 4px 18px 4px 0; }
@@ -4112,7 +4105,6 @@ dialog.task-conflict-dialog[open] { display: flex; flex-direction: column; }
 .connection-dialog { width: min(620px, calc(100vw - 24px)); }
 .connection-fields { display: grid; gap: 16px; padding: 20px; overflow-y: auto; }
 .connection-fields label { display: grid; gap: 6px; }
-.connection-fields details label { margin: 12px 0; }
 .connection-fields code { color: var(--text-2); }
 .connection-dialog .picker-foot { flex-wrap: wrap; }
 .connection-item { display: flex; align-items: start; justify-content: space-between; gap: 16px; padding: 16px 0; border-bottom: 1px solid var(--border); }

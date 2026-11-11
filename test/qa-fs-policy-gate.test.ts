@@ -30,14 +30,14 @@ function routedSegments(): Set<string> {
   for (const [, list] of routed.matchAll(/\[((?:"[a-z0-9-]+",?\s*)+)\]\.includes\(parts\[1\]/g)) for (const [, name] of list!.matchAll(/"([a-z0-9-]+)"/g)) segments.add(name!);
   for (const [, name] of routed.matchAll(/parts\.join\("\/"\) === "api\/([a-z0-9-]+)/g)) segments.add(name!);
   // Mounted handlers that check their own first segment.
-  for (const [file, pattern] of [["src/code-hosts-api.ts", /parts\[0\] !== "([a-z0-9-]+)"/g], ["src/workspace-api.ts", /parts\[1\] === "([a-z0-9-]+)"/g]] as const)
+  for (const [file, pattern] of [["src/workspace-api.ts", /parts\[1\] === "([a-z0-9-]+)"/g]] as const)
     for (const [, name] of readFileSync(join(root, file), "utf8").matchAll(pattern)) segments.add(name!);
   return segments;
 }
 
 test("every owner route is classified for restrictions, and every classified name is a real route", () => {
   const routed = routedSegments(), classified = new Set([...RESTRICTED_PRIVATE_ROUTES, ...RESTRICTED_EXECUTION_ROUTES, ...RESTRICTION_OPEN_ROUTES]);
-  for (const name of ["shell", "model-catalog", "models", "doctor", "github", "runs", "code-hosts", "workspace"]) assert.ok(routed.has(name), `the route scan finds ${name}`);
+  for (const name of ["shell", "model-catalog", "models", "doctor", "github", "runs", "workspace"]) assert.ok(routed.has(name), `the route scan finds ${name}`);
   assert.deepEqual([...routed].filter((name) => !classified.has(name)), [], "a route without a classification would be refused under any restriction; classify it deliberately");
   assert.deepEqual([...classified].filter((name) => !routed.has(name)), [], "a listed name that matches no route protects nothing (\"shells\" never matched /api/shell)");
   assert.deepEqual(RESTRICTION_OPEN_ROUTES.filter((name) => RESTRICTED_PRIVATE_ROUTES.includes(name) || RESTRICTED_EXECUTION_ROUTES.includes(name)), []);
