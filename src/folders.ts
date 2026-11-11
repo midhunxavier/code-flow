@@ -1,11 +1,11 @@
 import { createHash, randomBytes } from "node:crypto";
 import { constants, createWriteStream, existsSync, readFileSync, realpathSync } from "node:fs";
-import { chmod, lstat, mkdir, open, readdir, readFile, readlink, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, cp, lstat, mkdir, open, readdir, readFile, readlink, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { CODEFLOW_HOME, envNumber, WORKTREE_DIR } from "./config.js";
-import { CONTEXT_DIR, ensureCodeflowExcludes, git, gitError, repoRoot, withRepoLock } from "./git.js";
+import { CONTEXT_DIR, ensureCodeflowExcludes, git, gitError, repoRoot, withRepoLock, writeBlobFile } from "./git.js";
 
 /**
  * Folder projects (docs/design/folder-projects.md): Code Flow works on a folder that isn't a Git
@@ -210,8 +210,12 @@ type Manifest = Record<string, [size: number, mtimeMs: number, mode: number, ino
  */
 export async function importFolder(mirror: string): Promise<FolderImport> {
   const meta = await readMeta(mirror);
-  const folder = meta.path;
-  return withRepoLock(mirror, async () => {
+  return withRepoLock(mirror, () => importLocked(mirror, meta.path));
+}
+
+/** importFolder, for a caller that already holds the mirror's lock. */
+async function importLocked(mirror: string, folder: string): Promise<FolderImport> {
+  {
     const info = await lstat(folder).catch(() => undefined);
     if (!info?.isDirectory()) throw new FolderError(`The folder ${folder} no longer exists. Locate it or remove it from the project.`);
     const limits = folderLimits();
@@ -304,7 +308,7 @@ export async function importFolder(mirror: string): Promise<FolderImport> {
     await writeAtomic(manifestFile(mirror), JSON.stringify({ version: 1, files: next }));
     const commit = (await git(["rev-parse", "HEAD"], mirror)).stdout.trim();
     return { mirror, folder, commit, changed, files: kept.size, bytes, skipped };
-  });
+  }
 }
 
 function overLimits(folder: string, limits: ReturnType<typeof folderLimits>, sizes: Map<string, { files: number; bytes: number }>): FolderError {
@@ -366,4 +370,270 @@ async function writeAtomic(file: string, text: string): Promise<void> {
   const temp = `${file}.${randomBytes(4).toString("hex")}.tmp`;
   await writeFile(temp, text, { mode: 0o600 });
   await rename(temp, file);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Applying a result to the folder (docs/design/folder-projects.md 4.5).
+
+/** One apply of a run's result to a folder, kept so it can be undone. */
+export interface FolderApplyRecord {
+  version: 1;
+  id: string;
+  runId?: string;
+  branch: string;
+  /** The folder's snapshot the result started from, and the result applied. Pinned under refs/codeflow/applied/<id>/. */
+  base: string;
+  head: string;
+  at: number;
+  paths: string[];
+  /** Where the files the result deleted were moved. */
+  removedTo?: string;
+  undoneAt?: number;
+}
+
+export type FolderApply =
+  | { ok: true; id: string; commit: string; written: string[]; removed: string[] }
+  | { ok: false; conflicts: string[]; message: string };
+
+interface Change { path: string; oldMode: string; newMode: string; oldId: string; newId: string }
+type FolderState = { kind: "none" } | { kind: "file"; id: string; mode: number } | { kind: "link"; id: string } | { kind: "dir" | "other" | "blocked" } | { kind: "unsafe" };
+
+const ABSENT = /^0+$/;
+const appliedDir = (mirror: string) => join(dirname(mirror), "applied");
+
+async function gitText(mirror: string, args: string[]): Promise<string> {
+  const res = await git(args, mirror);
+  if (res.code !== 0) throw new Error(gitError(args, res));
+  return res.stdout;
+}
+
+/** What changed from `from` to `to`, path by path (no rename detection: each path stands alone). */
+async function changesBetween(mirror: string, from: string, to: string): Promise<Change[]> {
+  const out = (await gitText(mirror, ["diff", "--raw", "-z", "--no-renames", "--no-ext-diff", "--no-textconv", "--no-abbrev", from, to])).split("\0");
+  const changes: Change[] = [];
+  for (let i = 0; i + 1 < out.length; i += 2) {
+    const m = /^:(\d{6}) (\d{6}) ([0-9a-f]+) ([0-9a-f]+) [A-Z]/.exec(out[i]!);
+    if (m) changes.push({ path: out[i + 1]!, oldMode: m[1]!, newMode: m[2]!, oldId: m[3]!, newId: m[4]! });
+  }
+  return changes;
+}
+
+/** The id git gives a blob: what a file or link in the folder would be, without running git on the folder. */
+async function blobId(path: string, link: boolean): Promise<string> {
+  const hash = createHash("sha1");
+  if (link) {
+    const target = Buffer.from(await readlink(path));
+    return hash.update(`blob ${target.length}\0`).update(target).digest("hex");
+  }
+  const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    hash.update(`blob ${(await file.stat()).size}\0`);
+    for await (const chunk of file.createReadStream({ autoClose: false })) hash.update(chunk as Buffer);
+    return hash.digest("hex");
+  } finally { await file.close(); }
+}
+
+/** What the folder has at `path`. A link among its parent folders makes it unsafe to write there. */
+async function folderState(folder: string, path: string): Promise<FolderState> {
+  let at = folder;
+  for (const part of dirname(path).split("/").filter((p) => p && p !== ".")) {
+    at = join(at, part);
+    const st = await lstat(at).catch(() => undefined);
+    if (!st) return { kind: "none" };
+    if (st.isSymbolicLink()) return { kind: "unsafe" };
+    if (!st.isDirectory()) return { kind: "blocked" };
+  }
+  const target = join(folder, path);
+  const st = await lstat(target).catch(() => undefined);
+  if (!st) return { kind: "none" };
+  if (st.isSymbolicLink()) return { kind: "link", id: await blobId(target, true) };
+  if (st.isFile()) return { kind: "file", id: await blobId(target, false), mode: st.mode & 0o777 };
+  return { kind: st.isDirectory() ? "dir" : "other" };
+}
+
+/** A path Code Flow writes only inside the folder, never into a repository marker or its own folders. */
+function safePath(path: string): boolean {
+  const parts = path.split("/");
+  return !!path && !isAbsolute(path) && !parts.some((p) => !p || p === "." || p === ".." || p === ".git" || p === CONTEXT_DIR) && parts[0] !== WORKTREE_DIR;
+}
+
+/**
+ * Apply the change from `from` to `to` to the folder, all or nothing. Before writing anything,
+ * every path must hold in the folder exactly what `from` has there (or nothing, where `from` has
+ * nothing); any path that doesn't is a conflict and nothing is written. Deleted files are moved to
+ * `removedTo`, not deleted. A failure partway puts back what was already written.
+ */
+async function applyBetween(mirror: string, folder: string, from: string, to: string, removedTo: string): Promise<FolderApply & { paths?: string[] }> {
+  const changes = await changesBetween(mirror, from, to);
+  const conflicts: string[] = [];
+  const unsafe: string[] = [];
+  const modes = new Map<string, number>();
+  for (const c of changes) {
+    if (!safePath(c.path) || c.oldMode === "160000" || c.newMode === "160000") { unsafe.push(c.path); continue; }
+    if (c.newMode === "120000") {
+      const target = await gitText(mirror, ["cat-file", "blob", c.newId]);
+      if (isAbsolute(target) || !within(resolve(folder, dirname(c.path), target), folder)) { unsafe.push(c.path); continue; }
+    }
+    const state = await folderState(folder, c.path);
+    if (state.kind === "unsafe") { unsafe.push(c.path); continue; }
+    if (ABSENT.test(c.oldId)) { if (state.kind !== "none") conflicts.push(c.path); continue; }
+    const deleting = ABSENT.test(c.newId);
+    if (deleting && state.kind === "none") continue;
+    const expectLink = c.oldMode === "120000";
+    const matches = expectLink ? state.kind === "link" && state.id === c.oldId : state.kind === "file" && state.id === c.oldId;
+    if (!matches) conflicts.push(c.path);
+    else if (state.kind === "file") modes.set(c.path, state.mode);
+  }
+  if (unsafe.length) throw new FolderError(`The result changes paths Code Flow won't write into the folder (a link among their folders, a link that leaves the folder, a repository or Code Flow's own folders): ${unsafe.slice(0, 20).join(", ")}. Nothing was written.`);
+  if (conflicts.length) return { ok: false, conflicts, message: `These files changed in the folder since the run started, so the result can't be applied without losing your edits: ${conflicts.slice(0, 20).join(", ")}${conflicts.length > 20 ? ` and ${conflicts.length - 20} more` : ""}. Nothing was written. Resolve the conflicts, then apply again.` };
+
+  const done: { change: Change; movedTo?: string }[] = [];
+  const written: string[] = [];
+  const removed: string[] = [];
+  try {
+    for (const c of changes) {
+      const target = join(folder, c.path);
+      if (ABSENT.test(c.newId)) {
+        if (!(await lstat(target).catch(() => undefined))) continue;
+        const dest = join(removedTo, c.path);
+        await mkdir(dirname(dest), { recursive: true, mode: 0o700 });
+        await moveAside(target, dest);
+        done.push({ change: c, movedTo: dest });
+        removed.push(c.path);
+        continue;
+      }
+      await writeEntry(mirror, folder, c.path, c.newMode, c.newId, modes.get(c.path));
+      done.push({ change: c });
+      written.push(c.path);
+    }
+  } catch (err) {
+    const failed: string[] = [];
+    for (const { change: c, movedTo } of done.reverse()) {
+      try {
+        if (movedTo) await moveAside(movedTo, join(folder, c.path));
+        else if (ABSENT.test(c.oldId)) await rm(join(folder, c.path), { force: true });
+        else await writeEntry(mirror, folder, c.path, c.oldMode, c.oldId, modes.get(c.path));
+      } catch { failed.push(c.path); }
+    }
+    const back = failed.length ? ` These couldn't be put back: ${failed.join(", ")}; their earlier versions are in the snapshot ${from.slice(0, 12)}.` : " The folder was put back as it was.";
+    throw new FolderError(`Applying stopped: ${(err as Error).message}.${back}`);
+  }
+  return { ok: true, id: "", commit: "", written, removed, paths: changes.map((c) => c.path) };
+}
+
+/** Write one entry into the folder: its parent folders made as needed, then a temporary file renamed over it. */
+async function writeEntry(mirror: string, folder: string, path: string, mode: string, id: string, current?: number): Promise<void> {
+  let at = folder;
+  for (const part of dirname(path).split("/").filter((p) => p && p !== ".")) {
+    at = join(at, part);
+    const st = await lstat(at).catch(() => undefined);
+    if (!st) await mkdir(at);
+    else if (st.isSymbolicLink() || !st.isDirectory()) throw new Error(`${dirname(path)} is no longer a folder`);
+  }
+  const target = join(folder, path);
+  const temp = join(dirname(target), `.codeflow-apply-${randomBytes(6).toString("hex")}`);
+  try {
+    if (mode === "120000") await symlink(await gitText(mirror, ["cat-file", "blob", id]), temp);
+    else {
+      await writeBlobFile(mirror, id, temp);
+      const base = current ?? 0o644;
+      await chmod(temp, mode === "100755" ? base | 0o111 : base & ~0o111);
+    }
+    await rename(temp, target);
+  } finally { await rm(temp, { force: true }); }
+}
+
+/** Move a file, or copy it and remove the original when the two are on different disks. */
+async function moveAside(from: string, to: string): Promise<void> {
+  try { await rename(from, to); }
+  catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "EXDEV") throw err;
+    await cp(from, to, { verbatimSymlinks: true, preserveTimestamps: true });
+    await rm(from, { force: true });
+  }
+}
+
+/** The folder must still be the one the mirror was made for (see FolderMeta.inode). */
+async function assertSameFolder(meta: FolderMeta): Promise<void> {
+  const info = await lstat(meta.path, { bigint: true }).catch(() => undefined);
+  if (!info?.isDirectory()) throw new FolderError(`The folder ${meta.path} no longer exists. Locate it or remove it from the project.`);
+  if (String(info.ino) !== meta.inode) throw new FolderError(`The folder at ${meta.path} was replaced since Code Flow first copied it, so nothing is written into it. Remove it from the project and add it again.`);
+}
+
+/** Record the folder as it is after an apply, as a merge of the result: the next apply of that result only brings what's new. */
+async function snapshotAfterApply(mirror: string, folder: string, head: string): Promise<string> {
+  await importLocked(mirror, folder);
+  const tree = (await gitText(mirror, ["rev-parse", "HEAD^{tree}"])).trim();
+  const main = (await gitText(mirror, ["rev-parse", "HEAD"])).trim();
+  const args = ["commit-tree", tree, "-p", main, "-p", head, "-m", "Folder snapshot after applying a result"];
+  const res = await git(args, mirror, { env: SNAPSHOT_IDENTITY });
+  if (res.code !== 0) throw new Error(gitError(args, res));
+  const commit = res.stdout.trim();
+  await gitText(mirror, ["update-ref", "refs/heads/main", commit, main]);
+  return commit;
+}
+
+/**
+ * Apply `branch` (a run's result in the mirror) to the folder: import first, so edits made during
+ * the run count, then write the change from where the result started to the result. Conflicts
+ * come back as `ok: false` with nothing written; after an import the mirror's main holds the
+ * folder as it is now, so merging main into the result resolves them like any merge conflict.
+ */
+export async function applyToFolder(mirror: string, branch: string, opts: { runId?: string } = {}): Promise<FolderApply> {
+  const meta = await readMeta(mirror);
+  return withRepoLock(mirror, async () => {
+    await assertSameFolder(meta);
+    await importLocked(mirror, meta.path);
+    const head = (await gitText(mirror, ["rev-parse", "--verify", `${branch}^{commit}`])).trim();
+    const base = (await gitText(mirror, ["merge-base", "refs/heads/main", head])).trim();
+    if (base === head) throw new FolderError(`Nothing to apply: the folder already has everything on ${branch}`);
+    const id = `a-${Date.now().toString(36)}-${randomBytes(3).toString("hex")}`;
+    await gitText(mirror, ["update-ref", `refs/codeflow/applied/${id}/base`, base]);
+    await gitText(mirror, ["update-ref", `refs/codeflow/applied/${id}/head`, head]);
+    const removedTo = join(dirname(mirror), "removed", id);
+    const result = await applyBetween(mirror, meta.path, base, head, removedTo);
+    if (!result.ok) {
+      await gitText(mirror, ["update-ref", "-d", `refs/codeflow/applied/${id}/base`]);
+      await gitText(mirror, ["update-ref", "-d", `refs/codeflow/applied/${id}/head`]);
+      return result;
+    }
+    const record: FolderApplyRecord = { version: 1, id, ...(opts.runId ? { runId: opts.runId } : {}), branch, base, head, at: Date.now(), paths: result.paths ?? [], ...(result.removed.length ? { removedTo } : {}) };
+    await mkdir(appliedDir(mirror), { recursive: true, mode: 0o700 });
+    await writeAtomic(join(appliedDir(mirror), `${id}.json`), JSON.stringify(record, null, 2));
+    const commit = await snapshotAfterApply(mirror, meta.path, head);
+    return { ok: true, id, commit, written: result.written, removed: result.removed };
+  });
+}
+
+/** The applies to a folder, newest first. */
+export async function folderApplies(mirror: string): Promise<FolderApplyRecord[]> {
+  const names = await readdir(appliedDir(mirror)).catch(() => [] as string[]);
+  const records: FolderApplyRecord[] = [];
+  for (const name of names.filter((n) => /^a-[a-z0-9]+-[0-9a-f]{6}\.json$/.test(n))) {
+    try { records.push(JSON.parse(await readFile(join(appliedDir(mirror), name), "utf8"))); } catch { /* unreadable: left out */ }
+  }
+  return records.sort((a, b) => b.at - a.at);
+}
+
+/**
+ * Undo an apply: put back what the folder had before it, path by path, with the same checks the
+ * other way round. A file you changed since the apply is a conflict, and nothing is written.
+ */
+export async function undoFolderApply(mirror: string, id: string): Promise<FolderApply> {
+  if (!/^a-[a-z0-9]+-[0-9a-f]{6}$/.test(id)) throw new FolderError("Choose an apply to undo");
+  const meta = await readMeta(mirror);
+  return withRepoLock(mirror, async () => {
+    const file = join(appliedDir(mirror), `${id}.json`);
+    const record = JSON.parse(await readFile(file, "utf8").catch(() => { throw new FolderError("That apply isn't recorded for this folder"); })) as FolderApplyRecord;
+    if (record.undoneAt) throw new FolderError("That apply was already undone");
+    await assertSameFolder(meta);
+    await importLocked(mirror, meta.path);
+    const head = (await gitText(mirror, ["rev-parse", "--verify", `refs/codeflow/applied/${id}/head`])).trim();
+    const base = (await gitText(mirror, ["rev-parse", "--verify", `refs/codeflow/applied/${id}/base`])).trim();
+    const result = await applyBetween(mirror, meta.path, head, base, join(dirname(mirror), "removed", `${id}-undo`));
+    if (!result.ok) return { ...result, message: result.message.replace("since the run started, so the result can't be applied", "since the apply, so it can't be undone") };
+    await writeAtomic(file, JSON.stringify({ ...record, undoneAt: Date.now() }, null, 2));
+    const commit = (await importLocked(mirror, meta.path)).commit;
+    return { ok: true, id, commit, written: result.written, removed: result.removed };
+  });
 }

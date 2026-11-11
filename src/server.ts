@@ -2959,6 +2959,11 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
       });
       return send(res, 200, outcome);
     }
+    // A run on a folder: undo one apply of its result (src/folders.ts).
+    if (req.method === "POST" && parts[3] === "folder-undo") {
+      const body = await readJson(req);
+      return send(res, 200, await attempt(() => manager.undoFolderApply(run.id, String(body.apply ?? ""))));
+    }
     if (req.method === "POST" && parts[3] === "validate-merge") {
       const body = await readJson(req);
       const abort = new AbortController();

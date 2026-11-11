@@ -1,6 +1,6 @@
 # Folder projects: design
 
-Status: slice 1 is implemented (`src/folders.ts`, see section 6). Slices 2 to 4 are proposals and are not built.
+Status: slices 1 and 2 are implemented (`src/folders.ts`, see section 6). Slices 3 and 4 are proposals and are not built.
 
 This document covers letting Code Flow work on any folder, not only a Git repository: a folder of documents, a data directory, a script collection, a project that was never put under Git. The goal is the experience of the Claude and ChatGPT desktop apps (pick a folder, ask for work) while keeping what Code Flow adds on top: agents work on a copy, results are checked before they reach your files, and nothing changes in the folder until you apply.
 
@@ -78,7 +78,7 @@ A nested `.git` directory inside the folder is not imported. Its subtree is skip
 
 ### 4.3 Import (folder to mirror)
 
-When it runs: before a run starts (built), and, in later slices, before a side chat starts, before an export (4.5), and when the Files panel refreshes. There is no file watcher. A folder's first import happens when its mirror is created.
+When it runs: before a run starts and before an apply or undo (4.5), both built; in later slices also before a side chat starts and when the Files panel refreshes. There is no file watcher. A folder's first import happens when its mirror is created.
 
 How:
 
@@ -97,23 +97,32 @@ The import commit is the run's `baseRef`. Setup, the check, verification-profile
 
 Almost no engine change. `RunManager.start` and `validateStart` accept a folder path that already has a mirror, and the run's preparation imports the folder before it resolves the base commit. Worktrees live in `<mirror>/.worktrees/` (the default `worktreeRoot`). The mirror's `info/exclude` lists Code Flow's folders (`ensureCodeflowExcludes`), and the import never touches them.
 
-### 4.5 Export (mirror to folder)
+### 4.5 Applying a result (mirror to folder)
 
-A result reaches the mirror's `main` through the existing paths: `mergeInto` for app runs and handoff apply for CLI runs. The mirror's checkout is Code Flow's and is clean after an import, so neither path changes. Export then writes the result into the folder.
+Built in slice 2 as `applyToFolder` in `src/folders.ts`. **Merge** on a folder run applies its result to the folder: `RunManager.merge` sends a run whose repository is a mirror there instead of `mergeInto`, with `main` as the only target. The result never goes through the mirror's `main` first, so nothing in the mirror runs ahead of the folder.
 
-1. **Import first.** This captures edits the user made during the run.
-2. **List the changes.** List the paths that differ between the run's base import commit and the new `main`.
-3. **Preflight every path before writing anything.** A path is safe when the folder's current file has the hash the manifest recorded at the base import, or when it is absent at both. Anything else is a conflict: the user edited a file the result also changes. If any path conflicts, nothing is written, and the paths go to **Resolve conflicts** with the base, the user's version and the result.
-4. **Refuse unsafe targets.** Refuse any path whose parent resolves outside the folder, or that passes through a symbolic link.
-5. **Write.** Write each file to a temporary name in the same directory, keep its mode, and rename.
-6. **Deletions.** Deleted paths move to `~/.codeflow/folders/<id>/removed/<timestamp>/`; nothing is deleted outright.
-7. **Record.** Record the export, so **Undo apply** can restore the written and removed files. Undo runs the same preflight against the result.
+1. **Check the folder.** It must still exist and have the inode recorded in `folder.json` (4.8); a replaced folder gets nothing written.
+2. **Import first.** This captures edits the user made during the run.
+3. **List the changes.** List every path that differs between where the result started (the merge base of the mirror's `main` and the result) and the result. Renames count as a deletion and an addition.
+4. **Preflight every path before writing anything.** A path is safe when the folder holds exactly what the starting snapshot had there: the same blob, computed in Node from the folder's file, so git never runs on the folder. Absent in both also counts as safe. Anything else is a conflict, and if any path conflicts nothing is written. The conflict comes back as a merge conflict (`ok: false` with the paths), so the existing **Resolve conflicts** follow-up merges the mirror's `main` into the result. After the import, `main` holds the folder as it is now. The next apply then writes only the result's own changes.
+5. **Refuse unsafe targets.** These are refused before anything is written:
+   - a path with a symbolic link among its parent folders;
+   - a link whose target is absolute or leaves the folder;
+   - a submodule;
+   - `.git`, `.codeflow-context` and the worktree folder name.
+6. **Write.** Each file is written byte for byte (`writeBlobFile` in `src/git.ts`) to a temporary name in its own directory, given the result's executable bit on top of the file's current mode, and renamed over the target.
+7. **Deletions.** Deleted paths move to `~/.codeflow/folders/<id>/removed/<apply id>/`; nothing is deleted outright.
+8. **Failure partway.** If writing stops partway, what was already written is put back. The error names any path that couldn't be.
+9. **Record.** The apply is recorded in `~/.codeflow/folders/<id>/applied/<apply id>.json`, and its start and result commits are pinned under `refs/codeflow/applied/<apply id>/`. The run's merge entry carries the apply id (`folderApply`).
+10. **Snapshot.** The import after the apply is committed as a merge of the result, so applying the same result again says "Nothing to apply" and a later apply brings only newer work.
 
-CLI handoff (`codeflow_apply_handoff`) says "Applied to the folder" instead of "staged". A folder has no index.
+**Undo** (`undoFolderApply`; `POST /api/runs/:id/folder-undo` with `{ apply }`) applies the change the other way, with the same preflight. A file the user edited after the apply is a conflict, and nothing is written. Files the undo removes are moved aside too.
+
+CLI handoff (`codeflow_apply_handoff`) is still refused for a mirror. In slice 3 it applies through `applyToFolder` and says "Applied to the folder" instead of "staged", because a folder has no index.
 
 ### 4.6 What a folder project does not offer
 
-These are hidden for folder sources and refused by their APIs with "This project is a folder, not a Git repository":
+These are hidden for folder sources (slice 4) and refused by their APIs. Pull requests and pushes are refused since slice 1 (`managedShipping` in `src/engine.ts`: "…has no branches or pull requests to publish to"):
 
 - branches, push, pull requests, GitHub and code hosts, review threads;
 - team-collaboration hub sync and checkpoints, until a design covers mirrors;
@@ -127,14 +136,14 @@ The terminal (`src/server.ts:2605`) opens in the folder for a folder project.
 
 `serveMcp` (`src/cli-teams/mcp.ts:21`) currently calls `serveOutsideRepository` when started outside a repository. Instead:
 
-- If the folder passes 4.2, serve folder mode. Proposals and the proposal card show "Folder (not a Git repository)" and the folder path. Results are applied by export (4.5).
+- If the folder passes 4.2, serve folder mode. Proposals and the proposal card show "Folder (not a Git repository)" and the folder path. Results are applied with `applyToFolder` (4.5).
 - If it fails 4.2, which is common because CLIs often start in the home folder, keep today's error with the reason, and suggest starting in a project folder.
 
 The messages in `src/cli-teams/install.ts:28`, `:162` and `src/cli-teams/cli.ts:83` change from "any Git repository" to "any project folder".
 
 ### 4.8 Identity, memory and moved folders
 
-`repositoryIdentity(mirror)` works unchanged, so stores and memory are keyed on the mirror. An import of a folder that moved or was deleted fails with "The folder … no longer exists". Slice 4 adds **Locate** to the project. Locate accepts a folder only when its inode matches the one recorded in `folder.json`, or when the user confirms that it is the same folder; this stops a different folder from receiving a result. Slice 2 checks the inode before every export. Removing a folder project deletes its mirror after confirmation.
+`repositoryIdentity(mirror)` works unchanged, so stores and memory are keyed on the mirror. An import of a folder that moved or was deleted fails with "The folder … no longer exists". Slice 4 adds **Locate** to the project. Locate accepts a folder only when its inode matches the one recorded in `folder.json`, or when the user confirms that it is the same folder; this stops a different folder from receiving a result. Every apply and undo checks the inode first (built in slice 2). Removing a folder project deletes its mirror after confirmation.
 
 ### 4.9 UI
 
@@ -153,7 +162,16 @@ The messages in `src/cli-teams/install.ts:28`, `:162` and `src/cli-teams/cli.ts:
 ## 6. Slices
 
 1. **Folder sources and runs on a mirror (implemented).** Covers 4.1 to 4.4. Any pattern can run on a folder, because nothing it produces can leave the mirror yet: merging, pull requests and pushes (`managedShipping` in `src/engine.ts`) and CLI handoff (`prepareHandoff` in `src/cli-teams/handoff.ts`) are refused for a mirror, saying that applying to a folder isn't available yet. A run started on a folder path (`POST /api/runs`) creates the folder's mirror on first use. A run started on a mirror imports the folder first. A project created or edited with a folder path takes the folder's mirror. Tests: `test/folders.test.ts` covers the guards, the import (ignores, links, limits, nested repositories, incremental copy, Code Flow's own folders in the mirror), projects, and a run that starts from a fresh import and can't be merged back. Not yet: the UI still names a mirror by its last path segment (`source`) in places such as the composer; slice 4 fixes that.
-2. **Write runs and export.** Covers 4.5 (preflight, conflicts, removal folder, undo) and the 4.6 refusals. Tests: an edit during a run conflicts, nothing is partly written, undo, paths outside the folder are refused.
+2. **Applying results and undo (implemented).** Covers 4.5. `test/folders.test.ts` covers:
+   - writing, binary files, the executable bit, links, deletions moved aside, and your own edits to other files left alone;
+   - an edit during the run is a conflict, and nothing is partly written;
+   - resolving by merging `main` into the result;
+   - undo, and an undo refused after a later edit;
+   - links and parent links that would leave the folder;
+   - a replaced folder;
+   - a real run applied through `RunManager.merge` and undone.
+
+   Not yet: no UI for undo (slice 4), and the result-delivery suggestions may still offer a pull request for a folder run.
 3. **CLI and MCP folder mode.** Covers 4.7.
 4. **UI.** Covers 4.9, **Make it a Git repository**, and **Locate**. The browser e2e covers adding a folder, a run and an apply, with accessibility at zero violations.
 
