@@ -42,7 +42,7 @@ test("repository diagnostics distinguish missing folder, file, non-Git directory
 test("comparison preflight applies engine-only checks without run records, context folders or provider work", async () => {
   const input = { pattern: findPattern("solo")!, repo, task: "Inspect fixture", roles: { agent: ["codex" as const] }, options: {}, trust: "standard" as const };
   await manager.validateStart(input); assert.equal(manager.list().length, 0);
-  await assert.rejects(manager.validateStart({ ...input, pattern: findPattern("loop")!, roles: { workers: ["codex"] }, loop: { check: "" } }), /needs a check command/);
+  await assert.rejects(manager.validateStart({ ...input, pattern: { ...findPattern("solo")!, id: "checked", name: "Checked work", requiresCheck: true }, loop: { check: "" } }), /Checked work needs a check command/);
   await assert.rejects(manager.validateStart({ ...input, baseRef: "missing-branch" }), /Base branch .* not found/);
   await assert.rejects(manager.validateStart({ ...input, branchPrefix: "invalid name" }), /branch/i);
   assert.equal(manager.list().length, 0); assert.ok(!readdirSync(repo).includes(".worktrees"));

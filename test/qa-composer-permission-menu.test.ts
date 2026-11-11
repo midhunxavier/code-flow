@@ -52,17 +52,15 @@ test("Antigravity: alone it runs without approvals; beside providers that ask, S
   assert.equal(toolApprovalState({ trust: "standard", p: fixReview, roles: { builder: ["codex"], reviewer: ["agy"] } }).tools, false, "templates don't ask unless chosen");
 });
 
-test("default reviewer, judge and synthesizer avoid Antigravity after an explicit Ask for approval (t10-8)", () => {
+test("the default reviewer avoids Antigravity after an explicit Ask for approval (t10-8)", () => {
   state.agents.value = ["claude", "codex", "agy"].map((id) => ({ id, displayName: id, binary: id, available: true })) as typeof state.agents.value;
   state.health.value = ["claude", "codex", "agy"].map((id) => ({ id: id as "claude", name: id, installed: true, signedIn: true, compatible: true, managedCompatible: true }));
   state.roleSel.value = {};
   state.trust.value = "standard";
   const workflows = {
     pipeline: { id: "pipeline", roles: [{ id: "planner", default: ["claude"] }, { id: "builder", default: ["codex"] }, { id: "reviewer", default: ["codex"] }] },
-    race: { id: "race", roles: [{ id: "contestants", multiple: true, default: ["claude", "codex"] }, { id: "judge", default: ["claude"] }] },
-    debate: { id: "debate", roles: [{ id: "debaters", multiple: true, default: ["claude", "codex"] }, { id: "synthesizer", default: ["claude"] }] },
   } as unknown as Record<string, PatternInfo>;
-  const independent = { pipeline: "reviewer", race: "judge", debate: "synthesizer" } as const;
+  const independent = { pipeline: "reviewer" } as const;
   for (const [id, role] of Object.entries(independent)) {
     state.composerRunOptions.value = {};
     assert.deepEqual(state.rolesFor(workflows[id])[role], ["agy"], `${id}: a third vendor checks the work by default`);

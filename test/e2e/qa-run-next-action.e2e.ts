@@ -139,14 +139,3 @@ test("queued checks use singular wording and Stop renders an explicit cancelled 
   const stopped = await api<Run>(`/api/runs/${first.id}`); assert.equal(stopped.steps.find(step => step.kind === "check")!.finalText, "Stopped before it finished");
   assert.doesNotMatch(await p.locator(".runview").innerText(), /exit code null|Ready to review/); await shot("stopped-check");
 });
-
-test("a real TDD workflow distinguishes its premature green warning from the expected red check", async () => {
-  mode({ FAKE_TESTS_PASS_FIRST: "1" });
-  const run = await done((await start({ pattern: "tdd", roles: { tester: ["codex"], builder: ["claude"] }, loop: { check: "", maxSteps: 12 } })).id);
-  assert.equal(run.status, "done", run.error);
-  assert.equal(run.steps.find(step => step.title === "New tests (should fail)")?.outcome, "warning");
-  assert.equal(run.steps.find(step => step.title === "Revised tests (should fail)")?.outcome, "expected");
-  const p = await open(run.id); await p.locator("details.work > summary").waitFor();
-  assert.match(await p.locator("details.work > summary").innerText(), /1 warning/); assert.doesNotMatch(await p.locator("details.work > summary").innerText(), /failed/);
-  await p.locator("details.work > summary").click(); const red = p.getByRole("button", { name: /^Revised tests \(should fail\)/ }); await red.waitFor(); assert.equal(await red.getAttribute("aria-description"), "Revised tests (should fail): Expected failure"); await shot("tdd-warning-and-red");
-});

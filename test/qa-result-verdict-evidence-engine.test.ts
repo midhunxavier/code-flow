@@ -1,5 +1,5 @@
-// QA regressions, engine level with the fake CLIs: each race candidate's check is kept and the
-// winner is published first; an AI team's evidence reaches the chat that applied its result
+// QA regressions, engine level with the fake CLIs: each parallel candidate's check is kept and the
+// verdict belongs to the primary result; an AI team's evidence reaches the chat that applied its result
 // cleanly, and leaves it when the files change; busy and finished runs refuse with conflicts.
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -14,6 +14,7 @@ process.env.CODEFLOW_RETRY_DELAYS_MS = "0";
 
 const { RunManager, RunConflictError } = await import("../src/engine.js");
 const { findPattern } = await import("../src/patterns/index.js");
+const { parallelPattern } = await import("./parallel-pattern.js");
 const { validateTaskTeam } = await import("../src/task-team.js");
 const { checksLabel } = await import("../src/run-status.js");
 const { localDeliveryProblem } = await import("../src/result-delivery.js");
@@ -26,21 +27,21 @@ function repository() { const repo = mkdtempSync(join(tmpdir(), "cf-qa-verdict-r
 async function until(fn: () => boolean, ms = 30000) { const start = Date.now(); while (!fn()) { if (Date.now() - start > ms) throw new Error("Timed out"); await new Promise(r => setTimeout(r, 30)); } }
 async function done(run: Run) { await until(() => run.status !== "running"); assert.equal(run.status, "done", run.error); }
 const config = validateTaskTeam({ enabled: true, preset: "adaptive", coordinator: "claude", providers: ["codex"], settings: {}, maxMembers: 3, maxCalls: 12, maxMinutes: 5, approvePlan: false });
-const race = { contestants: ["claude", "codex"], judge: ["claude"] } as Record<string, any>;
+const writers = { writers: ["claude", "codex"] } as Record<string, any>;
 
-test("a race keeps each candidate's check and publishes the judge's winner first (t07-5)", { timeout: 90000 }, async () => {
+test("parallel candidates each keep their own check, and the verdict belongs to the primary result (t07-5)", { timeout: 90000 }, async () => {
   const manager = new RunManager(findPattern);
   try {
-    // Both pass; the fake judge picks B.
-    const judged = await manager.start({ pattern: findPattern("race")!, repo: repository(), task: "Race me", roles: race, options: {}, loop: { check: "true" } });
+    // Both pass; A is published first.
+    const judged = await manager.start({ pattern: parallelPattern, repo: repository(), task: "Race me", roles: writers, options: {}, loop: { check: "true" } });
     await done(judged);
     const [a, b] = ["candidate-a", "candidate-b"].map(name => judged.worktrees.find(tree => tree.name === name)!.branch);
-    assert.equal(judged.artifacts[0]!.branch, b, "the winner is the primary result");
+    assert.equal(judged.artifacts[0]!.branch, a, "the first candidate is the primary result");
     assert.equal(judged.branchChecks?.[a!]?.ok, true); assert.equal(judged.branchChecks?.[b!]?.ok, true);
     assert.equal(checksLabel(judged, false, a), "Passed"); assert.equal(checksLabel(judged, false, b), "Passed");
-    assert.equal(agentReviewLabel(judged, b), "Not recorded", "the winner is not 'Not recorded for this branch'");
-    // A passes, B fails and finishes last: A wins without a judge.
-    const split = await manager.start({ pattern: findPattern("race")!, repo: repository(), task: "Race me again", roles: race, options: {}, loop: { check: 'case "$(git rev-parse --abbrev-ref HEAD)" in *candidate-a) exit 0;; *) sleep 1; exit 1;; esac' } });
+    assert.equal(agentReviewLabel(judged, a), "Not recorded", "the primary result is not 'Not recorded for this branch'");
+    // A passes, B fails and finishes last: the verdict is A's.
+    const split = await manager.start({ pattern: parallelPattern, repo: repository(), task: "Race me again", roles: writers, options: {}, loop: { check: 'case "$(git rev-parse --abbrev-ref HEAD)" in *candidate-a) exit 0;; *) sleep 1; exit 1;; esac' } });
     await done(split);
     const [winner, loser] = ["candidate-a", "candidate-b"].map(name => split.worktrees.find(tree => tree.name === name)!.branch);
     assert.equal(split.lastCheck?.worktree, "candidate-b", "the loser's check finished last");

@@ -2,6 +2,7 @@ import { dispatchLabel } from "./run-outcome.js";
 import { runPassed } from "./run-status.js";
 import type { RunSummary, Step } from "./engine.js";
 import { confidenceInterval } from "./stats.js";
+import { retiredPatternName } from "./patterns/retired.js";
 
 export type TaskIntent = "bug" | "feature" | "review" | "explore";
 export function taskIntent(value: unknown): TaskIntent | undefined {
@@ -27,7 +28,7 @@ export function outcomeMetrics(runs: RunSummary[]) {
 }
 /** Explicit intent only: legacy tasks aren't guessed from their prose. Failures stay in the denominator. */
 export function workflowRecommendations(runs: RunSummary[], repo: string, intent?: TaskIntent) {
-  const comparable = runs.filter(run => run.repo === repo && run.status !== "running" && (!intent || run.intent === intent));
+  const comparable = runs.filter(run => run.repo === repo && run.status !== "running" && !retiredPatternName(run.pattern) && (!intent || run.intent === intent));
   const groups = new Map<string, RunSummary[]>();
   for (const run of comparable) groups.set(run.pattern, [...(groups.get(run.pattern) ?? []), run]);
   return [...groups].map(([pattern, samples]) => {

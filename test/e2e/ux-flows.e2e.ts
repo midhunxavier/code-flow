@@ -63,12 +63,10 @@ test("template library and workflow selection preserve intentional drafts and ex
   await page.getByLabel("Workflow", { exact: true }).selectOption("council");
   assert.equal(await draft.inputValue(), "Keep this task while changing the workflow");
   await choose("starter-explore");
-  assert.equal(await page.getByLabel("Workflow", { exact: true }).inputValue(), "debate");
-  const roles = await page.evaluate(() => JSON.parse(localStorage.getItem("roleSel") || "{}"));
-  assert.deepEqual(roles.debate.builder, []); assert.deepEqual(roles.debate.reviewer, []);
+  assert.equal(await page.getByLabel("Workflow", { exact: true }).inputValue(), "auto-team");
   await choose("starter-bug");
   await openAdvanced(page);
-  await page.getByLabel("Workflow", { exact: true }).selectOption("tdd");
+  await page.getByLabel("Workflow", { exact: true }).selectOption("fix-review");
   await page.locator(".composer-summary").getByText("Limit", { exact: true }).waitFor();
   await mkdir(join(root, "output/playwright"), { recursive: true });
   await page.screenshot({ path: join(root, "output/playwright/ux-composer.png"), fullPage: true });

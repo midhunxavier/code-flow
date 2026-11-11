@@ -151,7 +151,7 @@ test("Antigravity is left out of default checking roles after Ask for approval, 
   await runOptions(page);
   await page.locator("details.advanced-controls > summary").click();
   const start = page.locator(".task-start");
-  for (const [workflow, role] of [["pipeline", "reviews"], ["race", "picks the best"], ["debate", "writes the final plan"]] as const) {
+  for (const [workflow, role] of [["pipeline", "reviews"]] as const) {
     await page.locator("#workflow-select").selectOption(workflow);
     assert.doesNotMatch(await page.locator(".pattern-why").innerText(), new RegExp(`Antigravity CLI ${role}`), workflow);
     assert.equal(await start.isDisabled(), false);

@@ -71,7 +71,6 @@ Names are implementation targets, not files already present. Keep modules small 
 | [run-permissions.ts](../../src/run-permissions.ts) | Effective permission constraints |
 | [team-template-store.ts](../../src/team-template-store.ts) | Immutable template versions and compare-and-swap saves |
 | [patterns/pipeline.ts](../../src/patterns/pipeline.ts) | Build/check/review semantics and evidence handling |
-| [patterns/debate.ts](../../src/patterns/debate.ts) | Independent proposals and synthesis behavior |
 
 The existing internal [agent tool client](../../src/agent-tool-client.mjs) requires a parent-issued turn capability. It is not the public host connector. Reuse tested transport concepts, but create a separately scoped public interface.
 

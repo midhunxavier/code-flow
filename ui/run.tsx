@@ -61,7 +61,7 @@ import {
   setRunLimits,
   contextPaths,
   markSeen,
-  patterns,
+  patternName, patterns,
   repo,
   repoInfo,
   runState,
@@ -83,6 +83,7 @@ import {
   rememberSide,
   sideMemo,
 } from "./state.js";
+import { retiredPatternMessage } from "../src/patterns/retired.js";
 import { ProjectChip } from "./projects.js";
 import { AutoTeam, TeamQuestionCard } from "./team.js";
 import { ProjectMemory } from "./memory.js";
@@ -288,7 +289,7 @@ export function RunView({ id }: { id: string }) {
                 </span>
                 {runStateBadges(run).map((label) => <span key={label} class="status-pill run-state" title={label}>{label}</span>)}
                 {run.chatLink?.kind !== "side" ? <ProjectChip run={run} /> : null}
-                <span class="run-pattern">{leadTurn ? "Conversation lead" : p?.name ?? run.pattern}</span>
+                <span class="run-pattern">{leadTurn ? "Conversation lead" : patternName(run.pattern)}</span>
                 {run.permissions?.antigravityExecution === "native" ? <span class="badge warn run-unrestricted" title="Antigravity turns in this run use your normal profile and settings without Code Flow's sandbox">Unrestricted Antigravity</span> : null}
                 {run.permissions?.acpExecution === "native" ? <span class="badge warn run-unrestricted" title="ACP agents in this run use their own tools and settings without Code Flow's sandbox or delegation limits">Unrestricted ACP</span> : null}
                 {teamTask ? <a class="run-team-task" href={`#/team/task/${enc(teamTask)}`} title="This run executes a task of the team board">Team task</a> : null}
@@ -2444,6 +2445,8 @@ function ActivityLog({ logs }: { logs: RunData["logs"]; count: number }) {
 // ---------------------------------------------------------------- edit & run again
 let rerunRequest = 0;
 export async function editAndRerun(run: RunSummary) {
+  const retired = retiredPatternMessage(run.pattern);
+  if (retired) return showError(retired);
   const request = ++rerunRequest;
   const origin = route.value;
   const destination = projectFor(run);

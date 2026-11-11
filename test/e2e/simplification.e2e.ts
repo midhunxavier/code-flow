@@ -63,8 +63,7 @@ test("one template library restores complete saved configurations and keeps lega
   let dialog = page.getByRole("dialog", { name: "Template library", exact: true });
   await dialog.getByLabel("Template", { exact: true }).selectOption("starter-explore");
   await dialog.getByRole("button", { name: "Use template", exact: true }).click();
-  assert.equal(await page.getByLabel("Workflow", { exact: true }).inputValue(), "debate");
-  assert.deepEqual(await page.evaluate(() => JSON.parse(localStorage.getItem("roleSel")!).debate.builder), []);
+  assert.equal(await page.getByLabel("Workflow", { exact: true }).inputValue(), "auto-team");
   await page.evaluate(() => {
     const config = { pattern: "solo", roles: { agent: ["codex"] }, options: {}, agentSettings: { codex: { model: "gpt-5" } }, roleSettings: {}, trust: "safe", limits: { maxMinutes: 23, maxSteps: 17 }, approvePlan: false, toolApprovals: true, check: "node --test", setup: "", baseRef: "main" };
     localStorage.setItem("composerLibrary", JSON.stringify({ schemaVersion: 1, presets: [{ id: "legacy", name: "Old workflow", revision: 1, updatedAt: 1, config, history: [] }], templates: [{ id: "complete", name: "Full task", pattern: "solo", task: "Review {{component}}", criteria: ["Keep behavior"], config, runOptions: { verification: "", container: { enabled: false, image: "", authVolume: "" } } }] }));

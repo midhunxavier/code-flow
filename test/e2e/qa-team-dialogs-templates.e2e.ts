@@ -109,7 +109,7 @@ test("turning AI team off disables preserved-work resume and turning it on resto
 });
 
 test("browser library import displays server notes for both scopes and retains originals", async () => {
-  const library = (name: string) => ({ schemaVersion: 1, templates: [], presets: [{ id: name, name, config: { pattern: "race", roles: { contestants: ["claude", "codex"] }, check: "npm test", setup: "npm ci" }, runOptions: { verification: "thorough", container: { enabled: true, image: "qa/image" } } }] });
+  const library = (name: string) => ({ schemaVersion: 1, templates: [], presets: [{ id: name, name, config: { pattern: "pipeline", roles: { planner: ["claude"], builder: ["codex"] }, check: "npm test", setup: "npm ci" }, runOptions: { verification: "thorough", container: { enabled: true, image: "qa/image" } } }] });
   const personal = JSON.stringify(library("Personal checks")), scoped = JSON.stringify(library("Project checks"));
   const p = await open(`project/${project}/new`, { composerLibrary: personal, [`composerLibrary:${project}`]: scoped, composerAdvanced: "0" });
   await p.locator(".composer-options > summary").click(); await p.locator(".advanced-controls > summary").click();

@@ -12,6 +12,7 @@ process.env.CODEFLOW_HOME = mkdtempSync(join(tmpdir(), "codeflow-persist-home-")
 
 const { RunManager } = await import("../src/engine.js");
 const { findPattern } = await import("../src/patterns/index.js");
+const { parallelPattern, withParallel } = await import("./parallel-pattern.js");
 const { flushWrites, RUNS_DIR } = await import("../src/store.js");
 type Run = import("../src/engine.js").Run;
 type Manager = InstanceType<typeof RunManager>;
@@ -113,28 +114,44 @@ test("a run that crashed (no clean shutdown) loads as interrupted", async () => 
   delete process.env.FAKE_SLEEP_MS;
 });
 
-test("parallel race steps replay; only the unfinished judge runs again", async () => {
+test("parallel steps replay; only the unfinished one runs again", async () => {
   process.env.FAKE_SLEEP_VENDOR = "claude";
-  process.env.FAKE_SLEEP_MS = "5000";
-  const a = new RunManager(findPattern);
-  const run = await start(a, "race", { contestants: ["claude", "codex"], judge: ["claude"] });
-  // The candidate intentionally sleeps for five seconds before the judge can
-  // start; allow worktree and process startup overhead on busy CI runners.
-  await until(() => run.steps.some((s) => s.title === "Judge candidates" && s.status === "running"), 30_000);
+  process.env.FAKE_SLEEP_MS = "30000";
+  const a = new RunManager(withParallel(findPattern));
+  const run = await a.start({ pattern: parallelPattern, task: "Persist me", repo, roles: { writers: ["claude", "codex"] }, options: {} });
+  // Candidate A sleeps; wait for Candidate B to finish beside it before the "process" ends.
+  await until(() => run.steps.some((s) => s.title === "Candidate B" && s.status === "done") && run.steps.some((s) => s.title === "Candidate A" && s.status === "running"), 30_000);
   await a.shutdown();
   delete process.env.FAKE_SLEEP_VENDOR;
   delete process.env.FAKE_SLEEP_MS;
 
-  const b = new RunManager(findPattern);
+  const b = new RunManager(withParallel(findPattern));
   await b.load();
   const loaded = b.get(run.id)!;
   await b.resume(run.id);
   await finished(b, loaded);
   assert.equal(loaded.status, "done", loaded.error);
   const steps = agentSteps(loaded);
-  assert.equal(steps.filter((s) => s.startsWith("Candidate A")).length, 1);
-  assert.equal(steps.filter((s) => s.startsWith("Candidate B")).length, 1);
-  assert.deepEqual(steps.filter((s) => s.startsWith("Judge")), ["Judge candidates:interrupted", "Judge candidates:done"]);
+  assert.deepEqual(steps.filter((s) => s.startsWith("Candidate B")), ["Candidate B:done"]);
+  assert.deepEqual(steps.filter((s) => s.startsWith("Candidate A")), ["Candidate A:interrupted", "Candidate A:done"]);
+});
+
+test("a run of a workflow that no longer exists still loads, and says so when resumed", async () => {
+  const a = new RunManager(findPattern);
+  const run = await a.start({ pattern: { ...parallelPattern, id: "race" }, task: "Persist me", repo, roles: { writers: ["claude", "codex"] }, options: {}, loop: { maxSteps: 1 } });
+  await finished(a, run);
+  assert.equal(run.status, "stopped");
+  await a.shutdown();
+
+  const b = new RunManager(findPattern);
+  await b.load();
+  const loaded = b.get(run.id)!;
+  assert.equal(loaded.pattern, "race");
+  assert.equal(loaded.status, "stopped");
+  assert.ok(loaded.steps.some((s) => s.title.startsWith("Candidate")), "its steps are still there");
+  assert.ok(b.list().some((r) => r.id === run.id));
+  await assert.rejects(b.resume(run.id), /The "Best-of-N race" workflow is no longer available\. Start a new run with Auto team instead\./);
+  assert.equal(b.get(run.id)!.status, "stopped", "the refused resume changed nothing");
 });
 
 test("a run stopped at its step limit resumes with a fresh budget", async () => {

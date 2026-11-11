@@ -12,6 +12,7 @@ import { CHECKPOINT_ID, CollabError, collabErrorBody, currentAttempt, validatePa
 import type { RunnerPublic } from "./model.js";
 import type { CollabRunner, DraftTaskInput, LocalAttemptRecord, StartAttemptInput } from "./runner.js";
 import type { CollabStore } from "./store.js";
+import { retiredPatternMessage } from "../patterns/retired.js";
 
 /**
  * `/api/team-link/*`: the owner's routes for this computer as a runner. They are local and owner-only in
@@ -60,7 +61,7 @@ function loop(value: unknown): Partial<LoopSettings> {
   command("check"); command("setup"); number("maxMinutes", 1, MAX_EXECUTION_BUDGET.maxMinutes); number("maxSteps", 1, MAX_EXECUTION_BUDGET.maxSteps); return out;
 }
 export function validateStartBody(raw: Record<string, unknown>, host: Pick<TeamLinkApiHost, "findPattern" | "agents">): StartAttemptInput {
-  assertKeys(raw, START_FIELDS, "start"); const pattern = typeof raw.pattern === "string" && /^[a-z0-9-]{1,40}$/.test(raw.pattern) ? host.findPattern(raw.pattern) : undefined; if (!pattern) throw new CollabError("Unknown pattern");
+  assertKeys(raw, START_FIELDS, "start"); const pattern = typeof raw.pattern === "string" && /^[a-z0-9-]{1,40}$/.test(raw.pattern) ? host.findPattern(raw.pattern) : undefined; if (!pattern) throw new CollabError(retiredPatternMessage(raw.pattern) ?? "Unknown pattern");
   const input: StartAttemptInput = { pattern, roles: validateRoles(pattern, raw.roles ?? {}, host.agents()) }, repo = repoPath(raw.repo, false); if (repo) input.repo = repo;
   if (!absent(raw.trust)) { if (typeof raw.trust !== "string" || !(TRUSTS as readonly string[]).includes(raw.trust)) throw new CollabError("Choose agent permissions: safe, standard, trusted or full"); input.trust = raw.trust as Trust; }
   if (!absent(raw.agentSettings)) input.agentSettings = settings(raw.agentSettings, "agentSettings"); if (!absent(raw.roleSettings)) input.roleSettings = roleSettings(raw.roleSettings); if (!absent(raw.loop)) input.loop = loop(raw.loop);

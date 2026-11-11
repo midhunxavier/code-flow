@@ -30,23 +30,6 @@ test("pipeline: the reviewer defaults to a vendor other than the planner's", () 
   assert.deepEqual(independentRoles("pipeline", fallback, {}, ["claude"]).reviewer, ["claude"]);
 });
 
-test("debate: independent routing prefers another vendor when eligible", () => {
-  const debate = defaults("debate");
-  assert.ok(["claude", "codex"].includes(debate.synthesizer![0]!), "the default supports managed permissions");
-  const roles = { debaters: ["claude" as const, "codex" as const], synthesizer: ["claude" as const] };
-  assert.deepEqual(independentRoles("debate", roles, {}, [...ALL]).synthesizer, ["agy"]);
-  assert.deepEqual(independentRoles("debate", roles, {}, ["claude", "codex"]).synthesizer, ["claude"], "every vendor debates: the log warns instead");
-  assert.deepEqual(independentRoles("debate", roles, { synthesizer: ["claude"] }, [...ALL]).synthesizer, ["claude"]);
-});
-
-test("race and supervisor keep their independent judge and reviewer", () => {
-  assert.deepEqual(independentRoles("race", { contestants: ["agy", "claude"], judge: ["agy"] }, {}, [...ALL]).judge, ["codex"]);
-  assert.deepEqual(independentRoles("race", { contestants: ["auto", "claude"], judge: ["agy"] }, {}, [...ALL]).judge, ["agy"]);
-  assert.deepEqual(independentRoles("supervisor", { supervisor: ["claude"], workers: ["claude"], reviewer: ["claude"] }, {}, [...ALL]).reviewer, ["codex"]);
-  assert.deepEqual(independentRoles("supervisor", { supervisor: ["claude"], workers: ["claude"], reviewer: [] }, {}, [...ALL]).reviewer, ["codex"]);
-});
-
-
 test("fix & review suggests another available vendor while preserving explicit choices", () => {
   const roles = { builder: ["codex" as const], reviewer: ["codex" as const] };
   assert.deepEqual(independentRoles("fix-review", roles, {}, ["codex", "claude"]).reviewer, ["claude"]);

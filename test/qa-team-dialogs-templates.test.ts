@@ -31,7 +31,7 @@ test("migration reports each dropped setting, persists the explanation and stays
   const home = await mkdtemp(join(tmpdir(), "qa-team52-migration-"));
   try {
     const store = new TeamTemplateStore(home);
-    const library = { schemaVersion: 1, templates: [{ id: "plain", name: "Plain template", pattern: "solo", task: "{{task}}", criteria: [] }], presets: [{ id: "checks", name: "Checked build", config: { pattern: "race", roles: { contestants: ["claude", "codex"] }, check: "npm test", setup: "npm ci", baseRef: "main", contextBudget: { maxTokens: 4000 }, limits: { maxSteps: 12 } }, runOptions: { verification: "thorough", container: { enabled: true, image: "qa/image" } } }] };
+    const library = { schemaVersion: 1, templates: [{ id: "plain", name: "Plain template", pattern: "solo", task: "{{task}}", criteria: [] }], presets: [{ id: "checks", name: "Checked build", config: { pattern: "pipeline", roles: { planner: ["claude"], builder: ["codex"] }, check: "npm test", setup: "npm ci", baseRef: "main", contextBudget: { maxTokens: 4000 }, limits: { maxSteps: 12 } }, runOptions: { verification: "thorough", container: { enabled: true, image: "qa/image" } } }] };
     const result = await store.migrate(library);
     assert.equal(result.imported, 2);
     const notice = result.notes.find(note => note.startsWith("Checked build:"))!;

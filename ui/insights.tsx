@@ -6,11 +6,10 @@ import { CompareDialog, startProblem } from "./composer.js";
 import { useEffect, useState } from "preact/hooks";
 import { AgentTag } from "./bits.js";
 import { api, baseName, duration, fmtCost, fmtSize, fmtTokens, pct, post, showToast, showError, STATUS_TEXT } from "./lib.js";
-import { activeProject, currentProject, NONE, patterns, repo, route, runState } from "./state.js";
+import { activeProject, currentProject, NONE, patternName, patterns, repo, route, runState } from "./state.js";
 import type { AgentId, Stats } from "./types.js";
 import { ProjectButton } from "./projects.js";
 
-const patternName = (id: string) => patterns.value.find((p) => p.id === id)?.name ?? id;
 const PERIODS = { "7": 7, "30": 30, all: 0 } as const;
 
 /**
@@ -192,8 +191,6 @@ export function InsightsView({ group }: { group?: string }) {
                     <th class="num">Runs</th>
                     <th class="num">Passed</th>
                     <th class="num">Sole-writer evidence</th>
-                    <th class="num">Race wins</th>
-                    <th class="num">Loops it got green</th>
                     <th class="num">Review findings</th>
                     <th class="num">Steps</th>
                     <th class="num">Failed steps</th>
@@ -215,8 +212,6 @@ export function InsightsView({ group }: { group?: string }) {
                       <td class="num" title={`${a.sharedJudged ?? 0} shared outcomes excluded from provider comparisons`}>
                         {a.attributedJudged ? <>{a.attributedPassed}/{a.attributedJudged}<div class="help">95%: {Math.round(100 * a.confidence.low)}–{Math.round(100 * a.confidence.high)}%</div></> : "No attributable samples"}
                       </td>
-                      <td class="num">{a.raceEntries ? `${a.raceWins}/${a.raceEntries}` : "–"}</td>
-                      <td class="num">{a.loopSolves || "–"}</td>
                       <td class="num" title="Findings, and how many another reviewer also raised">
                         {a.findings ? `${a.findings} (${a.agreedFindings} agreed)` : "–"}
                       </td>

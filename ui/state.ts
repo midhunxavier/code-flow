@@ -17,6 +17,7 @@ import { readProjectDefaults } from "./project-defaults.js";
 import { api, sharedGet, ApiError, post, rememberFolders, showToast, showError, store, workspaceId, workspaceKey, SHORT } from "./lib.js";
 import { independentRoles, type RoleValue } from "./roles.js";
 import { onStreamState, subscribe } from "./stream.js";
+import { retiredPatternName } from "../src/patterns/retired.js";
 import { defaultPlanApproval, teamAwaitingAnswer } from "./team-state.js";
 import { hashFor, parseRouteHash, SIDE_TABS, type Route, type SideTab } from "./navigation.js";
 export { hashFor, SIDE_TABS, type Route, type SideTab } from "./navigation.js";
@@ -49,6 +50,8 @@ export async function loadAgents(force = false) {
   agents.value = inventory;
 }
 export const patterns = signal<PatternInfo[]>([]);
+/** A workflow's name, including retired ones that earlier runs and automations still name. */
+export const patternName = (id: string) => patterns.value.find((p) => p.id === id)?.name ?? retiredPatternName(id) ?? id;
 export const catalogs = signal<Record<string, CatalogOrError>>({});
 export const runs = signal<Map<string, RunSummary>>(new Map());
 /** The first list of runs has come: until then, a run missing from `runs` may just not be here yet. */
@@ -761,7 +764,8 @@ export const contextPaths = signal<Map<string, ContextItem>>(new Map());
 export const attachments = signal<Attachment[]>([]);
 export const contextError = signal("");
 /** Settings > Run defaults: the workflow new drafts start with, unless their project remembers a team. */
-export const defaultPattern = signal(store.get("pattern") ?? "solo");
+const savedPattern = store.get("pattern");
+export const defaultPattern = signal(savedPattern && !retiredPatternName(savedPattern) ? savedPattern : "solo");
 /** The current draft's workflow. */
 export const patternId = signal(defaultPattern.value);
 export const pattern = computed(() => patterns.value.find((p) => p.id === patternId.value) ?? patterns.value[0]);
@@ -904,7 +908,7 @@ export function planApprovalFor(patternId: string): boolean {
   return defaultPlanApproval(patternId, patternId !== "auto-team" && legacyApproval !== null ? legacyApproval === "1" : undefined);
 }
 /** Patterns with a plan checkpoint, and what you approve there. */
-export const CHECKPOINTS: Record<string, string> = { pipeline: "the plan", debate: "the plan", supervisor: "the subtasks", tdd: "the tests", "auto-team": "the team and plan" };
+export const CHECKPOINTS: Record<string, string> = { pipeline: "the plan", "auto-team": "the team and plan" };
 
 export function setTask(value: string) {
   task.value = value;
@@ -993,7 +997,7 @@ export function rolesFor(p: PatternInfo | undefined): Record<string, RoleValue[]
     if (!ids.length && !role.optional && !saved[role.id] && firstAvailable) ids = [firstAvailable];
     roles[role.id] = ids;
   }
-  // Judges, reviewers and synthesizers default to a vendor that didn't do the work they check.
+  // Reviewers default to a vendor that didn't do the work they check.
   return independentRoles(p.id, roles, saved, eligibleDefaults.map((a) => a.id));
 }
 
@@ -1639,7 +1643,7 @@ function restoreComposer(snapshot: ComposerSnapshot) {
     intentDraft.value = snapshot.intent;
     task.value = snapshot.task; acceptanceCriteria.value = snapshot.acceptance;
     contextPaths.value = new Map(snapshot.paths); attachments.value = snapshot.attachments;
-    patternId.value = snapshot.pattern; roleSel.value = snapshot.roles; roleModels.value = snapshot.models;
+    patternId.value = retiredPatternName(snapshot.pattern) ? defaultPattern.value : snapshot.pattern; roleSel.value = snapshot.roles; roleModels.value = snapshot.models;
     agentSettings.value = snapshot.settings; optionValues.value = snapshot.options;
     baseRef.value = snapshot.base; branchPrefix.value = snapshot.branch;
     // Counted as edits, so a lookup still on its way doesn't replace them.

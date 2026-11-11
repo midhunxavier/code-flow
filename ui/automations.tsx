@@ -9,7 +9,7 @@ import { useDialog } from "./app.js";
 import { AgentTag, CantRunNote } from "./bits.js";
 import { Icon } from "./icons.js";
 import { ago, api, ApiError, sharedGet, baseName, copy, post, showToast, showError, STATUS_TEXT } from "./lib.js";
-import { activeProject, projectCounts, filterActive, setRunFilter, historyNextCursor, historyLoadingMore, loadOlderRuns, ALL, currentProject, inScope, NONE, patterns, projectFor, projects, route, runs, selectProject } from "./state.js";
+import { activeProject, projectCounts, filterActive, setRunFilter, historyNextCursor, historyLoadingMore, loadOlderRuns, ALL, currentProject, inScope, NONE, patternName, projectFor, projects, route, runs, selectProject } from "./state.js";
 import type { Project, RunSummary } from "./types.js";
 import { ProjectButton } from "./projects.js";
 import { SCHEDULED_TEAM_NOTICE, usesTaskTeam } from "./deferred-runs.js";
@@ -410,7 +410,7 @@ function AutomationRow({ a, scoped }: { a: Automation; scoped: boolean }) {
         </button>
       </div>
       <div class="ar-meta help">
-        {patterns.value.find((p) => p.id === a.run.pattern)?.name ?? a.run.pattern} in {baseName(a.run.repo)}
+        {patternName(a.run.pattern)} in {baseName(a.run.repo)}
         {project ? <> · <Icon name="project" class="inline-icon" /> {project.name}</> : null}: “{a.run.task.split("\n")[0]}”
         {a.sweep && a.handled?.length ? ` · ${a.handled.length} items started` : ""}
         {Object.values(a.run.roles)

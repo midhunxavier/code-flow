@@ -28,10 +28,6 @@ export interface AgentStats {
   sharedJudged: number;
   /** Wilson 95% interval for attributable outcomes, not a prediction for a new task. */
   confidence: { low: number; high: number; samples: number };
-  raceEntries: number;
-  raceWins: number;
-  /** Loop until green: rounds that turned the check green. */
-  loopSolves: number;
   /** Review council findings this agent raised, and how many other reviewers agreed with. */
   findings: number;
   agreedFindings: number;
@@ -101,7 +97,7 @@ export function computeStats(all: RunSummary[], filter: { repo?: string; since?:
   const agent = (id: AgentId) => {
     let a = agents.get(id);
     if (!a) {
-      a = { agent: id, runs: 0, steps: 0, writeSteps: 0, failures: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, costUsd: 0, ms: 0, judged: 0, passed: 0, attributedJudged: 0, attributedPassed: 0, sharedJudged: 0, confidence: { low: 0, high: 1, samples: 0 }, raceEntries: 0, raceWins: 0, loopSolves: 0, findings: 0, agreedFindings: 0 };
+      a = { agent: id, runs: 0, steps: 0, writeSteps: 0, failures: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, costUsd: 0, ms: 0, judged: 0, passed: 0, attributedJudged: 0, attributedPassed: 0, sharedJudged: 0, confidence: { low: 0, high: 1, samples: 0 }, findings: 0, agreedFindings: 0 };
       agents.set(id, a);
     }
     return a;
@@ -159,9 +155,6 @@ export function computeStats(all: RunSummary[], filter: { repo?: string; since?:
         } else a.sharedJudged++;
       }
     }
-    for (const id of r.facts?.entrants ?? []) agent(id).raceEntries++;
-    if (r.facts?.winner) agent(r.facts.winner).raceWins++;
-    if (r.facts?.solvedBy) agent(r.facts.solvedBy).loopSolves++;
     for (const f of r.review?.findings ?? []) {
       for (const id of f.raisedBy) {
         agent(id).findings++;

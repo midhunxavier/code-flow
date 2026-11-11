@@ -141,6 +141,7 @@ import {
   type RunSource,
   type SourceInput,
 } from "./github.js";
+import { retiredPatternMessage } from "./patterns/retired.js";
 import { localDeliveryProblem, prDelivery, validateTestRun, type ResultDelivery, type TestRun } from "./result-delivery.js";
 
 /** How many agent CLIs, and how many check/setup commands, may run at once across all runs. */
@@ -781,7 +782,7 @@ export interface RoleSpec {
   id: string;
   label: string;
   description: string;
-  /** Several agents may fill this role (e.g. contestants, debaters, workers). */
+  /** Several agents may fill this role (e.g. reviewers). */
   multiple?: boolean;
   /** Fewest participants (agents, or model variants of one) the role needs; checked before a run starts. */
   min?: number;
@@ -4379,7 +4380,7 @@ export class RunManager {
       let template: TemplateSelection | undefined;
       if (config.template) template = { template: await teamTemplateStore.resolve(config.template.id, config.template.version, run.project), inputs: { ...config.template.inputs, task: request } };
       const pattern = this.findPattern(template?.template.workflow ?? "auto-team");
-      if (!pattern || pattern.id === "solo") throw new Error("Choose a team workflow template");
+      if (!pattern || pattern.id === "solo") throw new Error(retiredPatternMessage(template?.template.workflow) ?? "Choose a team workflow template");
       const roles = Object.fromEntries(pattern.roles.map(role => {
         const preferred = (template?.template.preferences?.roles[role.id] ?? []).filter(id => config.providers.includes(id as AgentId)) as AgentId[];
         return [role.id, role.id === "coordinator" || role.id === "planner" ? [config.coordinator] : role.id === "pool" ? config.providers : role.multiple ? preferred.length ? preferred : config.providers : [preferred[0] ?? (role.id === "reviewer" ? config.providers.at(-1)! : config.providers[0]!)]];
@@ -5994,7 +5995,7 @@ export class RunManager {
     const pattern = this.findPattern(run.pattern);
     if (!pattern) {
       if (run.pattern.startsWith("plugin:")) throw new Error(`This run's workflow extension ${run.pattern} isn't loaded. Check Settings → Extensions, restore the exact reviewed bundle and SHA-256 pin, then restart; or create a new run.`);
-      throw new Error(`Unknown pattern "${run.pattern}"`);
+      throw new Error(retiredPatternMessage(run.pattern) ?? `Unknown pattern "${run.pattern}"`);
     }
     if (run.pattern === "auto-team" && run.team && run.team.version !== 1) throw new Error("This team uses an unsupported plan version; update code-flow to resume it");
     if (!existsSync(run.repo)) throw new Error(`Repository ${run.repo} no longer exists`);

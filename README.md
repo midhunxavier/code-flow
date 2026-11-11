@@ -82,7 +82,6 @@ Use the same bridge from **Claude Desktop or the Codex app** with `codeflow desk
 | --- | --- |
 | Build a feature with an independent review | [Plan → Build → Review](docs/patterns.md) |
 | Let a coordinator propose a team and task graph | [Auto team](docs/auto-team.md), with plan approval and bounded execution |
-| Fix failing tests, compare solutions or explore a design | [Loop, race, test-first and debate workflows](docs/patterns.md) |
 | Inspect files, changes, terminals and app previews | The [run workspace and side panel](docs/runs.md) |
 | See what needs a decision across projects | The [review inbox](docs/review-inbox.md) |
 | Run scheduled work or revisit it from another device | [Automations and remote access](docs/automations.md) |
@@ -100,11 +99,6 @@ Code Flow shows checks, independent review and fail-to-pass evidence separately.
 | Workflow | Flow | Good for |
 | --- | --- | --- |
 | **Plan → Build → Review** | Plan, implement, review, repair | Features and bug fixes |
-| **Loop until green** | Change, check, repeat | A failing test or build |
-| **Best-of-N race** | Parallel candidates, blind judging | Exploring alternative implementations |
-| **Debate → Synthesize → Build** | Proposals, critique, synthesis, optional implementation | Design decisions |
-| **Supervisor → Workers** | Subtasks, separate branches, integration | Work that splits cleanly |
-| **Test-first** | Failing tests, implementation, verification | Precisely specified behavior |
 | **Review council** | Independent reviews, evidence, ranked findings | Reviewing a change |
 | **Auto team** | Proposed team, dependency graph, bounded adaptation | Delegating workflow design |
 

@@ -138,13 +138,6 @@ test("a sweep configures single agents, team patterns and saved templates withou
     await dialog.getByRole("combobox", { name: "Agent", exact: true }).selectOption("codex");
     assert.equal(await dialog.getByRole("combobox", { name: "Planner", exact: true }).count(), 0);
     assert.equal(await failing.isChecked(), true);
-    await workflow.selectOption("race");
-    const contestants = dialog.getByRole("group", { name: "Contestants providers", exact: true });
-    for (const name of ["Claude", "Codex"]) { const choice = contestants.getByRole("button", { name, exact: true }); if (await choice.getAttribute("aria-pressed") !== "true") await choice.click(); }
-    assert.equal(await dialog.getByRole("button", { name: "Start 1 run", exact: true }).isEnabled(), true);
-    await contestants.getByRole("button", { name: "Codex", exact: true }).click();
-    await dialog.getByRole("status").filter({ hasText: "at least two contestants" }).waitFor();
-    assert.equal(await dialog.getByRole("button", { name: "Start 1 run", exact: true }).isEnabled(), false);
     await workflow.selectOption("pipeline");
     await mkdir(join(root, "output/playwright"), { recursive: true });
     for (const width of [1414, 390, 320]) {

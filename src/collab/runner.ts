@@ -19,6 +19,7 @@ import type { HubClient, ProgressReportBody } from "./hub-client.js";
 import { assertLatestAttempt, ATTEMPT_ID, busyAttempt, CHECKPOINT_ID, CollabError, COMMIT_ID, latestCheckpoint, roleAtLeast, MAX, newAttemptId, newCheckpointId, ownerChangedMessage, TASK_ID } from "./model.js";
 import type { AttemptProgress, Checkpoint, CheckpointInput, Instruction, Task } from "./model.js";
 import type { FinishInput, FinishState } from "./store.js";
+import { retiredPatternMessage } from "../patterns/retired.js";
 
 /**
  * The execution side of a team task on this computer: claims an attempt on the hub, starts an ordinary run in
@@ -309,7 +310,7 @@ export class CollabRunner {
   // ---- Starting, attaching, publishing
   async startAttempt(taskId: string, input: StartAttemptInput): Promise<{ attemptId: string; runId: string }> {
     this.assertOpen(); const hub = this.hub; let task = await hub.task(taskId);
-    const pattern = typeof input.pattern === "string" ? this.options.findPattern(input.pattern) : input.pattern; if (!pattern) throw new CollabError("Unknown pattern");
+    const pattern = typeof input.pattern === "string" ? this.options.findPattern(input.pattern) : input.pattern; if (!pattern) throw new CollabError(retiredPatternMessage(input.pattern) ?? "Unknown pattern");
     // A busy attempt of this very computer with nothing running behind it (a claim whose answer was lost, a finish the hub never got) is settled here, rather than refused as "stop it first" until the next recovery pass.
     let busy = busyAttempt(task); if (busy && busy.runnerId === hub.runnerId && await this.settleStale(busy.id)) { task = await hub.task(taskId); busy = busyAttempt(task); }
     if (busy) throw new CollabError(`Stop the attempt running on ${busy.runnerName} before starting another`, 409);

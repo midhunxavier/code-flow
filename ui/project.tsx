@@ -18,7 +18,7 @@ import type { ComponentChildren } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { Icon } from "./icons.js";
 import { api, enc, usePoll, fmtCost, ago, baseName, isFolderMirror, shownPath, STATUS_TEXT, collaborationHref, selectedTeamConnection } from "./lib.js";
-import { editProject, patterns, projectFor, projects, projectsLoaded, route, runs, isRunDeleted, runState, openComposer, composerProject, composerLoading, draftsReady, task, savedDraftTask } from "./state.js";
+import { editProject, patternName, projectFor, projects, projectsLoaded, route, runs, isRunDeleted, runState, openComposer, composerProject, composerLoading, draftsReady, task, savedDraftTask } from "./state.js";
 import { hashFor, type ProjectSection, type RepositoryTool } from "./navigation.js";
 import { computerLabel, executionHost } from "./ssh-projects.js";
 import { addRepositoryToProject } from "./projects.js";
@@ -219,7 +219,7 @@ function Section({ title, runs, count, empty, more, moreCount = 0, attention = f
 
 function RunRow({ run }: { run: RunSummary }) {
   const state = runState(run);
-  const pattern = patterns.value.find((x) => x.id === run.pattern)?.name ?? run.pattern;
+  const pattern = patternName(run.pattern);
   const merged = run.merges.length > 0;
   const pr = Object.keys(run.prs).length > 0;
   const pill = (cls: string, text: ComponentChildren) => <span class={`status-pill ${cls}`}>{text}</span>;

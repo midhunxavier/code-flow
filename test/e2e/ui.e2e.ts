@@ -493,22 +493,22 @@ test("insights and run search", async () => {
   assert.equal(await page.locator(".rail .run-item").count(), 1);
 });
 
-test("supervisor: the reviewer defaults to a different vendor than the supervisor", async () => {
+test("fix & review: the reviewer defaults to a different vendor than the builder", async () => {
   await page.goto(`${BASE}/#/workflows`);
   await openAdvanced(page);
-  await page.getByLabel("Workflow", { exact: true }).selectOption("supervisor");
+  await page.getByLabel("Workflow", { exact: true }).selectOption("fix-review");
   if (await page.locator(".composer-options").getAttribute("open") === null) await page.locator(".composer-options > summary").click();
   if (await page.locator(".advanced-controls").getAttribute("open") === null) await page.locator(".advanced-controls > summary").click();
   const role = (label: string) => page.locator(".role").filter({ has: page.locator(".rl", { hasText: new RegExp(`^${label}`) }) });
   const pressed = async (label: string) =>
     (await role(label).locator(".pill[aria-pressed=true]").allInnerTexts()).map((t) => t.replace(/^✓\s*/, "").trim());
-  assert.deepEqual(await pressed("Reviewer"), ["Codex"], "the pattern's default when it isn't the supervisor");
-  await role("Supervisor").getByRole("button", { name: "Codex", exact: true }).click();
-  assert.deepEqual(await pressed("Supervisor"), ["Codex"]);
-  assert.deepEqual(await pressed("Reviewer"), ["Claude Code"], "moves off the supervisor's vendor");
-  // Your own choice stands, even to let the supervisor review itself.
-  await role("Reviewer").getByRole("button", { name: "Skip" }).click();
-  assert.deepEqual(await pressed("Reviewer"), ["Skip"]);
+  assert.deepEqual(await pressed("Reviewer"), ["Claude Code"], "the pattern's default when it isn't the builder");
+  await role("Builder").getByRole("button", { name: "Claude Code", exact: true }).click();
+  assert.deepEqual(await pressed("Builder"), ["Claude Code"]);
+  assert.deepEqual(await pressed("Reviewer"), ["Codex"], "moves off the builder's vendor");
+  // Your own choice stands, even to let the builder review itself.
+  await role("Reviewer").getByRole("button", { name: "Claude Code", exact: true }).click();
+  assert.deepEqual(await pressed("Reviewer"), ["Claude Code"]);
 });
 
 test("projects: onboarding made one; the sidebar lists runs under their projects; a run moves back", async () => {
@@ -1186,7 +1186,7 @@ test("Agent setup is inline and completed replies keep automatic workflow contro
     assert.equal(await fresh.evaluate(() => JSON.parse(localStorage.getItem("agentSettings") || "{}").claude?.model), undefined, "run model choices do not change the provider default in Settings");
     assert.equal(await fresh.getByLabel("Workflow", { exact: true }).isVisible(), false);
     await openAdvanced(fresh);
-    await fresh.getByLabel("Workflow", { exact: true }).selectOption("supervisor");
+    await fresh.getByLabel("Workflow", { exact: true }).selectOption("pipeline");
     assert.equal(await box.locator(".chat-controls").count(), 0);
     await fresh.getByLabel("Workflow", { exact: true }).selectOption("solo");
     assert.match(await box.getByRole("button", { name: /^Model:/ }).innerText(), /Haiku/);

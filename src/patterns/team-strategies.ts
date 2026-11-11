@@ -2,16 +2,6 @@ import type { TeamContext } from "../engine.js";
 import { hasConflictMarkers, type Worktree } from "../git.js";
 import type { CoordinatorCheckpoint, TeamPlan, TeamState, TeamSubplan, TeamTask } from "../teams.js";
 
-/** Shared decomposition contract; no workflow-generated code or provider assumptions. */
-export function decompositionInstructions(maxTasks: number, roster: string): string {
-  return `Study the code and split the task into at most ${maxTasks} subtasks that can be built in parallel ` +
-    "on separate branches with minimal file overlap (they will be merged afterwards). " +
-    "Each subtask's instructions must be self-contained: the worker sees only them and the contracts, not the other subtasks. " +
-    "In `contracts`, pin down everything the parts must agree on so they fit together: function signatures, " +
-    "endpoints, data shapes, file and module names, who owns which shared file. " +
-    `Assign each subtask to one of these workers: ${roster}.`;
-}
-
 /** Shared integration primitive retains caller-owned operation titles/identities for old runs. */
 export async function integrateBranch(ctx: TeamContext, integration: Worktree, branch: string, resolve: (conflicts: string[]) => Promise<void>, commitMessage: string): Promise<boolean> {
   const merge = await ctx.merge(integration, branch);

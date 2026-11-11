@@ -192,7 +192,7 @@ test("an unknown attempt reads Status unknown with its reason, and Resume is not
   await execution.getByRole("button", { name: "Recover attempt…", exact: true }).waitFor();
   // A run stopped at its budget on this computer, then deleted from its history: the attempt cannot be resumed here any more.
   const gone = "A run deleted from history", stopped = await newTask(gone);
-  const started = await send(`/api/team-link/tasks/${stopped.id}/start`, "POST", { pattern: "loop", roles: { workers: ["claude"] }, trust: "safe", loop: { check: "false", maxSteps: 1, maxMinutes: 2 } }) as { runId: string };
+  const started = await send(`/api/team-link/tasks/${stopped.id}/start`, "POST", { pattern: "pipeline", roles: { planner: ["claude"], builder: ["claude"], reviewer: ["claude"] }, trust: "safe", loop: { maxSteps: 1, maxMinutes: 2 } }) as { runId: string };
   await until(stopped.id, (t) => t.attempts[0]?.state === "stopped", "the attempt did not stop at its budget");
   execution = await openTask(page, stopped.id, gone); await execution.getByRole("button", { name: "Resume", exact: true }).waitFor();
   await api(`/api/runs/${started.runId}`, { method: "DELETE" });
@@ -228,7 +228,7 @@ test("a newer finished attempt replaces paused work in the task and board, and r
   const card = page.getByRole("button", { name: new RegExp(title) }); await card.waitFor();
   assert.doesNotMatch(await card.innerText(), /Paused/);
   const second = await newTask("Explain reassigned work");
-  await send(`/api/team-link/tasks/${second.id}/start`, "POST", { pattern: "loop", roles: { workers: ["claude"] }, trust: "safe", loop: { check: "false", maxSteps: 1, maxMinutes: 2 } });
+  await send(`/api/team-link/tasks/${second.id}/start`, "POST", { pattern: "pipeline", roles: { planner: ["claude"], builder: ["claude"], reviewer: ["claude"] }, trust: "safe", loop: { maxSteps: 1, maxMinutes: 2 } });
   const stopped = await until(second.id, value => value.attempts[0]?.state === "stopped", "the bounded attempt to stop");
   await send(`/api/team/tasks/${second.id}`, "PUT", { owner: bobId, revision: stopped.revision });
   execution = await openTask(page, second.id, "Explain reassigned work");

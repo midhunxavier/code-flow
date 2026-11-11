@@ -15,6 +15,7 @@ import type { VerificationProfile } from "../src/verification.js";
 import { ContextBudgetControls } from "./context-budget-controls.js";
 import { contextBudget, contextBudgetOrigin, setContextBudget } from "./context-budget.js";
 import type { ContextInspection } from "../src/context-inspection.js";
+import { retiredPatternMessage } from "../src/patterns/retired.js";
 
 const EMPTY_LIBRARY: ComposerLibrary = { schemaVersion: 1, presets: [], templates: [] };
 
@@ -79,7 +80,7 @@ function currentConfig(p: PatternInfo, toolApprovals = store.get("interactiveApp
 }
 export function applyPreset(config: PresetConfig, label: string) {
   const p = patterns.value.find((p) => p.id === config.pattern);
-  if (!p) throw new Error("This workflow is no longer available.");
+  if (!p) throw new Error(retiredPatternMessage(config.pattern) ?? "This workflow is no longer available.");
   setPattern(config.pattern);
   for (const role of p.roles) setRoles(p.id, role.id, config.roles[role.id] ?? []);
   for (const option of p.options) setOption(p, option.id, config.options[option.id] ?? option.default);
@@ -158,7 +159,7 @@ export const STARTER_TEMPLATES: TaskTemplate[] = [
   { id: "starter-bug", intent: "bug", name: "Fix a bug", pattern: "pipeline", task: "Fix the following bug:\n\nExpected behavior:\nActual behavior:\nSteps to reproduce:", criteria: [] },
   { id: "starter-feature", intent: "feature", name: "Build a feature", pattern: "pipeline", task: "Build the following feature:\n\nWho it helps:\nExpected behavior:\nAcceptance criteria:", criteria: [] },
   { id: "starter-review", intent: "review", name: "Review code", pattern: "council", task: "Review the code for correctness and regressions.\n\nScope or branch to review:\nAreas of concern:", criteria: [] },
-  { id: "starter-explore", intent: "explore", name: "Explore an idea", pattern: "debate", task: "Explore approaches to the following idea without implementing changes:\n\nGoal:\nConstraints:\nTrade-offs to consider:", criteria: [] },
+  { id: "starter-explore", intent: "explore", name: "Explore an idea", pattern: "auto-team", task: "Explore approaches to the following idea without implementing changes:\n\nGoal:\nConstraints:\nTrade-offs to consider:", criteria: [] },
 ];
 
 export function UseTaskTemplateDialog({ initialScope, onClose, onUsed, onConfigured }: { initialScope: string; onClose: () => void; onUsed: (scope: string) => void; onConfigured?: (template: TaskTemplate) => void }) {
@@ -212,7 +213,6 @@ export function UseTaskTemplateDialog({ initialScope, onClose, onUsed, onConfigu
     if (!template || !filled || editing || deleting) return;
     if (template.config) applyPreset(template.config, `Template ${template.name}`);
     else setPattern(template.pattern);
-    if (template.id === "starter-explore") { setRoles("debate", "builder", []); setRoles("debate", "reviewer", []); }
     intentDraft.value = preset ? intentDraft.value : template.intent;
     setTask(filled.task); setAcceptanceCriteria(filled.criteria);
     onConfigured?.(template); onUsed(scope);

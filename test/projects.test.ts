@@ -152,11 +152,11 @@ test("the composer's defaults: the last pattern, and the last team per pattern",
   const projects = fresh();
   await projects.load();
   const { project } = await projects.place(api);
-  await projects.remember(project.id, { pattern: "race", roles: { contestants: ["claude", "codex"], judge: ["auto"] }, agentSettings: { claude: { model: "opus" } } });
+  await projects.remember(project.id, { pattern: "council", roles: { reviewers: ["claude", "codex"], chair: ["auto"] }, agentSettings: { claude: { model: "opus" } } });
   await projects.remember(project.id, { pattern: "pipeline", roles, roleSettings: { builder: { codex: { effort: "high" } } }, agentSettings: {} });
   const d = projects.get(project.id)!.defaults!;
   assert.equal(d.pattern, "pipeline");
-  assert.deepEqual(d.teams.race!.roles, { contestants: ["claude", "codex"], judge: ["auto"] }, "the race team is kept for when you pick it again");
+  assert.deepEqual(d.teams.council!.roles, { reviewers: ["claude", "codex"], chair: ["auto"] }, "the council team is kept for when you pick it again");
   assert.deepEqual(d.teams.pipeline!.roleSettings, { builder: { codex: { effort: "high" } } });
   assert.equal(d.agentSettings, undefined);
 });

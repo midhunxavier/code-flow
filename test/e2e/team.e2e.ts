@@ -381,8 +381,8 @@ test("a save that lost to a teammate keeps every draft: the title and blocker ed
 });
 
 test("an attempt that stopped at its budget stays on the page with its run link and a Resume that continues the same attempt", async () => {
-  // The loop pattern asks the agent again after a failing check, so a step budget of one ends the run at the limit: attempt state "stopped".
-  const started = await api<{ attemptId: string; runId: string }>(`/api/team-link/tasks/${taskId}/start`, { method: "POST", body: JSON.stringify({ pattern: "loop", roles: { workers: ["claude"] }, trust: "safe", loop: { check: "false", maxSteps: 1, maxMinutes: 2 } }) });
+  // A step budget of one ends the run after its plan, at the limit: attempt state "stopped".
+  const started = await api<{ attemptId: string; runId: string }>(`/api/team-link/tasks/${taskId}/start`, { method: "POST", body: JSON.stringify({ pattern: "pipeline", roles: { planner: ["claude"], builder: ["claude"], reviewer: ["claude"] }, trust: "safe", loop: { maxSteps: 1, maxMinutes: 2 } }) });
   const ended = ["paused", "finished", "failed", "stopped", "unknown", "superseded"];
   const attemptWhen = async (until: (attempt: AttemptView) => boolean, what: string): Promise<AttemptView> => { const deadline = Date.now() + 90_000; for (;;) { const current = await task(), attempt = current.attempts.find((entry) => entry.id === started.attemptId); if (attempt && until(attempt)) return attempt; assert.ok(Date.now() < deadline, `${what}: ${JSON.stringify(current.attempts)}\n${log.slice(-3000)}`); await sleep(300); } };
   const stopped = await attemptWhen((attempt) => ended.includes(attempt.state), "the attempt did not end in time"); assert.equal(stopped.state, "stopped");

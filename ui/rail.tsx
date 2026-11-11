@@ -42,7 +42,7 @@ import {
   isFlagged,
   matchesFilter,
   needsYou,
-  patterns,
+  patternName,
   projectEdit,
   projectFor,
   projects,
@@ -233,7 +233,7 @@ export function Rail() {
     const details = [
       statusText(state),
       taskFlagged(r) ? "tests changed in ways that could hide failures" : "",
-      patterns.value.find((x) => x.id === r.pattern)?.name ?? r.pattern,
+      patternName(r.pattern),
       p ? (p.repos.length > 1 ? `${p.name} · ${baseName(r.repo)}` : p.name) : baseName(r.repo),
       ago(activityAt(r)),
       tokens ? `${fmtTokens(tokens)} tok` : "",

@@ -378,7 +378,7 @@ export function Composer() {
       <div class="section">
         {p ? <p class="pattern-why">{teamSentence(p, roles, true, checkMode)}</p> : null}
         {trust.value === "full" ? <p class="full-warn" role="alert"><b>Full access: no sandbox.</b> Agents can run commands and change files outside their worktree with your credentials. Review permissions in Advanced agent settings.</p> : null}
-        {p && CHECKPOINTS[p.id] && (p.id !== "debate" || roles.builder?.length) ? (
+        {p && CHECKPOINTS[p.id] ? (
           <label class="checkpoint">
             <input type="checkbox" checked={planApprovalFor(p.id)} onChange={(e) => setApprovePlan(e.currentTarget.checked, p.id)} />
             <span><b>Let me approve {CHECKPOINTS[p.id]}</b> before agents build.</span>
@@ -611,9 +611,6 @@ export function startProblem(p: PatternInfo | undefined, roles: Record<string, R
     if (trust.value !== "full") return `${name} needs Full access. Choose Ask for approval or Full access in Permissions.`;
   }
   for (const role of p.roles) if (!role.optional && !roles[role.id]?.length) return p.roles.length === 1 ? "Choose a provider" : `Choose a provider for ${role.label}`;
-  const unavailableHint = health.value?.some(item => item.installed && item.signedIn === false) ? " Some providers are signed out; open Settings → Providers." : "";
-  if (p.id === "race" && participantCount(p.id, "contestants", roles.contestants ?? []) < 2) return "A race needs at least two contestants." + unavailableHint;
-  if (p.id === "debate" && participantCount(p.id, "debaters", roles.debaters ?? []) < 2) return "A debate needs at least two debaters." + unavailableHint;
   if (p.id === "auto-team" && !roles.pool?.some(supportsRunPermissions)) return "Keep at least one compatible provider in the pool (Claude Code, Codex or Antigravity)";
   if (p.id === "auto-team" && limits.value.maxSteps < 4) return "A team needs at least 4 steps: planning, work, review and recovery";
   if (p.requiresCheck && !checkCmd.value.trim()) return `${p.name} needs a “Done when” command, e.g. npm test`;
@@ -1091,29 +1088,16 @@ export function teamSentence(p: PatternInfo, roles: Record<string, RoleValue[]>,
   };
   const opts = optionsFor(p);
   const check = checkCmd.value.trim();
-  const doneWhen = (check ? ` · done when “${check}” passes` : "") + (checkpoints && CHECKPOINTS[p.id] && planApprovalFor(p.id) && (p.id !== "debate" || roles.builder?.length) ? ` · you approve ${CHECKPOINTS[p.id]} first` : "");
+  const doneWhen = (check ? ` · done when “${check}” passes` : "") + (checkpoints && CHECKPOINTS[p.id] && planApprovalFor(p.id) ? ` · you approve ${CHECKPOINTS[p.id]} first` : "");
   switch (p.id) {
     case "auto-team":
       return `${one("coordinator")} assembles up to ${opts.maxMembers ?? 4} members from ${many("pool")} → the team works through dependencies → an independent member verifies the result${doneWhen}`;
     case "pipeline":
       return `${one("planner")} plans → ${one("builder")} builds → ${one("reviewer")} reviews (up to ${opts.maxRounds} rounds of fixes)${doneWhen}`;
-    case "race":
-      return `${many("contestants")} each solve it separately → ${many("judge")} ${(roles.judge?.length ?? 0) > 1 ? "vote" : "picks"} the best, blind${doneWhen}`;
-    case "debate":
-      return `${many("debaters")} propose and debate → ${one("synthesizer")} writes the final plan${roles.builder?.length ? ` → ${one("builder")} builds it${roles.reviewer?.length ? ` → ${one("reviewer")} reviews it` : ""}` : " (design only)"}${doneWhen}`;
-    case "supervisor":
-      return `${one("supervisor")} splits the work and sets the contracts → ${many("workers")} build the parts in parallel → ${one("supervisor")} merges${roles.reviewer?.length ? ` → ${one("reviewer")} reviews` : " and reviews its own work"}${doneWhen}`;
-    case "tdd":
-      return `${one("tester")} writes tests → ${one("builder")} makes them pass → ${one("tester")} tries to break it${doneWhen}`;
     case "council":
       return `${many("reviewers")} review on their own, read-only → ${one("chair")} merges what they found · nothing is changed or posted without you`;
     case "solo":
       return `${one("agent")} works on it in its own branch; reply to keep going, like a chat. ${checkExplanation(checkMode, check)}`;
-    case "loop": {
-      const w = roles.workers ?? [];
-      const handoff = w.length > 1 ? `, handing over to ${w.slice(1).map((id) => SHORT[id]).join(", then ")} if stuck` : "";
-      return `${w.length ? SHORT[w[0]!] : "—"} fixes and code-flow re-runs “${check || "your check"}” until it passes${handoff} (max ${opts.maxRounds} rounds)`;
-    }
     default:
       return p.summary;
   }

@@ -21,7 +21,7 @@ const { fitDiff } = await import("../src/diff.js");
 const { extractJson } = await import("../src/json.js");
 const { Slots } = await import("../src/slots.js");
 const { appendLine, flushWrites, readJsonLines, loadJournal, acquireLock, RUNS_DIR, JOURNAL_VERSION } = await import("../src/store.js");
-const { changesRunner, inspectChanges } = await import("../src/integrity.js");
+const { inspectChanges } = await import("../src/integrity.js");
 const { computeStats, rankAgents } = await import("../src/stats.js");
 const { resolveAuto } = await import("../src/routing.js");
 type Run = import("../src/engine.js").Run;
@@ -145,202 +145,31 @@ test("a read-only step that deletes its worktree's .git fails, says why, and you
 });
 
 // ---------------------------------------------------------------- evidence
-test("loop: a pass that comes from deleting the failing test isn't accepted until the agent is told; the result is flagged", async () => {
+test("pipeline: a pass that comes from deleting the failing test is flagged, and the reviewer is told", async () => {
   const tampered = newRepo({
     "failing.test.mjs": 'import { test } from "node:test";\nimport assert from "node:assert";\ntest("the feature works", () => assert.fail("not implemented"));\n',
   });
+  const record = mkdtempSync(join(tmpdir(), "codeflow-hard-record-"));
   process.env.FAKE_TAMPER = "1";
+  process.env.FAKE_RECORD_DIR = record;
   const manager = new RunManager(findPattern);
   let run: Run;
   try {
     run = await idle(
       manager,
-      await manager.start({ pattern: findPattern("loop")!, task: "Make the test pass", repo: tampered, roles: { workers: ["claude"] }, options: { maxRounds: 4 }, loop: { check: "node --test" } }),
+      await manager.start({ pattern: findPattern("pipeline")!, task: "Make the test pass", repo: tampered, roles: { planner: ["claude"], builder: ["claude"], reviewer: ["codex"] }, options: {}, loop: { check: "node --test" } }),
     );
   } finally {
     delete process.env.FAKE_TAMPER;
+    delete process.env.FAKE_RECORD_DIR;
   }
   assert.equal(run.status, "done", run.error);
-  assert.deepEqual(run.steps.filter((s) => s.kind === "agent").map((s) => s.title), ["Round 1", "Round 2"], "round 1's pass didn't end the loop");
-  const text = await logs(manager, run);
-  assert.match(text, /The check passes, but only after changes to the tests/);
-  assert.match(text, /kept its test changes after being asked to undo them; the pass doesn't count/);
   const issues = run.integrity?.[run.artifacts[0]!.branch] ?? [];
-  assert.deepEqual(issues.map((i) => i.kind).sort(), ["deleted-test", "fewer-tests"]);
-  // The result stays for you to review, but the pass isn't evidence: no verdict, nobody credited.
-  assert.equal(run.verdict, undefined);
-  assert.equal(run.facts?.solvedBy, undefined);
-  assert.match(run.summary!, /The check passes only with changes to the tests\*\* after 2 rounds/);
-});
-
-test("loop: a pass the last round gets only by deleting the failing test doesn't count — no verdict, nobody credited", async () => {
-  const tampered = newRepo({
-    "failing.test.mjs": 'import { test } from "node:test";\nimport assert from "node:assert";\ntest("the feature works", () => assert.fail("not implemented"));\n',
-  });
-  process.env.FAKE_TAMPER = "1";
-  const manager = new RunManager(findPattern);
-  let run: Run;
-  try {
-    run = await idle(
-      manager,
-      await manager.start({ pattern: findPattern("loop")!, task: "Make the test pass", repo: tampered, roles: { workers: ["claude"] }, options: { maxRounds: 1 }, loop: { check: "node --test" } }),
-    );
-  } finally {
-    delete process.env.FAKE_TAMPER;
-  }
-  assert.equal(run.status, "done", run.error);
-  assert.deepEqual(run.steps.filter((s) => s.kind === "agent").map((s) => s.title), ["Round 1"]);
-  assert.equal(run.steps.find((s) => s.title === "Check after round 1")?.status, "done", "the check passes");
-  assert.equal(run.verdict, undefined, "a pass on deleted tests isn't a pass");
-  assert.equal(run.facts?.solvedBy, undefined, "and nobody gets credit for it");
-  assert.match(run.summary!, /\*\*The check passes only with changes to the tests\*\* after 1 round — branch `[^`]+`; review them before merging/);
-  assert.match(run.summary!, /## Changes to the tests that could hide the failure\n- \*\*high\*\* `failing\.test\.mjs`: test file deleted/);
-  assert.doesNotMatch(run.summary!, /Proven|Not proven/);
-});
-
-test("race: nothing the judge can see names a vendor — not even the commit messages", async () => {
-  const { run } = await runPattern("race", { contestants: ["claude", "codex"], judge: ["claude"] });
-  assert.equal(run.status, "done", run.error);
-  const subjects = sh(repo, "log", "--all", "--format=%s").split("\n").filter((s) => /candidate/i.test(s));
-  assert.ok(subjects.length >= 2);
-  assert.ok(subjects.every((s) => !/claude|codex|agy/i.test(s)), subjects.join("\n"));
-  assert.equal(run.facts?.winner, "codex");
-  assert.deepEqual(run.facts?.entrants, ["claude", "codex"]);
-});
-
-test("test-first: the builder's edits to the tests are undone, not just reported", async () => {
-  process.env.FAKE_EDIT_TESTS = "1";
-  let result: { run: Run; manager: Manager };
-  try {
-    result = await runPattern("tdd", { tester: ["codex"], builder: ["claude"] });
-  } finally {
-    delete process.env.FAKE_EDIT_TESTS;
-  }
-  const { run, manager } = result;
-  assert.equal(run.status, "done", run.error);
-  assert.match(await logs(manager, run), /Builder modified test files: spec\.test\.mjs; code-flow put them back/);
-  const spec = sh(repo, "show", `${run.artifacts[0]!.branch}:spec.test.mjs`);
-  assert.match(spec, /feature is implemented/, "the tester's test is what's on the branch");
-});
-
-test("test-first: a conftest.py the builder adds is undone like an edit to the tests", async () => {
-  process.env.FAKE_BUILDER_TAMPER = "conftest";
-  let result: { run: Run; manager: Manager };
-  try {
-    result = await runPattern("tdd", { tester: ["codex"], builder: ["claude"] });
-  } finally {
-    delete process.env.FAKE_BUILDER_TAMPER;
-  }
-  const { run, manager } = result;
-  assert.equal(run.status, "done", run.error);
-  assert.match(await logs(manager, run), /Builder modified test files: conftest\.py; code-flow put them back/);
-  const branch = run.artifacts[0]!.branch;
-  assert.ok(!sh(repo, "ls-tree", "-r", "--name-only", branch).split("\n").includes("conftest.py"), "the builder's conftest.py is gone");
-  assert.equal(run.verdict, "passed", "the tests pass as the tester wrote them, so it counts");
-});
-
-test("test-first: runner settings the builder puts in package.json go back to it, and a pass doesn't count until they're gone", async () => {
-  const pkg = newRepo({ "package.json": JSON.stringify({ name: "tdd-demo" }, null, 2) + "\n" });
-  const tdd = async (mode: string, maxRounds: number) => {
-    const dir = mkdtempSync(join(tmpdir(), "codeflow-m7-record-"));
-    process.env.FAKE_BUILDER_TAMPER = mode;
-    process.env.FAKE_RECORD_DIR = dir;
-    const manager = new RunManager(findPattern);
-    try {
-      const run = await idle(manager, await manager.start({ pattern: findPattern("tdd")!, task: "Add the feature", repo: pkg, roles: { tester: ["codex"], builder: ["claude"] }, options: { maxRounds } }));
-      const prompts = readdirSync(dir).map((f) => JSON.parse(readFileSync(join(dir, f), "utf8")) as { vendor: string; prompt: string });
-      return { run, manager, builder: prompts.filter((p) => p.vendor === "claude").map((p) => p.prompt) };
-    } finally {
-      delete process.env.FAKE_BUILDER_TAMPER;
-      delete process.env.FAKE_RECORD_DIR;
-    }
-  };
-
-  // Told, the builder takes them out: the next round counts.
-  const undone = await tdd("jest", 3);
-  assert.equal(undone.run.status, "done", undone.run.error);
-  assert.match(await logs(undone.manager, undone.run), /Builder changed how the tests run:\n- \*\*medium\*\* `package\.json`: adds `jest` settings/);
-  assert.equal(undone.builder.length, 2);
-  assert.match(undone.builder[1]!, /## You changed how the tests run\ncode-flow found these in your changes[^]*`package\.json`: adds `jest` settings: \{"testPathIgnorePatterns":\["spec\.test\.mjs"\]\}/);
-  assert.equal(undone.run.verdict, "passed");
-  assert.doesNotMatch(sh(pkg, "show", `${undone.run.artifacts[0]!.branch}:package.json`), /jest/);
-  assert.ok(undone.run.steps.some((s) => s.title === "Try to break it (round 2)"), "the tester probes once they're gone");
-
-  // It keeps them, round after round: the tests pass, but only the way it set them up to run.
-  const kept = await tdd("jest-keeps", 2);
-  assert.equal(kept.run.status, "done", kept.run.error);
-  assert.equal(kept.builder.length, 2);
-  assert.match(kept.builder[1]!, /You changed how the tests run/, "a round that leaves them in place is told again");
-  assert.ok(!kept.run.steps.some((s) => s.title.startsWith("Try to break it")), "nothing is probed while they stand");
-  assert.equal(kept.run.verdict, undefined, "no verdict on tests the builder changed how to run");
-  assert.match(kept.run.summary!, /\*\*The tests pass only with the builder's changes to how they run\*\*/);
-  assert.match(kept.run.summary!, /## Still open\n[^]*adds `jest` settings/);
-});
-
-test("supervisor: every worker gets the contracts, and a separate reviewer checks the integration", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "codeflow-m7-record-"));
-  process.env.FAKE_RECORD_DIR = dir;
-  let run: Run;
-  try {
-    ({ run } = await runPattern("supervisor", { supervisor: ["claude"], workers: ["claude", "codex"], reviewer: ["codex"] }));
-  } finally {
-    delete process.env.FAKE_RECORD_DIR;
-  }
-  assert.equal(run.status, "done", run.error);
-  const prompts = readdirSync(dir).map((f) => JSON.parse(readFileSync(join(dir, f), "utf8")) as { prompt: string });
-  const workers = prompts.filter((p) => p.prompt.includes("Your subtask:"));
-  assert.equal(workers.length, 2);
-  assert.ok(workers.every((p) => p.prompt.includes("Contracts every part follows") && p.prompt.includes("Each part writes its own file")));
-  const review = run.steps.find((s) => s.title === "Integration review")!;
-  assert.deepEqual([review.agent, review.role], ["codex", "reviewer"]);
-});
-
-test("supervisor: a worker that changes nothing is reported as no changes, isn't merged, counts as a failed step, and the reviewer is told", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "codeflow-m7-record-"));
-  process.env.FAKE_RECORD_DIR = dir;
-  process.env.FAKE_NOOP_VENDOR = "codex";
-  let result: { run: Run; manager: Manager };
-  try {
-    result = await runPattern("supervisor", { supervisor: ["claude"], workers: ["claude", "codex"], reviewer: ["codex"] });
-  } finally {
-    delete process.env.FAKE_RECORD_DIR;
-    delete process.env.FAKE_NOOP_VENDOR;
-  }
-  const { run, manager } = result;
-  assert.equal(run.status, "done", run.error);
-  assert.match(run.summary!, /- Alpha part → claude: done/);
-  assert.match(run.summary!, /- Beta part → codex: no changes \(codex looked around but changed nothing\.\)/);
-  assert.doesNotMatch(run.summary!, /network access/, "only the first line of the answer");
-  assert.doesNotMatch(run.summary!, /not re-reviewed/, "a separate reviewer reviewed the fixes");
-  const beta = run.steps.find((s) => s.title === "Subtask: Beta part")!;
-  assert.equal(beta.status, "failed");
-  assert.equal(beta.error, "Made no changes: codex looked around but changed nothing.");
-  assert.equal(computeStats([run]).agents.find((a) => a.agent === "codex")!.failures, 1);
-  assert.match(await logs(manager, run), /Nothing to merge from "Beta part": codex made no changes/);
-  const review = readdirSync(dir)
-    .map((f) => JSON.parse(readFileSync(join(dir, f), "utf8")) as { vendor: string; prompt: string })
-    .find((p) => p.vendor === "codex" && p.prompt.includes('"verdict": "approve" | "changes_requested"'))!;
-  assert.match(review.prompt, /The subtasks that produced work have been merged/);
-  assert.match(review.prompt, /## Subtasks missing from the integration\n[^#]*- Beta part → codex: no changes/);
-});
-
-test("supervisor reviewing its own integration: its fixes aren't re-reviewed, and the result says so", async () => {
-  rmSync(join(process.env.CODEFLOW_HOME!, ".reviewed-once"), { force: true });
-  process.env.FAKE_REVIEW_FAIL_ONCE = "1";
-  let result: { run: Run; manager: Manager };
-  try {
-    result = await runPattern("supervisor", { supervisor: ["claude"], workers: ["claude", "codex"], reviewer: [] });
-  } finally {
-    delete process.env.FAKE_REVIEW_FAIL_ONCE;
-  }
-  const { run, manager } = result;
-  assert.equal(run.status, "done", run.error);
-  assert.deepEqual(
-    run.steps.filter((s) => /^(Integration review|Fix integration issues)/.test(s.title)).map((s) => s.title),
-    ["Integration review", "Fix integration issues"],
-  );
-  assert.match(run.summary!, /claude: findings block approval — 1 issues, 1 blocking, fixed by the supervisor, not re-reviewed/);
-  assert.match(await logs(manager, run), /No separate reviewer: the supervisor reviews its own integration/);
+  assert.ok(issues.some((i) => i.kind === "deleted-test" && i.file === "failing.test.mjs"), JSON.stringify(issues));
+  const review = readdirSync(record)
+    .map((f) => JSON.parse(readFileSync(join(record, f), "utf8")) as { prompt: string })
+    .find((p) => p.prompt.includes("review it critically"))!;
+  assert.match(review.prompt, /## Changes to tests \(found by code-flow\)[\s\S]*`failing\.test\.mjs`: test file deleted/);
 });
 
 // ---------------------------------------------------------------- follow-ups
@@ -491,8 +320,6 @@ test("integrity: pytest's settings in pyproject.toml, runner settings in package
     "test-config|pyproject.toml|medium|pytest settings ([tool.pytest…]) changed",
     "test-config|tests/pyproject.toml|high|pytest settings ([tool.pytest…]) removed",
   ]);
-  // What the runner collects, as opposed to build config or CI a change can need.
-  assert.deepEqual(issues.filter(changesRunner).map((i) => i.file).sort(), ["package.json", "packages/ui/package.json", "pyproject.toml", "tests/pyproject.toml"]);
 
   // The rest of those files is the project's: dependencies, other tools' settings, a skip that's a page offset.
   const clean = sh(dir, "rev-parse", "HEAD");

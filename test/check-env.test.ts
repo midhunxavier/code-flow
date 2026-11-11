@@ -13,6 +13,7 @@ process.env.PATH = `${fakeBin}:${process.env.PATH}`;
 process.env.CODEFLOW_HOME = mkdtempSync(join(tmpdir(), "codeflow-env-home-"));
 
 const { RunManager } = await import("../src/engine.js");
+const { parallelPattern } = await import("./parallel-pattern.js");
 const { findPattern } = await import("../src/patterns/index.js");
 const { cantRunReason } = await import("../src/checks.js");
 type Run = import("../src/engine.js").Run;
@@ -143,26 +144,13 @@ test("pipeline: when only the change breaks the check, it's a failing check like
   assert.match(await log(r), /It runs on the base commit, so the change broke it/);
 });
 
-test("loop: a baseline that can't run ends the run before any agent turn, and waits in the inbox", async () => {
-  const r = await run("loop", { workers: ["codex", "claude"] }, { loop: { check: "./pytest -q" }, trigger: { id: "a1", name: "Nightly", via: "manual" } });
-  assert.equal(r.status, "done", r.error);
-  // The baseline runs on the base commit itself: nothing to compare with.
-  assert.deepEqual(titles(r), ["Baseline check:failed"]);
-  assert.equal(r.usage.agentSteps, 0);
-  assert.equal(r.verdict, undefined);
-  assert.match(r.summary!, /No rounds run: the check can't run here\*\* — ModuleNotFoundError: No module named 'pkg'/);
-  assert.equal(r.triage?.state, "pending", "not archived as a run that changed nothing");
-  assert.equal(r.archived, false);
-});
-
-test("race: candidates checked at once compare with the base commit only once", async () => {
-  const r = await run("race", { contestants: ["claude", "codex"], judge: ["claude"] }, { loop: { check: "nosuchtool-xyz --run" } });
+test("parallel: candidates checked at once compare with the base commit only once", async () => {
+  const r = await settle(await manager.start({ pattern: parallelPattern, task: "Make it work", repo, roles: { writers: ["claude", "codex"] }, options: {}, loop: { check: "nosuchtool-xyz --run" } }));
   assert.equal(r.status, "done", r.error);
   assert.equal(r.steps.filter((s) => s.title === "Check on base commit").length, 1);
   assert.match(r.checkCantRun!.reason, /nosuchtool-xyz: (command )?not found/);
   assert.equal(r.verdict, undefined);
-  assert.ok(r.steps.some((s) => s.title === "Judge candidates"), "the judge decides without the check");
-  assert.doesNotMatch(await log(r), /fails the check/);
+  assert.equal(r.artifacts.length, 2, "both candidates are published without the check");
 });
 
 test("resume: the comparison with the base commit is replayed, not run again", async () => {

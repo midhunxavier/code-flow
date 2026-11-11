@@ -104,6 +104,7 @@ import { CODEFLOW_HOME, envNumber, PORT } from "./config.js";
 import { ConflictMarkersError, RunManager, RunConflictError, UntrustedSourceError, roleParticipants, type LoopSettings, type Pattern } from "./engine.js";
 import { detectCheck } from "./checks.js";
 import { findPattern, patterns } from "./patterns/index.js";
+import { retiredPatternMessage } from "./patterns/retired.js";
 import { listDirectories } from "./fs.js";
 import { git, listBranches, repoRoot, worktreeRoot, type GitCwd } from "./git.js";
 import { ensureFolderMirror, findFolderMirror, openFolder as openFolderCopy } from "./folders.js";
@@ -214,7 +215,7 @@ const hostExecution = new HostExecution({ store: collab, manager, findPattern, m
 });
 const resolveQueuedProviders: Parameters<typeof createDeferredRuns>[1]["resolveProviders"] = (request) => trackPolicyPreparation(async () => {
     const pattern = findPattern(request.pattern);
-    if (!pattern) throw new Error("This pattern no longer exists; cancel and review the saved request");
+    if (!pattern) throw new Error(retiredPatternMessage(request.pattern) ?? "This pattern no longer exists; cancel and review the saved request");
     assertNoRemoteWorker(request.loop);
     const { roles } = await validateRoles(pattern, request.roles, request.repo);
     const inventory = await agentAvailability();
@@ -921,7 +922,7 @@ async function validatedStartInput(body: Record<string, any>): Promise<StartRunI
     teamTemplate = { template, inputs: ref.inputs };
   }
   const pattern = findPattern(String(body.pattern ?? "auto-team"));
-  if (!pattern) throw new HttpError(400, "Unknown pattern");
+  if (!pattern) throw new HttpError(400, retiredPatternMessage(body.pattern) ?? "Unknown pattern");
   let task = String(body.task ?? "").trim();
   if (teamTemplate) {
     const filled = fillTeamTemplate(teamTemplate.template, teamTemplate.inputs);
@@ -1971,7 +1972,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
       const body = await readJson(req);
       const template = await attempt(async () => validateTeamTemplate(body.template));
       if (template.project && !projects.list().some(p => p.id === template.project)) throw new HttpError(404, "Project not found");
-      if (template.workflow && !findPattern(template.workflow)) throw new HttpError(400, "Unknown template workflow");
+      if (template.workflow && !findPattern(template.workflow)) throw new HttpError(400, retiredPatternMessage(template.workflow) ?? "Unknown template workflow");
       return send(res, 201, await attempt(() => teamTemplateStore.save(template, body.expectedVersion)));
     }
     throw new HttpError(404, "Unknown team template operation");
@@ -2073,7 +2074,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
       if (raw.context?.attachments !== undefined && (!Array.isArray(raw.context.attachments) || raw.context.attachments.length)) throw new HttpError(400, "Attachments cannot be deferred; remove them before queueing");
       const request = await attempt(async () => sanitizeDeferredRequest({ ...automationRun(raw), parentRunId: raw.parentRunId, branchPrefix: raw.branchPrefix }));
       const pattern = findPattern(request.pattern);
-      if (!pattern) throw new HttpError(400, "Unknown pattern");
+      if (!pattern) throw new HttpError(400, retiredPatternMessage(request.pattern) ?? "Unknown pattern");
       request.repo = await attempt(() => repoRoot(request.repo));
       if (request.project && !projects.get(request.project)?.repos.includes(request.repo)) throw new HttpError(400, "Choose a repository belonging to this project");
       if (request.parentRunId && manager.get(request.parentRunId)?.repo !== request.repo) throw new HttpError(400, "Choose an existing parent run in the same repository");

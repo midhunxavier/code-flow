@@ -1,6 +1,5 @@
 // QA regressions in the browser: a pass that relies on a deleted test is flagged where the result
-// is summarised (not only in collapsed details), a race shows its winner first with each
-// candidate's own check, an AI team's verified result reads as verified in the chat, and a
+// is summarised (not only in collapsed details), an AI team's verified result reads as verified in the chat, and a
 // requested comparison and its preview survive a reload. Fake agents; never ports 4317/4318.
 import { after, afterEach, before, test } from "node:test";
 import assert from "node:assert/strict";
@@ -87,31 +86,6 @@ test("a pass that deletes the failing test is flagged on the result card and the
   assert.equal(await checks.innerText(), "Passed · tests changed");
   assert.match(await checks.getAttribute("class") ?? "", /evidence-warn/);
   assert.doesNotMatch(await checks.getAttribute("class") ?? "", /evidence-ok/);
-  assert.deepEqual(errors, []);
-});
-
-test("a race shows its winner first, and each candidate with its own check (t07-5)", { timeout: 120_000 }, async () => {
-  const repo = await fixture("race", {});
-  // Both candidates pass; the fake judge picks B.
-  const started = await api("/api/runs", { repo, pattern: "race", task: "Race me", roles: { contestants: ["claude", "codex"], judge: ["claude"] }, loop: { check: "true" } });
-  const run = await finished(started.id);
-  assert.equal(run.status, "done", run.error);
-  const b = run.worktrees.find((tree: any) => tree.name === "candidate-b").branch;
-  assert.equal(run.artifacts[0].branch, b);
-  await page.goto(base + `/#/run/${run.id}`);
-  const studio = page.locator("section.result-studio");
-  const select = studio.getByLabel("Result branch");
-  await select.waitFor();
-  assert.equal(await select.inputValue(), "candidate-b", "the winner is shown by default");
-  assert.match(await studio.locator(".result-primary .help").first().innerText(), /Checks: Passed · Review: Not recorded$/);
-  await select.selectOption("candidate-a");
-  await studio.locator(".result-primary .help").filter({ hasText: "Checks: Passed" }).waitFor();
-  assert.doesNotMatch(await studio.locator(".result-primary .help").first().innerText(), /Not verified for this branch/);
-  await select.selectOption("candidate-b");
-  await studio.getByRole("button", { name: "Review changes", exact: true }).click();
-  const checks = page.locator(".review-overview .run-evidence div").filter({ hasText: "Checks" }).locator("dd");
-  await checks.waitFor();
-  assert.equal(await checks.innerText(), "Passed", "the winner's own check, on the Review page too");
   assert.deepEqual(errors, []);
 });
 

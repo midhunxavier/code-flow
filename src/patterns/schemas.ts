@@ -23,18 +23,6 @@ export const REVIEW_SCHEMA = obj({
   },
 });
 
-export const JUDGE_SCHEMA = obj({ winner: str, ranking: strings, reasons: str });
-
-export const SUBTASKS_SCHEMA = obj({
-  /** What every part must agree on (interfaces, names, data shapes); each worker gets it. */
-  contracts: str,
-  subtasks: { type: "array", items: obj({ id: str, title: str, instructions: str, agent: str }) },
-});
-
-export const TEST_SPEC_SCHEMA = obj({ test_command: str, test_files: strings });
-
-export const TEST_VERDICT_SCHEMA = obj({ verdict: { type: "string", enum: ["pass", "fail"] }, failures: strings });
-
 export const COUNCIL_SCHEMA = obj({
   verdict: { type: "string", enum: ["approve", "changes_requested"] },
   summary: str,

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import { fillTeamTemplate, validateTeamTemplate, templatePreferences, type TeamTemplate } from "../src/team-templates.js";
 import { api, post, showToast, store } from "./lib.js";
-import { composerProject, patterns, setAcceptanceCriteria, setPattern, setTask, task, setRoles, setOption, setAgentSetting, setRoleModel, pattern, rolesFor, optionsFor, agentSettings, roleModels } from "./state.js";
+import { composerProject, patternName, patterns, setAcceptanceCriteria, setPattern, setTask, task, setRoles, setOption, setAgentSetting, setRoleModel, pattern, rolesFor, optionsFor, agentSettings, roleModels } from "./state.js";
 import type { AgentId } from "./types.js";
 import { selectedTeamTemplate } from "./team-template-state.js";
 
@@ -77,7 +77,7 @@ export function TeamTemplateLibrary({ initial, focused = false, onPublished }: {
     {!focused && selected && !editing ? <div class="section">
       <p>{selected.description}</p>
       {selected.parameters.map(p => <label class="lbl" key={p}>{p}<input class="field" value={inputs[p] ?? ""} onInput={e => setInputs({ ...inputs, [p]: e.currentTarget.value })} /></label>)}
-      <p class="help">{selected.workflow ? `Workflow: ${patterns.value.find(p => p.id === selected.workflow)?.name ?? selected.workflow}` : `${selected.tasks.length} tasks · ${selected.roles.join(", ")} · independent final verification`}</p>
+      <p class="help">{selected.workflow ? `Workflow: ${patternName(selected.workflow)}` : `${selected.tasks.length} tasks · ${selected.roles.join(", ")} · independent final verification`}</p>
       <button class="btn" onClick={use}>Use this template</button>{" "}<button class="btn" onClick={() => edit(selected)}>Edit new version</button>{" "}<button class="btn" onClick={() => edit({ ...selected, id: `copy-${Date.now().toString(36)}`, version: 1, name: `${selected.name} copy` }, true)}>Copy</button>{" "}<button class="btn" onClick={() => download(selected)}>Export</button>{" "}
       <button class="btn" onClick={async () => { try { const r = await api<{ templates: TeamTemplate[] }>(`/api/team-templates${query}${query ? "&" : "?"}history=1`); setHistory(r.templates.filter(t => t.id === selected.id)); } catch (e) { setError((e as Error).message); } }}>Version history</button>
       {history.map(t => <details key={t.version}><summary>Version {t.version}{t.version === selected.version ? " · selected" : ""}</summary><pre>{JSON.stringify(t, null, 2)}</pre><button class="btn" onClick={() => { setSelected(t); setInputs({ task: task.value }); }}>Use this version</button></details>)}

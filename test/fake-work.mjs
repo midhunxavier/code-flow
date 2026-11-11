@@ -174,17 +174,8 @@ export function work({ vendor, prompt, write, schemaRequested, fail }) {
     const inventory = JSON.parse(prompt.match(/## Current provider inventory\n```json\n([\s\S]*?)\n```/)[1]);
     const ownerAvailable = t => inventory.providers.some(p => p.id === state.members.find(m => m.id === t.owner)?.provider && p.available && !p.blockedReason);
     answer = json({ reason: "Retry failed work within the existing scope", contractRequirements: prompt.includes("AUTO-CONTRACT-CHANGE") ? ["goal"] : [], addTasks: [], reassignments: handover ? [{ taskId: "alpha", memberId: "replacement" }] : [], retryTasks: state.tasks.filter((t) => t.status === "failed" && t.attempts <= state.maxRepairs && ownerAvailable(t)).map((t) => t.id), contracts: prompt.includes("AUTO-CONTRACT-CHANGE") ? ["Preserve empty input behavior across both components"] : [], answers: [], addMembers: handover ? [{ ...state.members.find((m) => m.id === "builder"), id: "replacement", name: "Replacement", reason: "Take over the blocked assignment" }] : [], retireMembers: handover ? ["builder"] : [] });
-  } else if (prompt.includes('"subtasks"')) {
-    const conflict = prompt.includes("CONFLICT");
-    answer = json({
-      contracts: "Each part writes its own file; no shared names.",
-      subtasks: [
-        { id: "alpha", title: "Alpha part", instructions: conflict ? "Write shared.txt CONFLICT" : "Build alpha", agent: "claude" },
-        { id: "beta", title: "Beta part", instructions: conflict ? "Write shared.txt CONFLICT" : "Build beta", agent: "codex" },
-      ],
-    });
   } else if (prompt.includes("Resolve every conflict")) {
-    // Resolve whatever is actually conflicted (falls back to shared.txt for the supervisor test).
+    // Resolve whatever is actually conflicted (falls back to shared.txt).
     const conflicted = execFileSync("git", ["diff", "--name-only", "--diff-filter=U"]).toString().split("\n").filter(Boolean);
     for (const file of conflicted.length ? conflicted : ["shared.txt"]) writeFileSync(file, "resolved by fake agent\n");
     answer = "Resolved the conflicts.";
@@ -193,14 +184,6 @@ export function work({ vendor, prompt, write, schemaRequested, fail }) {
     const schema = JSON.parse(prompt.match(/```json\n([\s\S]*?)\n```/)[1]);
     const instance = (s) => s.enum ? s.enum[0] : s.type === "object" ? Object.fromEntries(Object.entries(s.properties ?? {}).map(([k, v]) => [k, instance(v)])) : s.type === "array" ? [] : s.type === "number" ? 0 : s.type === "boolean" ? false : "x";
     answer = json(instance(schema));
-  } else if (prompt.includes('"test_command"')) {
-    // A real test: passes once any agent has written its "<vendor>-<id>.txt" implementation file.
-    // FAKE_TESTS_PASS_FIRST: a test that passes before anything is implemented, until asked again.
-    writeFileSync("spec.test.mjs", process.env.FAKE_TESTS_PASS_FIRST ? passingTest : implementedTest);
-    answer = json({ test_command: "node --test spec.test.mjs", test_files: ["spec.test.mjs"] });
-  } else if (write && prompt.includes("Change them so they fail now")) {
-    writeFileSync("spec.test.mjs", implementedTest);
-    answer = "Rewrote the tests so they fail until the feature is implemented.";
   } else if (write && prompt.includes("a test that fails without your change")) {
     // Asked to prove the change: a test that fails on the original code (no implementation file
     // there) and passes with it. FAKE_NO_PROOF: decline; FAKE_PROOF_BREAKS: a test that never passes.
@@ -283,8 +266,6 @@ export function work({ vendor, prompt, write, schemaRequested, fail }) {
         ? { verdict: "changes_requested", issues: [{ severity: "medium", file: "src/x.ts", problem: "missing edge case", fix: "handle it", repro: noRepro }] }
         : { verdict: "approve", issues: [] },
     );
-  } else if (prompt.includes('"winner"')) {
-    answer = json({ winner: "B", ranking: ["B", "A"], reasons: "B is simpler" });
   } else if (write && process.env.FAKE_TAMPER && existsSync("failing.test.mjs")) {
     // Gaming the check: delete the test that fails instead of fixing the code.
     execFileSync("git", ["rm", "-q", "failing.test.mjs"]);
@@ -301,29 +282,6 @@ export function work({ vendor, prompt, write, schemaRequested, fail }) {
     else execFileSync("git", ["rm", "-q", "t-2.txt"]);
     writeFileSync(`${vendor}-${id}.txt`, `${vendor} output\n`);
     answer = "CI passes now.";
-  } else if (write && process.env.FAKE_BUILDER_TAMPER && (prompt.includes("Make the tests pass") || prompt.includes("You changed how the tests run"))) {
-    // A builder that changes how the tests run as well as implementing: "conftest" adds a
-    // conftest.py that ignores the tests; "jest" adds a jest block to package.json that ignores
-    // them, and takes it out when told; "jest-keeps" never does.
-    const mode = process.env.FAKE_BUILDER_TAMPER;
-    const told = prompt.includes("You changed how the tests run");
-    if (mode === "conftest") writeFileSync("conftest.py", 'collect_ignore = ["spec.test.mjs"]\n');
-    else if (!told || mode === "jest") {
-      const pkg = JSON.parse(readFileSync("package.json", "utf8"));
-      if (told) delete pkg.jest;
-      else pkg.jest = { testPathIgnorePatterns: ["spec.test.mjs"] };
-      writeFileSync("package.json", JSON.stringify(pkg, null, 2) + "\n");
-    }
-    writeFileSync(`${vendor}-${id}.txt`, `${vendor} output\n`);
-    answer = told && mode === "jest" ? "Took the jest settings out and implemented it." : "Implemented it and set up the tests.";
-  } else if (write && process.env.FAKE_EDIT_TESTS && prompt.includes("Make the tests pass") && existsSync("spec.test.mjs")) {
-    writeFileSync("spec.test.mjs", 'import { test } from "node:test";\ntest("always passes", () => {});\n');
-    writeFileSync(`${vendor}-${id}.txt`, `${vendor} output\n`);
-    answer = "Simplified the test and implemented it.";
-  } else if (write && process.env.FAKE_BREAKS_VENDOR === vendor) {
-    // A change that makes things worse: see FAILING_CHECK in the loop tests.
-    writeFileSync(`broken-${vendor}-${id}.txt`, `${vendor} broke something\n`);
-    answer = `Tried something else as ${vendor}.`;
   } else if (write && process.env.FAKE_ADDS_DEP) {
     // A change that adds a package and a test that uses it, installed the way `npm install` would
     // (node_modules is gitignored). The test passes without the change's own code.
@@ -357,7 +315,6 @@ export function work({ vendor, prompt, write, schemaRequested, fail }) {
 const testFile = (...body) => ['import { test } from "node:test";', 'import assert from "node:assert";', 'import { readdirSync } from "node:fs";', ...body].join("\n") + "\n";
 /** Passes once any agent has written its "<vendor>-<id>.txt" implementation file. */
 const implementedTest = testFile('test("feature is implemented", () => assert.ok(readdirSync(".").some((f) => /^(claude|codex|agy)-.*\\.txt$/.test(f))));');
-const passingTest = testFile('test("feature is implemented", () => assert.ok(readdirSync(".").length > 0));');
 const brokenTest = testFile('test("feature is implemented", () => assert.fail("never passes"));');
 /** Reviewers' repros: no test; a test that fails on any code (the bug is there); one that passes (a false alarm). */
 const noRepro = { path: "", contents: "", command: "" };

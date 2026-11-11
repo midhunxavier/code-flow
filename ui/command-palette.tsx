@@ -7,7 +7,7 @@ import { useEffect, useRef, useState } from "preact/hooks";
 import { useDialog } from "./app.js";
 import { Icon, type IconName } from "./icons.js";
 import { api, baseName, STATUS_TEXT, collaborationHref } from "./lib.js";
-import { commandPaletteOpen, healthOpen, openSide, pickerOpen, projects, projectsOpen, route, runs, patterns, openComposer } from "./state.js";
+import { commandPaletteOpen, healthOpen, openSide, pickerOpen, projects, projectsOpen, route, runs, patternName, openComposer } from "./state.js";
 
 /** A palette row: an icon (or, for a run, its status dot), the label, and what kind of thing it is (`detail`, which
  *  searches match; `shown` when the row says it shorter, as a run's repository by its folder name). */
@@ -53,7 +53,7 @@ export function CommandPalette() {
     ...projects.value.map((p): Command => ({ group: "project", id: `project:${p.id}`, label: p.name, detail: "Project", icon: "project", run: () => { route.value = { view: "project", id: p.id }; } })),
     ...projects.value.flatMap(p => (["board", "people", "automation"] as const).map((section): Command => ({ group: "project-section", id: `project:${p.id}:${section}`, label: `${p.name} · ${{ board: "Board", people: "People", automation: "Automation" }[section]}`, detail: section === "automation" ? "Project schedules backlog" : "Project collaboration team members access", icon: section === "automation" ? "clock" : "people", run: () => { if (section === "board" || section === "people") location.assign(collaborationHref(`#/project/${encodeURIComponent(p.id)}/${section}`, "local")); else route.value = { view: "project", id: p.id, section }; } }))),
     ...[...allRuns.values()].filter(r => !r.archived).sort((a, b) => b.createdAt - a.createdAt).map((r): Command => {
-      const variant = r.group?.label || patterns.value.find(pattern => pattern.id === r.pattern)?.name || r.pattern;
+      const variant = r.group?.label || patternName(r.pattern);
       return { id: `run:${r.id}`, group: "run", label: r.task.split("\n")[0] || r.id, detail: `Run · ${r.status} · ${STATUS_TEXT[r.status] ?? r.status} · ${runSearchText(r)} · ${variant}`, shown: `Run · ${variant} · ${STATUS_TEXT[r.status] ?? r.status} · ${baseName(r.repo)}`, serverMatch: serverMatches.has(r.id), status: r.status, run: () => (route.value = { view: "run", id: r.id }) };
     }),
   ];
