@@ -324,7 +324,8 @@ export function managedAgyToolAllowed(name: string, mode: "read" | "write", shar
     return sharedTools && p?.ServerName === "codeflow_agent" && AGENT_TOOLS.some(tool => tool.name === p.ToolName) || teamTools && p?.ServerName === "codeflow_team" && TEAM_TOOLS.some(tool => tool.name === p.ToolName);
   }
   // CLI 1.4.4 exposes manage_task for the fresh process's own tasks, but cannot create them.
-  return ["view_file", "list_dir", "manage_task", "finish", ...(mode === "write" ? ["write_to_file", "replace_file_content"] : [])].includes(name);
+  // CLI 1.5.6 reports the same file tools as read_file, write_file and edit_file.
+  return ["view_file", "read_file", "list_dir", "manage_task", "finish", ...(mode === "write" ? ["write_to_file", "replace_file_content", "write_file", "edit_file"] : [])].includes(name);
 }
 
 export function managedAgyAuthKind(detail: string): "auth" | undefined {

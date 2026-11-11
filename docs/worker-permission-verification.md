@@ -142,6 +142,12 @@ The supported-version list now includes the installed CLI 1.4.7. The production 
 
 Live adaptive-team acceptance passed for Claude leading Codex, Codex leading Antigravity, and Antigravity leading Claude. In each case the configured check passed, the team's changes returned to the original chat workspace without modifying its branch or an existing draft, and the conversation continued after switching AI team off. Antigravity's `gemini-3.8-flash-high` planning turn took 241 seconds before completing. A three-provider recovery fixture passed selective Codex cancellation, Antigravity's scoped teammate message, independent Claude review and conflict resolution with a fresh check and review. Additional live tests recovered a reviewer after restart and replaced failed coordinator/reviewer providers without repeating completed implementation work.
 
+## Antigravity 1.5.6 compatibility (2026-11-11)
+
+The installed CLI updated to 1.5.6, which the exact-version check rejected. On 1.5.6 the stream reports the file tools as `read_file`, `write_file` and `edit_file` (previously `view_file`, `write_to_file` and `replace_file_content`), so the managed tool-name check stopped every turn that touched a file. The supported-version list now includes 1.5.6 and the check accepts the new names, with `write_file` and `edit_file` only in write turns. The macOS sandbox profile and protected per-turn settings are unchanged; other unverified versions still stop before launch.
+
+The production file-only probe passed on 1.5.6 with `gemini-3.8-flash-low`: the workspace edit and structured answer succeeded, the outside sentinel stayed unchanged, and no hook marker, browser request or retained native session appeared. A separate read-only turn was denied the outside symlink read by the CLI's permission check. All 28 targeted isolation, authentication, recovery and shared-tool tests passed, along with TypeScript checking. The task-scoped browser/computer bridge and team tools were not exercised live on 1.5.6.
+
 ## Task-scoped Antigravity tools (2026-10-22, later update)
 
 Interactive Antigravity Agent and Team turns can now use the shared Codeflow browser and computer bridge. Their isolated receipt is `macos-task-tools-v2` with `externalTools: task-scoped`; required `no-external-tools` retains the existing `macos-file-only-v1` profile and exposes no bridge. This supersedes earlier statements that isolated Antigravity is always file-only. Native shell/browser, ambient customizations and provider delegation remain unavailable in the isolated profile.
