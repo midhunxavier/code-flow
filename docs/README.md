@@ -56,7 +56,7 @@ Read the story: [Describe the team. Code Flow builds the workflow.](https://midh
 
 - [Configuration](configuration.md) · [ACP agents](acp-agents.md) · [Context inspection](context-inspection.md)
 - [Project conventions](project-conventions.md) · [Checkpoints and reversions](checkpoint-review.md)
-- [Service launch profiles](launch-profiles.md) · [Code intelligence](code-intelligence.md) · [Architecture explorer](architecture-explorer.md)
+- [Code intelligence](code-intelligence.md) · [Architecture explorer](architecture-explorer.md)
 - [Project memory and knowledge graph](memory-storage.md) · [Semantic claim review](memory-claims.md)
 - [Coordinated repository changes](coordinated-changes.md)
 
@@ -67,7 +67,6 @@ Read the story: [Describe the team. Code Flow builds the workflow.](https://midh
 - [SSH projects](ssh-projects.md) · [Remote workers](remote-workers.md)
 - [GitLab and Bitbucket workflows](code-hosts.md) · [External sources](external-sources.md)
 - [Automations and remote access](automations.md) · [Notifications](notifications.md)
-- [VS Code integration](../integrations/vscode/README.md)
 
 ## Operate safely
 

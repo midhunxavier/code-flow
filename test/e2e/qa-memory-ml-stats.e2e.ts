@@ -24,8 +24,6 @@ before(async () => {
   // A private app copy keeps mutable bundles/assets away from other parallel suites.
   mkdirSync(appRoot);
   for (const folder of ["src", "bin", "ui", "scripts", "docs", "public"]) cpSync(join(root, folder), join(appRoot, folder), { recursive: true });
-  mkdirSync(join(appRoot, "integrations/vscode"), { recursive: true });
-  cpSync(join(root, "integrations/vscode/README.md"), join(appRoot, "integrations/vscode/README.md"));
   cpSync(join(root, "tsconfig.json"), join(appRoot, "tsconfig.json"));
   cpSync(join(root, "package.json"), join(appRoot, "package.json"));
   symlinkSync(join(root, "node_modules"), join(appRoot, "node_modules"), "dir");

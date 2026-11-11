@@ -2877,7 +2877,7 @@
   .wb-main :is(.wb-card, .deferred-runs) .btn.small:not(.wb-hits .btn, .wb-item-head .btn, td .btn) { height: 34px; padding: 0 13px; gap: 7px; font-size: 13px; border-radius: var(--radius-sm); }
   /* buttons some tools put straight in the flow, one after another */
   .wb-card .btn { margin-block: 2px; }
-  .wb-card :not(.wb-actions, .wb-row, .wb-item-head, .convention-actions, .filtered-actions, .filesystem-policy-actions, .launch-actions) > .btn + .btn { margin-left: 8px; }
+  .wb-card :not(.wb-actions, .wb-row, .wb-item-head, .convention-actions, .filtered-actions, .filesystem-policy-actions) > .btn + .btn { margin-left: 8px; }
   /* long labels wrap inside their button instead of running out of the card */
   :is(.convention-actions, .filtered-actions, .filesystem-policy-actions, .project-conventions .msg) .btn { height: auto; min-height: 34px; padding-block: 7px; line-height: 1.3; white-space: normal; text-align: left; }
 
@@ -3003,22 +3003,6 @@
   .context-inspector ul { margin: 8px 0; padding-left: 20px; font-size: 13px; }
   .context-inspection-results { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); }
 
-  /* Explicit multi-service worktree launches (the Services tool) */
-  .launch-profiles { min-width: 0; }
-  .launch-profile-choice { display: grid; max-width: 420px; margin: 12px 0; }
-  .wb-card .launch-profile-choice > label.lbl { margin-top: 0; }
-  .launch-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 0; }
-  .launch-preview li { margin: 10px 0; }
-  .launch-preview pre { white-space: pre-wrap; overflow-wrap: anywhere; }
-  .launch-session { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border); }
-  .launch-session > p { margin: 0 0 10px; }
-  .launch-session strong { font-weight: 600; }
-  .launch-services { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); gap: 10px; }
-  .launch-service { min-width: 0; padding: 12px 14px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-sm); }
-  .launch-service > div:first-child { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-  .launch-service .help { margin: 4px 0 6px; }
-  .launch-service details { margin-top: 8px; }
-  .launch-logs { max-height: 250px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
 
   @media (max-width: 760px) {
     .workbench { padding: 16px 16px 48px; }

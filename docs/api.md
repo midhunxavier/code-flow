@@ -236,20 +236,6 @@ Publication excludes imported/private/untrusted material and prior onboarding
 summaries. Memory APIs remain owner-only; shared project roles use the separate
 closed review surface described below.
 
-## Multi-service launch profiles
-
-| Operation | Request | Behavior |
-| --- | --- | --- |
-| `GET /runs/:id/launch-profiles` | `worktree` query | Read `.codeflow/launch.json` from the owned worktree and return `{profiles, found, error?, session}` with sanitized configuration and session logs. |
-| `POST /runs/:id/launch-profiles` | `worktree`, `profile`, optional `allowUntrusted` | Start a configured dependency-ordered group; returns 201 with session and assigned local URLs/ports. Locked-down host execution requires explicit authorization. |
-| `DELETE /runs/:id/launch-profiles` | `worktree` query | Stop the owned launch session and return `{stopped}`. |
-
-Profiles configure at most six services and bounded commands, relative working
-directories, dependencies, environment values and optional local HTTP health
-checks. The server assigns ports and peer URL variables. This starts local
-processes; it is not remote deployment or hosting. See [launch profile
-configuration and lifecycle](launch-profiles.md).
-
 ## Automation inspection and replay
 
 | Operation | Request | Behavior |

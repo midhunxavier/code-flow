@@ -105,7 +105,7 @@ npm test           # unit + workflow tests against fake CLIs
 npm run test:e2e   # the real UI in Chrome (headless) against a server with fake agents
 ```
 
-CI (`.github/workflows/ci.yml`) runs the typecheck and `npm test` on every push and pull request: Ubuntu with Node 22.13 and 24, macOS with Node 22. The required browser job exercises critical workflows and accessibility. A separate job tests the packaged VS Code extension in the actual editor host. [Provider compatibility](provider-compatibility.md) continuously probes official version/help contracts without account or inference requests.
+CI (`.github/workflows/ci.yml`) runs the typecheck and `npm test` on every push and pull request: Ubuntu with Node 22.13 and 24, macOS with Node 22. The required browser job exercises critical workflows and accessibility. [Provider compatibility](provider-compatibility.md) continuously probes official version/help contracts without account or inference requests.
 
 The suite runs every pattern end to end against fake `claude` / `codex` / `agy` binaries (`test/fake-bin`). Each fake emits that vendor's real JSONL format, so tests cost no quota.
 

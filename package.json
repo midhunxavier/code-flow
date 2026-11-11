@@ -28,8 +28,6 @@
     "test:cli-ux:live": "tsx scripts/test-cli-ux-live.ts",
     "test:cli-native-flows:live": "node --import tsx scripts/test-cli-native-flows-live.mjs",
     "test:cli-crash:live": "tsx scripts/test-cli-crash-live.ts",
-    "test:vscode": "node scripts/test-vscode.mjs",
-    "package:vscode": "python3 scripts/package-vscode.py",
     "evaluate:teams": "tsx scripts/evaluate-teams.ts",
     "client": "node scripts/codeflow.mjs",
     "maintenance": "tsx scripts/maintenance.ts",

@@ -3,7 +3,6 @@ import { useEffect, useLayoutEffect, useState } from "preact/hooks";
 import { api, ApiError, enc, post, showToast } from "./lib.js";
 import { confirmAction } from "./confirm-state.js";
 import { presentFolders, workbenchFolders } from "./workbench-folders.js";
-import { LaunchProfilesPanel } from "./launch-profiles.js";
 const FilteredTasksPanel = lazyView(() => import("./filtered-tasks.js").then((module) => module.FilteredTasksPanel));
 import { CoordinatedChangesPanel } from "./repo-coordination.js";
 import { repo, runs, route, projects, projectsLoaded } from "./state.js";
@@ -14,10 +13,10 @@ import { lazyView } from "./lazy-view.js";
 const CodeBrowser = lazyView(() => import("./code-browser.js").then((module) => module.CodeBrowser));
 import type { RepositoryTool } from "./navigation.js";
 
-type Tab = "verification" | "code" | "context" | "history" | "services" | "coordination" | "filtered-tasks";
+type Tab = "verification" | "code" | "context" | "history" | "coordination" | "filtered-tasks";
 const TOOL_GROUPS: readonly { label: string; tools: readonly (readonly [Tab, string])[] }[] = [
   { label: "Code and verification", tools: [["verification", "Verification"], ["code", "Code"], ["context", "Context"], ["history", "History"]] },
-  { label: "Repository operations", tools: [["services", "Services"], ["coordination", "Coordinated changes"], ["filtered-tasks", "Filtered tasks"]] },
+  { label: "Repository operations", tools: [["coordination", "Coordinated changes"], ["filtered-tasks", "Filtered tasks"]] },
 ];
 /** How long something has been running: "45 s", "3 min 05 s". */
 const elapsed = (ms: number) => { const seconds = Math.floor(ms / 1000); return seconds < 60 ? `${seconds} s` : `${Math.floor(seconds / 60)} min ${String(seconds % 60).padStart(2, "0")} s`; };
@@ -156,7 +155,6 @@ export function WorkbenchView({ projectId, initialFolder, initialTool, onNavigat
     {tab === "history" && history && selectedRun ? <section class="wb-card"><h2>Apply selected hunks</h2><p class="help">Compare one existing text file against the selected checkpoint. Selected hunks remain unstaged for review; the run worktree must be clean and idle.</p><div class="wb-row"><input class="field" aria-label="File for checkpoint hunks" value={hunkPath} placeholder="Repository-relative file" onInput={(event) => setHunkPath(event.currentTarget.value)} /><button class="btn" disabled={busy || selectedRun.status === "running" || !hunkPath.trim()} onClick={() => perform(async () => { setHunks(await post("/api/workspace/checkpoint-hunks", { repo: folder, runId: selectedRun.id, source: checkpoint, path: hunkPath.trim() })); setChosenHunks([]); })}>Compare hunks</button></div>{hunks ? <><p>{hunks.hunks.length} hunks · {hunks.source.slice(0, 12)}</p>{hunks.hunks.map((hunk) => <details key={hunk.id}><summary><label><input type="checkbox" checked={chosenHunks.includes(hunk.id)} onChange={(event) => setChosenHunks(event.currentTarget.checked ? [...chosenHunks, hunk.id] : chosenHunks.filter((id) => id !== hunk.id))} /> {hunk.header}</label></summary><pre>{hunk.patch}</pre></details>)}<button class="btn" disabled={busy || !chosenHunks.length || selectedRun.status === "running"} onClick={() => perform(async () => { await post("/api/workspace/apply-hunks", { repo: folder, runId: selectedRun.id, source: hunks.source, path: hunks.path, expectedHead: hunks.head, hunks: chosenHunks }); setHunks(null); showToast("Selected hunks applied; review the unstaged changes"); })}>Apply chosen hunks</button></> : null}</section> : null}
     {tab === "filtered-tasks" ? <><div class="wb-scope"><label class="lbl" for="filtered-tasks-project">Filtered tasks project</label><select class="field" id="filtered-tasks-project" disabled={!!projectId || !projects.value.length} value={taskProject?.id ?? ""} onChange={(event) => setTaskProjectId(event.currentTarget.value)}>{taskProject ? null : <option value="" disabled>{projects.value.length ? "Choose a project" : projectsLoaded.value ? "No projects yet" : "Loading projects…"}</option>}{projects.value.map((project) => <option value={project.id} key={project.id}>{project.name}</option>)}</select></div>{taskProject ? <><p class="help wb-note">Manage project filesystem rules in <a href="#/settings/projects">Settings → Projects &amp; access</a>.</p><FilteredTasksPanel key={taskProject.id} projectId={taskProject.id} repos={taskProject.repos} /></> : projects.value.length ? <p class="help wb-note">Choose a project above to run a filtered task in it.</p> : projectsLoaded.value ? <p class="help wb-note">Create a project in <a href="#/settings/projects">Settings</a> first.</p> : <p class="help wb-note" role="status">Loading projects…</p>}</> : null}
     {tab === "coordination" ? <CoordinatedChangesPanel projectId={projectId} /> : null}
-    {tab === "services" ? selectedRun && selectedTree ? <LaunchProfilesPanel key={`${selectedRun.id}/${selectedTree.name}`} runId={selectedRun.id} worktree={selectedTree.name} /> : <p class="help wb-note">Select a run worktree to preview and launch its configured services.</p> : null}
     </div></div>
   </div>;
 }

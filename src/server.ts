@@ -69,7 +69,6 @@ import { checkGit, doctor } from "./doctor.js";
 import { readRepoConfig, readRepoConfigAt, saveRepoCommands, type Trust } from "./repo-config.js";
 import { openFolder } from "./serve.js";
 import { appCommand } from "./app-command.js";
-import { LaunchProfiles, LaunchProfileError, readLaunchProfiles } from "./launch-profiles.js";
 import { TeamRerunError } from "./team-reruns.js";
 import { ConventionsStore, ConventionsError } from "./conventions.js";
 import { discoverDependencies } from "./dependency-health.js";
@@ -245,8 +244,6 @@ const deferredRuns = createDeferredRuns(manager, { build: buildStartInput, resol
 /** Set at startup: an unreadable queue file disables deferred runs only, and is kept for repair. */
 let deferredFault: string | undefined = "Deferred runs are still loading";
 const coordinatedApi = createCoordinatedApi({ manager, projects, build: buildStartInput, resolveProviders: resolveQueuedProviders });
-const launchProfiles = new LaunchProfiles(manager.devServers);
-manager.onWorkspaceStop((runId) => launchProfiles.stopMatching(`${runId}/`));
 const integrations = new Integrations();
 const codeHostsApi = createCodeHostsApi({ integrations, manager, projects, build: buildStartInput });
 const integrationWarnings: string[] = [];
@@ -2742,29 +2739,6 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
       }
     }
     if (parts[3] === "human-rework" && req.method === "POST") { const body = await readJson(req); return send(res, 201, await attempt(() => manager.recordHumanRework(run.id, body))); }
-    if (parts[3] === "launch-profiles") {
-      const body = req.method === "POST" ? await readJson(req) : {};
-      const name = typeof body.worktree === "string" ? body.worktree : url.searchParams.get("worktree");
-      const worktree = run.worktrees.find((tree) => tree.name === name);
-      if (!worktree) throw new HttpError(400, "Choose a worktree owned by this run");
-      const key = `${run.id}/${worktree.name}/launch`;
-      if (req.method === "DELETE") return send(res, 200, { stopped: launchProfiles.stop(key) });
-      const config = await readLaunchProfiles(worktree.path);
-      if (req.method === "GET") return send(res, 200, redactExport({ ...config, session: launchProfiles.get(key) ?? null }));
-      if (req.method === "POST") {
-        const profile = config.profiles.find((profile) => profile.id === body.profile);
-        if (!profile) throw new HttpError(400, config.error ?? "Choose a configured launch profile");
-        const abort = new AbortController(); res.once("close", () => abort.abort());
-        try {
-          manager.noteActivity();
-          return send(res, 201, redactExport(await launchProfiles.start(key, worktree.path, profile, { signal: abort.signal, lockdown: run.lockdown, allowUntrusted: body.allowUntrusted === true })));
-        } catch (error) {
-          if (error instanceof LaunchProfileError) throw Object.assign(new HttpError(error.status, error.message), { confirm: error.confirm });
-          throw new HttpError(400, (error as Error).message);
-        }
-      }
-      throw new HttpError(404, "Unknown launch profile operation");
-    }
     if (req.method === "GET" && parts[3] === "events") return await streamTopic(req, res, "run", run.id);
     if (["GET", "POST"].includes(req.method ?? "") && parts[3] === "team-resolution") return send(res, 200, await attempt(async () => manager.taskResolution(run.id, url.searchParams.get("execution") ?? "", req.method === "POST" ? await readJson(req, 2 * 1024 * 1024) : undefined)));
     if (req.method === "POST" && parts[3] === "team-resume") return send(res, 200, await attempt(async () => manager.resumeTaskTeam(run.id, (await readJson(req)).execution)));
@@ -3242,7 +3216,6 @@ async function stop(reason: string, code = 0) {
     closeLanConnections();
     watcher.stop();
     approvals.close();
-    launchProfiles.stopAll();
     shells.closeAll();
     previews.closeAll();
     sshPreviews.closeAll();
