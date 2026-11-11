@@ -297,6 +297,9 @@ test("new project destinations support narrow screens, themes and keyboard navig
     for (const colorScheme of ["light", "dark"] as const) {
       await page.emulateMedia({ colorScheme, reducedMotion: "reduce" }); await page.setViewportSize({ width: 390, height: 844 });
       await page.locator(".rail").waitFor({ state: "hidden", timeout: 10_000 });
+      // ui/theme.ts applies the system theme from a matchMedia listener; until it sets
+      // data-theme, axe can read part of the page in one theme and part in the other.
+      await page.waitForFunction(scheme => document.documentElement.dataset.theme === scheme, colorScheme, { timeout: 10_000 });
       // Flush style changes before enumerating transitions; otherwise axe can
       // sample the previous theme before reduced-motion transitions start.
       await page.waitForFunction(() => { document.documentElement.getBoundingClientRect(); return document.getAnimations().every(animation => animation.playState !== "running" || animation.effect?.getComputedTiming().endTime === Infinity); }, undefined, { timeout: 10_000 });

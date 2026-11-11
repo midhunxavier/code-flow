@@ -69,6 +69,7 @@ import {
 import { listTree, readRepoFile, readRepoImage, searchFiles } from "./repo-tree.js";
 import { checkGit, doctor } from "./doctor.js";
 import { readRepoConfig, readRepoConfigAt, saveRepoCommands, type Trust } from "./repo-config.js";
+import { codexProfileStatus, saveCodexProfile } from "./codex-profile.js";
 import { openFolder } from "./serve.js";
 import { appCommand } from "./app-command.js";
 import { LaunchProfiles, LaunchProfileError, readLaunchProfiles } from "./launch-profiles.js";
@@ -2512,6 +2513,16 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     // ?ref=: the defaults a run from that branch gets (readRepoConfigAt), as the composer shows them.
     const repo = await requestedRepo(url), ref = url.searchParams.get("ref")?.trim();
     return send(res, 200, ref ? await readRepoConfigAt(repo, ref) : await readRepoConfig(repo));
+  }
+  if (parts[1] === "codex-profile" && parts.length === 2) {
+    // Which Codex profile runs use (Settings → Agents & models); read again on every turn.
+    if (req.method === "GET") return send(res, 200, codexProfileStatus());
+    if (req.method === "PUT") {
+      const body = await readJson(req);
+      if (typeof body.profile !== "string") throw new HttpError(400, "profile must be text; send an empty one to clear it");
+      try { saveCodexProfile(body.profile); } catch (err) { throw new HttpError(400, (err as Error).message); }
+      return send(res, 200, codexProfileStatus());
+    }
   }
   if (req.method === "PUT" && parts[1] === "repo-config") {
     // The repository's defaults live in its own file: saving them writes .codeflow/config.json in your checkout.
