@@ -243,6 +243,19 @@ test("applying a result writes its changes into the folder, moves deletions asid
   assert.equal(existsSync(join(dir, "alias.md")), false);
   assert.equal(readFileSync(join(dir, "keep.md"), "utf8"), "keep, edited by you", "undo leaves your own edits alone");
   await assert.rejects(undoFolderApply(mirror, applied.id), /already undone/);
+
+  // An undone apply can be applied again, though main still has the result in its history.
+  writeFileSync(join(dir, "edit.md"), "yours now");
+  const blocked = await applyToFolder(mirror, branch);
+  assert.equal(blocked.ok, false);
+  if (!blocked.ok) { assert.deepEqual(blocked.conflicts, ["edit.md"]); assert.equal(blocked.resolvable, false, "merging main wouldn't fix this one"); }
+  assert.equal(existsSync(join(dir, "new/deep/file.bin")), false, "nothing written");
+  writeFileSync(join(dir, "edit.md"), "before");
+  const again = await applyToFolder(mirror, branch);
+  assert.equal(again.ok, true, JSON.stringify(again));
+  assert.equal(readFileSync(join(dir, "edit.md"), "utf8"), "after");
+  assert.equal(existsSync(join(dir, "gone.md")), false);
+  await assert.rejects(applyToFolder(mirror, branch), /Nothing to apply/);
 });
 
 test("a file you changed during the run is a conflict, and nothing at all is written", async () => {
@@ -322,6 +335,8 @@ test("merging a folder run applies its result to the folder; pull requests stay 
   assert.equal((await manager.undoFolderApply(run.id, entry.folderApply!)).ok, true);
   assert.equal(existsSync(join(dir, "agent.md")), false);
   assert.ok(manager.get(run.id)!.merges.at(-1)!.undoneAt);
+  assert.equal((await manager.merge(run.id, { branch: tree.branch, into: "main" })).ok, true, "an undone apply can be applied again");
+  assert.equal(readFileSync(join(dir, "agent.md"), "utf8"), "from the run");
 });
 
 test("resolving a conflict the usual way (merging main into the result) lets the apply go through without undoing your edits", async () => {

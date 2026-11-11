@@ -1,6 +1,6 @@
 # Folder projects: design
 
-Status: slices 1 and 2 are implemented (`src/folders.ts`, see section 6). Slices 3 and 4 are proposals and are not built.
+Status: slices 1 and 2 are implemented (`src/folders.ts`), and most of slice 4, the UI (see section 6). Slice 3 is a proposal and is not built.
 
 This document covers letting Code Flow work on any folder, not only a Git repository: a folder of documents, a data directory, a script collection, a project that was never put under Git. The goal is the experience of the Claude and ChatGPT desktop apps (pick a folder, ask for work) while keeping what Code Flow adds on top: agents work on a copy, results are checked before they reach your files, and nothing changes in the folder until you apply.
 
@@ -118,6 +118,8 @@ Built in slice 2 as `applyToFolder` in `src/folders.ts`. **Merge** on a folder r
 
 **Undo** (`undoFolderApply`; `POST /api/runs/:id/folder-undo` with `{ apply }`) applies the change the other way, with the same preflight. A file the user edited after the apply is a conflict, and nothing is written. Files the undo removes are moved aside too.
 
+**Applying again after an undo.** The snapshot after an apply keeps the result in `main`'s history, and an undo doesn't take it out. So when the newest apply of a result (or of an earlier commit of it) was undone, the next apply starts from what the folder had before that apply (the pinned `base`), not from the merge base. A conflict in that case comes back with `resolvable: false`: merging `main` into the result would fast-forward it to the undone state and lose the run's changes, so **Ask to resolve** isn't offered and the message says to put the files back.
+
 CLI handoff (`codeflow_apply_handoff`) is still refused for a mirror. In slice 3 it applies through `applyToFolder` and says "Applied to the folder" instead of "staged", because a folder has no index.
 
 ### 4.6 What a folder project does not offer
@@ -147,10 +149,19 @@ The messages in `src/cli-teams/install.ts:28`, `:162` and `src/cli-teams/cli.ts:
 
 ### 4.9 UI
 
-- **Adding a project:** **Open folder…** next to **Add repository**. When the picked folder is inside a repository, offer the repository instead.
-- **First folder project:** a one-line note: "Code Flow works on a private copy. Your folder changes only when you apply a result."
-- **Composer and run header:** show a folder badge.
-- **Diff view:** handles binary files ("binary file changed", sizes).
+Built (slice 4):
+
+- **Adding a project:** the one picker takes a repository or a folder (**Add repository or folder…**). Picking a folder that isn't a repository calls `POST /api/folders`, which makes or finds its mirror and imports it. The picker says "Not a Git repository: Code Flow works on a private copy and changes the folder only when you apply a result", and a toast lists what the import skipped. A folder inside a repository is refused with the repository named.
+- **Names:** a mirror is shown everywhere as its folder (`shownPath`, `baseName` in `ui/lib.ts`, from `Project.folders` and `Run.folder`): the project's sources, the composer, scheduling, the run header. Folder sources and folder runs carry a **Folder** badge.
+- **Result card and review:** **Apply to folder…** replaces **Merge…**; **Open PR…** and the diff command are hidden. The panel (`FolderApplyPanel` in `ui/run.tsx`) confirms before writing, shows conflicts with **Ask to resolve**, lists the run's applies, and offers **Undo apply** on each.
+
+Not built yet:
+
+- **Make it a Git repository** and **Locate** (4.8).
+- Skipped files are shown once, in the toast after adding; the project doesn't list them later.
+- The result-delivery suggestion may still offer a pull request for a folder run.
+- **Diff view:** binary files ("binary file changed", sizes) are untested for folders.
+- A browser e2e for adding a folder, a run and an apply.
 
 ## 5. Security
 
@@ -171,9 +182,9 @@ The messages in `src/cli-teams/install.ts:28`, `:162` and `src/cli-teams/cli.ts:
    - a replaced folder;
    - a real run applied through `RunManager.merge` and undone.
 
-   Not yet: no UI for undo (slice 4), and the result-delivery suggestions may still offer a pull request for a folder run.
+   Not yet: the result-delivery suggestions may still offer a pull request for a folder run.
 3. **CLI and MCP folder mode.** Covers 4.7.
-4. **UI.** Covers 4.9, **Make it a Git repository**, and **Locate**. The browser e2e covers adding a folder, a run and an apply, with accessibility at zero violations.
+4. **UI (mostly implemented).** 4.9 lists what is built and what is left: **Make it a Git repository**, **Locate**, and a browser e2e covering adding a folder, a run and an apply. Checked by hand in the browser with fake agents: add a folder, chat, apply, undo, a conflict after an undo, and apply again. That check found that an undone apply couldn't be applied again; fixed in `applyBase` (4.5), with tests.
 
 ## 7. Open questions
 

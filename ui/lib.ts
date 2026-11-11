@@ -198,7 +198,25 @@ export function usePoll(fn: (current: () => boolean) => unknown, ms: number, dep
     return () => { live = false; stop(); };
   }, [active, ms, ...deps]);
 }
-export const baseName = (p: string) => (p || "").replace(/\/+$/, "").split("/").pop() ?? "";
+/**
+ * Folder projects (docs/design/folder-projects.md): a run or project "repository" can be the mirror
+ * Code Flow keeps for a folder that isn't a Git repository. The folder each mirror copies, as
+ * projects and runs report it, so the app names the folder, never the mirror.
+ */
+const mirrorFolders = new Map<string, string>();
+const trimPath = (p: string) => (p || "").replace(/\/+$/, "");
+export const isFolderMirror = (p: string) => /[\\/]folders[\\/]f-[0-9a-f]{16}[\\/]source$/.test(trimPath(p));
+export function rememberFolders(items: Iterable<{ folders?: { mirror: string; path: string }[]; repo?: string; folder?: string }>) {
+  for (const item of items) {
+    for (const f of item.folders ?? []) mirrorFolders.set(trimPath(f.mirror), f.path);
+    if (item.repo && item.folder) mirrorFolders.set(trimPath(item.repo), item.folder);
+  }
+}
+/** The folder a repository path stands for, when it is a folder's mirror. */
+export const folderOf = (repo: string): string | undefined => isFolderMirror(repo) ? mirrorFolders.get(trimPath(repo)) : undefined;
+/** The path to show for a repository: the folder for a folder's mirror. */
+export const shownPath = (repo: string): string => folderOf(repo) ?? repo;
+export const baseName = (p: string) => (isFolderMirror(p) ? folderOf(p) ?? "Folder" : trimPath(p)).split("/").pop() ?? "";
 export const fmtSize = (b: number) => (b < 1024 ? `${b} B` : b < 1048576 ? `${Math.round(b / 1024)} KB` : `${(b / 1048576).toFixed(1)} MB`);
 export const ago = (ts: number) => {
   const s = Math.round((Date.now() - ts) / 1000);

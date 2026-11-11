@@ -118,7 +118,7 @@ import { detectCheck } from "./checks.js";
 import { findPattern, patterns } from "./patterns/index.js";
 import { listDirectories } from "./fs.js";
 import { git, listBranches, repoRoot, worktreeRoot, type GitCwd } from "./git.js";
-import { ensureFolderMirror, findFolderMirror } from "./folders.js";
+import { ensureFolderMirror, findFolderMirror, openFolder as openFolderCopy } from "./folders.js";
 import { stat } from "node:fs/promises";
 import { folderSizes, remoteBranches } from "./ship.js";
 import { computeStats, rankAgents } from "./stats.js";
@@ -2112,6 +2112,16 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
         throw new HttpError(status, err.code === "ENOENT" ? "Folder not found" : err.message);
       });
     return send(res, 200, listing);
+  }
+  // A folder that isn't a Git repository: make (or refresh) the private copy Code Flow works on
+  // (src/folders.ts). The folder picker uses it; the copy's path then stands for the folder.
+  if (req.method === "POST" && parts[1] === "folders" && parts.length === 2) {
+    const body = await readJson(req, 8192);
+    const path = String(body.path ?? "").trim();
+    if (!path.startsWith("/")) throw new HttpError(400, "Choose a folder by its absolute path");
+    await attempt(async () => assertPolicyExecution(await fileAccess.execution(path), "Opening a folder"));
+    const opened = await attempt(() => openFolderCopy(path));
+    return send(res, 200, { mirror: opened.mirror, path: opened.folder, files: opened.files, bytes: opened.bytes, skipped: opened.skipped });
   }
   if (req.method === "GET" && parts[1] === "branches") {
     const repo = await requestedRepo(url);

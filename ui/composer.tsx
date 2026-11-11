@@ -32,7 +32,7 @@ import type { VerificationProfile } from "../src/verification.js";
 import { batch, effect } from "@preact/signals";
 import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import { AgentTag } from "./bits.js";
-import { api, showToast, ApiError, baseName, enc, fmtSize, post, readBase64, SHORT, store, useLatest, plural } from "./lib.js";
+import { api, showToast, ApiError, baseName, enc, fmtSize, post, readBase64, shownPath, SHORT, store, useLatest, plural } from "./lib.js";
 import { useDialog } from "./app.js";
 import { AcceptanceEditor, ContextInspector, EffectiveSettings, ProviderSetupPrompt, RepositoryReadiness, SaveTaskTemplateDialog, UseTaskTemplateDialog } from "./onboarding.js";
 import { rerunDraft } from "./rerun-draft.js";
@@ -308,8 +308,8 @@ export function Composer() {
       <p class="lede">{single ? "Choose a provider, describe your task, and start the conversation." : "Describe the task, add the files that matter, and pick how your agents work together."}</p>
       <div class="where" role="group" aria-label="Where the run works">
         <ProjectButton composer />
-        {target.value.project?.repos.length === 1 && target.value.project.repos[0] === repo.value ? <span class="repo-btn" title={repo.value}><Icon name="folder" /><span class="name">{baseName(repo.value)}</span></span>
-          : target.value.project && target.value.project.repos.length > 1 ? <label class="composer-repository">Repository<select class="field" aria-label="Run repository" value={repo.value} onChange={event => void chooseComposerRepository(event.currentTarget.value)}>{!target.value.project.repos.includes(repo.value) ? <option value="">Choose repository</option> : null}{target.value.project.repos.map(folder => <option value={folder}>{baseName(folder)} · {folder}</option>)}</select></label> : <RepoButton />}
+        {target.value.project?.repos.length === 1 && target.value.project.repos[0] === repo.value ? <span class="repo-btn" title={shownPath(repo.value)}><Icon name="folder" /><span class="name">{baseName(repo.value)}</span></span>
+          : target.value.project && target.value.project.repos.length > 1 ? <label class="composer-repository">Repository<select class="field" aria-label="Run repository" value={repo.value} onChange={event => void chooseComposerRepository(event.currentTarget.value)}>{!target.value.project.repos.includes(repo.value) ? <option value="">Choose repository</option> : null}{target.value.project.repos.map(folder => <option value={folder}>{baseName(folder)} · {shownPath(folder)}</option>)}</select></label> : <RepoButton />}
         <button class="btn small ghost" onClick={() => openRepository(composerProject.value)}>Open another repository</button>
       </div>
       {projectsStatus.value.recovery ? <div class="banner" role="alert"><p>{projectsStatus.value.available ? `Project storage recovered: projects.json ${projectsStatus.value.recovery.reason}. The original file is retained as ${projectsStatus.value.recovery.aside} in CODEFLOW_HOME. Existing runs are retained. Restore the backup manually with Code Flow stopped, or continue with the recovered project list.` : `Projects are off: projects.json ${projectsStatus.value.reason}. Fix the file in CODEFLOW_HOME and restart Code Flow. You can still open a repository and start an unassigned run.`}</p>{!projectsStatus.value.available && composerProject.value ? <button class="btn" onClick={() => void openComposer("", { repository: repo.value })}>Open unassigned draft</button> : null}</div> : null}
@@ -479,7 +479,7 @@ function ScheduleRunDialog({ body, onClose }: { body: Record<string, any>; onClo
 function RepoButton() {
   const info = repoInfo.value;
   return (
-    <button type="button" class={`repo-btn ${info ? "" : "empty"} ${repoError.value ? "bad" : ""}`} title={info ? info.repo : "Choose repository"} onClick={() => (pickerOpen.value = true)}>
+    <button type="button" class={`repo-btn ${info ? "" : "empty"} ${repoError.value ? "bad" : ""}`} title={info ? shownPath(info.repo) : "Choose repository"} onClick={() => (pickerOpen.value = true)}>
       <Icon name="folder" />
       <span class="name">{info ? baseName(info.repo) : repoChecking.value ? "Checking…" : repoError.value || "Choose repository…"}</span>
       <Icon name="chevron" class="caret" />

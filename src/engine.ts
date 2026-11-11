@@ -409,6 +409,8 @@ export interface Run {
   pattern: string;
   task: string;
   repo: string;
+  /** A run on a folder that isn't a repository: the folder; `repo` is its mirror (src/folders.ts). */
+  folder?: string;
   /** The project the run belongs to (see projects.ts); runs from before projects have none recorded. */
   project?: string;
   /** Commit every worktree starts from. */
@@ -4947,8 +4949,9 @@ export class RunManager {
     assertResultBranch(run, input.branch);
     const folder = folderOfMirror(run.repo);
     if (folder && input.into !== "main") throw new Error(`This run worked on a copy of the folder ${folder}: its result is applied to the folder (target "main"), not to another branch`);
-    // git would say "Already up to date" and code-flow would call that a merge.
-    if (await isAncestor(run.repo, input.branch, `refs/heads/${input.into}`)) throw new Error(`Nothing to merge: ${input.into} already has everything on ${input.branch}`);
+    // git would say "Already up to date" and code-flow would call that a merge. A folder's main
+    // keeps an undone apply in its history, so the folder's own code decides what is left to apply.
+    if (!folder && await isAncestor(run.repo, input.branch, `refs/heads/${input.into}`)) throw new Error(`Nothing to merge: ${input.into} already has everything on ${input.branch}`);
     // A run's result changes only through that run, where its review and checks follow it.
     const owner = this.resultBranchOwner(run.repo, input.into);
     if (owner) throw new Error(owner.id === run.id ? `"${input.into}" is one of this run's own result branches. Merge into one of your branches instead.` : `"${input.into}" is the result of another run (${owner.id}), and merging into it would change that result behind its review. Merge into one of your branches instead.`);
@@ -5983,6 +5986,7 @@ export class RunManager {
       deferred: input.deferred ? structuredClone(input.deferred) : undefined,
       coordination: input.coordination ? { jobId: input.coordination.jobId, nodeId: input.coordination.nodeId, claimId: input.coordination.claimId, attempt: input.coordination.attempt } : undefined,
       repo,
+      ...(isFolderMirror(repo) && folderOfMirror(repo) ? { folder: folderOfMirror(repo) } : {}),
       project: placed?.project.id,
       baseRef,
       baseLabel,

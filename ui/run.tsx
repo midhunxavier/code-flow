@@ -33,7 +33,7 @@ import { TriageActions } from "./automations.js";
 import { ChatControls, type ChatSettings, type ChatPermissions } from "./chat-controls.js";
 import { runProviderProblem, narrowerTrust } from "../src/run-permissions.js";
 import { Icon } from "./icons.js";
-import { ago, api, ApiError, baseName, copy, duration, enc, fmtCost, fmtSize, fmtTokens, onPhone, post, safeHref, SHORT, showToast, showError, plural, agentName, STATUS_TEXT, usePoll } from "./lib.js";
+import { ago, api, ApiError, baseName, copy, duration, enc, fmtCost, fmtSize, fmtTokens, folderOf, onPhone, post, safeHref, SHORT, shownPath, showToast, showError, plural, agentName, STATUS_TEXT, usePoll } from "./lib.js";
 import { loadLocalAttempts, localAttempts } from "./collab-state.js";
 import {
   agents,
@@ -559,8 +559,8 @@ function RunMeta({ run }: { run: RunSummary }) {
   const team = Object.entries(run.roles).filter(([, ids]) => ids.length);
   return (
     <div class="run-meta">
-      <span title={run.repo} class="repo-line">
-        <Icon name="folder" /> {baseName(run.repo)}
+      <span title={shownPath(run.repo)} class="repo-line">
+        <Icon name="folder" /> {run.folder ? baseName(run.folder) : baseName(run.repo)}{run.folder ?? folderOf(run.repo) ? <span class="git-badge" title="Not a Git repository: this run worked on a private copy, and the folder changes only when you apply its result">Folder</span> : null}
       </span>
       {run.trigger ? (
         <a class="src-link with-ic" href="#/automations" title={`Started by ${run.trigger.via === "schedule" ? "its schedule" : run.trigger.via === "webhook" ? "a webhook" : run.trigger.via === "sweep" ? "a sweep" : "Run now"}`}>
@@ -1092,6 +1092,8 @@ export function ArtifactCard({ run, artifact, steps, reviewing = false, initialP
   const deleted = !worktree && !!run.deletedWorktrees?.some((w) => w.branch === artifact.branch);
   const merged = run.merges?.filter((m) => m.branch === artifact.branch) ?? [];
   const pr = run.prs?.[artifact.branch];
+  // A run on a folder that isn't a repository: its result is applied to the folder (src/folders.ts).
+  const folder = run.folder ?? folderOf(run.repo);
   const canReview = (run.status === "done" || teamNeedsResume(run)) && !!worktree;
   const fromPr = run.source?.kind === "pr" ? run.source : undefined;
   const [panel, setPanel] = useState<"merge" | "pr" | null>(() => initialPanel && worktree && !run.testRun && !fromPr ? initialPanel : null);
@@ -1103,8 +1105,8 @@ export function ArtifactCard({ run, artifact, steps, reviewing = false, initialP
         <b>{artifact.label}</b>
         <code>{artifact.branch}</code>
         {merged.map((m) => (
-          <span key={m.commit} class="badge ok">
-            {m.pr ? "PR merged into" : "Merged into"} {m.into}
+          <span key={m.commit} class={`badge ${m.undoneAt ? "" : "ok"}`}>
+            {m.folderApply ? m.undoneAt ? "Apply undone" : "Applied to the folder" : <>{m.pr ? "PR merged into" : "Merged into"} {m.into}</>}
           </span>
         ))}
         {pr ? (
@@ -1121,7 +1123,7 @@ export function ArtifactCard({ run, artifact, steps, reviewing = false, initialP
           ) : null}
           {worktree && !run.testRun ? (
             <button class="btn small" aria-pressed={panel === "merge"} onClick={() => setPanel(panel === "merge" ? null : "merge")}>
-              {pr ? "Merge PR…" : "Merge…"}
+              {pr ? "Merge PR…" : folder ? "Apply to folder…" : "Merge…"}
             </button>
           ) : null}
           {!run.testRun && worktree && fromPr && !fromPr.isCrossRepository && run.status !== "running" ? (
@@ -1145,14 +1147,14 @@ export function ArtifactCard({ run, artifact, steps, reviewing = false, initialP
               {pushing ? "Pushing…" : `Push to PR #${fromPr.number}`}
             </button>
           ) : null}
-          {!run.testRun && worktree && !fromPr ? (
+          {!run.testRun && worktree && !fromPr && !folder ? (
             <button class="btn small" aria-pressed={panel === "pr"} onClick={() => setPanel(panel === "pr" ? null : "pr")}>
               Open PR…
             </button>
           ) : null}
-          <button class="btn small" onClick={() => copy(`git diff ${run.baseRef.slice(0, 12)}...${artifact.branch}`, "Diff command copied")}>
+          {!folder ? <button class="btn small" onClick={() => copy(`git diff ${run.baseRef.slice(0, 12)}...${artifact.branch}`, "Diff command copied")}>
             Copy diff cmd
-          </button>
+          </button> : null}
           <button class="btn small" onClick={() => copy(artifact.path, "Path copied")}>
             Copy path
           </button>
@@ -1165,7 +1167,7 @@ export function ArtifactCard({ run, artifact, steps, reviewing = false, initialP
       {!reviewing ? artifact.stat ? <pre tabIndex={0}>{artifact.stat}</pre> : <div class="help">No changes</div> : null}
       {!reviewing && worktree && existsHint(run) ? <details class="artifact-tools"><summary>Open in your tools</summary><WorkspaceTools run={run} worktree={worktree.name} /></details> : null}
       {!run.testRun && panel === "merge" && worktree ? (
-        pr ? <PrMergePanel run={run} branch={artifact.branch} worktree={worktree.name} steps={steps} /> : <MergePanel run={run} branch={artifact.branch} worktree={worktree.name} steps={steps} onMerged={() => setPanel(null)} />
+        pr ? <PrMergePanel run={run} branch={artifact.branch} worktree={worktree.name} steps={steps} /> : folder ? <FolderApplyPanel run={run} branch={artifact.branch} worktree={worktree.name} steps={steps} folder={folder} /> : <MergePanel run={run} branch={artifact.branch} worktree={worktree.name} steps={steps} onMerged={() => setPanel(null)} />
       ) : null}
       {!run.testRun && panel === "pr" ? <PrPanel run={run} branch={artifact.branch} focusOnOpen={initialPanel === "pr"} /> : null}
       {pr ? <GithubReviewThreadsPanel runId={run.id} branch={artifact.branch} /> : null}
@@ -1513,6 +1515,85 @@ function MergePanel({ run, branch, worktree, steps, onMerged }: { run: RunSummar
             </button>
           </div>
         </div>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * Merge, for a run on a folder that isn't a repository: write its result into the folder, with
+ * every file checked first, and undo an apply (src/folders.ts, docs/design/folder-projects.md).
+ */
+function FolderApplyPanel({ run, branch, worktree, steps, folder }: { run: RunSummary; branch: string; worktree: string; steps: Step[]; folder: string }) {
+  const [busy, setBusy] = useState(false);
+  const [conflicts, setConflicts] = useState<{ paths: string[]; undo: boolean; resolvable?: boolean } | null>(null);
+  const [archiveAfter, setArchiveAfter] = useState(false);
+  const provider = chatProvider(run);
+  const [picked, setAgent] = useState<AgentId>(lastAgentIn(steps, worktree) ?? "claude");
+  const agent = provider ?? picked;
+  const applies = (run.merges ?? []).filter((m) => m.branch === branch && m.folderApply).reverse();
+  const name = baseName(folder);
+  const apply = async (allowConflictMarkers = false) => {
+    if (!allowConflictMarkers && !await confirmAction(`Write this result into ${folder}? Code Flow checks every file first: if you changed a file the result also changes, nothing is written. Files the result deletes are moved aside, and you can undo the apply.`, { title: `Apply to ${name}?`, confirmLabel: "Apply to folder", danger: false })) return;
+    setBusy(true);
+    setConflicts(null);
+    try {
+      const outcome = await post<MergeOutcome>(`/api/runs/${run.id}/merge`, { branch, into: "main", archiveAfter, ...(allowConflictMarkers ? { allowConflictMarkers } : {}) });
+      if (outcome.ok) showToast(outcome.warning || `Applied to ${name}${archiveAfter ? " and archived the run" : ""}`, outcome.warning ? 12000 : 3000);
+      else setConflicts({ paths: outcome.conflicts, undo: false, resolvable: (outcome as { resolvable?: boolean }).resolvable !== false });
+    } catch (err) {
+      if (err instanceof ApiError && err.confirm === "allowConflictMarkers") {
+        setBusy(false);
+        if (await confirmAction(`${err.message}\n\nApply to ${name} with those lines in?`, { title: "Apply with conflict markers?", confirmLabel: "Apply anyway", danger: true })) await apply(true);
+        return;
+      }
+      showError((err as Error).message, 6000);
+    } finally { setBusy(false); }
+  };
+  const undo = async (id: string) => {
+    if (!await confirmAction(`Put back what ${folder} had before this apply? Files you changed since are checked first: if one changed, nothing is written. Files the undo removes are moved aside.`, { title: "Undo this apply?", confirmLabel: "Undo apply", danger: true })) return;
+    setBusy(true);
+    setConflicts(null);
+    try {
+      const outcome = await post<MergeOutcome>(`/api/runs/${run.id}/folder-undo`, { apply: id });
+      if (outcome.ok) showToast(`Undid the apply to ${name}`, 3000);
+      else setConflicts({ paths: outcome.conflicts, undo: true });
+    } catch (err) { showError((err as Error).message, 6000); }
+    finally { setBusy(false); }
+  };
+  return (
+    <div class="ship-panel">
+      <div class="row">
+        <span class="lbl">Apply to</span>
+        <code title={folder}>{folder}</code>
+        <label class="check">
+          <input type="checkbox" checked={archiveAfter} onChange={(e) => setArchiveAfter(e.currentTarget.checked)} /> Archive the run afterwards (removes its worktrees)
+        </label>
+        <button class="btn primary small" disabled={busy} onClick={() => apply()}>{busy ? "Working…" : "Apply to folder"}</button>
+      </div>
+      <div class="help">This folder isn't a Git repository, so the run worked on a private copy. Applying writes the result into the folder. Every file is checked first: if you changed one the result also changes, nothing is written.</div>
+      {conflicts ? (
+        <div class="conflicts">
+          <div class="msg warn" role="alert">
+            {conflicts.undo ? "You changed" : conflicts.resolvable === false ? "These changed in the folder since you undid the earlier apply:" : "These changed in the folder since the run started:"} {conflicts.paths.join(", ")}{conflicts.undo ? " since the apply, so it can't be undone. Nothing was written." : conflicts.resolvable === false ? ". Nothing was written. Put them back as they were, then apply again." : ". Nothing was written."}
+          </div>
+          {!conflicts.undo && conflicts.resolvable !== false ? <div class="row">
+            <span>Ask</span>
+            <AgentPicker value={agent} fixed={!!provider} onChange={setAgent} />
+            <span>to bring in the folder as it is now and resolve them, then apply again.</span>
+            <button class="btn small" onClick={() => post(`/api/runs/${run.id}/followups`, { kind: "resolve-conflicts", worktree, agent, mergeFrom: "main" }).then(() => showToast("Sent — the agent is resolving the conflicts"), (e) => showError(e.message, 5000))}>Ask to resolve</button>
+          </div> : null}
+        </div>
+      ) : null}
+      {applies.length ? (
+        <ul class="folder-applies" aria-label="Applies to the folder">
+          {applies.map((m) => (
+            <li key={m.folderApply}>
+              <span>Applied {ago(m.at)}{m.undoneAt ? ` · undone ${ago(m.undoneAt)}` : ""}</span>
+              {!m.undoneAt ? <button class="btn small" disabled={busy || run.status === "running"} onClick={() => undo(m.folderApply!)}>Undo apply</button> : null}
+            </li>
+          ))}
+        </ul>
       ) : null}
     </div>
   );

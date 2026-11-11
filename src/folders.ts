@@ -393,7 +393,8 @@ export interface FolderApplyRecord {
 
 export type FolderApply =
   | { ok: true; id: string; commit: string; written: string[]; removed: string[] }
-  | { ok: false; conflicts: string[]; message: string };
+  /** `resolvable: false`: merging the folder's latest copy into the result wouldn't fix it (see applyBase). */
+  | { ok: false; conflicts: string[]; message: string; resolvable?: false };
 
 interface Change { path: string; oldMode: string; newMode: string; oldId: string; newId: string }
 type FolderState = { kind: "none" } | { kind: "file"; id: string; mode: number } | { kind: "link"; id: string } | { kind: "dir" | "other" | "blocked" } | { kind: "unsafe" };
@@ -585,7 +586,7 @@ export async function applyToFolder(mirror: string, branch: string, opts: { runI
     await assertSameFolder(meta);
     await importLocked(mirror, meta.path);
     const head = (await gitText(mirror, ["rev-parse", "--verify", `${branch}^{commit}`])).trim();
-    const base = (await gitText(mirror, ["merge-base", "refs/heads/main", head])).trim();
+    const { base, afterUndo } = await applyBase(mirror, head);
     if (base === head) throw new FolderError(`Nothing to apply: the folder already has everything on ${branch}`);
     const id = `a-${Date.now().toString(36)}-${randomBytes(3).toString("hex")}`;
     await gitText(mirror, ["update-ref", `refs/codeflow/applied/${id}/base`, base]);
@@ -595,7 +596,9 @@ export async function applyToFolder(mirror: string, branch: string, opts: { runI
     if (!result.ok) {
       await gitText(mirror, ["update-ref", "-d", `refs/codeflow/applied/${id}/base`]);
       await gitText(mirror, ["update-ref", "-d", `refs/codeflow/applied/${id}/head`]);
-      return result;
+      // After an undo, main still has the result in its history: merging main into the result would
+      // fast-forward it to the undone state and lose the run's changes, so that fix isn't offered.
+      return afterUndo ? { ...result, resolvable: false, message: `These files changed in the folder since you undid the earlier apply: ${result.conflicts.slice(0, 20).join(", ")}. Nothing was written. Put them back as they were, then apply again.` } : result;
     }
     const record: FolderApplyRecord = { version: 1, id, ...(opts.runId ? { runId: opts.runId } : {}), branch, base, head, at: Date.now(), paths: result.paths ?? [], ...(result.removed.length ? { removedTo } : {}) };
     await mkdir(appliedDir(mirror), { recursive: true, mode: 0o700 });
@@ -603,6 +606,28 @@ export async function applyToFolder(mirror: string, branch: string, opts: { runI
     const commit = await snapshotAfterApply(mirror, meta.path, head);
     return { ok: true, id, commit, written: result.written, removed: result.removed };
   });
+}
+
+/**
+ * Where an apply of `head` starts from. Usually the merge base with main, the folder's latest
+ * snapshot. But the snapshot after an apply keeps the result as a parent, and undoing it doesn't
+ * take that out of main's history: when the newest apply of this result (or of an earlier commit of
+ * it) was undone, start from what the folder had before that apply.
+ */
+async function applyBase(mirror: string, head: string): Promise<{ base: string; afterUndo: boolean }> {
+  const base = (await gitText(mirror, ["merge-base", "refs/heads/main", head])).trim();
+  for (const record of await folderApplies(mirror)) {
+    if (!(await isAncestorCommit(mirror, record.head, head))) continue;
+    if (!record.undoneAt) break;
+    const before = await gitText(mirror, ["rev-parse", "--verify", `refs/codeflow/applied/${record.id}/base^{commit}`]).then((t) => t.trim(), () => "");
+    if (before && (await isAncestorCommit(mirror, before, head))) return { base: before, afterUndo: true };
+    break;
+  }
+  return { base, afterUndo: false };
+}
+
+async function isAncestorCommit(mirror: string, ancestor: string, commit: string): Promise<boolean> {
+  return gitText(mirror, ["merge-base", "--is-ancestor", ancestor, commit]).then(() => true, () => false);
 }
 
 /** The applies to a folder, newest first. */
