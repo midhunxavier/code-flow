@@ -4,7 +4,7 @@
 #
 # The jobs are skipped in two cases:
 # - a push to main whose tree is identical to the head of a merged pull request
-#   that already passed CI (the usual merge of an up-to-date branch), and
+#   whose "CI result" check passed (the usual merge of an up-to-date branch), and
 # - a change that only touches documentation (docs/, site/, README.md, LICENSE).
 #   The Documentation workflow builds and tests those.
 # Anything unexpected (API errors, a manual run, an unknown event) runs everything.
@@ -35,8 +35,10 @@ case "$EVENT" in
     for head in $heads; do
       head_tree=$(gh api "repos/$REPO/git/commits/$head" --jq .tree.sha) || continue
       [ "$head_tree" = "$tree" ] || continue
-      passed=$(gh api "repos/$REPO/actions/workflows/ci.yml/runs?head_sha=$head&event=pull_request&status=success&per_page=1" --jq .total_count) || continue
-      [ "${passed:-0}" -gt 0 ] && decide false "identical to pull request head $head, which already passed CI"
+      # The merge gate is the "CI result" check from GitHub Actions (app 15368), not the whole run,
+      # which also fails when a non-required job such as Browser acceptance flakes.
+      passed=$(gh api "repos/$REPO/commits/$head/check-runs?check_name=CI%20result&app_id=15368&filter=latest" --jq '[.check_runs[] | select(.conclusion == "success")] | length') || continue
+      [ "${passed:-0}" -gt 0 ] && decide false "identical to pull request head $head, whose CI result passed"
     done
     [[ -z "$BEFORE" || "$BEFORE" =~ ^0+$ ]] && decide true "no previous commit to compare with"
     # A renamed file also reports its old path, so moving code into docs/ still counts as code.
