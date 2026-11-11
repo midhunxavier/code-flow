@@ -358,3 +358,54 @@ test("resolving a conflict the usual way (merging main into the result) lets the
   assert.equal(readFileSync(join(dir, "shared.md"), "utf8"), "agent\n");
   assert.equal(readFileSync(join(dir, "mine.md"), "utf8"), "edited by you\n");
 });
+
+test("a result that turns a file into a folder, or a folder into a file, applies and undoes; your own file in that folder is a conflict", async () => {
+  const dir = folder("swap", { "foo": "a file", "bar/one.md": "1", "bar/sub/two.md": "2", "keep.md": "k" });
+  const mirror = (await openFolder(dir)).mirror;
+  const branch = resultBranch(mirror, "result-swap", (wt) => {
+    rmSync(join(wt, "foo"));
+    mkdirSync(join(wt, "foo"));
+    writeFileSync(join(wt, "foo/inner.md"), "now a folder");
+    rmSync(join(wt, "bar"), { recursive: true });
+    writeFileSync(join(wt, "bar"), "now a file");
+  });
+  const applied = await applyToFolder(mirror, branch);
+  assert.equal(applied.ok, true, JSON.stringify(applied));
+  if (!applied.ok) return;
+  assert.equal(readFileSync(join(dir, "foo/inner.md"), "utf8"), "now a folder");
+  assert.equal(readFileSync(join(dir, "bar"), "utf8"), "now a file");
+  const undone = await undoFolderApply(mirror, applied.id);
+  assert.equal(undone.ok, true, JSON.stringify(undone));
+  assert.equal(readFileSync(join(dir, "foo"), "utf8"), "a file");
+  assert.equal(readFileSync(join(dir, "bar/sub/two.md"), "utf8"), "2");
+
+  // A file of yours inside the folder the result replaces with a file: nothing is written.
+  writeFileSync(join(dir, "bar/yours.md"), "mine");
+  const blocked = await applyToFolder(mirror, branch);
+  assert.equal(blocked.ok, false);
+  if (!blocked.ok) assert.deepEqual(blocked.conflicts, ["bar"]);
+  assert.equal(readFileSync(join(dir, "foo"), "utf8"), "a file", "nothing written");
+  assert.equal(readFileSync(join(dir, "bar/yours.md"), "utf8"), "mine");
+});
+
+test("an apply that can't be recorded (the folder is over a limit afterwards) puts the folder back and leaves no record", async () => {
+  const dir = folder("unrecorded", { "a.md": "a", "b.md": "b" });
+  const mirror = (await openFolder(dir)).mirror;
+  const branch = resultBranch(mirror, "result-big", (wt) => { writeFileSync(join(wt, "a.md"), "changed"); writeFileSync(join(wt, "c.md"), "c"); writeFileSync(join(wt, "d.md"), "d"); rmSync(join(wt, "b.md")); });
+  process.env.CODEFLOW_FOLDER_MAX_FILES = "2";
+  try { await assert.rejects(applyToFolder(mirror, branch), /can't be applied.*put back as it was/s); }
+  finally { delete process.env.CODEFLOW_FOLDER_MAX_FILES; }
+  assert.equal(readFileSync(join(dir, "a.md"), "utf8"), "a");
+  assert.equal(readFileSync(join(dir, "b.md"), "utf8"), "b");
+  assert.equal(existsSync(join(dir, "c.md")), false);
+  assert.deepEqual(await folderApplies(mirror), []);
+  assert.equal((await applyToFolder(mirror, branch)).ok, true, "and it applies once the limit allows");
+});
+
+test("a mirror is a SHA-1 repository even when the environment asks git for SHA-256", async () => {
+  const dir = folder("hash", { "a.md": "a" });
+  process.env.GIT_DEFAULT_HASH = "sha256";
+  let mirror: string;
+  try { mirror = (await openFolder(dir)).mirror; } finally { delete process.env.GIT_DEFAULT_HASH; }
+  assert.equal(execFileSync("git", ["rev-parse", "--show-object-format"], { cwd: mirror }).toString().trim(), "sha1");
+});

@@ -116,6 +116,8 @@ Built in slice 2 as `applyToFolder` in `src/folders.ts`. **Merge** on a folder r
 9. **Record.** The apply is recorded in `~/.codeflow/folders/<id>/applied/<apply id>.json`, and its start and result commits are pinned under `refs/codeflow/applied/<apply id>/`. The run's merge entry carries the apply id (`folderApply`).
 10. **Snapshot.** The import after the apply is committed as a merge of the result, so applying the same result again says "Nothing to apply" and a later apply brings only newer work.
 
+A result that turns a file into a folder (or a folder into a file) is one change set: the path in the way is safe when the same change removes it, and deletions are written first. If the snapshot (step 10) fails, for example because the folder is now over a limit, the folder is put back and no apply is recorded. Mirrors are always SHA-1 repositories, because the preflight computes blob ids itself.
+
 **Undo** (`undoFolderApply`; `POST /api/runs/:id/folder-undo` with `{ apply }`) applies the change the other way, with the same preflight. A file the user edited after the apply is a conflict, and nothing is written. Files the undo removes are moved aside too.
 
 **Applying again after an undo.** The snapshot after an apply keeps the result in `main`'s history, and an undo doesn't take it out. So when the newest apply of a result (or of an earlier commit of it) was undone, the next apply starts from what the folder had before that apply (the pinned `base`), not from the merge base. A conflict in that case comes back with `resolvable: false`: merging `main` into the result would fast-forward it to the undone state and lose the run's changes, so **Ask to resolve** isn't offered and the message says to put the files back.

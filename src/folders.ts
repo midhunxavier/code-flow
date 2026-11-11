@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { constants, createWriteStream, existsSync, readFileSync, realpathSync } from "node:fs";
-import { chmod, cp, lstat, mkdir, open, readdir, readFile, readlink, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, cp, lstat, mkdir, open, readdir, readFile, readlink, realpath, rename, rm, rmdir, symlink, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pipeline } from "node:stream/promises";
@@ -178,7 +178,8 @@ async function createMirror(folder: string): Promise<FolderImport> {
     await rm(dirname(mirror), { recursive: true, force: true });
     await mkdir(mirror, { recursive: true, mode: 0o700 });
     const ok = async (args: string[]) => { const res = await git(args, mirror); if (res.code !== 0) throw new Error(gitError(args, res)); };
-    await ok(["init", "-q"]);
+    // SHA-1 whatever GIT_DEFAULT_HASH says: blobId computes the ids git would, without running git on the folder.
+    await ok(["init", "-q", "--object-format=sha1"]);
     await ok(["symbolic-ref", "HEAD", "refs/heads/main"]);
     await ok(["config", "core.autocrlf", "false"]);
     await ok(["config", "core.safecrlf", "false"]);
@@ -397,7 +398,7 @@ export type FolderApply =
   | { ok: false; conflicts: string[]; message: string; resolvable?: false };
 
 interface Change { path: string; oldMode: string; newMode: string; oldId: string; newId: string }
-type FolderState = { kind: "none" } | { kind: "file"; id: string; mode: number } | { kind: "link"; id: string } | { kind: "dir" | "other" | "blocked" } | { kind: "unsafe" };
+type FolderState = { kind: "none" } | { kind: "file"; id: string; mode: number } | { kind: "link"; id: string } | { kind: "dir" | "other" } | { kind: "blocked"; by: string } | { kind: "unsafe" };
 
 const ABSENT = /^0+$/;
 const appliedDir = (mirror: string) => join(dirname(mirror), "applied");
@@ -437,12 +438,14 @@ async function blobId(path: string, link: boolean): Promise<string> {
 /** What the folder has at `path`. A link among its parent folders makes it unsafe to write there. */
 async function folderState(folder: string, path: string): Promise<FolderState> {
   let at = folder;
+  const above: string[] = [];
   for (const part of dirname(path).split("/").filter((p) => p && p !== ".")) {
     at = join(at, part);
+    above.push(part);
     const st = await lstat(at).catch(() => undefined);
     if (!st) return { kind: "none" };
     if (st.isSymbolicLink()) return { kind: "unsafe" };
-    if (!st.isDirectory()) return { kind: "blocked" };
+    if (!st.isDirectory()) return { kind: "blocked", by: above.join("/") };
   }
   const target = join(folder, path);
   const st = await lstat(target).catch(() => undefined);
@@ -450,6 +453,26 @@ async function folderState(folder: string, path: string): Promise<FolderState> {
   if (st.isSymbolicLink()) return { kind: "link", id: await blobId(target, true) };
   if (st.isFile()) return { kind: "file", id: await blobId(target, false), mode: st.mode & 0o777 };
   return { kind: st.isDirectory() ? "dir" : "other" };
+}
+
+/** Every entry under a directory of the folder, as folder-relative paths (directories themselves left out). */
+async function entriesUnder(folder: string, path: string): Promise<string[]> {
+  const found: string[] = [];
+  for (const entry of await readdir(join(folder, path), { withFileTypes: true })) {
+    const child = `${path}/${entry.name}`;
+    if (entry.isDirectory()) found.push(...await entriesUnder(folder, child));
+    else found.push(child);
+  }
+  return found;
+}
+
+/** Remove a directory that holds nothing but empty directories. Fails, removing no file, when it holds anything else. */
+async function removeEmptyDirs(path: string): Promise<void> {
+  for (const entry of await readdir(path, { withFileTypes: true })) {
+    if (!entry.isDirectory()) throw new Error(`${path} is not empty`);
+    await removeEmptyDirs(join(path, entry.name));
+  }
+  await rmdir(path);
 }
 
 /** A path Code Flow writes only inside the folder, never into a repository marker or its own folders. */
@@ -469,6 +492,9 @@ async function applyBetween(mirror: string, folder: string, from: string, to: st
   const conflicts: string[] = [];
   const unsafe: string[] = [];
   const modes = new Map<string, number>();
+  // A result may turn a file into a folder or a folder into a file: the path in the way is then
+  // one this same change removes (and checks like any other), not an edit of yours.
+  const deleted = new Set(changes.filter((c) => ABSENT.test(c.newId)).map((c) => c.path));
   for (const c of changes) {
     if (!safePath(c.path) || c.oldMode === "160000" || c.newMode === "160000") { unsafe.push(c.path); continue; }
     if (c.newMode === "120000") {
@@ -477,7 +503,13 @@ async function applyBetween(mirror: string, folder: string, from: string, to: st
     }
     const state = await folderState(folder, c.path);
     if (state.kind === "unsafe") { unsafe.push(c.path); continue; }
-    if (ABSENT.test(c.oldId)) { if (state.kind !== "none") conflicts.push(c.path); continue; }
+    if (ABSENT.test(c.oldId)) {
+      const cleared = state.kind === "none"
+        || (state.kind === "blocked" && deleted.has(state.by))
+        || (state.kind === "dir" && (await entriesUnder(folder, c.path)).every((p) => deleted.has(p)));
+      if (!cleared) conflicts.push(c.path);
+      continue;
+    }
     const deleting = ABSENT.test(c.newId);
     if (deleting && state.kind === "none") continue;
     const expectLink = c.oldMode === "120000";
@@ -492,7 +524,8 @@ async function applyBetween(mirror: string, folder: string, from: string, to: st
   const written: string[] = [];
   const removed: string[] = [];
   try {
-    for (const c of changes) {
+    // Deletions first, so a file that becomes a folder (or the other way round) is out of the way.
+    for (const c of [...changes.filter((c) => ABSENT.test(c.newId)), ...changes.filter((c) => !ABSENT.test(c.newId))]) {
       const target = join(folder, c.path);
       if (ABSENT.test(c.newId)) {
         if (!(await lstat(target).catch(() => undefined))) continue;
@@ -503,6 +536,7 @@ async function applyBetween(mirror: string, folder: string, from: string, to: st
         removed.push(c.path);
         continue;
       }
+      if ((await lstat(target).catch(() => undefined))?.isDirectory()) await removeEmptyDirs(target);
       await writeEntry(mirror, folder, c.path, c.newMode, c.newId, modes.get(c.path));
       done.push({ change: c });
       written.push(c.path);
@@ -511,7 +545,9 @@ async function applyBetween(mirror: string, folder: string, from: string, to: st
     const failed: string[] = [];
     for (const { change: c, movedTo } of done.reverse()) {
       try {
-        if (movedTo) await moveAside(movedTo, join(folder, c.path));
+        const target = join(folder, c.path);
+        if (!ABSENT.test(c.oldId) && (await lstat(target).catch(() => undefined))?.isDirectory()) await removeEmptyDirs(target);
+        if (movedTo) { await mkdir(dirname(target), { recursive: true }); await moveAside(movedTo, target); }
         else if (ABSENT.test(c.oldId)) await rm(join(folder, c.path), { force: true });
         else await writeEntry(mirror, folder, c.path, c.oldMode, c.oldId, modes.get(c.path));
       } catch { failed.push(c.path); }
@@ -603,7 +639,18 @@ export async function applyToFolder(mirror: string, branch: string, opts: { runI
     const record: FolderApplyRecord = { version: 1, id, ...(opts.runId ? { runId: opts.runId } : {}), branch, base, head, at: Date.now(), paths: result.paths ?? [], ...(result.removed.length ? { removedTo } : {}) };
     await mkdir(appliedDir(mirror), { recursive: true, mode: 0o700 });
     await writeAtomic(join(appliedDir(mirror), `${id}.json`), JSON.stringify(record, null, 2));
-    const commit = await snapshotAfterApply(mirror, meta.path, head);
+    let commit: string;
+    try { commit = await snapshotAfterApply(mirror, meta.path, head); }
+    catch (err) {
+      // The folder is written but can't be recorded (over a limit now, say): an apply that isn't
+      // recorded can't be undone from the run, so put the folder back and report the failure.
+      const back = await applyBetween(mirror, meta.path, head, base, join(dirname(mirror), "removed", `${id}-back`)).then((r) => r.ok, () => false);
+      if (!back) throw new FolderError(`The result was written to the folder, but recording it failed: ${(err as Error).message}. The folder couldn't be put back; what it had before is in the snapshot ${base.slice(0, 12)}, and files the result removed are in ${removedTo}.`);
+      await rm(join(appliedDir(mirror), `${id}.json`), { force: true });
+      await gitText(mirror, ["update-ref", "-d", `refs/codeflow/applied/${id}/base`]);
+      await gitText(mirror, ["update-ref", "-d", `refs/codeflow/applied/${id}/head`]);
+      throw new FolderError(`The result can't be applied: ${(err as Error).message}. The folder was put back as it was.`);
+    }
     return { ok: true, id, commit, written: result.written, removed: result.removed };
   });
 }
@@ -658,7 +705,8 @@ export async function undoFolderApply(mirror: string, id: string): Promise<Folde
     const result = await applyBetween(mirror, meta.path, head, base, join(dirname(mirror), "removed", `${id}-undo`));
     if (!result.ok) return { ...result, message: result.message.replace("since the run started, so the result can't be applied", "since the apply, so it can't be undone") };
     await writeAtomic(file, JSON.stringify({ ...record, undoneAt: Date.now() }, null, 2));
-    const commit = (await importLocked(mirror, meta.path)).commit;
+    // The undo is done and recorded; a snapshot that fails now is taken by the next import.
+    const commit = await importLocked(mirror, meta.path).then((i) => i.commit, async () => (await gitText(mirror, ["rev-parse", "refs/heads/main"])).trim());
     return { ok: true, id, commit, written: result.written, removed: result.removed };
   });
 }
