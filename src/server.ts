@@ -35,7 +35,7 @@ import { requestTailscaleCertificate } from "./tailscale.js";
 import { ProjectTeams } from "./project-teams.js";
 import { handleProjectTeams } from "./project-teams-api.js";
 import { SshProjects } from "./ssh-projects/manager.js";
-import { readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { ProjectFilePolicies, FilePolicyError, assertPolicyExecution, configureFilePolicyResolver, filterPolicyDiff, policyIsRestrictive } from "./filesystem-policy.js";
 import { FilesystemAccess } from "./filesystem-access.js";
 import { createCodeHostsApi } from "./code-hosts-api.js";
@@ -627,6 +627,8 @@ async function requestedRepo(url: URL): Promise<string> {
 async function validRepo(requested: string, opts: { openFolder?: boolean } = {}): Promise<string> {
   if (!requested.startsWith("/")) throw new HttpError(400, "Repository must be an absolute path");
   return attempt(() => repoRoot(requested).catch(async (err) => {
+    // A path that isn't there keeps git's answer ("… no longer exists"), not a folder's.
+    if (!existsSync(requested)) throw err;
     const mirror = opts.openFolder ? await ensureFolderMirror(requested) : await findFolderMirror(requested);
     if (!mirror) throw err;
     return mirror;

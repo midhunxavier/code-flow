@@ -137,7 +137,7 @@ test("names: unique, taken from the folder (with its parent when two repos share
   await assert.rejects(projects.create({ name: "x".repeat(61) }), /under 60/);
   await assert.rejects(projects.create({ name: "Rel", repos: ["relative/path"] }), /absolute/);
   // A plain folder is accepted as its mirror (test/folders.test.ts); a missing one is refused.
-  await assert.rejects(projects.create({ name: "Nope", repos: [join(root, "missing")] }), /doesn't exist/);
+  await assert.rejects(projects.create({ name: "Nope", repos: [join(root, "missing")] }), /no longer exists|isn't a git repository/);
 
   const p = await projects.create({ name: "Both", repos: [join(web, "."), web] });
   assert.deepEqual(p.repos, [web], "paths are stored as their repo root, once");

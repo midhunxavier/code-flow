@@ -1,7 +1,7 @@
 import { test, before } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -42,7 +42,8 @@ test("only project folders are allowed: not too broad, not system, not Code Flow
   await assert.rejects(checkFolder("/usr/bin"), /system folder/);
   await assert.rejects(checkFolder(process.env.CODEFLOW_HOME!), /Code Flow's own data/);
   // A folder that holds CODEFLOW_HOME would copy its tokens into the mirror.
-  await assert.rejects(checkFolder(dirname(process.env.CODEFLOW_HOME!)), /Code Flow's own data/);
+  // (Where the temp folder is /tmp, that parent is also a first-level folder: refused either way.)
+  await assert.rejects(checkFolder(dirname(process.env.CODEFLOW_HOME!)), /Code Flow's own data|too broad/);
   const repo = folder("repo", { "a.txt": "a" });
   execFileSync("git", ["init", "-q"], { cwd: repo });
   mkdirSync(join(repo, "sub"));
@@ -225,7 +226,7 @@ test("applying a result writes its changes into the folder, moves deletions asid
   assert.equal(readFileSync(join(dir, "edit.md"), "utf8"), "after");
   assert.deepEqual([...readFileSync(join(dir, "new/deep/file.bin"))], [0, 255, 1, 254], "binary files byte for byte");
   assert.equal(readlinkSync(join(dir, "alias.md")), "keep.md");
-  assert.ok((execFileSync("stat", ["-f", "%p", join(dir, "tool.sh")]).toString().trim().endsWith("755")), "the executable bit is applied");
+  assert.equal(statSync(join(dir, "tool.sh")).mode & 0o111, 0o111, "the executable bit is applied");
   assert.equal(existsSync(join(dir, "gone.md")), false);
   assert.equal(readFileSync(join(dirname(mirror), "removed", applied.id, "gone.md"), "utf8"), "delete me", "a deleted file is moved aside");
   assert.equal(readFileSync(join(dir, "keep.md"), "utf8"), "keep, edited by you", "your own edit stays");
@@ -307,8 +308,10 @@ test("a folder that was replaced since it was added gets nothing written into it
   const dir = folder("replaced", { "a.md": "a" });
   const mirror = (await openFolder(dir)).mirror;
   const branch = resultBranch(mirror, "result-r", (wt) => writeFileSync(join(wt, "a.md"), "agent"));
+  // The replacement exists before the original goes, so it can't be given the same inode.
+  const other = folder("replacement", { "a.md": "a" });
   rmSync(dir, { recursive: true });
-  folder("replaced", { "a.md": "a" });
+  renameSync(other, dir);
   await assert.rejects(applyToFolder(mirror, branch), /was replaced/);
   assert.equal(readFileSync(join(dir, "a.md"), "utf8"), "a");
 });

@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { mkdir, readFile, realpath, rename, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
@@ -384,7 +385,7 @@ async function checkRepos(input: unknown[], current: string[] = []): Promise<str
     }
     if (!path.startsWith("/")) throw new Error("Repositories must be absolute paths");
     // A folder that isn't a repository joins as its mirror (docs/design/folder-projects.md).
-    const root = await repoRoot(path).catch(() => ensureFolderMirror(path));
+    const root = await repoRoot(path).catch((err) => { if (!existsSync(path)) throw err; return ensureFolderMirror(path); });
     if (!repos.includes(root)) repos.push(root);
   }
   return repos;
