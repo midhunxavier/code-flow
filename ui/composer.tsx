@@ -16,7 +16,6 @@ import { TeamTemplateLibrary } from "./team-template-library.js";
 import { selectedTeamTemplate } from "./team-template-state.js";
 import { confirmAction } from "./confirm-state.js";
 import { intentDraft, WorkflowRecommendation } from "./experience.js";
-import { journeyDraft } from "./journeys.js";
 import { composerRunBody } from "./composer-body.js";
 import { NumberField, numberInputProblem } from "./number-field.js";
 import { EXECUTION_LIMITS, MAX_COMPARE_RUNS, acceptanceCriteriaProblem, executionLimitsProblem, numberProblem, taskTeamLimitsProblem } from "../src/start-input-validation.js";
@@ -32,7 +31,7 @@ import type { VerificationProfile } from "../src/verification.js";
 import { batch, effect } from "@preact/signals";
 import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import { AgentTag } from "./bits.js";
-import { api, showToast, ApiError, baseName, enc, fmtSize, post, readBase64, SHORT, store, useLatest, plural } from "./lib.js";
+import { api, showToast, ApiError, baseName, enc, fmtSize, post, readBase64, shownPath, SHORT, store, useLatest, plural } from "./lib.js";
 import { useDialog } from "./app.js";
 import { AcceptanceEditor, ContextInspector, EffectiveSettings, ProviderSetupPrompt, RepositoryReadiness, SaveTaskTemplateDialog, UseTaskTemplateDialog } from "./onboarding.js";
 import { rerunDraft } from "./rerun-draft.js";
@@ -287,7 +286,6 @@ export function Composer() {
     externalSource.value = null;
     contextPaths.value = new Map();
     attachments.value = [];
-    journeyDraft.value = undefined;
     intentDraft.value = undefined;
     // Unrestricted Antigravity is an opt-in for the run just started, never a default for the next
     // one. Written straight to the run options too: the draft is saved before this composer renders again.
@@ -308,8 +306,8 @@ export function Composer() {
       <p class="lede">{single ? "Choose a provider, describe your task, and start the conversation." : "Describe the task, add the files that matter, and pick how your agents work together."}</p>
       <div class="where" role="group" aria-label="Where the run works">
         <ProjectButton composer />
-        {target.value.project?.repos.length === 1 && target.value.project.repos[0] === repo.value ? <span class="repo-btn" title={repo.value}><Icon name="folder" /><span class="name">{baseName(repo.value)}</span></span>
-          : target.value.project && target.value.project.repos.length > 1 ? <label class="composer-repository">Repository<select class="field" aria-label="Run repository" value={repo.value} onChange={event => void chooseComposerRepository(event.currentTarget.value)}>{!target.value.project.repos.includes(repo.value) ? <option value="">Choose repository</option> : null}{target.value.project.repos.map(folder => <option value={folder}>{baseName(folder)} · {folder}</option>)}</select></label> : <RepoButton />}
+        {target.value.project?.repos.length === 1 && target.value.project.repos[0] === repo.value ? <span class="repo-btn" title={shownPath(repo.value)}><Icon name="folder" /><span class="name">{baseName(repo.value)}</span></span>
+          : target.value.project && target.value.project.repos.length > 1 ? <label class="composer-repository">Repository<select class="field" aria-label="Run repository" value={repo.value} onChange={event => void chooseComposerRepository(event.currentTarget.value)}>{!target.value.project.repos.includes(repo.value) ? <option value="">Choose repository</option> : null}{target.value.project.repos.map(folder => <option value={folder}>{baseName(folder)} · {shownPath(folder)}</option>)}</select></label> : <RepoButton />}
         <button class="btn small ghost" onClick={() => openRepository(composerProject.value)}>Open another repository</button>
       </div>
       {projectsStatus.value.recovery ? <div class="banner" role="alert"><p>{projectsStatus.value.available ? `Project storage recovered: projects.json ${projectsStatus.value.recovery.reason}. The original file is retained as ${projectsStatus.value.recovery.aside} in CODEFLOW_HOME. Existing runs are retained. Restore the backup manually with Code Flow stopped, or continue with the recovered project list.` : `Projects are off: projects.json ${projectsStatus.value.reason}. Fix the file in CODEFLOW_HOME and restart Code Flow. You can still open a repository and start an unassigned run.`}</p>{!projectsStatus.value.available && composerProject.value ? <button class="btn" onClick={() => void openComposer("", { repository: repo.value })}>Open unassigned draft</button> : null}</div> : null}
@@ -338,7 +336,6 @@ export function Composer() {
       {externalSource.value ? <div class="banner"><p>External context: {externalSource.value.provider} {externalSource.value.kind} {externalSource.value.key} · {externalSource.value.title}</p><p class="help">This source remains untrusted. The run uses Safe permissions and isolated checks.</p><button class="btn small" onClick={() => { externalSource.value = null; }}>Remove source</button></div> : null}
       {p?.id === "auto-team" ? <TeamRolloutNotice /> : null}
       <PolicyPauseNotice what="Agent runs are paused" />
-      {journeyDraft.value?.repo === repo.value ? <p class="help">Recorded scenario: {journeyDraft.value.title} <button class="btn ghost small" onClick={() => { journeyDraft.value = undefined; }}>Detach scenario</button></p> : null}
       <TaskBox onStart={start} improve={improve} controls={<>
         {single ? <TaskTeamControl config={taskTeam} lead={soloAgent && soloAgent !== "auto" ? soloAgent : "claude"} project={composerProject.value || undefined} toolApprovals={approvals.tools} disabledReason={remoteWorker || containerEnabled ? "Teams in this conversation require This computer without Docker isolation. Standalone workflows remain available in Advanced." : undefined} onChange={next => { setTaskTeam(next); if (next.enabled) { setRoles(p!.id, "agent", [next.coordinator]); setRoleModel(p!.id, "agent", next.coordinator, next.settings[next.coordinator] ?? {}); } }} /> : <button class="btn ghost" onClick={() => setPattern("solo")}>Back to Agent conversation</button>}
         {single ? taskTeam?.enabled && !remoteWorker && !containerEnabled ? null : <>
@@ -386,7 +383,7 @@ export function Composer() {
         {nativeAcp ? <span class="warn">Unrestricted ACP agents · no Code Flow sandbox</span> : null}
         <button class="btn small ghost" onClick={() => setMoreOptions(!moreOptions)} aria-expanded={moreOptions}>Edit run options</button>
       </div>
-      <WorkflowRecommendation repository={repo.value} intent={journeyDraft.value?.repo === repo.value ? "bug" : intentDraft.value} />
+      <WorkflowRecommendation repository={repo.value} intent={intentDraft.value} />
       {contextError.value ? <div class="msg err">{contextError.value}</div> : null}
       <details class="composer-options compact" open={moreOptions} onToggle={(event) => setMoreOptions(event.currentTarget.open)}>
         <summary>Run options <span>Agents, context, checks and limits for this task</span></summary>
@@ -479,7 +476,7 @@ function ScheduleRunDialog({ body, onClose }: { body: Record<string, any>; onClo
 function RepoButton() {
   const info = repoInfo.value;
   return (
-    <button type="button" class={`repo-btn ${info ? "" : "empty"} ${repoError.value ? "bad" : ""}`} title={info ? info.repo : "Choose repository"} onClick={() => (pickerOpen.value = true)}>
+    <button type="button" class={`repo-btn ${info ? "" : "empty"} ${repoError.value ? "bad" : ""}`} title={info ? shownPath(info.repo) : "Choose repository"} onClick={() => (pickerOpen.value = true)}>
       <Icon name="folder" />
       <span class="name">{info ? baseName(info.repo) : repoChecking.value ? "Checking…" : repoError.value || "Choose repository…"}</span>
       <Icon name="chevron" class="caret" />

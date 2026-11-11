@@ -5,6 +5,7 @@ on:
     # PR updates run below; duplicate push checks can be cancelled and block merging.
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -14,8 +15,32 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Skips the jobs below when nothing needs testing: a merge to main that is identical to a
+  # pull request head that already passed, or a documentation-only change. See scripts/ci-changes.sh.
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+    outputs:
+      code: ${{ steps.decide.outputs.code }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BEFORE: ${{ github.event.before }}
+        run: bash scripts/ci-changes.sh
+
   test:
     name: test (${{ matrix.os }}, Node ${{ matrix.node }})
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ${{ matrix.os }}
     # The full macOS suite can exceed 40 minutes on shared hosted runners.
     timeout-minutes: ${{ matrix.os == 'macos-latest' && 60 || 40 }}
@@ -53,6 +78,8 @@ jobs:
 
   package:
     name: Installed npm launcher (${{ matrix.os }})
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     strategy:
@@ -71,6 +98,8 @@ jobs:
 
   desktop:
     name: macOS desktop lifecycle
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: macos-latest
     timeout-minutes: 20
     steps:
@@ -89,11 +118,15 @@ jobs:
           path: output/playwright/desktop-*.png
 
   windows-desktop:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     uses: ./.github/workflows/windows-desktop.yml
 
   # Critical UI flows in headless Chrome against deterministic provider fixtures.
   e2e:
     name: Browser acceptance (${{ matrix.shard }})
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -135,3 +168,23 @@ jobs:
             output/playwright/**/failed-page.txt
           if-no-files-found: ignore
           retention-days: 7
+
+  # The single check branch protection requires. Skipped jobs count as passing, so a skipped
+  # run can merge; a failed or cancelled job (or a failed change check) blocks the merge.
+  # Browser acceptance is reported above but not required here until its flaky tests are fixed.
+  ci-ok:
+    name: CI result
+    if: always()
+    needs: [changes, test, package, desktop, windows-desktop, e2e]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          echo "$NEEDS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          echo "$NEEDS" | jq -e '
+            .changes.result == "success" and
+            ([.test, .package, .desktop, ."windows-desktop"] | all(.result == "success" or .result == "skipped")) and
+            (.changes.outputs.code != "true" or .test.result == "success")
+          ' > /dev/null

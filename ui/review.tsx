@@ -7,7 +7,7 @@ import { ReviewCoveragePanel } from "./review-coverage.js";
 import { chatProvider, integrityFor, resultAgent } from "./run-experience.js";
 import { useRunStream } from "./run-feed.js";
 import { AgentPicker, ArtifactCard } from "./run.js";
-import { api, enc, post, showToast, showError, store } from "./lib.js";
+import { api, enc, folderOf, post, showToast, showError, store } from "./lib.js";
 import { route, runs } from "./state.js";
 import { publishReviewIntent } from "./publish-review-intent.js";
 import type { AgentId, DiffFile, Run } from "./types.js";
@@ -158,7 +158,7 @@ export function Review({ id, branch }: { id: string; branch: string }) {
           <ReviewCoveragePanel runId={id} branch={branch} refreshKey={`${refresh}:${summary?.status}:${summary?.lastCheck?.at}`} onOpen={setSelected} />
           {worktree && files?.length ? <ChangeImpact folder={worktree.path} paths={files.map(file => file.path)} refreshKey={`${refresh}:${summary?.status}:${summary?.lastCheck?.at}`} /> : null}
         </details>
-        {!summary.testRun && summary.artifacts.find(a => a.branch === branch) ? <details class="review-delivery" open={publishOpen} onToggle={event => setPublishOpen(event.currentTarget.open)}><summary>Publish changes</summary>{workingChanges === false ? <><p class="help">Review the diff and evidence before publishing. Merge… merges into the branch you pick as soon as you click Merge, without asking again{summary.loop.check || summary.loop.verification ? " (tick Require verification there to test the merged result first)" : ""}. Merging a pull request asks you to confirm.</p><ArtifactCard key={branch} run={summary} artifact={summary.artifacts.find(a => a.branch === branch)!} steps={[...data.current.steps.values()]} reviewing initialPanel={publishOnArrival ? "pr" : undefined} /></> : <p class="help">{workingChanges ? "Ask the agent in chat to commit these changes before publishing. Your working files are shown below." : "Checking the workspace…"}</p>}</details> : null}
+        {!summary.testRun && summary.artifacts.find(a => a.branch === branch) ? <details class="review-delivery" open={publishOpen} onToggle={event => setPublishOpen(event.currentTarget.open)}><summary>{folderOf(summary.repo) || summary.folder ? "Apply to the folder" : "Publish changes"}</summary>{workingChanges === false ? <>{folderOf(summary.repo) || summary.folder ? <p class="help">Review the diff and evidence first. Apply to folder… writes these changes into {summary.folder ?? folderOf(summary.repo)} after checking that you haven't changed the same files, and you can undo it.</p> : <p class="help">Review the diff and evidence before publishing. Merge… merges into the branch you pick as soon as you click Merge, without asking again{summary.loop.check || summary.loop.verification ? " (tick Require verification there to test the merged result first)" : ""}. Merging a pull request asks you to confirm.</p>}<ArtifactCard key={branch} run={summary} artifact={summary.artifacts.find(a => a.branch === branch)!} steps={[...data.current.steps.values()]} reviewing initialPanel={publishOnArrival ? "pr" : undefined} /></> : <p class="help">{workingChanges ? "Ask the agent in chat to commit these changes before publishing. Your working files are shown below." : "Checking the workspace…"}</p>}</details> : null}
         <button class="btn small review-refresh" onClick={() => setRefresh(value => value + 1)}>Refresh changes</button></div>
       </div> : null}
       {error ? <div class="msg err review-msg">{error}</div> : null}

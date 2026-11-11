@@ -8,13 +8,13 @@ import { DEFAULT_EXECUTION_BUDGET } from "../src/execution-budget.js";
 export { needsYou, runState, isFlagged } from "../src/run-status.js";
 import { rerunDraft } from "./rerun-draft.js";
 import { contextBudget, contextBudgetOrigin } from "./context-budget.js";
-import { intentDraft, journeyDraft } from "./composer-draft-fields.js";
+import { intentDraft } from "./composer-draft-fields.js";
 import { batch, computed, effect, signal, untracked } from "@preact/signals";
 import { legacyDraftProject, projectDestination, ProjectDraftStore } from "./project-context.js";
 import { supportsRunPermissions } from "../src/run-permissions.js";
 import { selectedTeamTemplate } from "./team-template-state.js";
 import { readProjectDefaults } from "./project-defaults.js";
-import { api, sharedGet, ApiError, post, showToast, showError, store, workspaceId, workspaceKey, SHORT } from "./lib.js";
+import { api, sharedGet, ApiError, post, rememberFolders, showToast, showError, store, workspaceId, workspaceKey, SHORT } from "./lib.js";
 import { independentRoles, type RoleValue } from "./roles.js";
 import { onStreamState, subscribe } from "./stream.js";
 import { defaultPlanApproval, teamAwaitingAnswer } from "./team-state.js";
@@ -305,6 +305,7 @@ export async function loadProjects(fresh = false) {
     // before restoring drafts or treating project storage as fully loaded.
     const inventory = await (fresh ? api<Project[]>("/api/projects") : sharedGet<Project[]>("/api/projects"));
     if (request !== projectLoadRequest) return;
+    rememberFolders(inventory);
     projects.value = inventory;
     const status = await diagnosis;
     if (request !== projectLoadRequest) return;
@@ -1156,6 +1157,7 @@ export function forgetRun(id: string, local = false, elsewhere = true, projectHi
 export function upsertRun(run: RunSummary) {
   if (run.deleted) { forgetRun(run.id, false, true, run.project); return; }
   if (deletedRunIds.value.has(run.id)) return;
+  rememberFolders([run]);
   const next = new Map(runs.value);
   next.set(run.id, run);
   runs.value = next;
@@ -1247,6 +1249,7 @@ function noticeChange(before: RunSummary | undefined, run: RunSummary) {
 /** A whole list of runs: `fresher` says which runs this list may not replace. */
 function applyRunList(list: RunSummary[], fresher: (id: string) => boolean, preserve = false) {
   const before = runs.value;
+  rememberFolders(list);
   const next = preserve ? new Map(before) : new Map<string, RunSummary>();
   for (const run of list) if (!deletedRunIds.value.has(run.id)) next.set(run.id, fresher(run.id) && before.has(run.id) ? before.get(run.id)! : run);
   for (const [id, run] of before) if (!next.has(id) && fresher(id)) next.set(id, run);
@@ -1550,7 +1553,7 @@ export function rememberBase() {
 // ---------------------------------------------------------------- project drafts
 function composerSnapshot() {
   return {
-    contextBudget: contextBudget.value, contextBudgetOrigin: contextBudgetOrigin.value, intent: intentDraft.value, journey: journeyDraft.value,
+    contextBudget: contextBudget.value, contextBudgetOrigin: contextBudgetOrigin.value, intent: intentDraft.value,
     version: 1 as const, repository: requestedRepository.value, task: task.value, acceptance: acceptanceCriteria.value,
     paths: [...contextPaths.value.entries()], attachments: attachments.value, pattern: patternId.value,
     roles: roleSel.value, models: roleModels.value, settings: agentSettings.value, options: optionValues.value,
@@ -1656,7 +1659,7 @@ function restoreComposer(snapshot: ComposerSnapshot) {
   if (snapshot.rerun && !DRAFT_CHOICES.some((field) => field in origins)) for (const field of DRAFT_CHOICES) origins[field] = RERUN_ORIGIN;
   batch(() => {
     contextBudget.value = snapshot.contextBudget; contextBudgetOrigin.value = snapshot.contextBudgetOrigin ?? "Application default";
-    intentDraft.value = snapshot.intent; journeyDraft.value = snapshot.journey;
+    intentDraft.value = snapshot.intent;
     task.value = snapshot.task; acceptanceCriteria.value = snapshot.acceptance;
     contextPaths.value = new Map(snapshot.paths); attachments.value = snapshot.attachments;
     patternId.value = snapshot.pattern; roleSel.value = snapshot.roles; roleModels.value = snapshot.models;
@@ -1676,7 +1679,7 @@ function restoreComposer(snapshot: ComposerSnapshot) {
 }
 
 function resetComposer(project?: Project) {
-  intentDraft.value = undefined; journeyDraft.value = undefined; contextBudget.value = undefined; contextBudgetOrigin.value = "Application default";
+  intentDraft.value = undefined; contextBudget.value = undefined; contextBudgetOrigin.value = "Application default";
   task.value = ""; acceptanceCriteria.value = []; attachments.value = []; contextPaths.value = new Map();
   source.value = null; externalSource.value = null; branchPrefix.value = ""; baseRef.value = "";
   roleSel.value = store.json("roleSel", {}); roleModels.value = store.json("roleModels", {});
@@ -1731,7 +1734,7 @@ async function switchComposer(next: string, options: { repository?: string; carr
         resetComposer(project);
       }
       if (saved && repository !== saved.repository) {
-        contextPaths.value = new Map(); source.value = null; externalSource.value = null; baseRef.value = ""; journeyDraft.value = undefined;
+        contextPaths.value = new Map(); source.value = null; externalSource.value = null; baseRef.value = "";
         checkCmd.value = detectedCheck; setupCmd.value = detectedSetup; trust.value = detectedTrust; selectedTeamTemplate.value = null; composerRunOptions.value = {}; rerunDraft.value = null;
         forgetChoices(["check", "setup", "trust"]);
       }

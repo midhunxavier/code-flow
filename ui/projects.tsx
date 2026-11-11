@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from "preact/hooks";
 import { HostControl, newProjectDraft } from "./ssh-projects.js";
 import { useDialog } from "./app.js";
 import { Icon } from "./icons.js";
-import { api, ApiError, baseName, post, showToast, showError, plural } from "./lib.js";
+import { api, ApiError, baseName, isFolderMirror, post, shownPath, showToast, showError, plural } from "./lib.js";
 import {
   ALL,
   composerProject,
@@ -242,12 +242,12 @@ function ProjectEditor({ project, onDone, onCreated }: { project?: Project; onDo
   };
   const addRepo = () => {
     pickerChoose.value = {
-      title: `Add a repository to ${name.trim() || "the project"}`,
+      title: `Add a repository or folder to ${name.trim() || "the project"}`,
       // The repo's root, so a subfolder you picked counts as its repo.
       choose: (path) =>
         api<RepoInfo>(`/api/branches?repo=${encodeURIComponent(path)}`).then(
           (info) => setRepos((list) => (list.includes(info.repo) ? list : [...list, info.repo])),
-          () => setError(`${baseName(path)} isn't a git repository`),
+          (err) => setError((err as Error).message || `${baseName(path)} couldn't be added`),
         ),
     };
     pickerOpen.value = true;
@@ -280,12 +280,13 @@ function ProjectEditor({ project, onDone, onCreated }: { project?: Project; onDo
           <div class="lbl">Repositories</div>
           <div class="project-repos">
             {repos.map((r) => (
-              <div key={r} class="dir" title={r}>
+              <div key={r} class="dir" title={shownPath(r)}>
                 <span class="di">
                   <Icon name="folder" />
                 </span>
                 <span class="dn">{baseName(r)}</span>
-                <Tail text={r} />
+                <Tail text={shownPath(r)} />
+                {isFolderMirror(r) ? <span class="git-badge" title="Not a Git repository: runs work on a private copy, and the folder changes only when you apply a result">Folder</span> : null}
                 <button type="button" class="btn ghost small" aria-label={`Remove ${baseName(r)}`} onClick={() => setRepos(repos.filter((x) => x !== r))}>
                   Remove
                 </button>
@@ -294,7 +295,7 @@ function ProjectEditor({ project, onDone, onCreated }: { project?: Project; onDo
             {!repos.length ? <div class="help">Add a repository before starting a run. You can also keep an empty project for shared work.</div> : null}
           </div>
           <button type="button" class="btn ghost small add-repo" onClick={addRepo}>
-            <Icon name="plus" /> Add repository…
+            <Icon name="plus" /> Add repository or folder…
           </button>
         </div>
         {leaving.length ? <div class="msg warn">Runs already in this project from {leaving.map(baseName).join(", ")} stay in it.</div> : null}

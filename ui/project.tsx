@@ -15,11 +15,10 @@ import { ProjectShare } from "./project-share.js";
 import { TeamPeopleView } from "./collab-people.js";
 import { useProjectFeatures } from "./project-features.js";
 import { OutcomeMetrics } from "./experience.js";
-import { ScenarioLibrary } from "./journeys.js";
 import type { ComponentChildren } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { Icon } from "./icons.js";
-import { api, enc, usePoll, fmtCost, ago, baseName, STATUS_TEXT, collaborationHref, selectedTeamConnection } from "./lib.js";
+import { api, enc, usePoll, fmtCost, ago, baseName, isFolderMirror, shownPath, STATUS_TEXT, collaborationHref, selectedTeamConnection } from "./lib.js";
 import { editProject, patterns, projectFor, projects, projectsLoaded, route, runs, isRunDeleted, runState, openComposer, composerProject, composerLoading, draftsReady, task, savedDraftTask } from "./state.js";
 import { hashFor, type ProjectSection, type RepositoryTool } from "./navigation.js";
 import { computerLabel, executionHost } from "./ssh-projects.js";
@@ -74,13 +73,13 @@ export function ProjectView({ id, section, repository, tool, kind }: { id: strin
       <a class="btn" href={destination("runs")}>View history</a>
     </> : section === "board" ? <TeamBoardView project={id} embedded navigate={navigateTeam} /> : section === "people" ? <TeamPeopleView project={id} embedded navigate={navigateTeam} /> : section === "connections" ? <IntegrationsScreen key={id} projectId={id} /> : section === "automation" ? <SchedulingView key={id} projectId={id} kind={kind} /> : section === "runs" ? <><ProjectChatHistory key={`chats:${id}`} projectId={id}/><ProjectRuns key={id} projectId={id} /></> : section === "repositories" ? <>
       <div class="project-repository-head"><h2>Repositories</h2><button class="btn" onClick={() => addRepositoryToProject(id)}><Icon name="plus" />Add repository</button></div>
-      {!p.repos.length ? <p class="help">No repositories yet. Add a repository from {computerLabel()} to use its files and tools.</p> : <div class="project-repository-list">{p.repos.map(folder => <a class={`pp-card project-repository ${selectedRepository === folder ? "selected" : ""}`} href={hashFor({ view: "project", id, section: "repositories", repository: folder, tool: "code" })}><strong>{baseName(folder)}</strong><code>{folder}</code><span>Open repository tools →</span></a>)}</div>}
+      {!p.repos.length ? <p class="help">No repositories yet. Add a repository from {computerLabel()} to use its files and tools.</p> : <div class="project-repository-list">{p.repos.map(folder => <a class={`pp-card project-repository ${selectedRepository === folder ? "selected" : ""}`} href={hashFor({ view: "project", id, section: "repositories", repository: folder, tool: "code" })}><strong>{baseName(folder)}</strong><code>{shownPath(folder)}</code><span>{isFolderMirror(folder) ? "Folder · not a Git repository. Open its tools →" : "Open repository tools →"}</span></a>)}</div>}
       {selectedRepository ? <WorkbenchView key={`${id}:${selectedRepository}`} projectId={id} initialFolder={selectedRepository} initialTool={tool} onNavigate={(folder, nextTool) => { route.value = { view: "project", id, section: "repositories", repository: folder, tool: nextTool }; }} /> : p.repos.length ? <p class="help">Choose a repository to inspect its files, checks, services and history.</p> : null}
     </> : <>
       <section class="pp-card project-start"><h2>Project settings</h2><p>Manage the project's name and repository membership.</p><button class="btn" onClick={() => editProject(id)}>Edit project</button></section>
       <section class="pp-card project-settings-card"><h2>Defaults</h2><p>Optional instructions, files, check commands, permissions and limits for future work. Each approach shows the settings it will use.</p><button class="btn" disabled={!p.repos.length} onClick={() => setContextOpen(true)}>Edit project defaults</button><p class="help">Provider connections and authentication live in <a href="#/settings/providers">App settings → Providers</a>.</p></section>
       <ProjectContextEditor project={id} repo={p.repos[0] ?? ""} open={contextOpen} onClose={() => setContextOpen(false)}/>
-      <details class="pp-card project-advanced"><summary>Advanced · saved workflows and repository configuration</summary><button class="btn" disabled={!draftsReady.value || composerLoading.value} onClick={() => void openComposer(id)}>Saved workflows</button><ProjectRunSettings projectId={id} repositories={p.repos}/>{p.repos.map(folder => <ScenarioLibrary key={folder} repository={folder} />)}<OutcomeMetrics project={id}/></details>
+      <details class="pp-card project-advanced"><summary>Advanced · saved workflows and repository configuration</summary><button class="btn" disabled={!draftsReady.value || composerLoading.value} onClick={() => void openComposer(id)}>Saved workflows</button><ProjectRunSettings projectId={id} repositories={p.repos}/><OutcomeMetrics project={id}/></details>
     </>}
   </div>;
 }

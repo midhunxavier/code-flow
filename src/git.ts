@@ -813,6 +813,27 @@ async function saveUntracked(at: Checkout, paths: string[]): Promise<Record<stri
   return Object.fromEntries(files.map((f, i) => [f, ids[i]!]).filter(([, id]) => /^[0-9a-f]{40,64}$/.test(id!)));
 }
 
+/**
+ * Write blob `id` of `repo` to the new file `target` (absolute; it must not exist yet), byte for
+ * byte. For src/folders.ts, which writes results into a folder that has no repository.
+ */
+export function writeBlobFile(repo: GitCwd, id: string, target: string, mode = 0o600): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let fd: number;
+    try { fd = openSync(target, "wx", mode); } catch (err) { reject(err); return; }
+    const command = gitCommand(["cat-file", "blob", id], repo);
+    const child = spawn("git", command.args, { cwd: folderOf(repo), env: command.env, stdio: ["ignore", fd, "pipe"] });
+    let stderr = "";
+    child.stderr?.on("data", (c: Buffer) => (stderr += c.toString()));
+    child.on("error", (err) => { closeSync(fd); reject(err); });
+    child.on("close", (code) => {
+      closeSync(fd);
+      if (code === 0) resolve();
+      else reject(new Error(`git cat-file blob ${id} failed: ${stderr.trim()}`));
+    });
+  });
+}
+
 /** Write blob `id` to `path` in a checkout, byte for byte (binary files too). */
 function writeBlob(at: Checkout, id: string, path: string): Promise<void> {
   return new Promise((resolve, reject) => {
