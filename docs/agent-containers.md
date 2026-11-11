@@ -77,10 +77,9 @@ use provider credentials or model quota. The regular suite also tests launch arg
 all adapter transports, daemon/client separation, cancellation, and timeout with a fake
 Docker runtime.
 
-Per-project read/write restrictions use the separate [filtered task
-backend](filesystem-policy.md), with a fresh allowed-file Git namespace and
-explicit review-branch import. Ordinary agent containers mount their worktree's
-full Git common directory and cannot enforce those restricted reads.
+Agent containers mount their worktree's full Git common directory and cannot
+enforce [per-project read/write restrictions](filesystem-policy.md); restricted
+projects do not run agents.
 
 ---
 

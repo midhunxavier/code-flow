@@ -38,7 +38,7 @@ test("main screens, workspace tools and dialogs pass automatic accessibility che
   for (const colorScheme of ["light", "dark"] as const) {
     await page.emulateMedia({ colorScheme, reducedMotion: "reduce" });
     for (const [route, name] of [["", "composer"], [`/run/${runId}`, "run result"], ["/settings/workspace", "workspace"]]) { await page.goto(`${base}/#${route}`); await page.locator("main").waitFor(); await page.waitForFunction(() => document.querySelector("main")!.textContent!.trim().length > 10); await audit(`${colorScheme} ${name}`); }
-    const tabs = ["Code", "Context", "History", "Services", "Coordinated changes", "Filtered tasks"];
+    const tabs = ["Code", "Context", "History", "Coordinated changes"];
     for (const tab of tabs) { await page.getByRole("navigation", { name: "Repository tools" }).getByRole("button", { name: tab, exact: true }).click(); await audit(`${colorScheme} workspace ${tab}`); }
     await page.goto(`${base}/#/settings`);
     for (const category of ["General", "Agents", "Run defaults", "Notifications", "Connections", "Integrations", "Projects", "Data & storage", "Advanced"]) {

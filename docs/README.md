@@ -56,9 +56,9 @@ Read the story: [Describe the team. Code Flow builds the workflow.](https://midh
 
 - [Configuration](configuration.md) · [ACP agents](acp-agents.md) · [Context inspection](context-inspection.md)
 - [Project conventions](project-conventions.md) · [Checkpoints and reversions](checkpoint-review.md)
-- [Service launch profiles](launch-profiles.md) · [Code intelligence](code-intelligence.md) · [Architecture explorer](architecture-explorer.md)
-- [Project memory and knowledge graph](memory-storage.md) · [Semantic claim review](memory-claims.md)
-- [Coordinated repository changes](coordinated-changes.md) · [Model training preview](model-training.md)
+- [Code intelligence](code-intelligence.md) · [Architecture explorer](architecture-explorer.md)
+- [Project memory](memory-storage.md)
+- [Coordinated repository changes](coordinated-changes.md)
 
 ## Connect and collaborate
 
@@ -67,12 +67,11 @@ Read the story: [Describe the team. Code Flow builds the workflow.](https://midh
 - [SSH projects](ssh-projects.md) · [Remote workers](remote-workers.md)
 - [GitLab and Bitbucket workflows](code-hosts.md) · [External sources](external-sources.md)
 - [Automations and remote access](automations.md) · [Notifications](notifications.md)
-- [VS Code integration](../integrations/vscode/README.md)
 
 ## Operate safely
 
 - [Security and execution boundaries](security.md) · [Filesystem policies](filesystem-policy.md)
-- [Agent containers](agent-containers.md) · [Filtered Docker tasks](filtered-tasks.md)
+- [Agent containers](agent-containers.md)
 - [Dependency discovery](dependency-discovery.md) · [Backup and maintenance](maintenance.md)
 
 ## Build and extend
@@ -86,13 +85,7 @@ Read the story: [Describe the team. Code Flow builds the workflow.](https://midh
 
 These documents record implementation decisions and evidence at a particular point in time. Use the guides above for current product instructions.
 
-- [Application improvement program](application-improvements.md)
-- [Project navigation review and implementation plan](project-first-navigation-plan.md) (proposed)
-- [Dynamic-team evaluation](dynamic-teams-evaluation.md) and [implementation plan](dynamic-teams-implementation-plan.md)
-- [Implementation review](dynamic-teams-implementation-review-1.md) and [original plan review](dynamic-teams-plan-review-0.md)
-- [Standing-team implementation plan](project-teams-implementation-plan.md)
-- [Local and remote ML automation implementation plan](ml-training-implementation-plan.md)
-- [Measured performance](performance-results.md)
+- [Worker permission verification](worker-permission-verification.md)
 
 [Project README](../README.md) · [Getting started](getting-started.md)
 

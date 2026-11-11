@@ -181,30 +181,6 @@ test("opening a cold archived run hydrates full task and step evidence through t
   assert.ok(detail.summary.includes("COLD_SUMMARY_FULL_END")); assert.equal(detail.steps.length, 1);
 });
 
-test("workspace starts, inspects and stops a real two-service launch profile", async () => {
-  await page.goto(`${base}/#/settings/workspace`);
-  await page.getByLabel("Repository or run worktree", { exact: true }).selectOption(worktree);
-  await page.getByRole("button", { name: "Services", exact: true }).click();
-  const panel = page.getByRole("region", { name: "Multi-service launch profiles" });
-  const idle = await fetch(`${base}/api/runs/history-125/launch-profiles?worktree=preview`, { headers }).then((response) => response.json());
-  assert.equal(idle.profiles?.length, 1, JSON.stringify(idle));
-  await panel.getByLabel("Launch profile", { exact: true }).waitFor();
-  assert.equal(idle.session, null, "viewing the profile executes no commands");
-  await panel.getByText("Review 2 service commands", { exact: true }).click();
-  assert.match(await panel.innerText(), /Starts after api/);
-  await panel.getByRole("button", { name: "Start launch profile", exact: true }).click();
-  await panel.getByText("Stack: ready", { exact: true }).waitFor({ timeout: 15000 });
-  const webUrl = await panel.getByRole("link", { name: "Open web", exact: true }).getAttribute("href");
-  const apiUrl = await panel.getByRole("link", { name: "Open api", exact: true }).getAttribute("href");
-  assert.notEqual(webUrl, apiUrl);
-  const response = await fetch(webUrl!).then((result) => result.json()); assert.equal(response.api, apiUrl);
-  await panel.getByRole("article", { name: "web service" }).getByText(/Logs \(/).click();
-  await panel.getByText("ready web", { exact: true }).waitFor();
-  await panel.getByRole("button", { name: "Stop services", exact: true }).click();
-  await panel.getByText("Stack: stopped", { exact: true }).waitFor();
-  assert.equal(await panel.getByRole("link", { name: "Open web", exact: true }).count(), 0);
-});
-
 test("project conventions save with CAS, restore a previewed version, and explicitly stage guidance for a later commit", async () => {
   await page.goto(`${base}/#/settings`);
   const tab = page.getByRole("navigation", { name: "Settings categories" }).getByRole("link", { name: "Projects", exact: true }); await tab.focus(); await page.keyboard.press("Enter");

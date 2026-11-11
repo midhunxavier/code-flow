@@ -214,41 +214,19 @@ persistent `Idempotency-Key`. Notification storage/configuration failure returns
 503 and leaves delivery off. See [configuration, disclosure, and delivery
 limitations](notifications.md).
 
-## Project memory analysis and revision commands
+## Project memory revision commands
 
 | Operation | Request | Behavior |
 | --- | --- | --- |
 | `GET /projects/:id/memory` | optional `repo` query | List authorized project entries. A supplied repository must belong to the project. |
 | `POST /projects/:id/memory/commands` | `op=create\|approve\|update\|delete\|feedback` plus operation fields | Run user-authorized revision commands. All existing-entry mutations require exact `id` and `expectedRevision`; conflicts return 409. Client authority/origins are not forwarded. |
-| `GET /projects/:id/memory/analysis` | `repo` query (optional for a single-repo project) | Return bounded provenance, freshness, duplicates/semantic claims, deletion impact and curated onboarding with exact source revisions and truncation indicators. |
-| `POST /projects/:id/memory/analysis/publish` | `repo`, `expectedSources` from `analysis.onboarding.sourceRefs` | Recompute and publish eligible user-authored onboarding guidance with pinned provenance. Changed sources return 409; no eligible sources returns 400. |
 
 Create accepts `repo`, `title`, `body`, optional `paths`, `tags`, and
 `applicability`. Update accepts editable fields and optional `accept: true`; an
 ordinary edit never accepts a proposal automatically. Feedback accepts `rating`,
 optional `note` and `runId`; a run reference must have selected that exact entry
-revision. Analysis is heuristic and bounded: lexical similarity does not infer
-contradictions on its own. Deterministic semantic claims compare supported
-policies and structured boolean/text/numeric intervals only across overlapping
-applicability; unsupported prose is counted. Git freshness checks do not
-establish semantic correctness. See [supported claims](memory-claims.md).
-Publication excludes imported/private/untrusted material and prior onboarding
-summaries. Memory APIs remain owner-only; shared project roles use the separate
+revision. Memory APIs remain owner-only; shared project roles use the separate
 closed review surface described below.
-
-## Multi-service launch profiles
-
-| Operation | Request | Behavior |
-| --- | --- | --- |
-| `GET /runs/:id/launch-profiles` | `worktree` query | Read `.codeflow/launch.json` from the owned worktree and return `{profiles, found, error?, session}` with sanitized configuration and session logs. |
-| `POST /runs/:id/launch-profiles` | `worktree`, `profile`, optional `allowUntrusted` | Start a configured dependency-ordered group; returns 201 with session and assigned local URLs/ports. Locked-down host execution requires explicit authorization. |
-| `DELETE /runs/:id/launch-profiles` | `worktree` query | Stop the owned launch session and return `{stopped}`. |
-
-Profiles configure at most six services and bounded commands, relative working
-directories, dependencies, environment values and optional local HTTP health
-checks. The server assigns ports and peer URL variables. This starts local
-processes; it is not remote deployment or hosting. See [launch profile
-configuration and lifecycle](launch-profiles.md).
 
 ## Automation inspection and replay
 
@@ -468,28 +446,6 @@ restrictions pause ordinary application-managed execution globally, including
 background preparation. See [activation, execution boundaries and HTTP error
 semantics](filesystem-policy.md).
 
-Restricted execution uses a separate owner-only manual task surface:
-
-| Operation | Request | Behavior |
-| --- | --- | --- |
-| `GET /filtered-tasks` | optional `project` query | Return bounded lifecycle/receipt metadata; historical source/output content is not listed. |
-| `POST /filtered-tasks` | `project`, `repo`, `task`, `agent`, `image`, optional `network`, `maxMinutes` | Prepare a filtered committed snapshot and return 202 after a durable claim; only built-in providers and an explicit local immutable image are supported. |
-| `GET /filtered-tasks/:id` | none | Read task/output under unchanged current canonical policy and project membership. |
-| `POST /filtered-tasks/:id/preview-import` | empty body | Validate source/result/policy and preview bounded allowed file changes. |
-| `POST /filtered-tasks/:id/import` | `revision`, `expectedHead`, `resultHash` | Create a new review branch with an atomic exact-source ref transaction; leave checkout and index unchanged. |
-| `POST /filtered-tasks/:id/cancel` | `revision` | Cancel preparation/execution, or an unknown daemon receipt, and confirm the owned daemon container is absent. A finished task whose container is confirmed stopped returns 409; delete it instead. |
-| `POST /filtered-tasks/:id/receipt` | `revision` | Explicitly inspect an interrupted branch-import receipt; never replay a provider turn. |
-| `DELETE /filtered-tasks/:id` | JSON `revision` | Remove a stopped terminal task's private export/record; preserve any imported review branch. |
-
-The task container receives only permitted committed regular files and a new Git
-object database. It mounts no original repository metadata, host login directory,
-authentication volume or application memory. The image layer and copied files
-denied writes are read-only. Network starts off; enabling inference access is an
-explicit owner choice. Input/output limits are 500 files, 512 KiB per file and
-16 MiB total; live monitoring is a polling safeguard, not a filesystem quota.
-Restarted effectful phases become unknown and require explicit inspection or
-cancellation. See [runtime provisioning, recovery and limitations](filesystem-policy.md).
-
 ## SSH projects
 
 Owner-only connection management is available on the local listener. SSH host
@@ -516,11 +472,11 @@ Managed Tailscale certificates renew automatically while Tailscale remote access
 
 For multi-agent roles in Race, Debate, Review council, Supervisor and Loop workflows, a role setting can include additional models from the same provider: `roleSettings.reviewers.claude = { model: "first", variants: [{ model: "second", effort: "low" }] }`. Each entry runs separately with its own settings and session. Pipeline and other single-agent roles still use one model. Auto team pools also accept variants in `roleSettings.pool`: these are allowed model/effort choices for workers and reviewers. The coordinator selects among them within the member limit; it does not launch every selected model. Coordinator settings stay fixed. Additional models use the same validation as primary models (maximum 128 additional models per provider).
 
-### Result experiences and browser scenarios
+### Result experiences
 
 These operations are owner-only and use the existing origin, authentication,
 filesystem-policy and host boundaries. New run requests can include `intent`
-(`bug`, `feature`, `review`, `explore`) and an existing same-repository `journeyId`.
+(`bug`, `feature`, `review`, `explore`).
 Comparison variants can include separate `task` instructions while sharing the
 base run configuration. Comparison launches can partially succeed; inspect the
 returned/visible group before retrying an interrupted request.
@@ -531,15 +487,6 @@ returned/visible group before retrying an interrupted request.
 | `POST /runs/:id/outcome` | `branch`, `expectedHead`, `decision=accepted\|needs-work` | Record feedback on an idle, exact result commit; stale heads return 409. Does not publish or approve managed shipping. |
 | `POST /runs/:id/task-priority` | `taskId`, `revision`, `priority` (-10 to 10) | Prioritize undispatched tasks on the current Auto-team plan without relaxing scheduling constraints. |
 | `GET /runs/:id/worktrees/:name/serve/ready` | none | Report process state and whether its local app port accepts a connection. |
-| `GET /journeys` | absolute `repo` query | List saved immutable browser scenarios in this repository. |
-| `POST /journeys` | `repo`, `title`, local `url`, `width`, `actions`, `expected: {selector, text}` | Validate and save a scenario; returns 201 with its ID and data. Actions use `kind=click\|fill\|select\|press`, `selector`, and optional `value`. |
-| `GET /journeys/:id` | none | Return scenario, generated Playwright spec, and up to four replay receipts. |
-| `POST /journeys/:id/replay` | optional local `url`, `runId`, `branch` | Replay in fresh Chrome, save screenshots and assertion status, return 201. Run-associated replays require that result's registered running app. Preserves the scenario's path/query/hash on the selected origin. |
-| `DELETE /journeys/:id` | none | Delete the scenario and retained screenshots. Existing runs keep their original attached test context. |
-
-A replay receipt's `passed` status means only that the expected visible text
-appeared after the recorded interactions. It is separate from Git verification;
-see [result experiences](application-improvements.md#result-first-product-experiences).
 
 ## Documentation and help
 

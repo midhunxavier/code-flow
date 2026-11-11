@@ -54,7 +54,7 @@ export class DevServers {
     this.stop(key);
     const port = await freePort(preferredPort);
     if (signal?.aborted) throw new Error("Service startup was cancelled before spawning");
-    if (generatedEnv.PORT !== undefined && generatedEnv.PORT !== String(port)) throw new Error("The allocated service port became busy. Restart the launch profile to allocate fresh ports.");
+    if (generatedEnv.PORT !== undefined && generatedEnv.PORT !== String(port)) throw new Error("The allocated service port became busy. Restart the service to allocate a fresh port.");
     const child = spawn("/bin/sh", ["-c", command], {
       cwd,
       detached: true, // own process group: stopping it stops whatever the command started

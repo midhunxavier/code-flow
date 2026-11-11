@@ -996,12 +996,6 @@
   .project-memory > .help { margin: 8px 0 0; }
   .project-memory > .at-row { justify-content: flex-start; gap: 8px; margin-top: 12px; }
   .memory-list { display: grid; gap: 10px; margin-top: 12px; }
-  .knowledge-graph { margin-top: 12px; font-size: 13px; }
-  .knowledge-graph label { display: grid; gap: 6px; margin: 12px 0; }
-  .knowledge-connections { overflow-x: auto; contain: inline-size; }
-  .knowledge-graph table { width: 100%; min-width: 720px; border-collapse: collapse; }
-  .knowledge-graph th, .knowledge-graph td { text-align: left; vertical-align: top; padding: 8px 10px; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; }
-  .knowledge-graph th { color: var(--text-2); font-weight: 600; white-space: nowrap; }
   .memory-card { border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); padding: 12px 14px; font-size: 13px; overflow-wrap: anywhere; }
   .memory-card > .at-row { flex-wrap: wrap; }
   .memory-card > .at-row > b { font-size: 14px; font-weight: 600; }
@@ -2743,35 +2737,6 @@
   .result > .verify-profile ul { margin: 6px 0; padding-left: 34px; display: grid; gap: 4px; color: var(--text-2); }
   .result > .verify-profile .help { margin: 4px 0 0 15px; }
 
-  /* ---------- Project memory: health, provenance and onboarding ---------- */
-  .memory-analysis > .help { margin: 8px 0 0; }
-  .memory-analysis > .btn { margin-top: 8px; }
-  .memory-analysis > .msg { margin: 8px 0 0; }
-  .memory-analysis > details { margin-top: 10px; }
-  .memory-analysis details > summary { min-height: 28px; }
-  /* what a disclosure holds lines up with its title, past the chevron */
-  .memory-analysis > details > :not(summary) { margin-left: 15px; }
-  .memory-analysis details .help { margin: 6px 0; }
-  .memory-analysis details details { margin-top: 8px; }
-  .memory-analysis ul { margin: 6px 0; padding-left: 18px; display: grid; gap: 6px; }
-  .memory-analysis li > p { margin: 4px 0; }
-  .memory-analysis pre { margin: 6px 0; max-height: none; overflow: visible; overflow-wrap: anywhere; } /* bounded snippets: shown whole, no keyboard-unreachable scroller */
-  .memory-analysis .btn.primary { margin: 4px 0; }
-  /* an entry named in a sentence: a link-like button that scrolls to (and focuses) its card */
-  .mem-link { display: inline; padding: 0; border: 0; background: none; font: inherit; color: var(--accent-ink); text-decoration: underline; text-underline-offset: 2px; text-align: left; cursor: pointer; }
-  .mem-link:hover { color: var(--text); }
-  .memory-graph { overflow: auto; max-height: 380px; margin: 8px 0; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--sunken); }
-  .memory-graph svg { display: block; font-family: var(--sans); }
-  .mem-edge { fill: none; stroke: var(--muted); stroke-width: 1.25px; }
-  .memory-graph marker path { fill: none; stroke: var(--muted); stroke-width: 1.25px; }
-  .mem-node { cursor: pointer; outline: none; }
-  .mem-node rect { fill: var(--raised); stroke: var(--border-strong); stroke-width: 1px; filter: drop-shadow(var(--shadow)); transition: fill .16s var(--ease); }
-  .mem-node.ref rect { fill: var(--bg); stroke-dasharray: 4 3; filter: none; }
-  .mem-node:hover rect { fill: var(--hover); }
-  .mem-node.on rect { fill: var(--selected); stroke: var(--ink); stroke-width: 1.5px; }
-  .mem-node:focus-visible rect { stroke: var(--focus); stroke-width: 2px; }
-  .mem-node text { fill: var(--muted); font-size: 11px; }
-  .mem-node .mem-title { fill: var(--text); font-size: 12px; font-weight: 600; }
   /* deleting an entry asks first: an error-tone banner holding the question, the impact preview and the two answers */
   .memory-confirm { flex-basis: 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 14px; border-radius: var(--radius-sm); background: var(--err-soft); }
   .memory-confirm > .help { flex-basis: 100%; margin: 0; font-size: 12.5px; line-height: 1.5; color: var(--text-2); }
@@ -2880,9 +2845,9 @@
   .wb-main :is(.wb-card, .deferred-runs) .btn.small:not(.wb-hits .btn, .wb-item-head .btn, td .btn) { height: 34px; padding: 0 13px; gap: 7px; font-size: 13px; border-radius: var(--radius-sm); }
   /* buttons some tools put straight in the flow, one after another */
   .wb-card .btn { margin-block: 2px; }
-  .wb-card :not(.wb-actions, .wb-row, .wb-item-head, .convention-actions, .filtered-actions, .filesystem-policy-actions, .launch-actions) > .btn + .btn { margin-left: 8px; }
+  .wb-card :not(.wb-actions, .wb-row, .wb-item-head, .convention-actions, .filesystem-policy-actions) > .btn + .btn { margin-left: 8px; }
   /* long labels wrap inside their button instead of running out of the card */
-  :is(.convention-actions, .filtered-actions, .filesystem-policy-actions, .project-conventions .msg) .btn { height: auto; min-height: 34px; padding-block: 7px; line-height: 1.3; white-space: normal; text-align: left; }
+  :is(.convention-actions, .filesystem-policy-actions, .project-conventions .msg) .btn { height: auto; min-height: 34px; padding-block: 7px; line-height: 1.3; white-space: normal; text-align: left; }
 
   /* Disclosures: a chevron and a quiet label; a card's own ones are rows across it, ruled like a list */
   :is(.wb-card, .deferred-runs, .context-inspector) details > summary { list-style: none; display: flex; align-items: center; gap: 8px; width: fit-content; max-width: 100%; min-height: 28px; padding: 3px 0; font-size: 13px; font-weight: 500; color: var(--text-2); cursor: pointer; transition: color .16s var(--ease); }
@@ -2959,19 +2924,12 @@
   .convention-compare > div { min-width: 0; }
   .convention-compare h3, .convention-compare h4 { margin-top: 8px; }
   .wb-card > .convention-publish { margin-top: 0; padding-top: 16px; border-top: 1px solid var(--border); }
-  /* Filesystem policy and filtered Docker tasks */
+  /* Filesystem policy */
   .filesystem-policy-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 16px; }
   .filesystem-policy-grid > label { max-width: none; margin: 0; }
   .filesystem-policy-grid label > textarea.field { width: 100%; min-width: 0; font: 12.5px/1.5 var(--mono); } /* paths: outranks the wrapped-field type above */
   .filesystem-policy-saved { white-space: pre-wrap; overflow-wrap: anywhere; }
-  .filesystem-policy-actions, .filtered-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
-  .filtered-task-panel code { word-break: break-all; }
-  .filtered-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 16px; margin: 12px 0; }
-  .filtered-fields > label { max-width: none; margin: 0; }
-  .filtered-task { margin: 12px 0; }
-  .filtered-task > h3:first-child { font: 500 13px var(--mono); }
-  .filtered-changes pre { max-height: 280px; white-space: pre-wrap; overflow-wrap: anywhere; }
-  .filtered-changes summary { min-height: 32px; }
+  .filesystem-policy-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
   /* Coordinated changes: each repository's task an inset group; a change's repositories ruled apart */
   fieldset.coordination-task { margin: 12px 0; padding: 10px 14px 4px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); }
   .coordination-task > legend { padding: 0 4px; margin-left: -4px; font-weight: 600; color: var(--text); }
@@ -3006,22 +2964,6 @@
   .context-inspector ul { margin: 8px 0; padding-left: 20px; font-size: 13px; }
   .context-inspection-results { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); }
 
-  /* Explicit multi-service worktree launches (the Services tool) */
-  .launch-profiles { min-width: 0; }
-  .launch-profile-choice { display: grid; max-width: 420px; margin: 12px 0; }
-  .wb-card .launch-profile-choice > label.lbl { margin-top: 0; }
-  .launch-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 0; }
-  .launch-preview li { margin: 10px 0; }
-  .launch-preview pre { white-space: pre-wrap; overflow-wrap: anywhere; }
-  .launch-session { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border); }
-  .launch-session > p { margin: 0 0 10px; }
-  .launch-session strong { font-weight: 600; }
-  .launch-services { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); gap: 10px; }
-  .launch-service { min-width: 0; padding: 12px 14px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-sm); }
-  .launch-service > div:first-child { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-  .launch-service .help { margin: 4px 0 6px; }
-  .launch-service details { margin-top: 8px; }
-  .launch-logs { max-height: 250px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
 
   @media (max-width: 760px) {
     .workbench { padding: 16px 16px 48px; }
@@ -3781,19 +3723,11 @@ dialog.picker.team-build-dialog { max-height: min(780px, calc(100dvh - 32px)); }
 .experience-metrics dd { font-size: 1.15rem; margin: 8px 0 0; }
 .workflow-recommendation article { padding: 12px 0; border-top: 1px solid var(--border-strong); }
 .evidence-run-link { display: block; overflow-wrap: anywhere; margin: 6px 0; }
-.alternatives, .scenario-evidence { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--border-strong); }
+.alternatives { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--border-strong); }
 .alternative-preview iframe { display: block; width: 100%; height: 360px; border: 1px solid var(--border-strong); border-radius: 8px; margin: 12px 0; background: white; }
 .alternative-preview h4 { margin-top: 0; }
-.journey-recorder { flex: 0 1 auto; padding: 0 12px; border-bottom: 1px solid var(--border-strong); max-height: 55%; overflow: auto; }
-.journey-editor { padding-bottom: 12px; }
-.journey-editor label, .result-studio label, .alternative-preview label { display: block; font-size: .85rem; margin: 10px 0; }
-.journey-editor .field, .result-studio .field, .alternative-preview .field { width: 100%; margin-top: 5px; }
-.journey-actions { padding-left: 22px; max-height: 180px; overflow: auto; }
-.journey-actions li { overflow-wrap: anywhere; padding: 4px 0; }
-.walkthrough img { display: block; width: 100%; border: 1px solid var(--border-strong); border-radius: 8px; }
-.walkthrough input[type=range] { width: 100%; }
-.scenario-library { padding: 16px; margin: 16px 0; }
-.scenario-library article { padding: 12px 0; border-top: 1px solid var(--border-strong); }
+.result-studio label, .alternative-preview label { display: block; font-size: .85rem; margin: 10px 0; }
+.result-studio .field, .alternative-preview .field { width: 100%; margin-top: 5px; }
 .team-map-grid, .briefing-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
 .team-map-node { display: flex; flex-direction: column; gap: 8px; text-align: left; padding: 14px; border: 1px solid var(--border-strong); border-radius: 10px; background: transparent; color: inherit; min-width: 0; overflow-wrap: anywhere; cursor: pointer; }
 .team-map-node[aria-pressed=true] { border: 2px solid currentColor; padding: 13px; }
@@ -4241,39 +4175,6 @@ dialog.task-conflict-dialog[open] { display: flex; flex-direction: column; }
   .connection-repository { width: 100%; }
   .integration-actions .btn, .integration-primary-actions .btn { max-width: 100%; height: auto; min-height: 34px; padding-block: 8px; white-space: normal; line-height: 1.35; text-align: center; }
 }
-
-/* Local and SSH model-training preview. */
-.ml-workspace { display: grid; gap: 18px; }
-.ml-workspace .pp-card { padding: 20px; min-width: 0; overflow-wrap: anywhere; }
-.ml-heading, .ml-actions { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; }
-.ml-actions { justify-content: flex-start; margin: 14px 0; }
-.ml-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin: 14px 0; }
-.ml-field { display: grid; gap: 6px; margin: 14px 0; font-weight: 600; min-width: 0; }
-.ml-grid label { display: grid; gap: 6px; font-weight: 600; }
-.ml-grid input, .ml-grid select, .ml-actions input, .ml-field input, .ml-field select { width: 100%; min-width: 0; padding: 9px 11px; border: 1px solid var(--border); border-radius: 8px; color: inherit; background: var(--bg); font: inherit; }
-.ml-actions label { min-width: 0; flex: 1 1 220px; }
-.ml-check { display: flex; align-items: flex-start; gap: 9px; margin: 14px 0; }
-.ml-check input { margin-top: 4px; flex-shrink: 0; }
-.ml-capability, .ml-server, .ml-detail { border-top: 1px solid var(--border); margin-top: 18px; padding-top: 16px; overflow-wrap: anywhere; }
-.ml-preview, .ml-recipe { font: 12px var(--font-sans, sans-serif); padding: 4px 8px; border: 1px solid var(--border); border-radius: 12px; vertical-align: middle; }
-.ml-experiments { display: grid; gap: 8px; }
-.ml-experiment { display: flex; align-items: center; flex-wrap: wrap; gap: 16px; padding: 10px; border: 1px solid var(--border); border-radius: 8px; }
-.ml-experiment.selected { outline: 2px solid var(--accent); }
-.ml-select { display: grid; gap: 4px; text-align: left; flex: 1; border: 0; background: none; color: inherit; cursor: pointer; font: inherit; }
-.ml-select span { font-size: 12px; }
-.ml-detail table { width: 100%; border-collapse: collapse; text-align: left; }
-.ml-detail th, .ml-detail td { padding: 10px; border-bottom: 1px solid var(--border); }
-.ml-detail caption { text-align: left; font-weight: 600; padding: 10px; }
-.ml-log { max-height: 360px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
-.ml-workspace details { margin-top: 14px; }
-@media (max-width: 640px) { .ml-select { flex-basis: 100%; } .ml-workspace .pp-card { padding: 16px; } .ml-grid { grid-template-columns: 1fr; } .ml-heading { align-items: flex-start; } }
-
-.ml-table-scroll { overflow-x: auto; }
-.ml-registry-table { min-width: 760px; overflow-wrap: normal; }
-.ml-promotion-table { min-width: 880px; table-layout: fixed; }
-.ml-promotion-table th, .ml-promotion-table td { vertical-align: top; }
-
-.ml-inference-input { width: 100%; min-width: 0; resize: vertical; padding: 10px; border: 1px solid var(--border); border-radius: 8px; color: inherit; background: var(--bg); font: 13px/1.5 var(--mono); }
 
 .user-message-text { white-space: pre-wrap; overflow-wrap: anywhere; }
 .note-chip.undelivered { border-color: var(--warn); white-space: normal; height: auto; align-items: start; }

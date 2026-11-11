@@ -29,11 +29,6 @@ export async function buildDocs() {
       source: `docs/${name}.md`,
     })),
   );
-  entries.push({
-    group: "Build and extend",
-    id: "vscode",
-    source: "integrations/vscode/README.md",
-  });
   const known = new Map(entries.map((e) => [e.source, e.id]));
   const docs = await Promise.all(
     entries.map(async (e) => {

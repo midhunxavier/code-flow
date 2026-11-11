@@ -112,7 +112,7 @@ The implementation uses `src/teams.ts`, `src/patterns/auto-team-model.ts`, and `
 
 Tests use fake vendor CLIs and isolated repositories. They exercise plan validation/approval, same-provider identities, dependency waves, peer and user questions, restart/resume, member replacement, independent verification, storage failures, memory trust/revision/deletion, and the browser workflow. They demonstrate behavior, not model quality or subscription savings. `npm run evaluate:teams -- --fake` runs an isolated comparison without model calls. Use `--real --runs 1 --providers claude,codex --max-steps 12 --max-minutes 5 --out /absolute/output` for a bounded comparison through signed-in CLIs. Reports record mode, CLI versions, actual calls, coverage, coordinator overhead, peer waiting and journal-load size/time. Estimated avoidable barrier delay is labeled separately from observed waiting.
 
-Insights shows evaluations and the recorded rollout decision. Fake or unknown runs cannot justify beta/default promotion. Promotion beyond the experimental stage requires the documented evidence thresholds; default rollout requires a larger representative sample. See [implementation evidence](dynamic-teams-evaluation.md).
+Insights shows evaluations and the recorded rollout decision. Fake or unknown runs cannot justify beta/default promotion. Promotion beyond the experimental stage requires the documented evidence thresholds; default rollout requires a larger representative sample.
 
 Set `CODEFLOW_AUTO_TEAM_ENABLED=false` to disable creation of new Auto runs. Existing teams remain inspectable and resumable; manual patterns and saved automations retain their compatibility. The feature does not require a database or new Node baseline.
 

@@ -1,6 +1,6 @@
 # CLI conversation UX implementation
 
-Status: implemented (2026-11-04). Validation evidence is recorded in [the QA report](../qa-dogfood/cli-ux-2026-11-04.md).
+Status: implemented (2026-11-04).
 
 ## Scope and sequence
 

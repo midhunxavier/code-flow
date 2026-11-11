@@ -1,9 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, readFile } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { analyzeProjectMemory } from "../src/memory-analysis.js";
 import { mergeMemoryManifests, type MemoryEntry } from "../src/memory.js";
 import { confidenceInterval, rankAgents } from "../src/stats.js";
 import { workflowRecommendations } from "../src/experience.js";
@@ -20,16 +19,6 @@ test("run manifest unions provenance and excludes conflicting omissions in eithe
     assert.deepEqual(merged.included, [ref("source")]); assert.deepEqual(merged.omitted, [ref("source", 2)]);
     assert.deepEqual(mergeMemoryManifests(merged, ...inputs), merged);
   }
-});
-test("curated onboarding withholds contradictions and exact duplicates, retaining eligible first copy", async () => {
-  const repo = await mkdtemp(join(tmpdir(), "qa-memory-analysis-"));
-  const entry = (id: string, body: string, extra = {}): MemoryEntry => ({ id, title: id, body, repo, projectId: "p", revision: 1, scope: "project", status: "accepted", acceptedBy: "user", tags: [], paths: [], applicability: { kind: "repository" }, derivedFrom: [], sourceRefs: [], origins: [{ kind: "user", trust: "trusted", private: false, lockedDown: false }], createdAt: 1, updatedAt: 2, ...extra });
-  try {
-    const result = await analyzeProjectMemory({ repo, projectId: "p", entries: [entry("Guest A", "Always permit guest requests"), entry("Guest B", "Never allow guest requests"), entry("A rejected duplicate", "Use the broker fixture from conftest for every integration test.", { status: "proposed" }), entry("Dup A", "Use the broker fixture from conftest for every integration test."), entry("Dup B", "Use the broker fixture from conftest for every integration test."), entry("Safe", "Read the project guide before starting.")] });
-    assert.deepEqual(result.onboarding.sourceRefs.map(r => r.id), ["Dup A", "Safe"]);
-    assert.doesNotMatch(result.onboarding.body, /guest requests/); assert.equal(result.onboarding.body.match(/Use the broker fixture/g)?.length, 1);
-    assert.equal(result.onboarding.reasons.filter(r => /contradiction/.test(r.reason)).length, 2); assert.match(result.onboarding.reasons.find(r => r.id === "Dup B")!.reason, /Dup A/);
-  } finally { await rm(repo, { recursive: true, force: true }); }
 });
 test("Wilson endpoints are exact and all-failing workflows and agents use sample tie-break", () => {
   for (let n = 1; n <= 100; n++) { assert.equal(confidenceInterval(0, n).low, 0); assert.equal(confidenceInterval(n, n).high, 1); }
@@ -53,8 +42,4 @@ test("stale save restore and publication name the actual blocked action", async 
     await assert.rejects(store.publish("p", { repo: home, revision: 1, sourceHash: null, head: "a".repeat(40) }, { repos: [home], actor: "user", isIdle: () => true }), /Nothing was published/);
     assert.equal((await store.get("p")).text, "second\n");
   } finally { await rm(home, { recursive: true, force: true }); }
-});
-test("ML docs identify the saved Settings choice as deployment control", async () => {
-  const docs = await readFile(new URL("../docs/model-training.md", import.meta.url), "utf8");
-  assert.doesNotMatch(docs, /Removing `CODEFLOW_ML_ENABLED` blocks/); assert.match(docs, /Disable model training.*blocks deployment/);
 });

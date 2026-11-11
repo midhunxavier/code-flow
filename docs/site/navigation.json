@@ -26,13 +26,10 @@
     "context-inspection",
     "project-conventions",
     "checkpoint-review",
-    "launch-profiles",
     "code-intelligence",
     "architecture-explorer",
     "memory-storage",
-    "memory-claims",
-    "coordinated-changes",
-    "model-training"
+    "coordinated-changes"
   ],
   "Connect and collaborate": [
     "project-integrations",
@@ -50,7 +47,6 @@
     "security",
     "filesystem-policy",
     "agent-containers",
-    "filtered-tasks",
     "dependency-discovery",
     "maintenance"
   ],
@@ -66,15 +62,6 @@
     "releasing"
   ],
   "Engineering records": [
-    "application-improvements",
-    "project-first-navigation-plan",
-    "dynamic-teams-evaluation",
-    "dynamic-teams-implementation-plan",
-    "dynamic-teams-implementation-review-1",
-    "worker-permission-verification",
-    "dynamic-teams-plan-review-0",
-    "project-teams-implementation-plan",
-    "ml-training-implementation-plan",
-    "performance-results"
+    "worker-permission-verification"
   ]
 }
