@@ -199,22 +199,6 @@ test("an older deleted project draft is removed on startup, including unreadable
   await until(() => page.evaluate(() => localStorage.getItem("project-draft-v1:p-deleted")), value => value === null);
 });
 
-test("mission repair presents an action and keeps diagnostic paths behind technical details", async () => {
-  await fresh("project/p-big");
-  await page.route("**/api/project-teams?project=p-big", route => route.fulfill({ json: { enabled: true, revision: 1, autoTeamEnabled: true, source: "saved", teams: [], providers: [], faults: { held: "Repository metadata was replaced" }, faultDetails: { held: { kind: "ownership", name: "Documentation", projectId: "p-big", repo, file: "/saved/missions/held.json" } } } }));
-  await page.goto(`${base}/#/project/p-big/automation/missions`);
-  const repair = page.locator(".mission-repair");
-  await repair.getByText(/needs a repository review/).waitFor();
-  const technical = repair.getByText(/Its history is kept in/);
-  assert.equal(await technical.isVisible(), false);
-  await repair.getByText("Review repair", { exact: true }).click();
-  await repair.getByRole("link", { name: "Review repository", exact: true }).waitFor();
-  assert.equal(await technical.isVisible(), false);
-  await repair.getByText("Technical details", { exact: true }).click();
-  assert.match(await technical.innerText(), /\/saved\/missions\/held.json/);
-  await shot("mission-repair-disclosure");
-});
-
 test("deleting a project removes its history and draft across tabs, but failed deletion retains the draft", async () => {
   await fresh("project/p-big/new");
   await page.getByRole("textbox", { name: "Task", exact: true }).fill("Delete this project draft too");

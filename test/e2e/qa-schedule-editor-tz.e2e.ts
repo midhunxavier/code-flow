@@ -1,7 +1,7 @@
 // QA regressions for editing schedules in the browser, on a server in Europe/Stockholm with fake
 // agents: a schedule saved without a zone stays in server local time, two windows can't silently
 // undo each other, invalid fields say why once and can't be saved, interval fields can be
-// cleared, zones show their current names, the mission form saves the schedule it shows, and
+// cleared, zones show their current names, and
 // "Next" has a date and zone. Never ports 4317/4318.
 import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
@@ -238,37 +238,6 @@ test("the save-automation dialog keeps an emptied interval empty and blocks what
   await dialog.waitFor({ state: "detached" });
   const created = await until(() => api<any[]>("/api/automations"), (all) => all.some((a) => a.name === "Repeat dialog QA"));
   assert.deepEqual(created.find((a) => a.name === "Repeat dialog QA").schedule, { every: 15 });
-  assert.deepEqual(errors, []);
-  await context.close();
-});
-
-test("the mission form saves the schedule it shows, without a separate schedule save", { timeout: 90_000 }, async () => {
-  await api("/api/project-teams/settings", { enabled: true, revision: 0 });
-  const context = await browserIn("Europe/Stockholm");
-  const { page, errors } = await open(context, `#/project/${encodeURIComponent(project)}/automation/missions`);
-  await page.getByRole("button", { name: "Create a mission", exact: true }).click();
-  const form = page.locator("form.pt-form");
-  await form.getByRole("button", { name: "Configure manually", exact: true }).click();
-  await form.getByLabel("Mission", { exact: true }).fill("Keep the schedule editor honest");
-  await form.getByLabel("Intended users").fill("Developers");
-  await form.getByLabel("Verification command").fill("node check.mjs");
-  await form.getByText("Schedule, budget and scope limits", { exact: true }).click();
-  await form.getByText("Schedule and next times", { exact: true }).click();
-  assert.equal(await form.getByRole("button", { name: "Save schedule", exact: true }).count(), 0, "the form's own Save saves it");
-  await form.getByLabel("Time", { exact: true }).fill("14:30");
-  await form.getByRole("checkbox", { name: "Wed", exact: true }).check();
-  await form.getByRole("button", { name: "Save draft mission", exact: true }).click();
-  await form.waitFor({ state: "detached" });
-  const [team] = (await api(`/api/project-teams?project=${encodeURIComponent(project)}`)).teams;
-  assert.deepEqual(team.mission.schedule, { at: "14:30", days: [1, 3], timezone: "Europe/Stockholm" });
-  await page.getByRole("button", { name: "Edit mission", exact: true }).click();
-  await form.getByText("Schedule, budget and scope limits", { exact: true }).click();
-  await form.getByText("Schedule and next times", { exact: true }).click();
-  await form.getByLabel("Time", { exact: true }).fill("17:45");
-  await form.getByRole("button", { name: "Save mission", exact: true }).click();
-  await form.waitFor({ state: "detached" });
-  const edited = (await api(`/api/project-teams/${team.id}`)).team;
-  assert.equal((edited.schedule ?? edited.mission.schedule).at, "17:45");
   assert.deepEqual(errors, []);
   await context.close();
 });

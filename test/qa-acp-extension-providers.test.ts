@@ -107,7 +107,7 @@ test('an explicitly configured empty file is invalid, while an empty extension l
 test('unattended provider eligibility retains the managed execution restriction at every trust level', async () => {
   const { providerEligibility } = await import('../src/provider-eligibility.js');
   for (const provider of ['acp:fixture', 'plugin:fixture/local'] as const) for (const trust of ['safe', 'standard', 'trusted', 'full'] as const) {
-    assert.match(providerEligibility(provider, { trust, unattended: true, projectTeam: true })!, /unavailable for runs.*Antigravity/);
+    assert.match(providerEligibility(provider, { trust, unattended: true })!, /unavailable for runs.*Antigravity/);
     assert.doesNotMatch(providerEligibility(provider, { trust, unattended: true })!, /require.*Full access/);
   }
   assert.equal(providerEligibility('claude', { trust: 'standard', unattended: true }), undefined);

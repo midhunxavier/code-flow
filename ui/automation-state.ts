@@ -9,7 +9,6 @@ export const automationProject = (run: { project?: string; repo: string }) =>
   run.project ? projects.value.find(p => p.id === run.project) : projects.value.filter(p => p.repos.includes(run.repo)).length === 1 ? projects.value.find(p => p.repos.includes(run.repo)) : undefined;
 
 export interface Automation {
-  target?: { kind: "project-team"; teamId: string };
   id: string;
   name: string;
   enabled: boolean;

@@ -331,7 +331,7 @@ test("side chat has an immediate Stop and Resume, and Ask names retained changes
 
 test("restart audit rejects normal-operation errors and keeps exact shutdown boundaries", () => {
   const windows = [{ started: 10, ready: 20, pid: 1 }];
-  const shutdown: NetworkRequest = { page: 1, url: base + "/api/project-teams?project=fixture", method: "GET", started: 9, responseAt: 11, status: 503, body: { error: "The backend is stopping" } };
+  const shutdown: NetworkRequest = { page: 1, url: base + "/api/automations?project=fixture", method: "GET", started: 9, responseAt: 11, status: 503, body: { error: "The backend is stopping" } };
   assert.equal(expectedFailure(shutdown, windows), true);
   for (const request of [
     { ...shutdown, started: 1, responseAt: 9 },
@@ -342,7 +342,7 @@ test("restart audit rejects normal-operation errors and keeps exact shutdown bou
     { ...shutdown, body: undefined },
     { ...shutdown, status: 500 },
     { ...shutdown, method: "POST" },
-    { ...shutdown, url: "https://unrelated.test/api/project-teams" },
+    { ...shutdown, url: "https://unrelated.test/api/automations" },
   ]) {
     assert.equal(expectedFailure(request, windows), false);
     assert.throws(() => assert.deepEqual(networkAudit([request], [], windows).pageErrors, []), "unexpected HTTP errors must still fail the actual audit");

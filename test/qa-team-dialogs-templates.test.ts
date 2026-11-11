@@ -1,12 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { carryConflictChoices, templateTeamSettings, teamApprovalProblem, type ConflictFile } from "../ui/task-team-choices.js";
 import { TeamTemplateStore } from "../src/team-template-store.js";
-import { AgentTeamDefinitions } from "../src/agent-team-definitions.js";
-import { ProjectTeamConflict } from "../src/project-team-store.js";
 
 test("comparison refresh preserves choices only for identical versions including binary identities and modes", () => {
   const version = { exists: true, text: "original", object: "a", mode: "100644" };
@@ -41,21 +39,5 @@ test("migration reports each dropped setting, persists the explanation and stays
     assert.equal(result.notes.some(note => note.startsWith("Plain template:")), false);
     assert.equal((await store.list()).templates.find(t => t.name === "Checked build")?.description, notice);
     assert.deepEqual(await store.migrate(library), { imported: 0, notes: result.notes });
-  } finally { await rm(home, { recursive: true, force: true }); }
-});
-
-test("the 101st reusable-team save explains the limit without changing history or rejecting an operation replay", async () => {
-  const home = await mkdtemp(join(tmpdir(), "qa-team52-limit-"));
-  try {
-    const definitions = new AgentTeamDefinitions(home); await definitions.load();
-    const configuration = { coordinator: "claude" as const, pool: ["claude" as const], agentSettings: {}, roleSettings: {} };
-    let definition = await definitions.save({ operationId: "version-1", name: "Team 1", configuration });
-    for (let revision = 2; revision <= 100; revision++) definition = await definitions.save({ id: definition.id, revision: definition.revision, operationId: `version-${revision}`, name: `Team ${revision}`, configuration });
-    const bytes = await readFile(join(home, `${definition.id}.json`), "utf8");
-    await assert.rejects(definitions.save({ id: definition.id, revision: 100, operationId: "version-101", name: "Team 101", configuration }), error => error instanceof ProjectTeamConflict && /100-version limit.*Create a new/.test(error.message));
-    assert.equal(await readFile(join(home, `${definition.id}.json`), "utf8"), bytes);
-    assert.equal((await definitions.save({ id: definition.id, revision: 99, operationId: "version-100", name: "Team 100", configuration })).revision, 100);
-    const reloaded = new AgentTeamDefinitions(home); await reloaded.load();
-    assert.equal(reloaded.get(definition.id).revision, 100); assert.equal(reloaded.faults.size, 0);
   } finally { await rm(home, { recursive: true, force: true }); }
 });

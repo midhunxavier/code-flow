@@ -89,10 +89,7 @@ export function ResultStudio({ run }: { run: RunSummary }) {
     setBusy(true); setError("");
     try {
       await post(`/api/runs/${run.id}/outcome`, { decision, branch: tree.branch, expectedHead: head });
-      if (decision === "needs-work" && run.status === "done") {
-        if (run.projectTeam && run.project) navigate({ view: "project", id: run.project, section: "automation", kind: "missions" });
-        else if (!run.projectTeam) navigate({ view: "review", id: run.id, branch: tree.branch });
-      }
+      if (decision === "needs-work" && run.status === "done") navigate({ view: "review", id: run.id, branch: tree.branch });
     } catch (error) { setError((error as Error).message); }
     finally { setBusy(false); }
   };
@@ -103,7 +100,7 @@ export function ResultStudio({ run }: { run: RunSummary }) {
     <ResultNextStep key={`${run.id}/${tree.branch}`} run={run} branch={tree.branch}><div class="result-primary"><div><h3>{run.status !== "done" ? "Partial work saved" : fileCount === null ? "Inspect saved work" : integrity.length ? "Check the test changes before merging" : attention ? "Changes need attention" : "Ready to review"}</h3>
       <p class="help">Checks: {checks} · Review: {review}</p></div>
       <div class="experience-actions"><button class={`btn${run.status === "done" && fileCount !== null ? " primary" : ""}`} onClick={() => navigate({ view: "review", id: run.id, branch: tree.branch })}>Review changes</button>
-        <button class="btn" disabled={busy || !!run.projectTeam && !command.trim()} onClick={tryResult}>{busy ? "Preparing preview…" : server?.status === "running" ? "Open preview" : previewSetupFailed(run, tree) ? "Set up preview…" : "Preview"}</button>
+        <button class="btn" disabled={busy} onClick={tryResult}>{busy ? "Preparing preview…" : server?.status === "running" ? "Open preview" : previewSetupFailed(run, tree) ? "Set up preview…" : "Preview"}</button>
         {server?.status === "running" ? <button class="btn small" disabled={busy} onClick={async () => { setBusy(true); setError(""); try { cancelPreviewBrowserPage(server.url, server.startedAt, run.id); await stopResultPreview(`/api/runs/${run.id}/worktrees/${enc(tree.name)}/serve`, server); setServer(null); } catch (error) { setError((error as Error).message); } finally { setBusy(false); } }}>Stop preview</button> : null}</div>
     </div></ResultNextStep>
     {integrity.length ? <IntegrityNote issues={integrity} /> : null}
@@ -119,7 +116,7 @@ export function ResultStudio({ run }: { run: RunSummary }) {
       {run.outcome ? <p class="help">{run.outcome.decision === "accepted" ? "Accepted" : "Needs more work"} at {run.outcome.head.slice(0, 12)}{head && (run.outcome.head !== head || run.outcome.branch !== tree.branch) ? " · previous result; assess this commit separately" : ""}.</p> : null}</details>
       {journey ? <ScenarioEvidence key={`${run.id}/${tree.branch}`} journey={journey} runId={run.id} branch={tree.branch} appUrl={server?.status === "running" ? server.url : undefined} /> : null}
       <VisualComparison key={`${run.id}/${tree.branch}`} appUrl={server?.status === "running" ? server.url : undefined} />
-      {!run.projectTeam ? <Alternatives run={run} branch={tree.branch} head={head} /> : null}
+      <Alternatives run={run} branch={tree.branch} head={head} />
     </details>
   </section>;
 }

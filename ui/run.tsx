@@ -23,7 +23,6 @@ import { setContextBudget } from "./context-budget.js";
 import { nextRunAction, executionLabel, resultSummary, agentReviewLabel, declinedUnasked, chatProvider, branchesGone, runStateBadges, integrityFor, replyTargets } from "./run-experience.js";
 import { IntegrityNote, MergeValidationGates, RunEvidence, VerificationEvidence } from "./run-evidence.js";
 import { ArchiveDialog, DeleteRunDialog } from "./run-actions.js";
-import { MissionRunNote, MissionTask, missionBrief, missionHref } from "./mission-brief.js";
 import { Menu, MenuItem, MenuTitle, Strip } from "./panel-bits.js";
 import { Component } from "preact";
 import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
@@ -243,7 +242,6 @@ export function RunView({ id }: { id: string }) {
 
   const next = nextRunAction(run);
   const failedSetup = run.status === "failed" && steps.at(-1)?.kind === "setup" && steps.at(-1)?.status === "failed" ? steps.at(-1) : undefined;
-  const brief = run.projectTeam ? missionBrief(run.task) : undefined;
   const hasResult = finished && !run.archived && run.worktrees.some(tree => run.artifacts.some(artifact => artifact.branch === tree.branch));
   const allocation = resumeBudget?.id === run.id ? resumeBudget : { id: run.id, maxSteps: Math.min(run.loop.maxSteps, run.loop.maxInvocations ?? run.loop.maxSteps), maxMinutes: wholeMinutes(run.loop.maxMinutes) };
   const minimumCalls = run.pattern === "auto-team" ? 4 : 1;
@@ -271,7 +269,6 @@ export function RunView({ id }: { id: string }) {
     else if (next.kind === "rerun") void editAndRerun(run);
     else if (next.kind === "check") setRecovering(true);
     else if (next.kind === "review" && next.branch) navigate({ view: "review", id: run.id, branch: next.branch });
-    else if (next.kind === "mission" && run.project) navigate({ view: "project", id: run.project, section: "automation", kind: "missions" });
     else if (next.kind === "revise") {
       chatDrafts.value = [...chatDrafts.value, { to: `main:${run.id}`, text: `Investigate and fix the failing checks (${run.loop.check || "the configured verification profile"}). Preserve the existing work and report fresh verification evidence.`, images: [] }];
     } else focusSection(`run-${next.kind}`);
@@ -283,7 +280,6 @@ export function RunView({ id }: { id: string }) {
         const el = event.currentTarget; followChat.current = el.scrollHeight - el.scrollTop - el.clientHeight < 100;
         chatScroll.set(id, { top: el.scrollTop, follow: followChat.current });
       }}>
-        {run.projectTeam && <p class="help">Project mission {run.projectTeam.phase} · <a href={missionHref(run)}>Review the opportunity, approve this result, or request a bounded team revision</a></p>}
         <header class="run-head">
           <div class="run-title">
             {/* OntoLab's page head: a status line above the heading, the actions beside it */}
@@ -308,7 +304,7 @@ export function RunView({ id }: { id: string }) {
                   const common = { id: `strategy-${Date.now().toString(36)}`, name: run.task.split("\n")[0]!.slice(0, 80), scope: run.project ? "project" as const : "personal" as const, ...(run.project ? { project: run.project } : {}) };
                   setSavingStrategy(run.team ? templateFromPlan(run.team, common) : { schemaVersion: 1, ...common, version: 1, description: "Saved workflow. Parameterize inputs before reuse.", autoEnabled: false, parameters: ["task"], roles: [], tasks: [], contracts: [], workflow: run.pattern, task: "{{task}}", criteria: [] });
                 } catch (e) { showError((e as Error).message); } }}>Save as team template…</MenuItem>
-                {!run.projectTeam ? <MenuItem disabled={!draftsReady.value || composerLoading.value} onClick={() => { close(); void editAndRerun(run); }}>Edit &amp; run again</MenuItem> : null}
+                <MenuItem disabled={!draftsReady.value || composerLoading.value} onClick={() => { close(); void editAndRerun(run); }}>Edit &amp; run again</MenuItem>
                 <MenuItem onClick={() => { close(); if (run.archived) void post(`/api/runs/${run.id}/archive`, { archived: false }).catch(e => showError(e.message)); else setArchiving(true); }}>{run.archived ? "Unarchive" : "Archive…"}</MenuItem>
                 <MenuItem onClick={() => { close(); setDeleting(true); }}>Delete…</MenuItem>
               </>}</Menu> : null}
@@ -334,7 +330,7 @@ export function RunView({ id }: { id: string }) {
           {!leadTurn ? <div class="msg-you">
             <div class="bubble">
               <div class="run-task" tabIndex={0} role="region" aria-label="Your task">
-                {run.projectTeam && brief ? <MissionTask brief={brief} /> : <BrowserMessage text={run.task} />}
+                <BrowserMessage text={run.task} />
               </div>
               {run.parentRunId ? (
                 <a class="help" href={`#/run/${run.parentRunId}`}>
@@ -457,7 +453,7 @@ export function RunView({ id }: { id: string }) {
         </div>
       </div>
 
-      {leadTurn ? null : run.projectTeam && run.status !== "running" ? <MissionRunNote run={run} /> : <ConversationBar key={run.id} run={run} steps={steps} chat={chat} />}
+      {leadTurn ? null : <ConversationBar key={run.id} run={run} steps={steps} chat={chat} />}
       {recovering ? <RecoveryCheckDialog run={run} onClose={() => setRecovering(false)} /> : null}
       {savingStrategy ? <SaveStrategyDialog template={savingStrategy} onClose={() => setSavingStrategy(null)} /> : null}
       {deleting ? <DeleteRunDialog run={run} onClose={() => setDeleting(false)} /> : null}
@@ -2371,11 +2367,6 @@ function ActivityLog({ logs }: { logs: RunData["logs"]; count: number }) {
 // ---------------------------------------------------------------- edit & run again
 let rerunRequest = 0;
 export async function editAndRerun(run: RunSummary) {
-  if (run.projectTeam) {
-    showToast("Use the project mission's revision controls to revise this result.", 4000);
-    if (run.project) navigate({ view: "project", id: run.project, section: "automation", kind: "missions" });
-    return;
-  }
   const request = ++rerunRequest;
   const origin = route.value;
   const destination = projectFor(run);
@@ -2454,7 +2445,7 @@ function SetupRecoveryCard({ run, step, data, resume, busy, error }: { run: RunS
   useEffect(() => { if (data.pagedTranscript && !data.pages.get(step.id)?.loaded) void loadStepTranscript(run.id, step.id); }, [run.id, step.id, data.pages]);
   const output = (data.events.get(step.id) ?? []).filter((event): event is Extract<AgentEvent, { kind: "tool_result" }> => event.kind === "tool_result").map(event => event.output).join("\n");
   return <div class="chat-recovery" role="status"><p>{setupRecovery(output)}</p>
-    <button class="btn small" disabled={busy} onClick={() => void resume()}>{busy ? "Resuming…" : "Resume after fixing setup"}</button>{!run.projectTeam ? <button class="btn small" disabled={busy || !draftsReady.value || composerLoading.value} onClick={() => void editAndRerun(run)}>Edit setup &amp; retry</button> : null}
+    <button class="btn small" disabled={busy} onClick={() => void resume()}>{busy ? "Resuming…" : "Resume after fixing setup"}</button><button class="btn small" disabled={busy || !draftsReady.value || composerLoading.value} onClick={() => void editAndRerun(run)}>Edit setup &amp; retry</button>
     <details><summary>Technical details</summary><pre>{run.loop.setup}</pre><pre>{output || data.pages.get(step.id)?.error || step.finalText}</pre></details>{error ? <p role="alert">{error}</p> : null}
   </div>;
 }

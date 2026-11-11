@@ -113,11 +113,6 @@ export function work({ vendor, prompt, write, schemaRequested, fail }) {
 
   if (prompt.includes("You are the code-flow documentation assistant.")) {
     answer = json({ answer: "Open the composer, choose a repository, describe the task and select Start run. See Getting started for the full walkthrough." });
-  } else if (prompt.includes("Draft an editable project mission from the owner's goal.")) {
-    const clarificationContext = prompt.split("Mission drafting context:\n")[1];
-    const context = clarificationContext ? JSON.parse(clarificationContext) : undefined;
-    const replies = context?.clarifications ?? [];
-    answer = prompt.includes("MISSION-INVALID") ? json({ name: "Invalid draft", check: "echo unsafe" }) : json({ name: context?.draft.name ?? "Improve device onboarding", mission: replies.length ? `Improve device onboarding. ${replies.map(reply => reply.answer).join(" ")}` : "Make it easier for users to connect their OPC UA devices and understand connection errors.", users: context?.draft.users ?? "Engineers connecting OPC UA devices", priorities: context?.draft.priorities ?? ["Clear connection setup", "Actionable error messages"], exclusions: context?.draft.exclusions ?? [], questions: prompt.includes("MISSION-QUESTIONS") && !replies.length ? ["Which connection step needs improvement?", "How often do users connect devices?"] : [] });
   } else if (prompt.includes("## Task to improve")) {
     // The composer's Improve: the task restated with a done line. IMPROVE-EMPTY answers with nothing usable.
     const original = prompt.slice(prompt.indexOf("## Task to improve") + "## Task to improve".length).trim();
@@ -156,8 +151,6 @@ export function work({ vendor, prompt, write, schemaRequested, fail }) {
         answer = json(value);
       }
     }
-  } else if (prompt.startsWith("PROJECT_TEAM_REPORT")) {
-    answer = json({ version: 1, summary: "A small documentation improvement backed by source evidence", candidates: prompt.includes("PT-EMPTY") ? [] : [{ key: "document-empty-input", title: "Clarify empty input", category: "docs", problem: "The input contract needs an example", users: "Developers", proposal: "Add a small example", benefit: "Makes the documented contract easier to apply", evidence: [{ path: "README.md", quote: prompt.includes("PT-INVENTED") ? "invented evidence" : "Empty input is valid." }], paths: ["*"], acceptance: ["The example is present and existing checks pass"], kind: "observed", risk: prompt.includes("PT-HIGH-RISK") ? "high" : "low", alignment: 3, impact: 2, confidence: 3, effort: 1, rationale: "Small, bounded improvement" }] });
   } else if (prompt.includes("AUTO_TEAM_TASK")) {
     const { task, member, attempt } = JSON.parse(prompt.match(/## Assignment JSON\n```json\n([\s\S]*?)\n```/)[1]);
     if (task.instructions.includes("AUTO-SLOW-TURN")) {

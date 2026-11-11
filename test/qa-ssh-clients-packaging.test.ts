@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { spawn, execFileSync, type ChildProcess } from "node:child_process";
 import { createServer } from "node:http";
 import { connect, type AddressInfo } from "node:net";
-import { mkdtemp, mkdir, readFile, rm, cp, symlink } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -67,14 +67,4 @@ test("documentation preview supports an ephemeral port and explains invalid or o
   const collision = await command("scripts/preview-docs.mjs", [], { CODEFLOW_HOME: home, DOCS_PORT: new URL(url).port }).result;
   assert.equal(collision.code, 1); assert.match(collision.stderr, /in use; set DOCS_PORT/); assert.doesNotMatch(collision.stderr, /Unhandled|node:events/);
   const invalid = await command("scripts/preview-docs.mjs", [], { CODEFLOW_HOME: home, DOCS_PORT: "-1" }).result; assert.equal(invalid.code, 2); assert.match(invalid.stderr, /DOCS_PORT must/);
-});
-
-test("project-team evaluation writes synthetic results outside a Git checkout", { timeout: 120_000 }, async t => {
-  const directory = await scratch(t), copy = join(directory, "source"); await mkdir(copy);
-  for (const name of ["src", "bin", "scripts", "test/fake-bin", "test/fake-agent.mjs", "test/fake-work.mjs", "test/fake-team-tools.mjs"]) await cp(join(root, name), join(copy, name), { recursive: true });
-  await cp(join(root, "package.json"), join(copy, "package.json")); await symlink(join(root, "node_modules"), join(copy, "node_modules"));
-  const out = join(directory, "out"), r = await command("--import", ["tsx", "scripts/evaluate-project-teams.ts", "--fake", "--cycles", "1", "--out", out], { CODEFLOW_HOME: join(directory, "outer") }, copy).result;
-  assert.equal(r.code, 0, r.stderr); const report = JSON.parse(await readFile(join(out, "report.json"), "utf8")); assert.equal(report.applicationRevision, "unknown"); assert.equal(report.applicationDirty, null); assert.equal(report.cycles.length, 1); assert.equal(report.mode, "fake"); assert.match(r.stderr, /unknown provenance/);
-  const real = await command("--import", ["tsx", "scripts/evaluate-project-teams.ts", "--real", "--confirm", "--cycles", "1", "--out", join(directory, "real")], { CODEFLOW_HOME: join(directory, "outer-real") }, copy).result;
-  assert.notEqual(real.code, 0); assert.match(real.stderr, /requires a Git checkout/); assert.doesNotMatch(real.stdout, /Completed pilot/);
 });

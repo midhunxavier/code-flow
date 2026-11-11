@@ -62,7 +62,7 @@ export function needsYou(run: RunSummary): boolean {
   if (run.cliTeam?.taskConversation && run.status === "running" && Object.values(run.cliTeam.questions).some(q => !q.answer)) return true;
   const question = run.status === "running" && (!!run.team?.awaitingRequestId || run.approvalPending === true);
   if (run.awaiting || question) return true;
-  if (run.projectTeam || run.taskExecution) return false;
+  if (run.taskExecution) return false;
   // Reading acknowledges a result, not its correctness. Historical failures remain
   // on the run, but only an outstanding decision keeps a read result in attention.
   return run.triage?.state === "pending" || !run.seen &&

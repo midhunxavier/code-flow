@@ -33,7 +33,6 @@ test("attention and project sections share the same decisions", () => {
   assert.equal(matchesHistoryFilter(question, { section: "running" }), false);
   assert.equal(matchesHistoryFilter(question, { section: "waiting" }), true);
   assert.equal(needsYou(run({ seen: false, archived: true })), false);
-  assert.equal(needsYou(run({ seen: false, projectTeam: {} as RunSummary["projectTeam"] })), false);
   assert.equal(needsYou(run({ triage: { state: "pending" } as RunSummary["triage"] })), true);
 });
 

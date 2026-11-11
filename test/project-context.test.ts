@@ -22,11 +22,11 @@ test("project routes retain encoded repository and tool targets and reject unsup
     { view: "project", id: "a", section: "settings" },
     { view: "project", id: "a/b", section: "board" },
     { view: "project", id: "a/b", section: "people" },
-    { view: "project", id: "a/b", section: "automation", kind: "missions" },
+    { view: "project", id: "a/b", section: "automation", kind: "backlog" },
     { view: "team-people", project: "a/b" },
   ];
   for (const route of routes) assert.deepEqual(parseRouteHash(hashFor(route)), route);
-  for (const hash of ["#/project/a/automation/unknown", "#/project/a/automation/missions/extra", "#/project/a/people/extra", "#/project/a/unknown", "#/project/a/runs/extra", "#/project/a/repositories/%2Fa/unknown", "#/project/a/repositories/%"]) assert.equal(parseRouteHash(hash).view, "invalid");
+  for (const hash of ["#/project/a/automation/unknown", "#/project/a/automation/backlog/extra", "#/project/a/people/extra", "#/project/a/unknown", "#/project/a/runs/extra", "#/project/a/repositories/%2Fa/unknown", "#/project/a/repositories/%"]) assert.equal(parseRouteHash(hash).view, "invalid");
   assert.deepEqual(parseRouteHash(hashFor({ view: "composer", project: "a" })), { view: "composer", project: "a" });
   assert.deepEqual(parseRouteHash(hashFor({ view: "composer", project: "" })), { view: "composer", project: "" });
   assert.deepEqual(parseRouteHash("#/project/a/workspace"), { view: "workspace", project: "a" });

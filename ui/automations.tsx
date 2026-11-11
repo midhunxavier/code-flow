@@ -4,7 +4,6 @@ import { runTitle } from "../src/run-title.js";
 import { confirmAction } from "./confirm-state.js";
 import { checksLabel } from "../src/run-status.js";
 import { pollVisible } from "./polling.js";
-import { ProjectTeamsInbox } from "./project-teams.js";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { useDialog } from "./app.js";
 import { AgentTag, CantRunNote } from "./bits.js";
@@ -173,7 +172,7 @@ export function AutomationsView({ mode = "all", category, projectId, showScope =
     if (grouping === "none") return { id: "all", label: "All attention items" };
     const project = projectFor(run); return { id: project?.id ?? "unassigned", label: project?.name ?? "Without a project" };
   });
-  const matching = automations.value.filter(a => !category || !a.target && (category === "backlog" ? !!a.sweep : !a.sweep));
+  const matching = automations.value.filter(a => !category || (category === "backlog" ? !!a.sweep : !a.sweep));
   const list = matching.filter((a) => automationInScope(a, scope));
   const elsewhere = matching.filter(a => !automationInScope(a, scope));
   const withoutProject = elsewhere.filter(a => !automationProject(a.run)).length;
@@ -181,7 +180,6 @@ export function AutomationsView({ mode = "all", category, projectId, showScope =
   const here = project ? ` in ${project.name}` : scoped ? " without a project" : "";
   return (
     <div class="automations">
-      {mode !== "automations" ? <ProjectTeamsInbox projectId={currentProject.value !== ALL && currentProject.value !== NONE ? currentProject.value : undefined} /> : null}
       {showScope ? <div class="page-head">
         <div class="ph-text page-head-text">
           <p class="lede">
@@ -360,7 +358,6 @@ function AutomationRow({ a, scoped }: { a: Automation; scoped: boolean }) {
   // The editor shows why a save failed itself; what's saved now is loaded either way.
   const saveSchedule = (patch: object) => post<Automation>(`/api/automations/${a.id}`, patch).then(loadAutomations, (err) => { void loadAutomations(); throw err; });
   const hookUrl = `${location.origin}${a.hookPath}`;
-  if (a.target) return <div class="auto-row"><b>{a.name}</b><p class="help">Project mission · {a.enabled ? "active" : "paused"} · {a.scheduleText}</p><button class="btn small" onClick={() => { const id = a.run.project; if (id) route.value = { view: "project", id }; }}>Mission, cycles and opportunities</button></div>;
   return (
     <div class={`auto-row ${a.enabled ? "" : "off"}`}>
       <div class="ar-head">

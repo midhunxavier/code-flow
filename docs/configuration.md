@@ -165,10 +165,6 @@ The authenticated run API accepts `loop.maxInvocations` as an additional per-all
 
 Project memory is in `memory.sqlite`, with automatic verified import from `memory.json`, indexed keyword search and a lightweight knowledge graph. See [Memory storage](memory-storage.md) for migration, rollback, runtime requirements and backup behavior. Evaluation reports and the explicit rollout decision still use durable replacement files under the evaluation store in `CODEFLOW_HOME`. See [Auto team](auto-team.md) for scope, trust, revision and deletion semantics.
 
-## Project missions
-
-Click **Enable project missions** on a project page to enable the feature immediately and save the choice for this host across restarts. `CODEFLOW_PROJECT_TEAMS_ENABLED=true` is an optional initial default; a saved UI choice takes precedence. `CODEFLOW_AUTO_TEAM_ENABLED` must also permit Auto team execution. Each team is separately activated by its owner. Schedules, budgets, missions, recovery and provider limits are described in [Project missions](project-teams.md).
-
 ---
 
 [Documentation library](README.md) · [Getting started](getting-started.md) · [Ask code-flow](help.md)

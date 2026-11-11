@@ -47,20 +47,20 @@ test("storage exposes recovered backup or unavailable state and refuses unavaila
   await assert.rejects(unavailable.auto.create(input), (e: any) => e.status === 503 && /storage/i.test(e.message));
 });
 
-test("mission-owned records refuse generic edits and deletion as actionable 409", async () => {
-  const raw = { ...input, id: "t-mission", token: "1234567890123456", target: { kind: "project-team", teamId: "pt-" + "a".repeat(24) } };
-  const { auto, file } = await fixture([raw]), saved = await readFile(file, "utf8");
-  await assert.rejects(auto.update(raw.id, { name: "Unsafe" }), (e: any) => e.status === 409 && /project mission/.test(e.message));
-  await assert.rejects(auto.remove(raw.id), (e: any) => e.status === 409 && /project mission/.test(e.message));
-  assert.equal(await readFile(file, "utf8"), saved); assert.equal(auto.get(raw.id)?.name, input.name);
+test("records projected from removed project missions are ignored without setting the file aside", async () => {
+  const legacy = { ...input, id: "t-mission", token: "1234567890123456", target: { kind: "project-team", teamId: "pt-" + "a".repeat(24) } };
+  const kept = { ...input, id: "t-kept", token: "6543210987654321" };
+  const { auto } = await fixture([legacy, kept]);
+  assert.equal(auto.get(legacy.id), undefined); assert.equal(auto.get(kept.id)?.name, input.name);
+  assert.equal((auto as any).storageStatus().state, "ready");
 });
 
 test("global and project automation links validate the same purpose and reject extra segments", () => {
-  for (const kind of ["once", "repeat", "backlog", "missions"]) {
+  for (const kind of ["once", "repeat", "backlog"]) {
     assert.equal(parseRouteHash(`#/automations/${kind}`).view, "automations");
     assert.equal(parseRouteHash(`#/project/p-a/automation/${kind}`).view, "project");
   }
-  for (const suffix of ["bogus", "repeat/extra", "repeat/", "once/ignored/extra"]) {
+  for (const suffix of ["bogus", "missions", "repeat/extra", "repeat/", "once/ignored/extra"]) {
     assert.equal(parseRouteHash(`#/automations/${suffix}`).view, "invalid");
     assert.equal(parseRouteHash(`#/project/p-a/automation/${suffix}`).view, "invalid");
   }

@@ -8,7 +8,7 @@ In a chat, open Agent settings → Provider and turn on **Allow unrestricted ACP
 
 - The CLI uses its own login, tools and settings. Code Flow cannot stop it from starting its own subagents, using the network or running external tools, and that usage is outside the worker budget. Read-only turns are a request in the prompt.
 - With Ask for approval, the permission requests the CLI sends appear in the approval inbox. Without it those requests are declined; anything the CLI approves by its own settings runs unasked.
-- It requires Full access on this computer. Remote workers, Docker isolation, automations, sweeps, project teams, read-only side chats and mandatory boundaries stay unavailable, and Auto never picks an ACP agent as a default.
+- It requires Full access on this computer. Remote workers, Docker isolation, automations, sweeps, read-only side chats and mandatory boundaries stay unavailable, and Auto never picks an ACP agent as a default.
 - Claude, Codex and Antigravity in the same run keep their managed permissions.
 - Each step records the `acp-native-v1` permission receipt, and the run shows an **Unrestricted ACP** badge.
 

@@ -23,7 +23,6 @@ test("project assignment requires current exact membership; removed or ambiguous
   const identity: SharedPrincipal = { kind: "shared", userId: "user", username: "viewer", displayName: "Viewer", revision: 1, roles: { one: "viewer" } };
   const projects = [{ id: "one", name: "One", repos: ["/repo/one"], createdAt: 1 }, { id: "two", name: "Two", repos: ["/repo/two"], createdAt: 1 }];
   assert.equal(sharedCanReadRun(identity, { pattern: "solo", project: "one", repo: "/repo/one" }, projects), true);
-  assert.equal(sharedCanReadRun(identity, { pattern: "solo", project: "one", repo: "/repo/one", projectTeam: { teamId: "private-team" } as import("../src/engine.js").Run["projectTeam"] }, projects), false);
   for (const run of [{ project: "two", repo: "/repo/two" }, { project: "one", repo: "/repo/two" }, { project: "missing", repo: "/repo/one" }]) assert.equal(sharedCanReadRun(identity, { ...run, pattern: "solo" }, projects), false);
   assert.equal(sharedCanReadRun(identity, { pattern: "solo", repo: "/repo/one" }, projects), true); assert.equal(sharedCanReadRun(identity, { pattern: "solo", repo: "/repo/one" }, [...projects, { ...projects[1]!, repos: ["/repo/one"] }]), false);
   assert.deepEqual(sharedProjectProjection({ ...projects[0]!, defaults: { pattern: "solo", teams: {} } }), { id: "one", name: "One", createdAt: 1 });

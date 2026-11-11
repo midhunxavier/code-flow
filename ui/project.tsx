@@ -16,7 +16,6 @@ import { TeamPeopleView } from "./collab-people.js";
 import { useProjectFeatures } from "./project-features.js";
 import { OutcomeMetrics } from "./experience.js";
 import { ScenarioLibrary } from "./journeys.js";
-import { ProjectTeamsInbox } from "./project-teams.js";
 import type { ComponentChildren } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { Icon } from "./icons.js";
@@ -71,7 +70,6 @@ export function ProjectView({ id, section, repository, tool, kind }: { id: strin
         {draftTask.trim() ? <p class="draft-preview">{draftTask.slice(0, 240)}</p> : null}
         <button class="btn primary" disabled={!draftsReady.value || composerLoading.value} onClick={() => p.repos.length ? draftTask.trim() ? void openComposer(id) : openChat(id) : addRepositoryToProject(id)}>{p.repos.length ? draftTask.trim() ? "Continue draft" : "Describe a task" : "Add repository"}</button>
       </section>
-      <ProjectTeamsInbox projectId={id} />
       <ProjectOverview key={id} id={id} />
       <a class="btn" href={destination("runs")}>View history</a>
     </> : section === "board" ? <TeamBoardView project={id} embedded navigate={navigateTeam} /> : section === "people" ? <TeamPeopleView project={id} embedded navigate={navigateTeam} /> : section === "connections" ? <IntegrationsScreen key={id} projectId={id} /> : section === "automation" ? <SchedulingView key={id} projectId={id} kind={kind} /> : section === "runs" ? <><ProjectChatHistory key={`chats:${id}`} projectId={id}/><ProjectRuns key={id} projectId={id} /></> : section === "repositories" ? <>
@@ -82,7 +80,7 @@ export function ProjectView({ id, section, repository, tool, kind }: { id: strin
       <section class="pp-card project-start"><h2>Project settings</h2><p>Manage the project's name and repository membership.</p><button class="btn" onClick={() => editProject(id)}>Edit project</button></section>
       <section class="pp-card project-settings-card"><h2>Defaults</h2><p>Optional instructions, files, check commands, permissions and limits for future work. Each approach shows the settings it will use.</p><button class="btn" disabled={!p.repos.length} onClick={() => setContextOpen(true)}>Edit project defaults</button><p class="help">Provider connections and authentication live in <a href="#/settings/providers">App settings → Providers</a>.</p></section>
       <ProjectContextEditor project={id} repo={p.repos[0] ?? ""} open={contextOpen} onClose={() => setContextOpen(false)}/>
-      <details class="pp-card project-advanced"><summary>Advanced · saved workflows and repository configuration</summary><button class="btn" disabled={!draftsReady.value || composerLoading.value} onClick={() => void openComposer(id)}>Saved workflows</button><ProjectRunSettings projectId={id} repositories={p.repos}/>{p.repos.map(folder => <ScenarioLibrary key={folder} repository={folder} />)}<OutcomeMetrics project={id}/><a class="btn" href={hashFor({view:"project", id, section:"automation", kind:"missions"})}>Manage project missions</a></details>
+      <details class="pp-card project-advanced"><summary>Advanced · saved workflows and repository configuration</summary><button class="btn" disabled={!draftsReady.value || composerLoading.value} onClick={() => void openComposer(id)}>Saved workflows</button><ProjectRunSettings projectId={id} repositories={p.repos}/>{p.repos.map(folder => <ScenarioLibrary key={folder} repository={folder} />)}<OutcomeMetrics project={id}/></details>
     </>}
   </div>;
 }

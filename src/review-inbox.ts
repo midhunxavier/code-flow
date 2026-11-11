@@ -15,7 +15,7 @@ export function canMarkReviewRead(run: RunSummary): boolean {
 export function reviewReason(run: RunSummary): ReviewReason | undefined {
   if (!run.archived) { const attention = chatAutomationAttention(run); if (attention === "quiet") return; if (attention === "decision") return "answer"; if (!run.seen && attention) return attention === "failure" ? "failed" : "review"; }
   const question = run.status === "running" && reviewDecisionPending(run);
-  if (run.archived || run.projectTeam && !run.awaiting && !question) return;
+  if (run.archived) return;
   if (run.awaiting || question) return "answer";
   if (run.triage?.state === "pending") return "review";
   if (!run.seen && run.status !== "running" && run.team?.status === "blocked") return "blocked";

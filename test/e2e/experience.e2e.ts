@@ -218,7 +218,5 @@ test("alternative runs keep a pinned base and distinct instructions; comparison 
   await page.goto(base + `/#/project/${result.project}/settings`);
   await page.locator(".project-advanced > summary").click();
   await page.getByRole("region", { name: "Useful outcomes", exact: true }).waitFor();
-  await page.getByRole("link", { name: "Manage project missions", exact: true }).click();
-  await page.getByRole("region", { name: "Project briefing", exact: true }).waitFor();
   assert.deepEqual(errors, []);
 });

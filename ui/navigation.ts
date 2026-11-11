@@ -6,7 +6,7 @@ export type ProjectSection = typeof PROJECT_SECTIONS[number];
 export const REPOSITORY_TOOLS = ["verification", "code", "context", "history", "coordination"] as const;
 export type RepositoryTool = typeof REPOSITORY_TOOLS[number];
 
-export const AUTOMATION_KINDS = ["once", "repeat", "backlog", "missions"] as const;
+export const AUTOMATION_KINDS = ["once", "repeat", "backlog"] as const;
 export const validAutomationKind = (kind: string) => (AUTOMATION_KINDS as readonly string[]).includes(kind);
 
 export type Route =
