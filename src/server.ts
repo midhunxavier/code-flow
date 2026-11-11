@@ -41,8 +41,6 @@ import { readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { ProjectFilePolicies, FilePolicyError, assertPolicyExecution, configureFilePolicyResolver, filterPolicyDiff, policyIsRestrictive } from "./filesystem-policy.js";
 import { FilesystemAccess } from "./filesystem-access.js";
 import { createCodeHostsApi } from "./code-hosts-api.js";
-import { FilteredTasks, FilteredTaskError } from "./filtered-tasks.js";
-import { handleFilteredTasksApi } from "./filtered-tasks-api.js";
 import { createServer as createSecureServer } from "node:https";
 import { PhoneSessions } from "./phone-sessions.js";
 import { deviceLabel } from "./phone-device-label.js";
@@ -192,16 +190,6 @@ await remoteWorkers.load().catch((error) => logError("SSH workers disabled; repa
 const manager = new RunManager(findPattern, projects, remoteWorkers);
 const filePolicies = new ProjectFilePolicies();
 const fileAccess = new FilesystemAccess(filePolicies, projects, manager);
-const filteredTasks = new FilteredTasks({
-  authorize: async (project, repo) => {
-    if (!projects.get(project)?.repos.includes(repo)) throw new FilteredTaskError("The project or its explicit repository membership changed", 409);
-    const policies = await fileAccess.forRepo(repo);
-    if (!projects.get(project)?.repos.includes(repo)) throw new FilteredTaskError("The project or its explicit repository membership changed", 409);
-    return policies;
-  },
-  withRepository: (repo, operation) => manager.withIdleRepository(repo, operation, { kind: "filtered task", owner: "filtered-tasks" }),
-});
-let filteredTasksReady = false;
 configureFilePolicyResolver((repo) => fileAccess.forRepo(repo), { suppressRepositoryCommands: () => fileAccess.hasRestrictions() });
 manager.setFilesystemPolicyGuard((repo, run) => fileAccess.execution(repo, run));
 let filesystemFeedRevision = 0;
@@ -1747,7 +1735,6 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     if (req.method === "PUT") {
       const body = await readJson(req, 64 * 1024);
       return send(res, 200, await attempt(() => fileAccess.update(project.id, body, async (commit, next) => {
-        if (!filteredTasksReady || filteredTasks.active()) throw new FilePolicyError("Finish or explicitly cancel and reconcile filtered tasks before changing policy; unavailable task storage must be repaired first", 409);
         if (policyIsRestrictive(next) && extensions.list().length) throw new FilePolicyError("Disable configured extensions and restart before applying a restriction. Previously imported trusted JavaScript can retain background host authority, including a bundle rejected after initialization.", 409);
         const terminals = shells.list().filter((shell) => shell.status === "running").length;
         if (terminals || teamTerminals.active() || manager.devServers.list().some((service) => service.status === "running")) throw new FilePolicyError(`${terminals ? `Close the ${terminals === 1 ? "open terminal" : `${terminals} open terminals`} (side panel → Terminal)` : "Close terminals"} and stop development services before changing filesystem policy`, 409);
@@ -1756,13 +1743,6 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
       })));
     }
     throw new HttpError(405, "Use GET or PUT for filesystem policy");
-  }
-  if (parts[1] === "filtered-tasks") {
-    await attempt(() => fileAccess.sharedGate(req));
-    if (!filteredTasksReady) throw new HttpError(503, "Filtered task storage is unavailable; repair its private records before execution or policy changes");
-    auth.claimable = false;
-    if (req.method === "POST" && parts.length === 2) manager.noteActivity();
-    if (await handleFilteredTasksApi(req, res, url, parts.slice(1), filteredTasks)) return;
   }
   if (parts[1] === "docs-help" && req.method === "POST") parseHelpRequest(await readJson(req, 64 * 1024, { timeoutMs: 10_000 }));
   // Check before ownerGate/validRepo: even repository discovery can invoke Git in its cwd.
@@ -2973,7 +2953,6 @@ await acpConnections.load().catch((error) => logError("ACP connections unavailab
 await collab.load();
 await teamConnections.load();
 await fileAccess.all().catch((error) => logError("Filesystem policy is unavailable; protected operations and extension loading remain disabled until the private policy file is repaired", error));
-filteredTasksReady = await filteredTasks.load().then(() => true, (error) => { logError("Filtered tasks unavailable; policy activation remains blocked until task receipts are repaired", error); return false; });
 if (!fileAccess.hasRestrictions()) await extensions.load().catch((error) => logError("Extension configuration could not be loaded; built-in workflows remain available", error));
 else { extensions.defer("A custom filesystem policy is active. Clear it and restart to load extensions."); logWarn("Extensions deferred: custom filesystem policy cannot isolate trusted plugin initialization; clear the policy and restart to load extensions"); }
 await codeHostsApi.service.load();
@@ -3234,7 +3213,6 @@ async function stop(reason: string, code = 0) {
   await deferredRuns.stop().catch((err) => logError("Deferred queue shutdown failed", err));
   docsHelp.close();
   for (const controller of improvingControllers) controller.abort();
-  await filteredTasks.close().catch((err) => logError("Filtered task shutdown failed; inspect its durable unknown receipt before retrying", err));
   await chatsStopped;
   await manager.shutdown().catch((err) => logError("Shutdown failed", err));
   await cliTransport?.close().catch((err) => logError("CLI bridge shutdown failed", err));
@@ -3255,14 +3233,13 @@ if (process.env.CODEFLOW_CLI_HEADLESS === "1" && process.env.CODEFLOW_MANAGED_RE
   setInterval(() => { void checkUpdates(CODEFLOW_HOME).catch(() => undefined); }, 6 * 60 * 60 * 1000).unref();
   /** What holds an update back, in words `codeflow updates status` shows. */
   const updateBlocker = () =>
-    !cliReady || !taskConversationsReady || !filteredTasksReady ? "Code Flow is still starting"
+    !cliReady || !taskConversationsReady ? "Code Flow is still starting"
     : cliTransport?.holding ? "a start confirmation is open"
     : activeHttpRequests || cliTransport?.inFlight ? "a request is in progress"
     : policyPreparations.size ? "agent settings are being prepared"
     : improvingControllers.size ? "a prompt is being improved"
     : ownerHubStreams.size ? "a linked team runner is connected"
     : extensions.list().length ? "an extension is running"
-    : filteredTasks.active() ? "a filtered task is running"
     : teamTerminals.active() ? "a team terminal is open"
     : shells.list().some(s => s.status === "running") ? "a terminal command is running"
     : manager.devServers.list().some(s => s.status === "running") ? "an app preview is running"

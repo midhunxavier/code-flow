@@ -3,7 +3,7 @@ export type SideTab = "task" | "chat" | "changes" | "files" | "terminal" | "brow
 export const SIDE_TABS: SideTab[] = ["task", "chat", "changes", "files", "terminal", "browser", "notes"];
 export const PROJECT_SECTIONS = ["runs", "repositories", "connections", "board", "people", "automation", "settings"] as const;
 export type ProjectSection = typeof PROJECT_SECTIONS[number];
-export const REPOSITORY_TOOLS = ["verification", "code", "context", "history", "coordination", "filtered-tasks"] as const;
+export const REPOSITORY_TOOLS = ["verification", "code", "context", "history", "coordination"] as const;
 export type RepositoryTool = typeof REPOSITORY_TOOLS[number];
 
 export const AUTOMATION_KINDS = ["once", "repeat", "backlog", "missions"] as const;

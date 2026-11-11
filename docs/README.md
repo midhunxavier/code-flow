@@ -71,7 +71,7 @@ Read the story: [Describe the team. Code Flow builds the workflow.](https://midh
 ## Operate safely
 
 - [Security and execution boundaries](security.md) · [Filesystem policies](filesystem-policy.md)
-- [Agent containers](agent-containers.md) · [Filtered Docker tasks](filtered-tasks.md)
+- [Agent containers](agent-containers.md)
 - [Dependency discovery](dependency-discovery.md) · [Backup and maintenance](maintenance.md)
 
 ## Build and extend

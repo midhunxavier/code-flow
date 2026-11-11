@@ -19,7 +19,7 @@ Open **Settings** at the bottom of the sidebar, press **⌘, / Ctrl+,**, or sear
 
 Appearance, run defaults and sidebar preferences save in this browser, separately for each SSH workspace. SSH definitions and the team link with its repository mappings save on the local server; project, access, notification and retention settings save on the machine hosting that workspace; team board tasks, checkpoints and runner registrations save on the team server the link points to. Controls with a **Save** action keep their existing explicit save behavior. Numeric run limits save when you leave the field; invalid values restore the previous setting.
 
-**Project → Repository tools** contains verification, code editing, dependency and context inspection, checkpoints, services, coordinated changes and filtered tasks. **Inbox** and **Automations** are sidebar destinations. Open **Insights** and the workspace from the application menu or command palette. Older Settings URLs redirect to the current destinations.
+**Project → Repository tools** contains verification, code editing, dependency and context inspection, checkpoints and coordinated changes. **Inbox** and **Automations** are sidebar destinations. Open **Insights** and the workspace from the application menu or command palette. Older Settings URLs redirect to the current destinations.
 
 ## Per-repo config
 
@@ -148,7 +148,6 @@ Child processes exclude the application API token, scoped team capabilities, int
 | `team-link/attempts/<attempt>.json` | Which local run belongs to which board attempt, and what was published; read at startup, by the recovery pass every minute and after a restore to reconcile with the team server, never to start anything again |
 | `team-link/bundles/<checkpoint id>.bundle` | A checkpoint bundle this computer created, kept until the team server has received it; a failed upload is retried with the same file, and the file of a checkpoint that was given up is deleted |
 | `filesystem-policies/<project>.json` | Revisioned read/write rules and content hashes; see [filesystem policy](filesystem-policy.md) |
-| `filtered-tasks/` | Private filtered exports, exact policy/source/result records and explicit import receipts; never a startup execution queue |
 | `remote-worker-private/` | Private SSH receipt capabilities; excluded from ordinary result projections and restore authority |
 | `code-host-operations.json` | Safe confirmed/unknown code-host mutation receipts; no automatic replay after restart or restore |
 | `extension-cache/` | Captured trusted plugin bundles; excluded from backup/restore and rebuilt only from explicit reviewed configuration |

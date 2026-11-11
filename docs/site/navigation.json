@@ -48,7 +48,6 @@
     "security",
     "filesystem-policy",
     "agent-containers",
-    "filtered-tasks",
     "dependency-discovery",
     "maintenance"
   ],

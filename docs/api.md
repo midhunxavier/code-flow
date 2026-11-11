@@ -454,28 +454,6 @@ restrictions pause ordinary application-managed execution globally, including
 background preparation. See [activation, execution boundaries and HTTP error
 semantics](filesystem-policy.md).
 
-Restricted execution uses a separate owner-only manual task surface:
-
-| Operation | Request | Behavior |
-| --- | --- | --- |
-| `GET /filtered-tasks` | optional `project` query | Return bounded lifecycle/receipt metadata; historical source/output content is not listed. |
-| `POST /filtered-tasks` | `project`, `repo`, `task`, `agent`, `image`, optional `network`, `maxMinutes` | Prepare a filtered committed snapshot and return 202 after a durable claim; only built-in providers and an explicit local immutable image are supported. |
-| `GET /filtered-tasks/:id` | none | Read task/output under unchanged current canonical policy and project membership. |
-| `POST /filtered-tasks/:id/preview-import` | empty body | Validate source/result/policy and preview bounded allowed file changes. |
-| `POST /filtered-tasks/:id/import` | `revision`, `expectedHead`, `resultHash` | Create a new review branch with an atomic exact-source ref transaction; leave checkout and index unchanged. |
-| `POST /filtered-tasks/:id/cancel` | `revision` | Cancel preparation/execution, or an unknown daemon receipt, and confirm the owned daemon container is absent. A finished task whose container is confirmed stopped returns 409; delete it instead. |
-| `POST /filtered-tasks/:id/receipt` | `revision` | Explicitly inspect an interrupted branch-import receipt; never replay a provider turn. |
-| `DELETE /filtered-tasks/:id` | JSON `revision` | Remove a stopped terminal task's private export/record; preserve any imported review branch. |
-
-The task container receives only permitted committed regular files and a new Git
-object database. It mounts no original repository metadata, host login directory,
-authentication volume or application memory. The image layer and copied files
-denied writes are read-only. Network starts off; enabling inference access is an
-explicit owner choice. Input/output limits are 500 files, 512 KiB per file and
-16 MiB total; live monitoring is a polling safeguard, not a filesystem quota.
-Restarted effectful phases become unknown and require explicit inspection or
-cancellation. See [runtime provisioning, recovery and limitations](filesystem-policy.md).
-
 ## SSH projects
 
 Owner-only connection management is available on the local listener. SSH host

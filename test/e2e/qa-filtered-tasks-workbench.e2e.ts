@@ -1,7 +1,7 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -30,31 +30,13 @@ before(async () => {
   writeFileSync(join(repo, "README.md"), "older\n"); git(repo, "init", "-q", "-b", "main"); git(repo, "add", "."); git(repo, "commit", "-qm", "older main commit");
   writeFileSync(join(repo, "src/allowed.txt"), "original browser source\n"); writeFileSync(join(repo, "README.md"), "base\n"); git(repo, "add", "."); git(repo, "commit", "-qm", "run base");
   writeFileSync(join(home, "projects.json"), JSON.stringify([{ id: "project", name: "Filtered project", repos: [repo], createdAt: 1, defaults: {} }, { id: "other", name: "Other project", repos: [], createdAt: 2, defaults: {} }]));
-  chmodSync(join(root, "test/fake-filtered-docker.mjs"), 0o755); symlinkSync(join(root, "test/fake-filtered-docker.mjs"), join(bin, "docker")); execFileSync(process.execPath, ["scripts/build-ui.mjs"], { cwd: root });
-  server = spawn(process.execPath, ["--import", "tsx", "src/server.ts"], { cwd: root, env: { ...process.env, PORT: String(port), CODEFLOW_TOKEN: token, CODEFLOW_HOME: home, FAKE_FILTERED_DOCKER_STATE: state, PATH: `${bin}:${join(root, "test/fake-bin")}:${process.env.PATH}` }, stdio: process.env.E2E_DEBUG ? "inherit" : "ignore" });
+  execFileSync(process.execPath, ["scripts/build-ui.mjs"], { cwd: root });
+  server = spawn(process.execPath, ["--import", "tsx", "src/server.ts"], { cwd: root, env: { ...process.env, PORT: String(port), CODEFLOW_TOKEN: token, CODEFLOW_HOME: home, PATH: `${bin}:${join(root, "test/fake-bin")}:${process.env.PATH}` }, stdio: process.env.E2E_DEBUG ? "inherit" : "ignore" });
   let ready = false; for (let attempt = 0; attempt < 150; attempt++) { ready = await fetch(`${base}/api/health`, { headers }).then((response) => response.ok, () => false); if (ready) break; await new Promise((resolve) => setTimeout(resolve, 100)); } assert.ok(ready);
   browser = await chromium.launch({ channel: "chrome", headless: true });
 });
 after(async () => { await browser?.close(); server?.kill("SIGTERM"); await new Promise<void>((resolve) => { if (!server || server.exitCode !== null) return resolve(); server.once("exit", () => resolve()); setTimeout(resolve, 5000).unref(); }); rmSync(directory, { recursive: true, force: true }); });
 
-test("filtered tasks ask for a project, count UTF-8 bytes, and never offer Cancel on a finished task", { timeout: 60_000 }, async () => {
-  const page = await open(); await page.goto(`${base}/#/workspace`); await page.getByRole("button", { name: "Filtered tasks", exact: true }).click();
-  const project = page.getByLabel("Filtered tasks project", { exact: true }); await page.getByText("Choose a project above to run a filtered task in it.", { exact: true }).waitFor();
-  assert.equal(await project.inputValue(), ""); assert.equal(await project.evaluate((select: HTMLSelectElement) => select.selectedOptions[0]?.textContent), "Choose a project");
-  assert.equal(await page.getByText("Create a project in Settings first.").count(), 0);
-  await project.selectOption("project");
-  const panel = page.getByRole("region", { name: "Filtered Docker tasks", exact: true }), start = panel.getByRole("button", { name: "Start filtered Docker task", exact: true });
-  await panel.getByLabel("Prepared filtered Docker image", { exact: true }).fill("prepared-browser:1");
-  await panel.getByLabel("Filtered task instructions", { exact: true }).fill("é".repeat(13_000));
-  await panel.getByText(/Instructions are 26 KB as UTF-8; the limit is 24 KB/).waitFor(); assert.equal(await start.isDisabled(), true);
-  await panel.getByLabel("Filtered task instructions", { exact: true }).fill("Change the allowed source through the filtered task"); await start.click();
-  await panel.getByText(/^Filtered task status: completed/).waitFor();
-  const cancel = panel.getByRole("button", { name: "Cancel task and confirm container stopped", exact: true }); assert.equal(await cancel.count(), 0);
-  await panel.getByRole("button", { name: "Preview allowed import", exact: true }).click(); await panel.getByRole("button", { name: "Import into new review branch", exact: true }).click();
-  await panel.getByText(/^Filtered task status: imported/).waitFor(); assert.equal(await cancel.count(), 0);
-  await panel.getByRole("button", { name: "Delete private task and export", exact: true }).click(); await panel.getByText("Private task/export deleted; any imported review branch is preserved.", { exact: true }).waitFor();
-  await page.close();
-});
 
 test("History hides removed worktrees, forks only from the run's own checkpoints and asks before deleting files", { timeout: 90_000 }, async () => {
   const start = (task: string) => api<{ id: string }>("/api/runs", { repo, pattern: "solo", task, roles: { agent: ["codex"] }, loop: { check: "", maxSteps: 3 } });
