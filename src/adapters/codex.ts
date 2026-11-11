@@ -5,6 +5,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { codexTransport } from "../config.js";
+import { codexProfile, codexProfileProblem } from "../codex-profile.js";
 import { logWarn } from "../log.js";
 import type { AgentAdapter, AgentEvent, ErrorKind, ModelCatalog, ModelInfo, RunOptions, RunResult } from "./types.js";
 import { runAppServerTurn } from "./codex-app-server.js";
@@ -95,7 +96,14 @@ export const codexAdapter: AgentAdapter = {
       }
     }
     const teamConfig = [...nativeTools, ...(opts.questionProtocol === "structured" || opts.permissions?.nativeDelegation === false ? ["-c", "agents.enabled=false", "-c", "features.multi_agent=false", "-c", "features.multi_agent_v2.enabled=false", "-c", "features.hooks=false"] : [])];
-    const transport = codexTransport();
+    // A profile is a `codex exec` option; app-server has none, so its turns use exec.
+    const profile = codexProfile().name;
+    if (profile) {
+      // In a container Codex's home is the image's, so only Codex there can tell whether the file exists.
+      const problem = opts.agentContainer ? undefined : codexProfileProblem(profile);
+      if (problem) return { ok: false, finalText: "", error: `${problem}, or clear the Codex profile in Settings → Agents & models.`, errorKind: "cli_incompatible" };
+    }
+    const transport = profile ? "exec" : codexTransport();
 
     // Only a thread Codex confirms in this turn: a resume that failed must not hand back its id.
     let sessionId: string | undefined;
@@ -220,7 +228,7 @@ export const codexAdapter: AgentAdapter = {
     }
 
     if (!outcome) {
-      if (opts.permissions?.toolApprovals) return { ok: false, finalText: "", error: "This run requires interactive approvals; Codex exec cannot preserve them. Use an available app-server transport.", errorKind: "cli_incompatible" };
+      if (opts.permissions?.toolApprovals) return { ok: false, finalText: "", error: profile ? `This run requires interactive approvals, which the Codex profile “${profile}” can’t provide: a profile runs through codex exec. Clear the profile in Settings → Agents & models, or start the run without tool approvals.` : "This run requires interactive approvals; Codex exec cannot preserve them. Use an available app-server transport.", errorKind: "cli_incompatible" };
       if (opts.interactiveApprovals) onEvent({ kind: "status", text: "Native tool approvals require Codex app-server; this exec turn remains headless." });
       // `-c sandbox_mode=` works for both `exec` and `exec resume` (resume has no -s flag).
       const common = ["--json", "--skip-git-repo-check", ...(opts.permissions ? ["-c", 'approval_policy="never"'] : []), "-c", `sandbox_mode="${sandbox}"`, ...network, ...teamConfig, ...managedSandbox];
@@ -229,9 +237,10 @@ export const codexAdapter: AgentAdapter = {
       schemaFile = opts.jsonSchema ? await writeSchemaFile(opts.jsonSchema) : undefined;
       if (schemaFile) common.push("--output-schema", schemaFile);
       // "-" reads the prompt from stdin, so its size isn't limited by argv.
+      const selectProfile = profile ? ["--profile", profile] : [];
       const args = opts.resumeSessionId
-        ? ["exec", "resume", ...common, opts.resumeSessionId, "-"]
-        : ["exec", ...common, "-C", opts.cwd, "-"];
+        ? [...selectProfile, "exec", "resume", ...common, opts.resumeSessionId, "-"]
+        : [...selectProfile, "exec", ...common, "-C", opts.cwd, "-"];
       const proc = startJsonlProcess({
         command: "codex",
         args,
