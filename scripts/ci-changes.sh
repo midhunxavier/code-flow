@@ -26,7 +26,8 @@ files=""
 case "$EVENT" in
   pull_request)
     # actions/checkout checks out the test merge commit; its first parent is the base branch tip.
-    files=$(git diff --name-only HEAD^1 HEAD) || decide true "could not diff the pull request"
+    # --no-renames lists both sides of a move, so moving code into docs/ still counts as code.
+    files=$(git diff --no-renames --name-only HEAD^1 HEAD) || decide true "could not diff the pull request"
     ;;
   push)
     tree=$(git rev-parse "$SHA^{tree}") || decide true "could not read the pushed tree"
@@ -38,7 +39,8 @@ case "$EVENT" in
       [ "${passed:-0}" -gt 0 ] && decide false "identical to pull request head $head, which already passed CI"
     done
     [[ -z "$BEFORE" || "$BEFORE" =~ ^0+$ ]] && decide true "no previous commit to compare with"
-    files=$(gh api "repos/$REPO/compare/$BEFORE...$SHA" --jq '.files[].filename') || decide true "could not compare with the previous commit"
+    # A renamed file also reports its old path, so moving code into docs/ still counts as code.
+    files=$(gh api "repos/$REPO/compare/$BEFORE...$SHA" --jq '.files[] | .filename, (.previous_filename // empty)') || decide true "could not compare with the previous commit"
     # The compare API lists at most 300 files.
     [ "$(printf '%s\n' "$files" | grep -c .)" -ge 300 ] && decide true "too many changed files to inspect"
     ;;
