@@ -4,8 +4,6 @@ import { Markdown } from "./bits.js";
 import { api, ApiError, post, showToast } from "./lib.js";
 import type { MemoryEntry } from "../src/memory.js";
 import { memoryDraft, mergeMemoryDraft, resolveMemoryMerge, type MemoryDraft, type MemoryDraftField } from "./memory-merge.js";
-import { MemoryAnalysisPanel, MemoryDeleteImpact } from "./memory-analysis.js";
-import { MemoryGraph } from "./memory-graph.js";
 
 /** Knowledge remains inspectable and editable at the scope where later runs read it. */
 export function ProjectMemory({ projectId, repo, refreshKey = "" }: { projectId: string; repo: string; refreshKey?: string }) {
@@ -43,8 +41,6 @@ export function ProjectMemory({ projectId, repo, refreshKey = "" }: { projectId:
     {error ? <p class="msg err" role="alert">{error}</p> : null}
     {creating ? <MemoryEditor endpoint={endpoint} repo={repo} onSaved={async () => { setCreating(false); await load(); }} onCancel={() => setCreating(false)} /> : null}
     {entries && !visible.length ? <p class="help">No project knowledge saved for this repository yet.</p> : null}
-    {entries ? <MemoryAnalysisPanel endpoint={endpoint} repo={repo} entries={entries} refreshKey={refreshKey} onPublished={load} /> : null}
-    {entries ? <MemoryGraph endpoint={endpoint} repo={repo} entries={entries} /> : null}
     <div class="memory-list">{visible.map((entry) => <MemoryCard key={entry.id} entry={entry} endpoint={endpoint} onChanged={load} />)}</div>
   </details>;
 }
@@ -54,7 +50,6 @@ function MemoryCard({ entry, endpoint, onChanged }: { entry: MemoryEntry; endpoi
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [confirmingDelete, setConfirmingDelete] = useState(false);
-  const [impactReady, setImpactReady] = useState(false);
   const change = async (op: "approve" | "delete") => {
     setBusy(true);
     setError("");
@@ -82,8 +77,8 @@ function MemoryCard({ entry, endpoint, onChanged }: { entry: MemoryEntry; endpoi
       {entry.status === "proposed" ? <button class="btn small primary" disabled={busy || editing} onClick={() => change("approve")}>{busy ? "Saving…" : "Accept for future runs"}</button> : null}
       {!editing ? <button class="btn small" disabled={busy} onClick={() => setEditing(true)}>Edit</button> : null}
       {confirmingDelete
-        ? <div class="memory-confirm" role="group" aria-label="Confirm deletion"><span class="help">Delete this knowledge? Its text is erased; entries written with it in context keep theirs.</span><MemoryDeleteImpact endpoint={endpoint} repo={entry.repo} entryId={entry.id} onReady={() => setImpactReady(true)} /><button class="btn small danger" disabled={busy || !impactReady} onClick={() => { setConfirmingDelete(false); void change("delete"); }}>Delete</button><button class="btn small" disabled={busy} onClick={() => setConfirmingDelete(false)}>Keep</button></div>
-        : <button class="btn small danger" disabled={busy || editing} onClick={() => { setImpactReady(false); setConfirmingDelete(true); }}>Delete…</button>}
+        ? <div class="memory-confirm" role="group" aria-label="Confirm deletion"><span class="help">Delete this knowledge? Its text is erased; entries written with it in context keep theirs.</span><button class="btn small danger" disabled={busy} onClick={() => { setConfirmingDelete(false); void change("delete"); }}>Delete</button><button class="btn small" disabled={busy} onClick={() => setConfirmingDelete(false)}>Keep</button></div>
+        : <button class="btn small danger" disabled={busy || editing} onClick={() => setConfirmingDelete(true)}>Delete…</button>}
     </div>
     {error ? <p class="msg err" role="alert">{error} Refresh to see the latest revision.</p> : null}
   </article>;
