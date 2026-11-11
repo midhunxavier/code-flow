@@ -34,8 +34,8 @@ async function audit(selector: string, name: string) {
   assert.deepEqual(result.violations.map((v: any) => ({ id: v.id, nodes: v.nodes.map((n: any) => n.target) })), []);
 }
 async function stopServer() { if (server && server.exitCode === null && server.signalCode === null) { const exited = new Promise(resolve => server.once("exit", resolve)); server.kill("SIGTERM"); await exited; } }
-async function launch(enabled = true) {
-  server = spawn(process.execPath, ["--import", "tsx", "src/server.ts"], { cwd: root, env: { ...process.env, PORT: String(port), CODEFLOW_HOME: home, CODEFLOW_TOKEN: token, CODEFLOW_AUTO_TEAM_ENABLED: String(enabled), PATH: `${join(root, "test/fake-bin")}:${process.env.PATH}` }, stdio: "pipe" });
+async function launch() {
+  server = spawn(process.execPath, ["--import", "tsx", "src/server.ts"], { cwd: root, env: { ...process.env, PORT: String(port), CODEFLOW_HOME: home, CODEFLOW_TOKEN: token, PATH: `${join(root, "test/fake-bin")}:${process.env.PATH}` }, stdio: "pipe" });
   for (const stream of [server.stdout, server.stderr]) stream?.on("data", value => logs += String(value));
   await until(() => fetch(base + "/api/health", { headers }).then(response => response.ok, () => false), Boolean);
 }
@@ -127,15 +127,4 @@ test("save-from-run is a focused editor and publishes the run strategy without c
   const definition = JSON.parse(await dialog.getByLabel("Template definition").inputValue()); assert.ok(definition.tasks.length > 0); await dialog.getByLabel("Name", { exact: true }).fill("Captured QA strategy"); await shot("focused-save-from-run"); await audit("dialog[open]", "save-from-run");
   await dialog.getByRole("button", { name: "Publish template version" }).click(); await dialog.waitFor({ state: "hidden" });
   const saved = (await api(`/api/team-templates?project=${project}`)).templates.find((entry: any) => entry.id === definition.id); assert.equal(saved.name, "Captured QA strategy"); assert.deepEqual(saved.tasks, definition.tasks);
-});
-
-test("server rollout disables new team toggles while existing enabled teams can be turned off", async () => {
-  const existing = await start({ task: "Answer directly", taskTeam: team }); await done(existing.id);
-  const p = await open(`project/${project}/new`); const toggle = p.getByRole("switch", { name: "AI team", exact: true }); await toggle.click();
-  await p.locator(".taskbox textarea").fill("Saved team draft"); await p.reload(); await until(() => toggle.getAttribute("aria-checked"), value => value === "true");
-  await stopServer(); await launch(false); assert.equal((await api("/api/team-rollout")).enabled, false);
-  await p.reload(); await p.getByText("Team is disabled on this server. Turn AI team off to continue with one agent.", { exact: true }).waitFor(); assert.equal(await p.getByRole("button", { name: "Send", exact: true }).isDisabled(), true);
-  await toggle.click(); await until(() => toggle.isDisabled(), Boolean); assert.match(await toggle.getAttribute("title") ?? "", /Team is disabled/);
-  await p.goto(`${base}/#/run/${existing.id}`); const existingToggle = p.locator("main").getByRole("switch", { name: "AI team", exact: true }); await until(() => existingToggle.getAttribute("aria-checked"), value => value === "true"); assert.equal(await existingToggle.isEnabled(), true); await existingToggle.click(); await until(() => api(`/api/runs/${existing.id}`), value => value.taskTeam?.enabled === false); assert.equal(await existingToggle.isDisabled(), true);
-  const solo = await start({ task: "Single agent still works" }); await done(solo.id);
 });

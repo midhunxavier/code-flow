@@ -13,9 +13,9 @@ import { repoRoot } from "./git.js";
  * a host CLI even to read (provider discovery, `gh` issue and pull-request listings) is private: that process has the
  * host's authority in whatever repository it lists, which no path rule can confine.
  */
-export const RESTRICTED_PRIVATE_ROUTES = ["chats", "codex-profile", "task-conversations", "docs-help", "experience", "fs", "notes", "stats", "automations", "deferred-runs", "coordinated-changes", "notifications", "maintenance", "diagnostics", "shell", "serve", "preview", "snapshot", "disk", "cleanup", "models", "model-catalog", "doctor", "github", "approvals", "team-capabilities", "team-evaluations", "team-rollout"];
+export const RESTRICTED_PRIVATE_ROUTES = ["chats", "codex-profile", "task-conversations", "docs-help", "experience", "fs", "notes", "stats", "automations", "deferred-runs", "coordinated-changes", "notifications", "maintenance", "diagnostics", "shell", "serve", "preview", "snapshot", "disk", "cleanup", "models", "model-catalog", "doctor", "github", "approvals", "team-capabilities"];
 export const RESTRICTED_EXECUTION_ROUTES = ["acp-connections", "runs", "readiness", "verification", "compare", "sweeps", "automations", "deferred-runs", "coordinated-changes", "remote-workers", "improve-prompt", "team-link", "folders"];
-export const RESTRICTION_OPEN_ROUTES = ["accounts", "agents", "branches", "browser", "check", "events", "extensions", "file", "health", "host-execution", "integration-connections", "integrations", "patterns", "projects", "remote", "repo-config", "search", "ssh-hosts", "ssh-runtime", "stream", "team", "team-host-runtime", "team-templates", "team-terminals", "templates", "tree", "v1", "workspace", "workspace-projects"];
+export const RESTRICTION_OPEN_ROUTES = ["accounts", "agents", "branches", "browser", "check", "events", "extensions", "file", "health", "host-execution", "integration-connections", "patterns", "projects", "remote", "repo-config", "search", "ssh-hosts", "ssh-runtime", "stream", "team", "team-host-runtime", "team-templates", "team-terminals", "templates", "tree", "v1", "workspace", "workspace-projects"];
 
 /** Server boundary and current/pinned ownership resolution; low-level helpers use the same resolver. */
 export class FilesystemAccess {

@@ -13,7 +13,7 @@ import type { SharedPrincipal } from "../src/shared-accounts.js";
 import { configureStreamSharing, type StreamSharing } from "./stream.js";
 import logo from "./brand/code-flow-mark.svg";
 import { api, localApi, ownerOnLocalListener, workspaceId, initializeTeamConnection, ensureCollaborationSource, showToast, showError, store, SHORT } from "./lib.js";
-import { agents, composerProject, composerLoading, draftsReady, openBrowserPage, openComposer, hashFor, initializeProjectDrafts, listenForHandOffs, loadHealth, loadModels, loadProjects, loadTeamRollout, patterns, refreshRuns, replaceRouteHistory, route, routeFromHash, setRepo, templates, watchAllRuns } from "./state.js";
+import { agents, composerProject, composerLoading, draftsReady, openBrowserPage, openComposer, hashFor, initializeProjectDrafts, listenForHandOffs, loadHealth, loadModels, loadProjects, patterns, refreshRuns, replaceRouteHistory, route, routeFromHash, setRepo, templates, watchAllRuns } from "./state.js";
 
 // Reuse the sidebar's stacked-layers mark for the browser tab.
 const icon = Object.assign(document.createElement("link"), { rel: "icon", type: "image/svg+xml", href: logo });
@@ -80,7 +80,6 @@ async function boot() {
   agents.value = agentList;
   for (const agent of agentList) SHORT[agent.id as keyof typeof SHORT] = agent.displayName;
   patterns.value = patternList;
-  void loadTeamRollout();
   readConnectionIntent();
   route.value = routeFromHash();
   effect(() => {

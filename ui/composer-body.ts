@@ -8,7 +8,7 @@ import { taskWithCriteria } from "./composer-tools.js";
 import { toolApprovalState } from "./composer-permissions.js";
 import { readProjectDefaults } from "./project-defaults.js";
 import { store } from "./lib.js";
-import { composerRunOptions, repo, projectsStatus, composerProject, task, acceptanceCriteria, optionsFor, baseRef, source, branchPrefix, externalSource, contextPaths, attachments, agentSettings, CHECKPOINTS, planApprovalFor, trust, roleModels, checkCmd, setupCmd, limits, repoConfig, rolesFor } from "./state.js";
+import { composerRunOptions, repo, projectsStatus, composerProject, task, acceptanceCriteria, optionsFor, baseRef, source, branchPrefix, contextPaths, attachments, agentSettings, CHECKPOINTS, planApprovalFor, trust, roleModels, checkCmd, setupCmd, limits, repoConfig, rolesFor } from "./state.js";
 
 /** Build the current saved draft independently of which screen happens to be mounted. */
 export function composerRunBody(p: PatternInfo, profile?: VerificationProfile | null): Record<string, any> {
@@ -21,7 +21,7 @@ export function composerRunBody(p: PatternInfo, profile?: VerificationProfile | 
   const single = p.id === "solo", roles = rolesFor(p), soloAgent = roles.agent?.[0];
   const soloSettings = soloAgent && soloAgent !== "auto" ? { ...agentSettings.value[soloAgent], ...roleModels.value[p.id]?.agent?.[soloAgent] } : {};
   const savedApprovals = store.get("interactiveApprovals");
-  const approvals = toolApprovalState({ choice: options.toolApprovals ?? (savedApprovals === null ? undefined : savedApprovals === "1"), trust: externalSource.value ? "safe" : trust.value, p, roles, remote: !!remoteWorker, container: containerEnabled, external: !!externalSource.value });
+  const approvals = toolApprovalState({ choice: options.toolApprovals ?? (savedApprovals === null ? undefined : savedApprovals === "1"), trust: trust.value, p, roles, remote: !!remoteWorker, container: containerEnabled });
   return ({
     intent: intentDraft.value,
     repo: repo.value,
@@ -38,7 +38,6 @@ export function composerRunBody(p: PatternInfo, profile?: VerificationProfile | 
     baseRef: baseRef.value,
     source: sourceForRerun(source.value, restored?.source),
     branchPrefix: branchPrefix.value.trim(),
-    externalSourceId: externalSource.value?.id,
     context: {
       paths: [...contextPaths.value.values()].map((c) => ({ path: c.path })),
       attachments: attachments.value.map((a) => ({ name: a.name, data: a.data })),

@@ -41,7 +41,6 @@ test("wizard installs an isolated team server over connected SSH, configures HTT
     const errors: string[] = []; page.on("pageerror", (error) => errors.push(error.message));
     await page.goto(`${base}/?token=${token}`);
     await page.goto(`${base}/?team=local#/settings/team`);
-    await page.getByLabel("Show Board in the app menu").check();
     await page.getByRole("button", { name: "Set up team server", exact: true }).click();
     await page.getByLabel("Server", { exact: true }).selectOption(connection.id);
     await page.getByLabel("Team HTTPS port", { exact: true }).fill(String(teamPort));
@@ -225,7 +224,6 @@ test("wizard installs an isolated team server over connected SSH, configures HTT
     await page.screenshot({ path: "/tmp/code-flow-team-board-mobile.png", fullPage: true, animations: "disabled" });
     await page.setViewportSize({ width: 1440, height: 1100 });
     await page.goto(`${base}/computer/${connection.id}/#/settings/connections/manage`);
-    await page.getByLabel("Show Board in the app menu").check();
     const statusCard = page.getByRole("region", { name: "Team server on Connected VM", exact: true });
     await statusCard.getByText("Not responding", { exact: true }).waitFor();
     await statusCard.getByRole("button", { name: "Delete team server", exact: true }).click();

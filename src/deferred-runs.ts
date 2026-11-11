@@ -27,7 +27,6 @@ export interface DeferredRunRequest {
   loop: Partial<LoopSettings> & { copy: [] };
   trust: "safe"; allowUntrusted: false; approvals: { plan: false; tools: false };
   source?: SourceInput;
-  externalSourceRef?: { integration: string; kind: "issue" | "pr"; key: string };
 }
 export type DeferredRunStatus = "queued" | "waiting-time" | "waiting-provider" | "claimed" | "started" | "failed" | "unknown" | "cancelled";
 export interface DeferredRunJob {
@@ -84,7 +83,7 @@ const canonical = (value: any): string => JSON.stringify(value, (_key, item) => 
 
 /** A second defense behind server validation: only configuration and source references persist. */
 export function sanitizeDeferredRequest(value: unknown): DeferredRunRequest {
-  const raw = keys(value, ["templateRef", "permissionRequirements", "repo", "project", "projectSelection", "pattern", "task", "roles", "options", "baseRef", "branchPrefix", "parentRunId", "context", "agentSettings", "roleSettings", "loop", "trust", "allowUntrusted", "approvals", "source", "externalSourceRef"], "run request");
+  const raw = keys(value, ["templateRef", "permissionRequirements", "repo", "project", "projectSelection", "pattern", "task", "roles", "options", "baseRef", "branchPrefix", "parentRunId", "context", "agentSettings", "roleSettings", "loop", "trust", "allowUntrusted", "approvals", "source"], "run request");
   const repo = text(raw.repo, 4000, "repository");
   if (!isAbsolute(repo)) throw new Error("Deferred runs need an absolute repository path");
   const roles = record(raw.roles ?? {}, 20, (value) => {
@@ -153,11 +152,6 @@ export function sanitizeDeferredRequest(value: unknown): DeferredRunRequest {
         run.source.numbers = [...new Set<number>(source.numbers)];
       }
     } else if (source.tool !== undefined || source.numbers !== undefined) throw new Error("Alert fields require an alert source");
-  }
-  if (raw.externalSourceRef !== undefined) {
-    const ref = keys(raw.externalSourceRef, ["integration", "kind", "key"], "external source reference");
-    if (!["issue", "pr"].includes(ref.kind) || run.source) throw new Error("Choose one deferred source reference");
-    run.externalSourceRef = { integration: text(ref.integration, 100, "integration"), kind: ref.kind, key: text(ref.key, 240, "source key") };
   }
   if (Buffer.byteLength(JSON.stringify(run)) > DEFERRED_RUN_LIMITS.requestBytes) throw new Error("Deferred run configuration is too large");
   return run;

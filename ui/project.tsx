@@ -13,7 +13,6 @@ import { TeamBoardView } from "./collab-board.js";
 import { IntegrationsScreen } from "./integration-connections.js";
 import { ProjectShare } from "./project-share.js";
 import { TeamPeopleView } from "./collab-people.js";
-import { useProjectFeatures } from "./project-features.js";
 import { OutcomeMetrics } from "./experience.js";
 import type { ComponentChildren } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
@@ -28,7 +27,6 @@ import type { RunSummary } from "./types.js";
 
 export function ProjectView({ id, section, repository, tool, kind }: { id: string; section?: ProjectSection; repository?: string; tool?: RepositoryTool; kind?: string }) {
   const [contextOpen, setContextOpen] = useState(false);
-  const features = useProjectFeatures(id);
   const navigation = useRef<HTMLElement>(null);
   useEffect(() => {
     const nav = navigation.current, active = nav?.querySelector<HTMLElement>('[aria-current="page"]');

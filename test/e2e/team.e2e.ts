@@ -67,7 +67,6 @@ async function audit(target: Page, screen: string) {
 const fits = (target: Page) => target.evaluate(() => { const main = document.getElementById("main-content") ?? document.querySelector("main"); return document.documentElement.scrollWidth <= innerWidth && (!main || main.scrollWidth <= main.clientWidth + 1); });
 
 test("the People entry opens a useful empty board with a workflow summary", async () => {
-  await page.evaluate(() => localStorage.setItem("peopleEnabled", "1")); await page.reload();
   await page.goto(`${base}/#/settings/board`);
   await page.waitForURL(/#\/settings\/board$/);
   await page.getByRole("heading", { name: "Board", exact: true }).waitFor();

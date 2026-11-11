@@ -67,7 +67,7 @@ Running, paused, interrupted, stopped, unarchived, pinned and watched runs are p
 
 Eligible old private/team memory bodies are erased atomically while their provenance tombstones remain. Attachment retention deletes only bounded regular files in known staging/generated context directories and refuses tracked repository files or symlinked ancestors. Already-removed managed workspace directories are omitted because there is nothing left to delete. Symlinked or non-directory ancestors still protect the data. Workspace retention requires verified managed linked Git ownership, a clean index and worktree, no hidden tracked changes, no nested repository/submodule, and no Git lock. Removal uses Git without force and preserves branches. Run retention removes only the selected terminal archived logs, journals and checkpoints. These changes remove recovery evidence, so review the preview and back up data you still need.
 
-The older `retention --days 90` command remains an age-only report and does not assess pins or provenance. Its unguarded `--apply` behavior has been removed. Existing scripts must migrate to a reviewed `retention-policy` manifest; the compatibility alias `retention --plan /path/reviewed-plan.json --apply` uses the same protected exact-plan apply.
+The older age-only `retention --days 90` command has been removed. Existing scripts must migrate to a reviewed `retention-policy` manifest; the compatibility alias `retention --plan /path/reviewed-plan.json --apply` uses the same protected exact-plan apply.
 
 ## Log compaction
 

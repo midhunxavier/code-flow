@@ -30,7 +30,7 @@ import {
   executionPaused, healthError, healthOpen, refreshProviders, providersRefreshing, loadHealth, loadModels, loadAgents, limitPreference, setLimits, type Limits, trust, setTrust, settingsProject,
   patterns, defaultPattern, setPattern,
   railView, setRailView, shortcutsOpen, projectsOpen, projects, repo, route,
-  externalSource, source, setTask, type Trust,
+  source, setTask, type Trust,
 } from "./state.js";
 
 export function SettingsView({ section = "general", group, connection }: { section?: SettingsSection; group?: string; connection?: string }) {

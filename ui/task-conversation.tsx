@@ -24,10 +24,6 @@ type Draft = {
 };
 function draftFor(project = composerProject.value, repository = repo.value): Draft { return store.json<Draft>(`task-draft:${project}`, { project, repo: repository, request: "", source: "working_changes", untracked: [], coordinator: { id: "coordinator", provider: "claude" } }); }
 const OUTCOMES: Record<string, string> = { plan_ready: "Plan ready", agreed_plan: "Plan agreed", verified_changes: "Changes verified", review_complete: "Review complete", stopped_limit: "Stopped · partial work preserved", blocked: "Needs attention · partial work preserved" };
-export function OpenTaskSetup() {
-    const allowed = executionHost.value.kind === "local" && !onPhone && !!composerProject.value && !!repo.value;
-    return <button type="button" class="btn ghost" disabled={!allowed} title={allowed ? "Prepare a team and work sequence from your instructions" : "Choose a local project and repository first"} onClick={() => { store.set("task-entry", JSON.stringify({ project: composerProject.value, repo: repo.value })); route.value = { view: "task", id: "new" }; }}>Try conversational setup</button>;
-}
 export function TaskConversationPage({ id }: {
     id: string;
 }) {

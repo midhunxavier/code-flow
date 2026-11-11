@@ -32,7 +32,7 @@ src/team-memory.ts       run/project scope and Git applicability for memory retr
 src/team-mailbox.ts      validated atomic collaboration commands, requests and waits
 src/team-scheduler.ts    recorded completion batches with concurrent worker lifetimes
 src/team-tools.ts        expiring member capability service; stdio MCP client in team-tool-client.mjs
-src/team-evaluation.ts   immutable evaluations and evidence-gated rollout decisions
+src/team-evaluation.ts   per-run coordination, verification and recovery measurements
 src/projects.ts          projects: named groups of repos, and which project a new run goes in
 src/log.ts               code-flow's own log, ~/.codeflow/server.log (rotated at 5 MB)
 src/env.ts               the environment of everything code-flow starts: yours, minus its token, npm_* and its own node_modules/.bin

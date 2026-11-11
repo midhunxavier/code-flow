@@ -9,7 +9,6 @@ import { api, baseName, duration, fmtCost, fmtSize, fmtTokens, pct, post, showTo
 import { activeProject, currentProject, NONE, patterns, repo, route, runState } from "./state.js";
 import type { AgentId, Stats } from "./types.js";
 import { ProjectButton } from "./projects.js";
-import { TeamEvaluations } from "./team-evaluation.js";
 
 const patternName = (id: string) => patterns.value.find((p) => p.id === id)?.name ?? id;
 const PERIODS = { "7": 7, "30": 30, all: 0 } as const;
@@ -290,7 +289,6 @@ export function InsightsView({ group }: { group?: string }) {
         </>
       ) : null}
       <details class="settings"><summary>Experiments</summary><div class="settings-body"><p class="help">Compare workflows against your current New run draft. Each selected setup starts a separate run and uses provider capacity.</p>{draft ? <p>{draft.task.split("\n")[0] || "No task in the current draft"}</p> : null}<button class="btn" disabled={!!comparisonProblem} title={comparisonProblem} onClick={() => setComparing(true)}>Compare setups…</button>{comparisonProblem ? <p class="help">{comparisonProblem} <a href="#/">Configure task</a></p> : null}</div></details>
-      <details class="ins-advanced"><summary>Team evaluation</summary><TeamEvaluations /></details>
       <details class="ins-advanced"><summary>Storage</summary><DiskPanel scope={scopeQuery()} /></details>
     </div>
   );

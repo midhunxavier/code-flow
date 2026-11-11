@@ -1,12 +1,8 @@
-import { createHash, randomBytes } from "node:crypto";
-import { mkdir, open, readFile, readdir, rename, rm } from "node:fs/promises";
-import { join } from "node:path";
-import { CODEFLOW_HOME } from "./config.js";
+import { createHash } from "node:crypto";
 import type { Run, Step } from "./engine.js";
 import type { MemoryEntry } from "./memory.js";
 
 export type EvaluationMode = "fake" | "real" | "unknown";
-export type RolloutStage = "experimental" | "beta" | "default";
 export interface ReplayMeasurement { bytes: number; records: number; durationMs: number; kind: "journal-load" | "execution-replay" }
 export interface EvaluationReproducibility {
   nodeVersion: string;
@@ -47,13 +43,6 @@ export interface TeamEvaluation {
     replay?: ReplayMeasurement;
   };
   limitations: string[];
-}
-export interface RolloutDecision { at: number; stage: RolloutStage; rationale: string; evaluationIds: string[] }
-export interface TeamRollout { enabled: boolean; stage: RolloutStage; reason: string; decision?: RolloutDecision }
-export interface RolloutAssessment {
-  realRuns: number; realAutoRuns: number; realWorkerTurns: number; matchedPairs: number;
-  verifiedAutoRuns: number; overheadFraction: number | null; peerYieldRate: number | null;
-  eligibleBeta: boolean; eligibleDefault: boolean; blockers: string[];
 }
 
 const finite = (n: unknown): n is number => typeof n === "number" && Number.isFinite(n) && n >= 0;
@@ -141,7 +130,7 @@ export function buildTeamEvaluation(run: Run, options: { mode?: EvaluationMode; 
       replay: options.replay,
     },
     limitations: [
-      ...(mode !== "real" ? [mode === "fake" ? "Deterministic fake CLIs validate orchestration, not model quality or subscription savings." : "Execution provenance is unknown; excluded from real-run rollout evidence."] : []),
+      ...(mode !== "real" ? [mode === "fake" ? "Deterministic fake CLIs validate orchestration, not model quality or subscription savings." : "Execution provenance is unknown."] : []),
       "API-equivalent cost is not a subscription charge; unreported values remain unknown.",
       "Model identities record requested CLI settings. A provider default or alias is not an immutable model snapshot and may change between trials.",
       "Avoidable barrier time is a counterfactual upper-bound estimate after answered peer questions; it does not prove spare process capacity or an asynchronous speedup.",
@@ -151,86 +140,3 @@ export function buildTeamEvaluation(run: Run, options: { mode?: EvaluationMode; 
     ],
   };
 }
-
-export function assessTeamRollout(reports: TeamEvaluation[]): RolloutAssessment {
-  const real = reports.filter((report) => report.mode === "real" && report.status !== "running");
-  const auto = real.filter((report) => report.pattern === "auto-team");
-  const pairs = new Map<string, TeamEvaluation[]>();
-  for (const report of real) if (report.pairId) { const key = `${report.pairId}:${report.caseId}:${report.taskHash}:${report.baseRef}`; pairs.set(key, [...(pairs.get(key) ?? []), report]); }
-  const matched = [...pairs.values()].filter((items) => items.some((item) => item.pattern === "auto-team") && items.some((item) => item.pattern === "supervisor"));
-  const verifiedMatch = matched.some((items) => items.some((item) => item.pattern === "auto-team" && item.verified));
-  const pairedQuality = matched.every((items) => !items.some((item) => item.pattern === "supervisor" && item.verified) || items.some((item) => item.pattern === "auto-team" && item.verified));
-  const multi = auto.filter((report) => report.metrics.multiWorker);
-  const denominator = multi.reduce((sum, report) => sum + report.metrics.invocations, 0);
-  const overhead = denominator ? multi.reduce((sum, report) => sum + report.metrics.coordinatorInvocations, 0) / denominator : null;
-  const workerTurns = auto.reduce((sum, report) => sum + report.metrics.workerTurns, 0);
-  const peerYields = auto.reduce((sum, report) => sum + (report.metrics.peerYieldRate ?? 0) * report.metrics.workerTurns, 0);
-  const blockers: string[] = [];
-  if (auto.length < 20) blockers.push(`Need 20 real Auto runs; recorded ${auto.length}.`);
-  if (workerTurns < 100) blockers.push(`Need 100 real worker turns; recorded ${workerTurns}.`);
-  if (matched.length < 20) blockers.push(`Need 20 matched Auto/Supervisor comparisons; recorded ${matched.length}.`);
-  if (!pairedQuality) blockers.push("Auto verification regressed against a matched Supervisor result.");
-  if (auto.some((report) => !report.verified)) blockers.push("Some real Auto results are incomplete or unverified.");
-  if (overhead === null || overhead > .25) blockers.push(overhead === null ? "No multi-worker coordinator overhead sample." : "Observed multi-worker coordinator calls exceed 25% of invocations.");
-  if (real.some((report) => !Object.keys(report.cliVersions).length)) blockers.push("Some real results have no recorded CLI versions.");
-  return { realRuns: real.length, realAutoRuns: auto.length, realWorkerTurns: workerTurns, matchedPairs: matched.length, verifiedAutoRuns: auto.filter((report) => report.verified).length, overheadFraction: overhead, peerYieldRate: workerTurns ? peerYields / workerTurns : null, eligibleBeta: verifiedMatch && pairedQuality && real.every((report) => Object.keys(report.cliVersions).length > 0), eligibleDefault: blockers.length === 0, blockers };
-}
-
-/** Local immutable reports and an explicit, audited rollout decision. No model output can change it. */
-export class TeamEvaluationStore {
-  private queue: Promise<unknown> = Promise.resolve();
-  constructor(readonly directory = join(CODEFLOW_HOME, "team-evaluations")) {}
-  private async write(file: string, value: unknown) {
-    await mkdir(this.directory, { recursive: true });
-    const temporary = join(this.directory, `.${file}.${randomBytes(8).toString("hex")}.tmp`);
-    try {
-      const handle = await open(temporary, "wx", 0o600);
-      try { await handle.writeFile(JSON.stringify(value, null, 2) + "\n"); await handle.sync(); } finally { await handle.close(); }
-      await rename(temporary, join(this.directory, file));
-      if (process.platform !== "win32") { const dir = await open(this.directory, "r"); try { await dir.sync(); } finally { await dir.close(); } }
-    } finally { await rm(temporary, { force: true }); }
-  }
-  async list(): Promise<TeamEvaluation[]> {
-    const names = await readdir(this.directory).catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return []; throw error; });
-    const reports = await Promise.all(names.filter((name) => /^evaluation-[\w-]+\.json$/.test(name)).map(async (name) => {
-      const value = JSON.parse(await readFile(join(this.directory, name), "utf8")) as TeamEvaluation;
-      if (value.version !== 1 || value.id + ".json" !== name) throw new Error(`Unsupported or damaged evaluation ${name}`);
-      return value;
-    }));
-    return reports.sort((a, b) => b.at - a.at || a.id.localeCompare(b.id));
-  }
-  async record(report: TeamEvaluation): Promise<TeamEvaluation> {
-    if (report.version !== 1 || !/^evaluation-[\w-]+$/.test(report.id) || !["fake", "real", "unknown"].includes(report.mode)) throw new Error("Invalid evaluation report");
-    const operation = this.queue.then(async () => {
-      const previous = await readFile(join(this.directory, `${report.id}.json`), "utf8").catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return undefined; throw error; });
-      if (previous) { if (JSON.stringify(JSON.parse(previous)) !== JSON.stringify(report)) throw new Error("An evaluation is immutable; use a new run for another trial"); return report; }
-      await this.write(`${report.id}.json`, report); return report;
-    });
-    this.queue = operation.catch(() => undefined); return operation;
-  }
-  async rollout(enabled = true): Promise<TeamRollout> {
-    const decision = await readFile(join(this.directory, "rollout.json"), "utf8").then((text) => JSON.parse(text) as RolloutDecision, (error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return undefined; throw error; });
-    if (decision && (!["experimental", "beta", "default"].includes(decision.stage) || !Array.isArray(decision.evaluationIds))) throw new Error("Damaged team rollout decision");
-    return { enabled, stage: decision?.stage ?? "experimental", reason: enabled ? decision?.rationale ?? "No evaluation promotion decision has been recorded. The application default is configured separately." : "New Auto teams are disabled. Existing teams can still be viewed and resumed.", decision };
-  }
-  async decide(input: { stage: RolloutStage; rationale: string; evaluationIds: string[] }): Promise<TeamRollout> {
-    if (!["experimental", "beta", "default"].includes(input.stage) || typeof input.rationale !== "string" || !input.rationale.trim() || input.rationale.length > 4000 || !Array.isArray(input.evaluationIds)) throw new Error("Choose a stage, evaluation reports and a written rationale");
-    const operation = this.queue.then(async () => {
-      const all = await this.list(); const ids = [...new Set(input.evaluationIds)];
-      if (ids.some((id) => !all.some((report) => report.id === id))) throw new Error("Unknown evaluation report");
-      const selected = all.filter((report) => ids.includes(report.id));
-      // Promotion is judged on every real report, not on the ones a caller chose to cite.
-      const assessment = assessTeamRollout(all);
-      if (input.stage === "beta" && !assessment.eligibleBeta) throw new Error("Beta needs a verified real Auto result and a matched Supervisor comparison with CLI versions and no verification regression");
-      if (input.stage === "default" && !assessment.eligibleDefault) throw new Error(`Default rollout is not supported: ${assessment.blockers.join(" ")}`);
-      // The evidence permits it; the decision must still say which reports it rests on.
-      if (input.stage !== "experimental" && !selected.length) throw new Error("Cite the evaluation reports the decision rests on");
-      const decision: RolloutDecision = { at: Date.now(), stage: input.stage, rationale: input.rationale.trim(), evaluationIds: ids };
-      await this.write(`decision-${decision.at}-${randomBytes(4).toString("hex")}.json`, decision);
-      await this.write("rollout.json", decision); return this.rollout();
-    });
-    this.queue = operation.catch(() => undefined); return operation;
-  }
-}
-
-export const teamEvaluationStore = new TeamEvaluationStore();

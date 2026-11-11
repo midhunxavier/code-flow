@@ -177,25 +177,6 @@ a stale cursor triggers a fresh `hello`. `GET /runs/:id/events` streams that run
 retained events with a run-bound replay cursor. These are live feeds, not durable
 client acknowledgment queues.
 
-## Read-only external sources
-
-| Operation | Request | Behavior |
-| --- | --- | --- |
-| `GET /integrations` | none | List explicitly server-configured provider metadata and availability without credential names or values. |
-| `GET /integrations/:id/items` | `kind=issue\|pr`, optional `cursor` query | Return `{items, nextCursor?, truncated}` from a bounded provider listing. Supported kinds depend on the provider. |
-| `POST /integrations/:id/import` | `kind`, `key` | Read one item and return 201 with a server-issued source snapshot ID and untrusted marker. |
-
-Run creation accepts `externalSourceId` from the import response, or
-`externalSourceRef: {integration, kind, key}` for a server-side import. It rejects
-client-authored `externalSource` snapshots, invalid/expired IDs, and simultaneous
-ID/ref inputs. Snapshots expire after 30 minutes and the server retains at most
-200. Imported context forces Safe permissions, removes secret-file copying, and
-requires network-disabled checks in a container or explicit host authorization.
-Forks and continuations inherit the trust boundary. Source text is task context;
-PR imports do not fetch or check out remote code. No source providers are built
-in, so these routes list nothing unless a build adds a provider in code. See
-[external sources](external-sources.md).
-
 ## Outbound notifications
 
 | Operation | Request | Behavior |
@@ -258,8 +239,7 @@ Run creation accepts `loop.verification`, `loop.maxTokens`, `loop.maxCostUsd`,
 `loop.agentContainer`, and explicit `approvals.tools`. Token/cost limits count
 only provider-reported usage and are checked between operations. API-equivalent
 cost is not a subscription charge. Automated and locked-down runs never wait for
-native tool permissions. See [agent containers](agent-containers.md),
-[external sources](external-sources.md), and [maintenance](maintenance.md).
+native tool permissions. See [agent containers](agent-containers.md) and [maintenance](maintenance.md).
 
 The client has no automatic retry for mutations. A dropped response is not proof
 that an operation did not execute; inspect the run before repeating a creation.

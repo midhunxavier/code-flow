@@ -89,7 +89,6 @@ import { cursorSeq, StreamHub, TopicError, type Deliver, type TopicSource } from
 import { replayEvents } from "./run-log.js";
 import { previewTarget, Previews } from "./preview.js";
 import { SnapshotError, takeSnapshot } from "./snapshot.js";
-import { Integrations } from "./integrations.js";
 import { IntegrationConnections } from "./integration-connections.js";
 import { createIntegrationConnectionsApi } from "./integration-connections-api.js";
 import { Notifications } from "./notifications.js";
@@ -102,7 +101,7 @@ import { handleWorkspaceApi } from "./workspace-api.js";
 import { TeamPlanEditError } from "./workflow-control.js";
 import { redactExport } from "./privacy.js";
 import { validateVerificationProfile, renderVerificationReport } from "./verification.js";
-import { CODEFLOW_HOME, autoTeamEnabled, envNumber, PORT } from "./config.js";
+import { CODEFLOW_HOME, envNumber, PORT } from "./config.js";
 import { ConflictMarkersError, RunManager, RunConflictError, UntrustedSourceError, roleParticipants, type LoopSettings, type Pattern } from "./engine.js";
 import { detectCheck } from "./checks.js";
 import { findPattern, patterns } from "./patterns/index.js";
@@ -133,7 +132,7 @@ import { adapterTeamCapabilities } from "./adapters/team-tools.js";
 import { createAcpAdapter, probeAcp } from "./adapters/acp.js";
 import { AcpConnections, validateAcpConnection } from "./acp-connections.js";
 import { teamToolBridge } from "./team-tools.js";
-import { teamEvaluationStore, buildTeamEvaluation, assessTeamRollout } from "./team-evaluation.js";
+import { buildTeamEvaluation } from "./team-evaluation.js";
 import type { Run, RunEvent, RunSummary, SideTurn, StartRunInput } from "./engine.js";
 import { CliTeamsService } from "./cli-teams/service.js";
 import { startCliTeamsTransport } from "./cli-teams/transport.js";
@@ -228,15 +227,13 @@ const deferredRuns = createDeferredRuns(manager, { build: buildStartInput, resol
 /** Set at startup: an unreadable queue file disables deferred runs only, and is kept for repair. */
 let deferredFault: string | undefined = "Deferred runs are still loading";
 const coordinatedApi = createCoordinatedApi({ manager, projects, build: buildStartInput, resolveProviders: resolveQueuedProviders });
-const integrations = new Integrations();
 const integrationWarnings: string[] = [];
-await integrations.load().catch(error => { logError("Administrator external sources disabled: invalid integration configuration", error); integrationWarnings.push("Administrator integration configuration (CODEFLOW_INTEGRATIONS_JSON/FILE) is invalid or unreadable. Those sources are unavailable; app-managed connections remain available."); });
 const notifications = new Notifications();
 const notificationsReady = await notifications.load(undefined, { allowInvalidAdministratorConfig: true }).then(() => true, (error) => { logError("Notifications disabled: delivery state cannot be read", error); integrationWarnings.push("Notification delivery storage is unavailable. Repair it and restart; other app-managed connections remain available."); return false; });
 if (notifications.configurationWarning) integrationWarnings.push(notifications.configurationWarning);
-const integrationConnections = new IntegrationConnections({ integrations, notifications, notificationsAvailable: notificationsReady, warnings: integrationWarnings });
+const integrationConnections = new IntegrationConnections({ notifications, notificationsAvailable: notificationsReady, warnings: integrationWarnings });
 await integrationConnections.load().catch(error => logError("Integration connection storage is unavailable", error));
-const integrationConnectionsApi = createIntegrationConnectionsApi({ connections: integrationConnections, integrations, projects });
+const integrationConnectionsApi = createIntegrationConnectionsApi({ connections: integrationConnections, projects });
 /** The side panel's terminals and notes. */
 const shells = new Shells();
 const teamTerminals = new TeamTerminals({
@@ -949,8 +946,7 @@ async function validatedStartInput(body: Record<string, any>): Promise<StartRunI
   if (body.trust !== undefined && !["safe", "standard", "trusted", "full"].includes(body.trust)) throw new HttpError(400, "Choose Safe, Standard, Trusted or Full access");
   for (const field of ["loop", "options", "agentSettings", "roleSettings"]) if (body[field] !== undefined && (!body[field] || typeof body[field] !== "object" || Array.isArray(body[field]))) throw new HttpError(400, `${field} must be an object`);
   if (body.projectSelection === "explicit" && !projects.get(body.project)?.repos.includes(await repoRoot(repo))) throw new HttpError(409, "This repository is no longer an explicit member of the selected project");
-  if (body.externalSource !== undefined || (body.externalSourceId !== undefined && typeof body.externalSourceId !== "string")) throw new HttpError(400, "Import the external source through its configured integration first");
-  if (body.externalSourceId !== undefined && body.externalSourceRef !== undefined) throw new HttpError(400, "Choose one external source reference");
+  if (body.externalSource !== undefined || body.externalSourceId !== undefined || body.externalSourceRef !== undefined) throw new HttpError(400, "Imported external sources are no longer available. Start from a GitHub issue or pull request instead.");
   if (body.checkpointOnFinish !== undefined && typeof body.checkpointOnFinish !== "boolean") throw new HttpError(400, "checkpointOnFinish must be a boolean");
   if (body.intent !== undefined && !taskIntent(body.intent)) throw new HttpError(400, "Choose a supported task type");
   const parent = typeof body.parentRunId === "string" ? manager.get(body.parentRunId) : undefined;
@@ -964,14 +960,6 @@ async function validatedStartInput(body: Record<string, any>): Promise<StartRunI
   const runTrust = parent?.permissions ? narrowerTrust(narrowerTrust(parent.permissions.trust, parent.trust), body.trust ?? parent.trust) : body.trust;
   const runTools = parent?.permissions ? parent.permissions.toolApprovals && !!parent.approvals.tools && body.approvals?.tools !== false : body.approvals?.tools === true;
   const { roles, notes } = await validateRoles(pattern, body.roles, await repoRoot(repo).catch(() => repo), loop.remoteWorker, runTrust, { required: requiredPermissions, container: !!loop.agentContainer, tools: runTools, antigravityExecution: agyExecution, acpExecution: acpMode });
-  let externalSource = typeof body.externalSourceId === "string" ? await attempt(async () => integrations.resolveSource(body.externalSourceId)) : undefined;
-  if (body.externalSourceRef) {
-    const ref = body.externalSourceRef;
-    if (typeof ref.integration !== "string" || !["issue", "pr"].includes(ref.kind) || typeof ref.key !== "string") throw new HttpError(400, "Choose a configured external source");
-    externalSource = await attempt(() => integrations.importSource(ref.integration, ref.kind, ref.key, typeof body.project === "string" && projects.get(body.project) ? { project: body.project, repository: repo } : undefined));
-  }
-  if (externalSource && body.source) throw new HttpError(400, "Choose one external source for this run");
-  if (externalSource?.projectContext && (externalSource.projectContext.project !== body.project || externalSource.projectContext.repository !== repo)) throw new HttpError(400, "Keep the imported issue's project and repository, or import it again from the intended project");
   if (body.loop?.verification) loop.verification = await attempt(async () => validateVerificationProfile(body.loop.verification));
   if (loop.remoteWorker && (body.approvals?.tools || loop.agentContainer)) throw new HttpError(400, "Remote workers use their provisioned isolation profile and cannot wait for native tool approvals");
   const container = inheritedLoop.container;
@@ -1013,7 +1001,6 @@ async function validatedStartInput(body: Record<string, any>): Promise<StartRunI
     roleSettings,
     agentSettings,
     source: validateSource(body.source),
-    externalSource,
     allowUntrusted: body.allowUntrusted === true,
     routing: notes,
     roles,
@@ -1044,11 +1031,6 @@ function automationRun(body: Record<string, any>) {
   if (body.taskTeam?.enabled === true) throw new HttpError(400, SCHEDULED_TEAM_UNAVAILABLE);
   const keep = ["templateRef", "permissionRequirements", "repo", "project", "projectSelection", "pattern", "task", "roles", "options", "baseRef", "loop", "trust", "agentSettings", "roleSettings", "source"];
   const run: Record<string, any> = Object.fromEntries(keep.filter((k) => body[k] !== undefined).map((k) => [k, body[k]]));
-  if (typeof body.externalSourceId === "string") {
-    try { const source = integrations.resolveSource(body.externalSourceId); run.externalSourceRef = { integration: source.integration, kind: source.kind, key: source.key }; }
-    catch (error) { throw new HttpError(400, (error as Error).message); }
-  }
-  else if (body.externalSourceRef) run.externalSourceRef = body.externalSourceRef;
   if (Array.isArray(body.context?.paths)) run.context = { paths: body.context.paths.map((p: any) => ({ path: String(p.path ?? "") })) };
   return run as Record<string, any> & { repo: string; pattern: string; task: string };
 }
@@ -1960,20 +1942,6 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     if (fileAccess.hasRestrictions()) throw new HttpError(403, "Integration connections are unavailable under custom filesystem restrictions");
     if (await attempt(() => integrationConnectionsApi(req, res, url, parts.slice(1)))) return;
   }
-  if (parts[1] === "integrations") {
-    if (req.method === "GET" && !parts[2]) return send(res, 200, integrations.list());
-    if (req.method === "GET" && parts[2] && parts[3] === "items") {
-      const kind = url.searchParams.get("kind");
-      if (kind !== "issue" && kind !== "pr") throw new HttpError(400, "Choose issues or review requests");
-      return send(res, 200, await attempt(() => integrations.items(parts[2]!, kind, url.searchParams.get("cursor") ?? undefined)));
-    }
-    if (req.method === "POST" && parts[2] && parts[3] === "import") {
-      const body = await readJson(req);
-      if (!["issue", "pr"].includes(body.kind) || typeof body.key !== "string") throw new HttpError(400, "Choose a source item");
-      return send(res, 201, await attempt(() => integrations.importSource(parts[2]!, body.kind, body.key)));
-    }
-    throw new HttpError(404, "Unknown external source operation");
-  }
   if (parts[1] === "notifications") {
     if (!notificationsReady) throw new HttpError(503, "Notification settings and delivery history are unavailable because saved state could not be loaded. The file was preserved. Check the server log, repair the state, then restart the server.");
     if (req.method === "GET" && !parts[2]) return send(res, 200, notifications.list());
@@ -2000,18 +1968,6 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
   }
 
   if (req.method === "GET" && parts[1] === "team-capabilities") return send(res, 200, await Promise.all(AGENT_IDS.map(adapterTeamCapabilities)));
-  if (parts[1] === "team-rollout") {
-    if (req.method === "GET") return send(res, 200, await teamEvaluationStore.rollout(autoTeamEnabled()));
-    if (req.method === "POST") {
-      const body = await readJson(req);
-      await attempt(() => teamEvaluationStore.decide({ stage: body.stage, rationale: body.rationale, evaluationIds: body.evaluationIds }));
-      return send(res, 200, await teamEvaluationStore.rollout(autoTeamEnabled()));
-    }
-  }
-  if (req.method === "GET" && parts[1] === "team-evaluations") {
-    const reports = await teamEvaluationStore.list();
-    return send(res, 200, { reports, assessment: assessTeamRollout(reports), rollout: await teamEvaluationStore.rollout(autoTeamEnabled()) });
-  }
   // Under a restriction no CLI is probed: every provider is unavailable, and says why.
   if (req.method === "GET" && parts[1] === "agents") {
     if (url.searchParams.get("refresh") === "1" && !fileAccess.hasRestrictions()) invalidateAgentCatalogs();
@@ -2681,8 +2637,6 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     }
     if (req.method === "GET" && parts.length === 3) return send(res, 200, run);
     if (req.method === "GET" && parts[3] === "evaluation") {
-      const report = (await teamEvaluationStore.list()).find((item) => item.runId === run.id && item.at === run.endedAt);
-      if (report) return send(res, 200, report);
       const journal = await loadJournal(run.id, { strict: run.pattern === "auto-team" });
       const memoryEntries = run.project && projects.get(run.project)?.repos.includes(run.repo) ? await memoryStore.list({ repo: run.repo, projectId: run.project, scope: "project" }, { kind: "user", repo: run.repo, projectId: run.project }) : [];
       return send(res, 200, buildTeamEvaluation(run, { replay: run.recovery, journal, memoryEntries }));

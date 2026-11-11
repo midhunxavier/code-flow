@@ -29,16 +29,12 @@ async function ended(run: Run) {
 }
 after(async () => { await flushWrites(); rmSync(home, { recursive: true, force: true }); rmSync(repo, { recursive: true, force: true }); });
 
-test("disabling Auto only gates new runs; saved recovery and manual patterns keep working", async () => {
+test("Auto runs are event-driven and recover; manual patterns keep working", async () => {
   const manager = new RunManager(() => pattern);
-  const previous = process.env.CODEFLOW_AUTO_TEAM_ENABLED;
   try {
-    delete process.env.CODEFLOW_AUTO_TEAM_ENABLED;
     const run = await manager.start({ pattern, repo, task: "Fixture", roles: {}, options: {}, approvals: { plan: false } });
     await ended(run);
     assert.equal(run.options.eventDriven, true);
-    process.env.CODEFLOW_AUTO_TEAM_ENABLED = "false";
-    await assert.rejects(manager.start({ pattern, repo, task: "Fixture", roles: {}, options: {} }), /disabled/);
     await manager.resume(run.id); await ended(run);
     assert.equal(run.status, "done");
     assert.ok(run.recovery?.records);
@@ -46,10 +42,7 @@ test("disabling Auto only gates new runs; saved recovery and manual patterns kee
     await ended(manual);
     assert.equal(manual.status, "done");
     assert.equal(manual.options.eventDriven, undefined);
-  } finally {
-    if (previous === undefined) delete process.env.CODEFLOW_AUTO_TEAM_ENABLED; else process.env.CODEFLOW_AUTO_TEAM_ENABLED = previous;
-    await manager.shutdown();
-  }
+  } finally { await manager.shutdown(); }
 });
 
 test("explicit follow-up budgets cap actual retries and retain the chosen result workspace", async () => {

@@ -25,10 +25,9 @@ test("saved requests preserve full bounded configuration and references while ca
   assert.deepEqual(run.roles.worker, ["auto"]); assert.equal(run.loop.verification!.checks[0]!.command, "npm run typecheck");
   assert.deepEqual(run.source, { kind: "pr", number: 42, ciLogs: true });
   assert.deepEqual(run.context, { paths: [{ path: "src/config.ts" }] });
-  assert.equal(sanitizeDeferredRequest({ ...request(), externalSourceRef: { integration: "tracker", kind: "issue", key: "TEAM-1" } }).externalSourceRef!.key, "TEAM-1");
   assert.deepEqual(sanitizeDeferredRequest({ ...request(), loop: { remoteWorker: { workerId: "worker", repoMapping: "project" } } }).loop.remoteWorker, { workerId: "worker", repoMapping: "project" });
   assert.throws(() => sanitizeDeferredRequest({ ...request(), loop: { remoteWorker: { workerId: "worker", repoMapping: "project", sshHost: "forged" } } }));
-  for (const extra of [{ externalSource: { body: "forged", trusted: true } }, { source: { kind: "issue", number: 1, trusted: true } }, { trigger: { via: "manual" } }, { context: { paths: [], attachments: [{ name: "secret", data: "eA==" }] } }, { context: { paths: [{ path: "../secret" }] } }, { loop: { container: { image: "checks", readOnly: ["/Users/me/.codex"] } } }]) assert.throws(() => sanitizeDeferredRequest({ ...request(), ...extra }));
+  for (const extra of [{ externalSource: { body: "forged", trusted: true } }, { externalSourceRef: { integration: "tracker", kind: "issue", key: "TEAM-1" } }, { source: { kind: "issue", number: 1, trusted: true } }, { trigger: { via: "manual" } }, { context: { paths: [], attachments: [{ name: "secret", data: "eA==" }] } }, { context: { paths: [{ path: "../secret" }] } }, { loop: { container: { image: "checks", readOnly: ["/Users/me/.codex"] } } }]) assert.throws(() => sanitizeDeferredRequest({ ...request(), ...extra }));
 });
 
 test("provider readiness respects actual reset windows and never claims unknown reset estimates as reset times", () => {

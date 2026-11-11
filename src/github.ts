@@ -232,11 +232,6 @@ export async function viewIssue(repo: string, number: number): Promise<Issue> {
   return toIssue(JSON.parse(await gh(repo, ["issue", "view", String(number), "--json", "number,title,body,url,labels,comments"])));
 }
 
-export async function listPullRequests(repo: string, limit = 50): Promise<PullRequest[]> {
-  const raw = await gh(repo, ["pr", "list", "--state", "open", "--limit", String(limit), "--json", PR_FIELDS]);
-  return JSON.parse(raw).map(toPr);
-}
-
 /** Bounded picker results with explicit truncation and server-side title/label search. */
 export async function listGitHubPicker(repo: string, kind: "issue" | "pr", query = "", cap = 50): Promise<Listed<Issue | PullRequest>> {
   if (!Number.isInteger(cap) || cap < 1 || cap > LIST_CAP) throw new Error("Invalid GitHub picker size");

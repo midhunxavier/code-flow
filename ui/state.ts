@@ -20,7 +20,6 @@ import { onStreamState, subscribe } from "./stream.js";
 import { defaultPlanApproval, teamAwaitingAnswer } from "./team-state.js";
 import { hashFor, parseRouteHash, SIDE_TABS, type Route, type SideTab } from "./navigation.js";
 export { hashFor, SIDE_TABS, type Route, type SideTab } from "./navigation.js";
-import type { TeamRollout } from "../src/team-evaluation.js";
 import type {
   AgentId,
   AgentInfo,
@@ -52,14 +51,6 @@ export async function loadAgents(force = false) {
 export const patterns = signal<PatternInfo[]>([]);
 export const catalogs = signal<Record<string, CatalogOrError>>({});
 export const runs = signal<Map<string, RunSummary>>(new Map());
-export const teamRollout = signal<TeamRollout | null>(null);
-export async function loadTeamRollout() {
-  try {
-    const rollout = await api<TeamRollout>("/api/team-rollout");
-    teamRollout.value = rollout;
-    // Evaluation describes evidence; it never changes the selected execution mode.
-  } catch { /* The existing app remains usable if optional evaluation metadata cannot load. */ }
-}
 /** The first list of runs has come: until then, a run missing from `runs` may just not be here yet. */
 export const runsLoaded = signal(false);
 
@@ -1493,7 +1484,6 @@ export const templates = signal<Template[]>([]);
 export const sweepPicker = signal<Template | null>(null);
 /** The issue or PR the next run starts from. */
 export const source = signal<SourcePick | null>(null);
-export const externalSource = signal<import("../src/integrations.js").ExternalSource | null>(null);
 /** The GitHub picker, and the template waiting for its pick. */
 export const ghPicker = signal<{ kind: "issue" | "pr"; template?: Template; repository?: string; onPick?: (item: import("../src/conversational/github-context.js").GitHubContextItem) => void } | null>(null);
 
@@ -1501,7 +1491,6 @@ export const sourceTemplatePicker = signal<Template | null>(null);
 
 export function applyTemplate(t: Template, pick?: SourcePick, values: Record<string, string> = {}) {
   const filled = fillTemplate({ ...t, criteria: [] }, values).task;
-  externalSource.value = null;
   setPattern(t.pattern);
   const fill = (text: string) => (pick ? text.replace(/\{number\}/g, String(pick.number)).replace(/\{title\}/g, `${pick.kind} #${pick.number}`) : text);
   setTask(fill(filled));
@@ -1516,7 +1505,7 @@ export const markSeen = (id: string) => post(`/api/runs/${id}/seen`).catch(() =>
  * Where the draft's .codeflow/config.json comes from: the start branch you chose, or your checkout.
  * A run from an issue, a PR or an imported source, and a retry, use the checkout's, as the server does.
  */
-export const configRef = computed(() => source.value || externalSource.value || rerunDraft.value ? "" : baseRef.value);
+export const configRef = computed(() => source.value || rerunDraft.value ? "" : baseRef.value);
 // Choosing another start branch brings its defaults; what the draft chose stays (loadRepoCheck).
 effect(() => {
   const ref = configRef.value;
@@ -1549,7 +1538,7 @@ function composerSnapshot() {
     base: baseRef.value, branch: branchPrefix.value, check: checkCmd.value, setup: setupCmd.value,
     limits: limits.value, trust: trust.value, approvals: approvalChoices.value, origins: composerOrigins.value,
     selectedTemplate: selectedTeamTemplate.value,
-    source: source.value, externalSource: externalSource.value, runOptions: composerRunOptions.value, rerun: rerunDraft.value,
+    source: source.value, runOptions: composerRunOptions.value, rerun: rerunDraft.value,
   };
 }
 type ComposerSnapshot = ReturnType<typeof composerSnapshot>;
@@ -1627,7 +1616,7 @@ export async function unsentDraft(project: string): Promise<{ task: string } | n
   const paths = (items: { path: string; type: string }[]) => JSON.stringify(items.map(item => [item.path, item.type]).sort(([a], [b]) => a!.localeCompare(b!)));
   const sameContext = retry && paths((snapshot.paths ?? []).map(([, item]) => item)) === paths(retry.contextPaths ?? []);
   if (retry && snapshot.task === retry.task && !files && sameContext) return null;
-  return task || files || !retry && (snapshot.paths?.length || snapshot.source || snapshot.externalSource) ? { task } : null;
+  return task || files || !retry && (snapshot.paths?.length || snapshot.source) ? { task } : null;
 }
 
 export async function saveComposerDraft() {
@@ -1660,7 +1649,7 @@ function restoreComposer(snapshot: ComposerSnapshot) {
     if (origins.limits !== undefined) limits.value = snapshot.limits;
     if (origins.trust !== undefined) trust.value = snapshot.trust;
     approvalChoices.value = snapshot.approvals;
-    composerOrigins.value = origins; source.value = snapshot.source; externalSource.value = snapshot.externalSource;
+    composerOrigins.value = origins; source.value = snapshot.source;
     selectedTeamTemplate.value = snapshot.selectedTemplate ?? null;
     composerRunOptions.value = snapshot.runOptions ?? {};
     rerunDraft.value = snapshot.rerun ?? null;
@@ -1670,7 +1659,7 @@ function restoreComposer(snapshot: ComposerSnapshot) {
 function resetComposer(project?: Project) {
   intentDraft.value = undefined; contextBudget.value = undefined; contextBudgetOrigin.value = "Application default";
   task.value = ""; acceptanceCriteria.value = []; attachments.value = []; contextPaths.value = new Map();
-  source.value = null; externalSource.value = null; branchPrefix.value = ""; baseRef.value = "";
+  source.value = null; branchPrefix.value = ""; baseRef.value = "";
   roleSel.value = store.json("roleSel", {}); roleModels.value = store.json("roleModels", {});
   patternId.value = defaultPattern.value; agentSettings.value = structuredClone(providerDefaults.value);
   optionValues.value = {};
@@ -1723,7 +1712,7 @@ async function switchComposer(next: string, options: { repository?: string; carr
         resetComposer(project);
       }
       if (saved && repository !== saved.repository) {
-        contextPaths.value = new Map(); source.value = null; externalSource.value = null; baseRef.value = "";
+        contextPaths.value = new Map(); source.value = null; baseRef.value = "";
         checkCmd.value = detectedCheck; setupCmd.value = detectedSetup; trust.value = detectedTrust; selectedTeamTemplate.value = null; composerRunOptions.value = {}; rerunDraft.value = null;
         forgetChoices(["check", "setup", "trust"]);
       }

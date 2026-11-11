@@ -119,7 +119,6 @@ Once an agent CLI reports its final result, it gets 10 seconds to exit; one that
 | `CODEFLOW_REMOTE_PORT` | `PORT+1` | Port for the phone view (or the full app, with phone control) and webhooks on your network, when Wi-Fi or Tailscale is selected under **Remote access** |
 | `CODEFLOW_TLS_CERT`, `CODEFLOW_TLS_KEY` | unset | Optional certificate/key file paths overriding saved HTTPS setup in Settings → Connections → Share access. Configure both together; full control requires TLS on Wi-Fi and Tailscale so browser session cookies remain Secure |
 | `CODEFLOW_ALLOW_INSECURE_PHONE_CONTROL` | unset | Explicit `1` permits full phone control over HTTP for development |
-| `CODEFLOW_INTEGRATIONS_FILE`, `CODEFLOW_INTEGRATIONS_JSON` | unset | Explicit read-only [external source](external-sources.md) definitions with server credential references. No source providers are built in, so entries are rejected unless a build adds one in code |
 | `CODEFLOW_REMOTE_WORKERS_FILE`, `CODEFLOW_REMOTE_WORKERS_JSON` | unset | Explicit provisioned SSH targets and repository mapping names; see [remote workers](remote-workers.md) |
 | `CODEFLOW_EXTENSIONS_FILE`, `CODEFLOW_EXTENSIONS_JSON` | unset | Explicit trusted bundled provider/workflow plugins with API negotiation and SHA-256 pins; choose one configuration source; see [extensions](extensions.md) |
 | `CODEFLOW_NOTIFICATIONS_FILE`, `CODEFLOW_NOTIFICATIONS_JSON` | unset | Explicit outbound destinations; targets remain disabled until event/project opt-in; see [notifications](notifications.md) |
@@ -158,11 +157,11 @@ Child processes exclude the application API token, scoped team capabilities, int
 
 ## Dynamic teams
 
-`CODEFLOW_AUTO_TEAM_ENABLED=false` disables new Auto team runs while preserving saved-run viewing and recovery. The rollout record and evaluation evidence are shown in Insights; the composer selects Auto initially only at the `default` stage when there is no saved workflow preference. The recorded stage is informational (and a composer default when set to `default`); only `CODEFLOW_AUTO_TEAM_ENABLED` changes whether new Auto runs can start. Existing runs without the `eventDriven` option retain dependency-wave replay; newly created Auto runs default it on.
+Auto team runs are always available. Existing runs without the `eventDriven` option retain dependency-wave replay; newly created Auto runs default it on.
 
 The authenticated run API accepts `loop.maxInvocations` as an additional per-allocation ceiling on actual CLI launches, including retries. Auto already caps launches with its step budget. Follow-up requests can specify `budget: { maxSteps, maxInvocations, maxMinutes }`; the UI exposes this fresh allocation and retains lifetime usage.
 
-Project memory is in `memory.sqlite`, with automatic verified import from `memory.json`, indexed keyword search and a lightweight knowledge graph. See [Memory storage](memory-storage.md) for migration, rollback, runtime requirements and backup behavior. Evaluation reports and the explicit rollout decision still use durable replacement files under the evaluation store in `CODEFLOW_HOME`. See [Auto team](auto-team.md) for scope, trust, revision and deletion semantics.
+Project memory is in `memory.sqlite`, with automatic verified import from `memory.json`, indexed keyword search and a lightweight knowledge graph. See [Memory storage](memory-storage.md) for migration, rollback, runtime requirements and backup behavior. See [Auto team](auto-team.md) for scope, trust, revision and deletion semantics.
 
 ---
 

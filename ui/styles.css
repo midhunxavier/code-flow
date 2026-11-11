@@ -225,7 +225,6 @@
   .task-new-settings > details[open] { padding-bottom: 12px; }
   .task-new-settings > details > summary { padding-block: 12px; }
   .task-preparation-note { color: var(--muted); font-size: 11px; margin-top: 14px; }
-  .task-setup-entry { display: flex; justify-content: flex-end; margin-bottom: 12px; }
   @container main (max-width: 850px) { .task-page-tools > .btn.ghost > span { display: none; } .task-state { max-width: 165px; overflow: hidden; text-overflow: ellipsis; } }
   @container main (max-width: 650px) {
     .task-page-heading { flex-wrap: wrap; gap: 12px; padding: 14px 20px; }
@@ -1916,18 +1915,6 @@
   .ins-section .row-inline .help { margin: 0; }
   .ins-section .row-inline .field.inline.num { width: 64px; height: 28px; min-height: 28px; padding: 0 8px; } /* as tall as the small buttons beside it */
   .ins-section > .help.ins-kept { margin: 12px 0 0; } /* above the runs Clean up kept */
-  /* a disclosure in a section (Auto team's rollout decision): the app's drawn chevron, not the browser's triangle */
-  .ins-section details > summary { list-style: none; display: flex; align-items: center; gap: 8px; width: fit-content; max-width: 100%; margin-top: 12px; padding: 4px 0; cursor: pointer; font-size: 13px; font-weight: 500; color: var(--text-2); transition: color .16s var(--ease); }
-  .ins-section details > summary::-webkit-details-marker { display: none; }
-  .ins-section details > summary::before { content: ""; flex: none; width: 5px; height: 5px; margin: 0 2px 0 1px; border-right: 1.5px solid var(--dim); border-bottom: 1.5px solid var(--dim); transform: rotate(-45deg); transition: transform .16s var(--ease); }
-  .ins-section details[open] > summary::before { transform: rotate(45deg); }
-  .ins-section details > summary:hover { color: var(--text); }
-  /* the rollout form inside it: labelled fields stacked, like the app's other forms */
-  .ins-section details > label { display: grid; gap: 6px; max-width: 520px; margin: 12px 0 0; font-size: 12px; font-weight: 500; color: var(--text-2); }
-  .ins-section details > label .field { font-size: 13px; font-weight: 400; }
-  .ins-section details > label select.field { width: auto; min-width: 220px; justify-self: start; }
-  .ins-section details > label + .btn { margin-top: 12px; }
-  .ins-section details ul { margin: 8px 0 0; padding-left: 1.3em; font-size: 13px; color: var(--text-2); }
   .table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius); background: var(--raised); box-shadow: var(--shadow); margin-top: 10px; }
   table.ins-table { border-collapse: collapse; width: 100%; font-size: 13px; }
   .ins-table th { text-align: left; font-size: 12px; font-weight: 500; color: var(--muted); padding: 9px 14px; border-bottom: 1px solid var(--border); white-space: nowrap; background: var(--sunken); }

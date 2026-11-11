@@ -23,7 +23,7 @@ async function until<T>(read: () => Promise<T>, ready: (value: T) => boolean, ti
 async function start() {
   await qaPorts.release();
   const inherited = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(CODEFLOW_|FAKE_)/.test(key)));
-  server = spawn(process.execPath, ["--import", "./test/qa-integration-connections-transport.mjs", "--import", "tsx", "src/server.ts"], { cwd: root, env: { ...inherited, HOME: join(scratch, "os-home"), SHELL: join(scratch, "bash"), BASH_ENV: "", ENV: "", CODEFLOW_HOME: home, CODEFLOW_TOKEN: token, PORT: String(port), CODEFLOW_REMOTE_PORT: String(port + 1), PATH: `${join(root, "test/fake-bin")}:${process.env.PATH}`, FAKE_GH_STATE: gh, CODEFLOW_INTEGRATIONS_JSON: "[]", CODEFLOW_NOTIFICATIONS_JSON: notificationConfig, FAKE_NO_APP_SERVER: "1", CODEFLOW_CODEX_TRANSPORT: "exec" }, stdio: ["ignore", "pipe", "pipe"] });
+  server = spawn(process.execPath, ["--import", "./test/qa-integration-connections-transport.mjs", "--import", "tsx", "src/server.ts"], { cwd: root, env: { ...inherited, HOME: join(scratch, "os-home"), SHELL: join(scratch, "bash"), BASH_ENV: "", ENV: "", CODEFLOW_HOME: home, CODEFLOW_TOKEN: token, PORT: String(port), CODEFLOW_REMOTE_PORT: String(port + 1), PATH: `${join(root, "test/fake-bin")}:${process.env.PATH}`, FAKE_GH_STATE: gh, CODEFLOW_NOTIFICATIONS_JSON: notificationConfig, FAKE_NO_APP_SERVER: "1", CODEFLOW_CODEX_TRANSPORT: "exec" }, stdio: ["ignore", "pipe", "pipe"] });
   server.stdout?.on("data", data => logs.push(String(data))); server.stderr?.on("data", data => logs.push(String(data)));
   await until(() => fetch(base + "/api/health", { headers }).then(r => r.ok, () => false), Boolean);
 }
@@ -102,7 +102,6 @@ for (const mode of ["Issue", "PR", "CI"] as const) test(`${mode} handoff waits f
   const saved = await until(savedDraft, value => value?.task === currentTask && value.pattern === expectedPattern && value.acceptance?.length === 0);
   if (mode === "PR" || mode === "CI") { assert.equal(saved.source.number, 7); assert.equal(saved.source.ciLogs, mode === "CI"); }
   else { assert.equal(saved.source.kind, "issue"); assert.equal(saved.source.number, 3); }
-  assert.equal(saved.externalSource, null);
   await page.reload(); await page.getByLabel("Task", { exact: true }).waitFor();
   assert.equal(await page.getByLabel("Task", { exact: true }).inputValue(), currentTask, "late restore/reload must not overwrite the selected issue or PR");
   const restored = await savedDraft(); assert.equal(restored.pattern, expectedPattern); assert.deepEqual(restored.acceptance, []);

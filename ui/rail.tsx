@@ -4,7 +4,6 @@ import { runTitle } from "../src/run-title.js";
 import { sidebarStatusLabel as statusText } from "./run-experience.js";
 import { dispatchLabel } from "../src/run-outcome.js";
 import { chatTaskId, chatUpdatedAt, groupChatTasks } from "../src/chat-family.js";
-import { peopleEnabled } from "./preferences.js";
 import { DesktopUpdateNotice } from "./desktop-updates.js";
 import { chats, watchChats, openChat, chatQuery, chatSearchTarget } from "./chat-state.js";
 import { ComputerProjects, useComputerProjects } from "./connected-projects.js";

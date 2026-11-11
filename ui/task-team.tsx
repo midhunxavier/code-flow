@@ -10,7 +10,7 @@ import { useDialog } from "./app.js";
 import { ModelSelect } from "./model-select.js";
 import { ChatControls } from "./chat-controls.js";
 import { api, post, store, SHORT } from "./lib.js";
-import { agents, runs, catalogs, health, composerRunOptions, teamRollout } from "./state.js";
+import { agents, runs, catalogs, health, composerRunOptions } from "./state.js";
 import type { AgentId, RunSummary } from "./types.js";
 import { providerChangeText } from "./team-state.js";
 
@@ -47,8 +47,7 @@ export function TaskTeamControl({ run, config, lead, project, onChange, disabled
     finally { setBusy(false); }
   };
   const enabled = !!value?.enabled && !disabledReason;
-  const rolloutProblem = teamRollout.value?.enabled === false ? "Team is disabled on this server. Turn AI team off to continue with one agent." : "";
-  const toggleProblem = disabledReason || (!enabled ? rolloutProblem : "");
+  const toggleProblem = disabledReason || "";
   const approvals = toolApprovals ?? !!run?.approvals.tools;
   const permissionProblem = teamApprovalProblem(value, approvals);
   const next = value ?? defaultTaskTeam(lead);
@@ -59,7 +58,7 @@ export function TaskTeamControl({ run, config, lead, project, onChange, disabled
   });
   return <>
     <button class={`btn ghost task-team-toggle ${enabled ? "on" : ""}`} type="button" role="switch" aria-label="AI team" aria-checked={enabled} disabled={!!toggleProblem || busy} title={toggleProblem || (enabled ? "Turn AI team off" : "Turn AI team on")} onClick={() => { void save({ ...next, enabled: !enabled }).catch(() => {}); }}><span class="team-switch-track" aria-hidden="true"><span /></span>AI team <span class="team-state">{active ? enabled ? "Working" : "Stopping…" : enabled ? "On" : "Off"}</span></button>
-    {enabled ? <><ModelSelect compact label="Lead model" title="Team lead model" value={`${next.coordinator}:${next.settings[next.coordinator]?.model ?? ""}`} options={options} disabled={busy || !!rolloutProblem} onChange={value => {
+    {enabled ? <><ModelSelect compact label="Lead model" title="Team lead model" value={`${next.coordinator}:${next.settings[next.coordinator]?.model ?? ""}`} options={options} disabled={busy} onChange={value => {
       const colon = value.indexOf(":"), coordinator = value.slice(0, colon) as AgentId, model = value.slice(colon + 1);
       void save({ ...next, coordinator, settings: { ...next.settings, [coordinator]: { ...next.settings[coordinator], model } } }).catch(() => {});
     }} /><button type="button" class="btn ghost small task-team-advanced" onClick={() => setOpen(true)}>Advanced</button></> : null}
@@ -79,7 +78,6 @@ function TaskTeamDialog({ value, project, running, toolApprovals, nativeAgy, onS
   const update = (patch: Partial<TaskTeamConfig>) => setDraft({ ...draft, ...patch });
   const selected = templates.find(template => template.id === draft.template?.id);
   const permissionProblem = teamApprovalProblem(draft, toolApprovals);
-  const rolloutProblem = draft.enabled && teamRollout.value?.enabled === false ? "Team is disabled on this server. Turn AI team off to continue with one agent." : "";
   const blockedProvider = draft.enabled ? [draft.coordinator, ...draft.providers].find(id => teamProviderProblem(id, nativeAgy)) : undefined;
   const availabilityProblem = blockedProvider ? `${SHORT[blockedProvider]}: ${teamProviderProblem(blockedProvider, nativeAgy)}. Choose an available provider.` : "";
   const limitProblem = numberInputProblem("task-team:") || taskTeamLimitsProblem(draft as unknown as Record<string, unknown>);
@@ -113,8 +111,8 @@ function TaskTeamDialog({ value, project, running, toolApprovals, nativeAgy, onS
         <details class="task-team-limits"><summary>Limits and approval</summary><div class="task-team-limit-grid">{([['maxMembers', 'Maximum members'], ['maxCalls', 'Maximum calls'], ['maxMinutes', 'Maximum minutes']] as const).map(([key, label]) => <label key={key}>{label}<NumberField id={`team-${key}`} problemKey={`task-team:${key}`} value={draft[key]} rule={TASK_TEAM_LIMITS[key]} onChange={value => update({ [key]: value })} /></label>)}</div><label><input type="checkbox" checked={draft.approvePlan} onChange={event => update({ approvePlan: event.currentTarget.checked })} /> Let me approve the plan before teammates start</label></details>
         {running ? <p class="help" role="status">New settings apply on Resume or the next conversation turn. Turning AI team off stops its active execution, preserves partial work, and hands control back to your agent.</p> : <p class="help">Turning AI team off keeps these settings for next time. Existing task permissions stay in effect.</p>}
       </fieldset>
-      {error || limitProblem || permissionProblem || rolloutProblem || availabilityProblem ? <p class="msg err" role="alert">{error || limitProblem || permissionProblem || rolloutProblem || availabilityProblem}</p> : null}
-    </div><div class="picker-foot"><button class="btn" disabled={busy} onClick={onClose}>Cancel</button><button class="btn primary" disabled={busy || !draft.providers.length || !!limitProblem || !!permissionProblem || !!rolloutProblem || !!availabilityProblem} onClick={() => void save()}>{busy ? "Saving…" : "Apply team settings"}</button></div>
+      {error || limitProblem || permissionProblem || availabilityProblem ? <p class="msg err" role="alert">{error || limitProblem || permissionProblem || availabilityProblem}</p> : null}
+    </div><div class="picker-foot"><button class="btn" disabled={busy} onClick={onClose}>Cancel</button><button class="btn primary" disabled={busy || !draft.providers.length || !!limitProblem || !!permissionProblem || !!availabilityProblem} onClick={() => void save()}>{busy ? "Saving…" : "Apply team settings"}</button></div>
   </div></dialog>;
 }
 

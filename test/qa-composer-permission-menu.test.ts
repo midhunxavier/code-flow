@@ -40,7 +40,6 @@ test("Run details and the request use the value the control shows (t02-6, t03-6,
   assert.deepEqual(toolApprovalState({ choice: true, trust: "safe", p: solo, roles: { agent: ["claude"] } }), { tools: false, source: "Safe permissions", conflict: "" });
   assert.deepEqual(toolApprovalState({ trust: "standard", p: solo, roles: { agent: ["claude"] }, container: true }), { tools: false, source: "Unavailable with Docker isolation", conflict: "" });
   assert.equal(toolApprovalState({ choice: true, trust: "standard", p: solo, roles: { agent: ["codex"] }, remote: true }).source, "Unavailable on a remote worker");
-  assert.equal(toolApprovalState({ choice: true, trust: "safe", p: solo, roles: { agent: ["codex"] }, external: true }).source, "External source · Safe permissions");
   assert.deepEqual(toolApprovalState({ choice: false, trust: "standard", p: solo, roles: { agent: ["claude"] } }), { tools: false, source: "Explicit choice", conflict: "" });
 });
 

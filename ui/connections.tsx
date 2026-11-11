@@ -7,7 +7,6 @@ import { lazyView } from "./lazy-view.js";
 const TeamServerWizard = lazyView(() => import("./team-server-wizard.js").then(module => module.TeamServerWizard));
 import { SharedAccountsPanel } from "./shared.js";
 import { projects } from "./state.js";
-import { peopleEnabled, setPeopleEnabled } from "./preferences.js";
 import { AcpConnectionsPanel } from "./acp-connections.js";
 
 export const CONNECTION_PURPOSES = [
@@ -41,7 +40,7 @@ export function ConnectionsView({ purpose = "workspace", connection }: { purpose
       {purpose === "manage" ? <>
       <h3>Manage existing connections and access</h3>
       {host.kind === "local" ? <RemoteAccess /> : null}
-      <section class="settings-card"><h3>People</h3><p>Shared boards, reviews and handovers. Manage project membership in Project → People and access.</p><label class="checkpoint"><input type="checkbox" checked={peopleEnabled.value} onChange={event => setPeopleEnabled(event.currentTarget.checked)} /><span>Show Board in the app menu</span></label><p class="help">Show an unused Board shortcut in this browser. Configured collaboration remains visible; access is controlled by project roles and grants.</p></section>
+      <section class="settings-card"><h3>People</h3><p>Shared boards, reviews and handovers. Manage project membership in Project → People and access.</p></section>
       {<><a class="btn" href="#/team">{host.kind === "ssh" ? "Open computer board" : "Open Board"}</a><TeamSettings />{host.kind !== "ssh" ? <SharedAccountsPanel projects={projects.value} /> : null}</>}
       </> : null}
     </> : null}

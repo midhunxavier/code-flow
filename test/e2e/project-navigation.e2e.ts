@@ -265,7 +265,7 @@ test("project Board and People use the owning server despite colliding linked pr
 test("project Automation ignores global filters and preserves saved schedules and backlog destinations", { timeout: 60_000 }, async () => {
   const create = (project: string, repo: string, name: string) => api("/api/automations", { name, enabled: false, schedule: { every: 60 }, run: { repo, project, projectSelection: "explicit", task: name, pattern: "solo", roles: { agent: ["claude"] }, loop: { check: "true", setup: "true" } } });
   await create(projectA, repoA, "Alpha scheduled task"); await create(projectB, repoB, "Beta scheduled task");
-  await page.evaluate(() => { localStorage.setItem("peopleEnabled", "0"); localStorage.setItem("project", "all"); });
+  await page.evaluate(() => { localStorage.setItem("project", "all"); });
   await page.goto(base + `/#/project/${projectA}/automation/repeat`);
   await page.getByText("Alpha scheduled task", { exact: true }).waitFor();
   assert.equal(await page.getByText("Beta scheduled task", { exact: true }).count(), 0);

@@ -5,14 +5,7 @@ import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { IntegrationConnections, describeGitRemote } from "../src/integration-connections.js";
-import { Integrations, type ReadOnlySourceProvider } from "../src/integrations.js";
 import { Notifications } from "../src/notifications.js";
-
-const extension: ReadOnlySourceProvider = {
-  kinds: ["issue"],
-  async list(c, kind, request) { const { data } = await request("issues"); return { items: (data as any[]).map(v => ({ integration: c.id, provider: c.provider, kind, key: String(v.number), title: v.title, body: v.body })), truncated: false }; },
-  async get() { throw new Error("unused"); },
-};
 
 async function fixture() {
   const directory = await mkdtemp(join(tmpdir(), "connection-store-")), calls: { url: string; headers: Headers; body?: string }[] = [];
@@ -21,13 +14,10 @@ async function fixture() {
     if (url.includes("hooks.example.test")) return new Response("ok");
     return Response.json([{ number: 7, title: "Issue fixture", body: "Untrusted source" }]);
   }) as typeof fetch;
-  const environment = { ADMIN_TOKEN: "administrator-original-token" };
-  const integrations = new Integrations({ environment, adapters: { extension }, fetch: fetcher });
-  await integrations.load([{ id: "admin-source", provider: "extension", project: "org/admin", credentialEnv: "ADMIN_TOKEN", baseUrl: "https://source.example.test/api/" }]);
   const notifications = new Notifications({ file: join(directory, "notifications.json"), environment: {}, fetch: fetcher }); await notifications.load([]);
-  const create = () => new IntegrationConnections({ integrations, notifications, directory: join(directory, "private") });
+  const create = () => new IntegrationConnections({ notifications, directory: join(directory, "private") });
   const store = create(); await store.load();
-  return { directory, calls, environment, integrations, notifications, store, create, clean: async () => { await notifications.stop(); await rm(directory, { recursive: true, force: true }); } };
+  return { directory, calls, notifications, store, create, clean: async () => { await notifications.stop(); await rm(directory, { recursive: true, force: true }); } };
 }
 const draft = { provider: "webhook" as const, name: "Team updates", url: "https://hooks.example.test/private?key=hidden-webhook-token", credential: "webhook-bearer-secret" };
 const AAD = Buffer.from("code-flow-integrations-v1");
@@ -42,30 +32,26 @@ async function writeState(directory: string, state: unknown) {
   await writeFile(join(directory, "private/connections.enc"), JSON.stringify({ version: 1, iv: iv.toString("base64"), tag: cipher.getAuthTag().toString("base64"), data: data.toString("base64") }), { mode: 0o600 });
 }
 
-test("tested connection keeps secrets encrypted, retains project scope, reconnects and preserves administrator configuration", async () => {
+test("tested connection keeps secrets encrypted, retains project scope and reconnects", async () => {
   const f = await fixture();
   try {
     await assert.rejects(f.store.testDraft({ ...draft, url: "http://hooks.example.test/insecure" }), /HTTPS/);
     await assert.rejects(f.store.testDraft({ provider: "gitlab" as any, name: "Removed", scope: "org/repo" }), /supported service/);
-    assert.equal(f.store.list().length, 1);
+    assert.equal(f.store.list().length, 0);
     const test = await f.store.testDraft(draft);
     const { id } = await f.store.connect(test.testId, { projectId: "p-first", repository: "/local/repo" });
     assert.deepEqual(f.store.bindings("p-first"), [{ projectId: "p-first", repository: "/local/repo", connectionId: id }]);
     assert.equal(f.store.list().find(c => c.id === id)?.administratorManaged, false);
-    assert.equal(f.store.list().find(c => c.id === "admin-source")?.administratorManaged, true);
     assert.doesNotMatch(JSON.stringify(f.store.list()), /hidden-webhook-token|webhook-bearer-secret|credentialRef|urlRef|TOKEN/);
     assert.doesNotMatch(await readFile(join(f.directory, "private/connections.enc"), "utf8"), /hidden-webhook-token|Team updates/);
     assert.equal((await stat(join(f.directory, "private/master.key"))).mode & 0o777, 0o600);
     assert.equal((await stat(join(f.directory, "private/connections.enc"))).mode & 0o777, 0o600);
-    assert.deepEqual(f.environment, { ADMIN_TOKEN: "administrator-original-token" }, "managed secrets do not enter process or caller environments");
     const restored = f.create(); await restored.load(); assert.equal(restored.get(id).scope, "hooks.example.test");
     await assert.rejects(restored.testDraft({ ...draft, id, url: "https://hooks.slack.com.example.test/" , provider: "slack" }), /same service/);
     const second = await restored.testDraft({ ...draft, id, url: undefined, credential: "rotated-bearer-secret" }); await restored.connect(second.testId);
     await f.notifications.test(id); await f.notifications.drain();
     assert.equal(f.calls.at(-1)?.headers.get("authorization"), "Bearer rotated-bearer-secret", "an empty URL keeps the saved destination while the token rotates");
     assert.match(f.calls.at(-1)!.url, /hidden-webhook-token/);
-    assert.deepEqual(await restored.testExisting("admin-source"), { message: "Connection verified." });
-    await assert.rejects(restored.disconnect("admin-source"), /Administrator-managed/);
     await restored.disconnect(id); assert.equal(restored.bindings("p-first").length, 0);
     assert.equal(f.notifications.list().length, 0);
   } finally { await f.clean(); }
@@ -119,7 +105,6 @@ test("saved connections for removed services stay on disk, hidden and unused", a
     const next = f.create(); await next.load();
     assert.ok(!next.list().some(c => c.id === "connection-removed"));
     assert.throws(() => next.get("connection-removed"), /not found/);
-    await assert.rejects(f.integrations.items("connection-removed", "issue"), /not found/);
     const another = await next.testDraft({ ...draft, name: "Second destination" }); await next.connect(another.testId);
     const saved = await readState(f.directory);
     assert.ok(saved.connections.some((c: any) => c.id === "connection-removed"), "the saved record is preserved");

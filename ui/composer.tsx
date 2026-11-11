@@ -1,5 +1,4 @@
 import { activeChatContext } from "./chat-context.js";
-import { OpenTaskSetup } from "./task-conversation.js";
 import { EXECUTION_BUDGET_PRESETS, budgetDuration } from "../src/execution-budget.js";
 import { teamApprovalProblem } from "./task-team-choices.js";
 import { composerCheckMode, checkExplanation, type CheckMode } from "./composer-checks.js";
@@ -85,7 +84,6 @@ import {
   optionsFor,
   pattern,
   patterns,
-  teamRollout,
   pickerOpen,
   refreshRuns,
   repo,
@@ -112,7 +110,6 @@ import {
   setTask,
   setupCmd,
   source,
-  externalSource,
   task,
   ghPicker,
   afterStart,
@@ -125,7 +122,6 @@ import {
 import { ProjectButton, openRepository } from "./projects.js";
 import { computerLabel } from "./ssh-projects.js";
 import { readProjectDefaults, projectDefaultsVersion } from "./project-defaults.js";
-import { TeamRolloutNotice } from "./team-evaluation.js";
 import { SourceChip } from "./github.js";
 import { SaveAutomationDialog } from "./automations.js";
 import { Icon } from "./icons.js";
@@ -237,13 +233,13 @@ export function Composer() {
   const soloAgent = roles.agent?.[0];
   const soloSettings = soloAgent && soloAgent !== "auto" ? { ...agentSettings.value[soloAgent], ...roleModels.value[p!.id]?.agent?.[soloAgent] } : {};
   // The Permissions control, Run details and the start request all use this one value.
-  const runTrust = externalSource.value ? "safe" : trust.value;
-  const approvals = toolApprovalState({ choice: toolApprovals, trust: runTrust, p, roles, remote: !!remoteWorker, container: containerEnabled, external: !!externalSource.value });
+  const runTrust = trust.value;
+  const approvals = toolApprovalState({ choice: toolApprovals, trust: runTrust, p, roles, remote: !!remoteWorker, container: containerEnabled });
   const choosePermissions = (value: ChatPermissions) => { setTrust(value.trust); setToolApprovals(value.tools); store.set("interactiveApprovals", value.tools ? "1" : "0"); };
   // Both "Save as template…" and "Save task preset" save through one dialog, so they share one guard.
   const templateBlocked = verificationPreset === "restored" ? "Choose a verification preset before saving a template" : "";
   const canSaveTemplate = !!p && projectsLoaded.value && !!task.value.trim() && !templateBlocked;
-  const problem = (p?.id === "auto-team" && teamRollout.value?.enabled === false ? "Team is disabled on this server. Choose Agent or a template in Advanced." : "") || (remoteWorker ? remoteError || (!remoteAgents ? "Checking remote worker…" : startProblem(p, roles, true, remoteAgents)) : startProblem(p, roles, true, undefined, nativeAntigravity ? "native" : "isolated", nativeAcp ? "native" : undefined)) || approvals.conflict || (containerEnabled && !remoteWorker && !containerImage.trim() ? "Choose a prebuilt agent image in Run options → Agent isolation." : "") || (automaticChecks && profileLoading ? "Loading verification profile…" : automaticChecks && profileError ? "Verification profile unavailable. Choose another profile in Run options." : "");
+  const problem = (remoteWorker ? remoteError || (!remoteAgents ? "Checking remote worker…" : startProblem(p, roles, true, remoteAgents)) : startProblem(p, roles, true, undefined, nativeAntigravity ? "native" : "isolated", nativeAcp ? "native" : undefined)) || approvals.conflict || (containerEnabled && !remoteWorker && !containerImage.trim() ? "Choose a prebuilt agent image in Run options → Agent isolation." : "") || (automaticChecks && profileLoading ? "Loading verification profile…" : automaticChecks && profileError ? "Verification profile unavailable. Choose another profile in Run options." : "");
 
   const [scheduling, setScheduling] = useState(false);
   const [savingTemplate, setSavingTemplate] = useState(false);
@@ -283,7 +279,6 @@ export function Composer() {
     setAcceptanceCriteria([]);
     branchPrefix.value = "";
     source.value = null;
-    externalSource.value = null;
     contextPaths.value = new Map();
     attachments.value = [];
     intentDraft.value = undefined;
@@ -333,8 +328,6 @@ export function Composer() {
 
       {repoConfig.value?.found && repoConfig.value.error ? <div class="config-note bad" role="alert">⚠ {repoConfig.value.error}</div> : null}
 
-      {externalSource.value ? <div class="banner"><p>External context: {externalSource.value.provider} {externalSource.value.kind} {externalSource.value.key} · {externalSource.value.title}</p><p class="help">This source remains untrusted. The run uses Safe permissions and isolated checks.</p><button class="btn small" onClick={() => { externalSource.value = null; }}>Remove source</button></div> : null}
-      {p?.id === "auto-team" ? <TeamRolloutNotice /> : null}
       <PolicyPauseNotice what="Agent runs are paused" />
       <TaskBox onStart={start} improve={improve} controls={<>
         {single ? <TaskTeamControl config={taskTeam} lead={soloAgent && soloAgent !== "auto" ? soloAgent : "claude"} project={composerProject.value || undefined} toolApprovals={approvals.tools} disabledReason={remoteWorker || containerEnabled ? "Teams in this conversation require This computer without Docker isolation. Standalone workflows remain available in Advanced." : undefined} onChange={next => { setTaskTeam(next); if (next.enabled) { setRoles(p!.id, "agent", [next.coordinator]); setRoleModel(p!.id, "agent", next.coordinator, next.settings[next.coordinator] ?? {}); } }} /> : <button class="btn ghost" onClick={() => setPattern("solo")}>Back to Agent conversation</button>}
@@ -346,14 +339,14 @@ export function Composer() {
           onSettings={(value) => setRoleModel(p!.id, "agent", soloAgent, value)}
           permissions={{ trust: runTrust, tools: approvals.tools }}
           onPermissions={choosePermissions}
-          restricted={!!externalSource.value} approvalsAvailable={!remoteWorker && !containerEnabled}
+          approvalsAvailable={!remoteWorker && !containerEnabled}
           unrestricted={soloAgent === "agy" && nativeAntigravity}
           acpAllowed={nativeAcp}
         /> : <Menu above label="Provider" icon="layers" class="chat-choice" trigger={<><span>{soloAgent === "auto" ? "Auto provider" : "Choose provider"}</span><Icon name="chevron" /></>}>
           {(close) => <>{(remoteAgents ?? agents.value).map((entry) => <MenuItem key={entry.id} disabled={!!providerProblem(entry, remoteAgents ? null : health.value)} sub={providerProblem(entry, remoteAgents ? null : health.value) || undefined} onClick={() => { setRoles(p!.id, "agent", [entry.id]); close(); }}>{entry.displayName}</MenuItem>)}</>}
         </Menu>}
         </> : <span class="help">{selectedTeamTemplate.value ? `Template: ${selectedTeamTemplate.value.template.name} v${selectedTeamTemplate.value.template.version}` : p?.id === "auto-team" ? "Plans and delegates dynamically" : `Template: ${p?.name}`}</span>}
-        {!single ? <><button type="button" class="btn ghost" onClick={() => { setMoreOptions(true); setAdvancedOpen(true); store.set("composerAdvanced", "1"); }}>Advanced</button><PermissionMenu permissions={{ trust: runTrust, tools: approvals.tools }} onPermissions={choosePermissions} restricted={!!externalSource.value} approvalsAvailable={!remoteWorker && !containerEnabled && Object.values(roles).flat().some(canAskForApproval)} agent={Object.values(roles).flat().find((id) => id.startsWith("acp:")) as AgentId | undefined} unrestricted={nativeAntigravity && Object.values(roles).flat().some(id => id === "agy" || id === "auto")} acpAllowed={nativeAcp} /></> : null}
+        {!single ? <><button type="button" class="btn ghost" onClick={() => { setMoreOptions(true); setAdvancedOpen(true); store.set("composerAdvanced", "1"); }}>Advanced</button><PermissionMenu permissions={{ trust: runTrust, tools: approvals.tools }} onPermissions={choosePermissions} approvalsAvailable={!remoteWorker && !containerEnabled && Object.values(roles).flat().some(canAskForApproval)} agent={Object.values(roles).flat().find((id) => id.startsWith("acp:")) as AgentId | undefined} unrestricted={nativeAntigravity && Object.values(roles).flat().some(id => id === "agy" || id === "auto")} acpAllowed={nativeAcp} /></> : null}
         <button class="btn primary task-start" disabled={!!problem || starting} onClick={start} title={problem || "Start run (⌘↵)"}>{starting ? "Starting…" : single ? "Send" : "Start run"}<Icon name="send" /></button>
         <Menu above label="Run actions" icon="more" class="chat-choice">{(close) => <>
           <MenuItem disabled={!p || !projectsLoaded.value} onClick={() => { close(); setUsingTemplate(true); }}><Icon name="files" />Use template…</MenuItem>
@@ -362,7 +355,6 @@ export function Composer() {
         </>}</Menu>
       </>} />
       {error ? <div ref={startError} class="msg err composer-start-error" role="alert" tabIndex={-1}>{error}</div> : null}
-      <div class="task-setup-entry"></div>
       <div class="composer-summary" aria-label="Run configuration summary">
         <span><b>Computer</b> {computerLabel()}{remoteWorker ? ` · Agent worker: ${remoteWorker.workerId}` : ""}</span>
         <span><b>Project</b> {target.value.project?.name ?? "Choose project"}</span>
@@ -597,11 +589,9 @@ export function startProblem(p: PatternInfo | undefined, roles: Record<string, R
     if (problem) return problem;
   }
   if (p?.id === "solo" && composerRunOptions.value.taskTeam?.enabled && !inventory && !composerRunOptions.value.remoteWorker && !composerRunOptions.value.container?.enabled) {
-    if (teamRollout.value?.enabled === false) return "Team is disabled on this server. Turn AI team off to continue with one agent.";
-    const approvals = toolApprovalState({ choice: composerRunOptions.value.toolApprovals, trust: externalSource.value ? "safe" : trust.value, p, roles, external: !!externalSource.value }).tools;
+    const approvals = toolApprovalState({ choice: composerRunOptions.value.toolApprovals, trust: trust.value, p, roles }).tools;
     const permission = teamApprovalProblem(composerRunOptions.value.taskTeam, approvals); if (permission) return permission;
   }
-  if (p?.id === "auto-team" && teamRollout.value?.enabled === false) return "New teams are disabled. Existing teams can still be resumed.";
   // Before "Pick an agent": the providers are greyed out because the pause applies everywhere.
   if (executionPaused.value) return "Agent runs are paused by a project's filesystem restriction";
   if (composerLoading.value) return "Restoring project draft…";
@@ -627,7 +617,7 @@ export function startProblem(p: PatternInfo | undefined, roles: Record<string, R
   if (acpChosen) {
     const name = (inventory ?? agents.value).find(agent => agent.id === acpChosen)?.displayName ?? acpChosen;
     if (inventory || composerRunOptions.value.remoteWorker || composerRunOptions.value.container?.enabled) return `${name} runs only on this computer without Docker isolation`;
-    if ((externalSource.value ? "safe" : trust.value) !== "full") return `${name} needs Full access. Choose Ask for approval or Full access in Permissions.`;
+    if (trust.value !== "full") return `${name} needs Full access. Choose Ask for approval or Full access in Permissions.`;
   }
   for (const role of p.roles) if (!role.optional && !roles[role.id]?.length) return p.roles.length === 1 ? "Choose a provider" : `Choose a provider for ${role.label}`;
   const unavailableHint = !inventory && health.value?.some(item => item.installed && item.signedIn === false) ? " Some providers are signed out; open Settings → Providers." : "";
@@ -673,7 +663,7 @@ function useImprove(disabledReason: string) {
   const [mode, setMode] = useState<ImproveMode>(improveSettings.value.defaultMode);
   const reason = useRef(disabledReason);
   reason.current = disabledReason;
-  const capture = () => [task.value, repo.value, repoInfo.value, currentProject.value, target.value.project?.id, baseRef.value, contextPaths.value, attachments.value, source.value, externalSource.value, acceptanceCriteria.value, contextBudget.value, reason.current, improveSettings.value] as const;
+  const capture = () => [task.value, repo.value, repoInfo.value, currentProject.value, target.value.project?.id, baseRef.value, contextPaths.value, attachments.value, source.value, acceptanceCriteria.value, contextBudget.value, reason.current, improveSettings.value] as const;
   type ImproveSnapshot = ReturnType<typeof capture>;
   const same = (a: ImproveSnapshot, b: ImproveSnapshot) => a.every((value, index) => Object.is(value, b[index]));
   const observed = useRef(capture());

@@ -1,9 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { assessTeamRollout, buildTeamEvaluation, intervalDuration, TeamEvaluationStore, type TeamEvaluation } from "../src/team-evaluation.js";
+import { buildTeamEvaluation, intervalDuration } from "../src/team-evaluation.js";
 import type { Run } from "../src/engine.js";
 import type { TeamState } from "../src/teams.js";
 
@@ -86,60 +83,6 @@ test("approval and memory feedback measurements use durable answers and exact co
   });
   assert.deepEqual(report.metrics.approvals, { approved: 1, revised: 1, rejected: 0, withReason: 1 });
   assert.deepEqual(report.metrics.memoryFeedback, { useful: 1, irrelevant: 0, stale: 0, incorrect: 0 });
-});
-
-function report(id: string, pattern: string, mode: "fake" | "real" = "real"): TeamEvaluation {
-  const value = buildTeamEvaluation(fixture(), { mode, cliVersions: { claude: "test-version" }, caseId: "case", pairId: id });
-  value.id = `evaluation-${id}-${pattern}`; value.pattern = pattern;
-  value.metrics = { ...value.metrics, workerTurns: 5, invocations: 8, coordinatorInvocations: 2, coordinatorFraction: .25, multiWorker: true };
-  return value;
-}
-
-test("rollout evidence separates fake runs and requires matched tasks and revisions", () => {
-  const fake = [report("pair", "auto-team", "fake"), report("pair", "supervisor", "fake")];
-  assert.equal(assessTeamRollout(fake).eligibleBeta, false);
-  const real = [report("pair", "auto-team"), report("pair", "supervisor")];
-  assert.equal(assessTeamRollout(real).eligibleBeta, true);
-  real[1]!.baseRef = "different-base";
-  assert.equal(assessTeamRollout(real).matchedPairs, 0);
-  real[1]!.baseRef = "base"; real[0]!.verified = false;
-  assert.equal(assessTeamRollout(real).eligibleBeta, false);
-});
-
-test("an unrelated verified Auto result cannot qualify a failed matched pair for beta", () => {
-  const pair = [report("failed-pair", "auto-team"), report("failed-pair", "supervisor")];
-  pair.forEach((value) => { value.verified = false; value.status = "failed"; });
-  const unrelated = report("unpaired", "auto-team");
-  const assessment = assessTeamRollout([...pair, unrelated]);
-  assert.equal(assessment.matchedPairs, 1);
-  assert.equal(assessment.verifiedAutoRuns, 1);
-  assert.equal(assessment.eligibleBeta, false, "the verified Auto result must itself have a matched comparison");
-});
-
-test("default rollout requires a real sample and an explicit durable decision", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "team-evaluation-test-"));
-  try {
-    const store = new TeamEvaluationStore(directory);
-    const reports = Array.from({ length: 20 }, (_, i) => [report(`pair-${i}`, "auto-team"), report(`pair-${i}`, "supervisor")]).flat();
-    await Promise.all(reports.map((value) => store.record(value)));
-    assert.equal((await store.rollout()).stage, "experimental", "recording evidence never changes the default");
-    assert.equal(assessTeamRollout(await store.list()).eligibleDefault, true);
-    const decision = await store.decide({ stage: "default", rationale: "Synthetic test decision", evaluationIds: reports.map((value) => value.id) });
-    assert.equal(decision.stage, "default");
-    assert.equal((await new TeamEvaluationStore(directory).rollout(false)).enabled, false);
-    await assert.rejects(store.record({ ...reports[0]!, verified: false }), /immutable/);
-    await store.record(reports[0]!);
-  } finally { await rm(directory, { recursive: true, force: true }); }
-});
-
-test("fake or incomplete reports cannot promote rollout, and a rejected write does not poison later decisions", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "team-evaluation-test-"));
-  try {
-    const store = new TeamEvaluationStore(directory); const fake = report("fake", "auto-team", "fake"); await store.record(fake);
-    await assert.rejects(store.decide({ stage: "beta", rationale: "Not enough", evaluationIds: [fake.id] }), /verified real/);
-    await assert.rejects(store.decide({ stage: "default", rationale: "Not enough", evaluationIds: [fake.id] }), /20 real Auto/);
-    assert.equal((await store.decide({ stage: "experimental", rationale: "Keep collecting evidence", evaluationIds: [fake.id] })).stage, "experimental");
-  } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
 test("measured documentation proof exemption still requires checks, coverage and independent approval", () => {

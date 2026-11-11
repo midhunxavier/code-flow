@@ -207,7 +207,7 @@ test("under a restriction in one project, settings, health, the composer, termin
   await page.addScriptTag({ content: axe.source });
   const violations = await page.evaluate(async () => (await (window as any).axe.run("#side-pane-browser, .composer, .policy-pause", { runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21a"] } })).violations.map((violation: { id: string }) => violation.id));
   assert.deepEqual(violations, []);
-  assert.deepEqual(refused.filter((entry) => !/\/api\/(team-rollout|experience)$/.test(entry)), [], "only boot reads of unscoped private data are refused");
+  assert.deepEqual(refused.filter((entry) => !/\/api\/experience$/.test(entry)), [], "only boot reads of unscoped private data are refused");
   assert.deepEqual(errors, []);
 });
 

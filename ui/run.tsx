@@ -45,7 +45,6 @@ import {
   roleModels,
   baseRef,
   branchPrefix,
-  externalSource,
   route,
   setAcceptanceCriteria,
   setApprovePlan,
@@ -2469,7 +2468,6 @@ export async function editAndRerun(run: RunSummary) {
     permissionRequirements: [...(run.permissions?.required ?? [])],
   };
   intentDraft.value = run.intent;
-  externalSource.value = null;
   setAcceptanceCriteria([]);
   branchPrefix.value = "";
   // The original commit, permissions, commands and limits are this retry's own: they aren't

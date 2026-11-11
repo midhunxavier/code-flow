@@ -47,7 +47,7 @@ after(async () => { await browser?.close(); server?.kill("SIGTERM"); await new P
 
 
 const errors: string[] = [];
-test("Connections consolidates old bookmarks and keeps access setup discoverable with an optional Board shortcut", { timeout: 45_000 }, async () => {
+test("Connections consolidates old bookmarks and keeps access setup discoverable", { timeout: 45_000 }, async () => {
   page.on("pageerror", error => errors.push(error.message));
   await page.goto(`${base}/#/settings/ssh`);
   await page.getByRole("navigation", { name: "Connection purpose" }).getByRole("link", { name: "Computers" }).waitFor();
@@ -55,14 +55,7 @@ test("Connections consolidates old bookmarks and keeps access setup discoverable
   await page.getByRole("link", { name: "Workers", exact: true }).click();
   await page.getByRole("heading", { name: /Remote workers/ }).waitFor();
   await page.goto(`${base}/#/settings/team`);
-  const toggle = page.getByLabel("Show Board in the app menu");
-  assert.equal(await toggle.isChecked(), false);
-  await toggle.check();
   await page.getByRole("link", { name: "Open Board" }).waitFor();
-  await page.reload();
-  assert.equal(await toggle.isChecked(), true);
-  await toggle.uncheck();
-  assert.equal(await page.getByRole("link", { name: "Open Board" }).count(), 1, "navigation preference never hides access setup");
 });
 
 test("one template library restores complete saved configurations and keeps legacy workflows", { timeout: 45_000 }, async () => {

@@ -282,22 +282,6 @@ test("Auto team approval, addressed question, distinct members, and verified cov
   assert.equal(await page.getByRole("checkbox", { name: /Let me approve the team and plan/ }).isChecked(), false, "explicit approval preference persists");
 });
 
-test("evaluation UI records an explicit experimental decision and cannot promote missing evidence", { timeout: 30_000 }, async () => {
-  await page.goto(`${base}/#/settings/insights`);
-  await page.getByText("Team evaluation", { exact: true }).click();
-  const evaluations = page.getByLabel("Team evaluations", { exact: true });
-  await evaluations.getByText("Rollout decision and requirements", { exact: true }).click();
-  await evaluations.getByLabel("Auto team rollout stage", { exact: true }).selectOption("default");
-  await evaluations.getByLabel("Rollout rationale", { exact: true }).fill("Checking the evidence guard.");
-  await evaluations.getByRole("button", { name: "Record rollout decision", exact: true }).click();
-  await evaluations.getByRole("alert").filter({ hasText: /not supported|20 real/ }).waitFor();
-  await evaluations.getByLabel("Auto team rollout stage", { exact: true }).selectOption("experimental");
-  await evaluations.getByRole("button", { name: "Record rollout decision", exact: true }).click();
-  await evaluations.getByText(/Last decision:.*Checking the evidence guard/).waitFor();
-  const rollout = await fetch(`${base}/api/team-rollout`, { headers }).then((response) => response.json());
-  assert.equal(rollout.stage, "experimental");
-});
-
 test("changing a running goal stops its team and creates an approved child plan with an explicit budget", { timeout: 60_000 }, async () => {
   const started = await fetch(`${base}/api/runs`, { method: "POST", headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify({ repo, pattern: "auto-team", task: "AUTO-USER-QUESTION Implement the initial behavior", roles: { coordinator: ["claude"], pool: ["claude", "codex"] }, options: {}, approvals: { plan: true }, loop: { check: "npm test", maxSteps: 20, maxInvocations: 20, maxMinutes: 3 } }) });
   assert.equal(started.status, 201, await started.clone().text());

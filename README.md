@@ -108,7 +108,7 @@ Code Flow shows checks, independent review and fail-to-pass evidence separately.
 | **Review council** | Independent reviews, evidence, ranked findings | Reviewing a change |
 | **Auto team** | Proposed team, dependency graph, bounded adaptation | Delegating workflow design |
 
-Assign providers, models and effort per role. Auto team availability and its default selection follow the current rollout state; see [Auto team](docs/auto-team.md).
+Assign providers, models and effort per role; see [Auto team](docs/auto-team.md).
 
 ## Your CLIs, your machine
 
