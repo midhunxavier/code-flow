@@ -72,7 +72,7 @@ Commit `.codeflow/config.json` and every run in that repo (and every teammate) g
 | Trusted | any command | sandboxed, with network | sandboxed to the worktree |
 | Full access | any tool, no permission checks (`bypassPermissions`) | no sandbox (`danger-full-access`) | no sandbox (no `--sandbox`) |
 
-The composer's **Permissions** menu offers the same modes, plus **Ask for approval**: Standard, with supported tool requests sent to the approval inbox. A Claude or Codex conversation at Standard asks by default; a repository's `"trust"` default shows as its own mode. Remote workers, Docker isolation and Safe can't ask, so those runs start without approvals. Antigravity can't ask either: a team that gives it a role needs another mode, and Run details shows what the run will use.
+The composer's **Permissions** menu offers the same modes, plus **Ask for approval**: Standard, with supported tool requests sent to the approval inbox. A Claude or Codex conversation at Standard asks by default; a repository's `"trust"` default shows as its own mode. Docker isolation and Safe can't ask, so those runs start without approvals. Antigravity can't ask either: a team that gives it a role needs another mode, and Run details shows what the run will use.
 
 **Full access** turns every agent's sandbox off in steps that build: an agent can run anything, use the network, and change files outside its worktree with your credentials. Use it only on repos and tasks you trust completely. To keep it a choice you make:
 
@@ -119,7 +119,6 @@ Once an agent CLI reports its final result, it gets 10 seconds to exit; one that
 | `CODEFLOW_REMOTE_PORT` | `PORT+1` | Port for the phone view (or the full app, with phone control) and webhooks on your network, when Wi-Fi or Tailscale is selected under **Remote access** |
 | `CODEFLOW_TLS_CERT`, `CODEFLOW_TLS_KEY` | unset | Optional certificate/key file paths overriding saved HTTPS setup in Settings → Connections → Share access. Configure both together; full control requires TLS on Wi-Fi and Tailscale so browser session cookies remain Secure |
 | `CODEFLOW_ALLOW_INSECURE_PHONE_CONTROL` | unset | Explicit `1` permits full phone control over HTTP for development |
-| `CODEFLOW_REMOTE_WORKERS_FILE`, `CODEFLOW_REMOTE_WORKERS_JSON` | unset | Explicit provisioned SSH targets and repository mapping names; see [remote workers](remote-workers.md) |
 | `CODEFLOW_EXTENSIONS_FILE`, `CODEFLOW_EXTENSIONS_JSON` | unset | Explicit trusted bundled provider/workflow plugins with API negotiation and SHA-256 pins; choose one configuration source; see [extensions](extensions.md) |
 | `CODEFLOW_NOTIFICATIONS_FILE`, `CODEFLOW_NOTIFICATIONS_JSON` | unset | Explicit outbound destinations; targets remain disabled until event/project opt-in; see [notifications](notifications.md) |
 | `CODEFLOW_SCHEDULER_TICK_MS` | `30000` | How often due automations are checked |
@@ -148,7 +147,6 @@ Child processes exclude the application API token, scoped team capabilities, int
 | `team-link/attempts/<attempt>.json` | Which local run belongs to which board attempt, and what was published; read at startup, by the recovery pass every minute and after a restore to reconcile with the team server, never to start anything again |
 | `team-link/bundles/<checkpoint id>.bundle` | A checkpoint bundle this computer created, kept until the team server has received it; a failed upload is retried with the same file, and the file of a checkpoint that was given up is deleted |
 | `filesystem-policies/<project>.json` | Revisioned read/write rules and content hashes; see [filesystem policy](filesystem-policy.md) |
-| `remote-worker-private/` | Private SSH receipt capabilities; excluded from ordinary result projections and restore authority |
 | `extension-cache/` | Captured trusted plugin bundles; excluded from backup/restore and rebuilt only from explicit reviewed configuration |
 | `projects.json` | Your [projects](runs.md#projects): names, repositories, and the team each one last used. Written whole (through a temporary file); a change that can't be saved fails and is undone. Invalid JSON or unusable entries are preserved in `projects.json.corrupt-<time>`; the composer shows the backup filename and recovery guidance for that server session. An unreadable file, or one that cannot be moved aside, is retained and projects are off. The composer explains the actual cause and can start unassigned runs. Stop Code Flow before repairing or restoring the file in `CODEFLOW_HOME`, then restart |
 | `server.log` | code-flow's own log, one JSON line per entry: failed requests, unhandled errors, failed writes, processes it cleaned up. Past 5 MB it moves to `server.log.1` (one old file is kept) |

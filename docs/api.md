@@ -353,14 +353,10 @@ team server and never start a run again. See [team
 collaboration](team-collaboration.md) for roles, hand-overs, checkpoints and
 limits.
 
-## Explicit workers, coordination and extensions
+## Coordination and extensions
 
 | Operation | Request | Behavior |
 | --- | --- | --- |
-| `GET /remote-workers` | none | List explicitly configured SSH targets without private capabilities. |
-| `POST /remote-workers/:id/probe` | `repoMapping` | Probe the provisioned worker and its own provider inventory. |
-| `POST /runs/:id/remote-steps/:step/receipt` | empty body | Inspect an accepted execution receipt; never replay the turn. |
-| `POST /runs/:id/remote-steps/:step/cancel` | empty body | Explicitly request cancellation and inspect its receipt. |
 | `GET /coordinated-changes` | none | List durable multi-repository jobs and their current claims. |
 | `POST /coordinated-changes` | `project`, `name`, `nodes`, optional `operationId` | Create 2–10 explicitly configured repository tasks with a verified dependency DAG. |
 | `POST /coordinated-changes/:id/cancel` | `expectedRevision` | Cancel further dispatch; preserve accepted execution receipts. |
@@ -371,10 +367,7 @@ limits.
 | `POST /coordinated-changes/:id/nodes/:node/recover-shipping` | `expectedRevision`, `commit` | Confirm the exact reviewed parents/tree after an uncertain local merge. |
 | `GET /extensions` | none | Inspect host API version and explicitly configured trusted provider/workflow bundles. |
 
-Runs select SSH using `loop.remoteWorker: {workerId,repoMapping}`. Worker
-credentials stay on the provisioned worker; accepted turns are never retried
-automatically after a disconnected transport. See [worker setup and receipt
-recovery](remote-workers.md). Coordination ships each repository separately;
+Coordination ships each repository separately;
 there is no atomic transaction across repositories. See [coordinated
 changes](coordinated-changes.md). Extension installation is server configuration,
 not an HTTP operation; immutable version/hash pins are rechecked before

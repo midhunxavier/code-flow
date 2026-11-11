@@ -54,7 +54,7 @@ export function permissionRequirements(value: unknown): PermissionRequirement[] 
   if (!Array.isArray(value) || value.length > 3 || value.some(v => !["workspace-writes", "no-command-network", "no-external-tools"].includes(v))) throw new Error("Unknown required permission enforcement");
   return [...new Set(value)] as PermissionRequirement[];
 }
-/** Persisted authority is untrusted input on recovery and remote receipt replay. */
+/** Persisted authority is untrusted input on recovery. */
 export function validateRunPermissions(value: unknown): RunPermissionPolicy {
   const p = value as RunPermissionPolicy;
   if (!p || typeof p !== "object" || Array.isArray(p) || Object.keys(p).some(k => !["version", "revision", "trust", "toolApprovals", "delegation", "required", "antigravityExecution", "acpExecution"].includes(k)) || p.version !== 1 || !Number.isSafeInteger(p.revision) || p.revision < 1 || !levels.includes(p.trust) || typeof p.toolApprovals !== "boolean" || !["managed", "none"].includes(p.delegation) || !Array.isArray(p.required)) throw new Error("Invalid run permission policy");
@@ -81,7 +81,7 @@ export function permissionProviderProblem(provider: AgentId, policy?: RunPermiss
 }
 export function resolveRunPermissions(input: {
   policy: RunPermissionPolicy; provider: AgentId; mode: AccessMode; currentTrust: Trust;
-  turnTrust?: Trust; tools?: boolean; currentTools: boolean; container?: boolean; remote?: boolean; unattended?: boolean;
+  turnTrust?: Trust; tools?: boolean; currentTools: boolean; container?: boolean; unattended?: boolean;
 }): EffectivePermissions {
   const { provider, mode } = input;
   const policy = validateRunPermissions(input.policy);
@@ -90,7 +90,7 @@ export function resolveRunPermissions(input: {
   if (problem) throw new Error(problem);
   const trust = narrowerTrust(narrowerTrust(policy.trust, input.currentTrust), input.turnTrust);
   if (provider === "agy" && policy.antigravityExecution === "native") {
-    if (input.remote || input.container || input.unattended || policy.toolApprovals || policy.required.length || trust === "safe" || trust !== policy.trust) throw new Error("Unrestricted Antigravity requires a local attended run without mandatory boundaries, Safe mode, narrowed trust or interactive approvals");
+    if (input.container || input.unattended || policy.toolApprovals || policy.required.length || trust === "safe" || trust !== policy.trust) throw new Error("Unrestricted Antigravity requires a local attended run without mandatory boundaries, Safe mode, narrowed trust or interactive approvals");
     return { required: [], delegation: policy.delegation, policyRevision: policy.revision,
       provider, trust: "full", mode, nativeDelegation: true, toolApprovals: false,
       isolation: "none", implementation: "agy-native-v1", commandNetwork: "allowed", externalTools: "provider-configured",
@@ -98,7 +98,7 @@ export function resolveRunPermissions(input: {
   }
   if (isAcpProvider(provider)) {
     // Reached only with the run's explicit acpExecution opt-in (permissionProviderProblem above).
-    if (input.remote || input.container || input.unattended || policy.required.length) throw new Error("Unrestricted ACP agents require a local attended run without mandatory boundaries");
+    if (input.container || input.unattended || policy.required.length) throw new Error("Unrestricted ACP agents require a local attended run without mandatory boundaries");
     if (trust !== "full") throw new Error("ACP connections require Full access on the current host");
     return { required: [], delegation: policy.delegation, policyRevision: policy.revision,
       provider, trust, mode, nativeDelegation: true,
@@ -108,7 +108,7 @@ export function resolveRunPermissions(input: {
       limitations: [ACP_NATIVE_LIMITATION] };
   }
   if (provider === "agy") {
-    if (input.remote || input.container) throw new Error(AGY_MANAGED_PERMISSION_PROBLEM);
+    if (input.container) throw new Error(AGY_MANAGED_PERMISSION_PROBLEM);
     if (policy.toolApprovals && input.currentTools && input.tools !== false && mode === "write") throw new Error(AGY_APPROVALS_PROBLEM);
     const shared = !policy.required.includes("no-external-tools");
     return {
@@ -122,15 +122,15 @@ export function resolveRunPermissions(input: {
   if (externalTools === "disabled" && provider !== "claude") throw new Error(`${provider} has no verified external-tool isolation in this adapter`);
   const isolation = input.container ? "container" : trust === "full" && mode === "write" ? "none" : provider === "codex" ? "provider-sandbox" : "tool-rules";
   const commandNetwork = provider === "codex" && (mode === "read" || trust === "safe" || trust === "standard") ? "denied" : trust === "full" || trust === "trusted" ? "allowed" : "provider-configured";
-  if (policy.required.includes("workspace-writes") && (isolation === "none" || isolation === "tool-rules" || input.remote || input.container)) throw new Error(`${provider} cannot enforce the required workspace write boundary in this environment`);
-  if (policy.required.includes("no-command-network") && (commandNetwork !== "denied" || input.remote || input.container)) throw new Error(`${provider} cannot enforce the required command network restriction in this environment`);
+  if (policy.required.includes("workspace-writes") && (isolation === "none" || isolation === "tool-rules" || input.container)) throw new Error(`${provider} cannot enforce the required workspace write boundary in this environment`);
+  if (policy.required.includes("no-command-network") && (commandNetwork !== "denied" || input.container)) throw new Error(`${provider} cannot enforce the required command network restriction in this environment`);
   const wantsApprovals = policy.toolApprovals && input.currentTools && input.tools !== false && mode === "write";
   if (wantsApprovals && policy.required.some(r => r === "workspace-writes" || r === "no-command-network")) throw new Error("Interactive command approvals cannot be combined with mandatory sandbox boundaries");
-  if (wantsApprovals && (!["codex", "claude"].includes(provider) || input.remote || input.container || input.unattended)) throw new Error(`${provider} cannot provide the run's required interactive approvals in this environment`);
+  if (wantsApprovals && (!["codex", "claude"].includes(provider) || input.container || input.unattended)) throw new Error(`${provider} cannot provide the run's required interactive approvals in this environment`);
   return {
     required: [...policy.required], delegation: policy.delegation,
     policyRevision: policy.revision, provider, trust, mode, nativeDelegation: false,
-    toolApprovals: policy.toolApprovals && input.currentTools && input.tools !== false && !input.container && !input.remote && !input.unattended && mode === "write",
+    toolApprovals: policy.toolApprovals && input.currentTools && input.tools !== false && !input.container && !input.unattended && mode === "write",
     isolation, commandNetwork, externalTools,
     limitations: ["Worktrees do not restrict file reads.", "Setup and check commands use the run’s separately configured command environment.", ...(isolation === "tool-rules" ? ["CLI tool rules are not an operating-system filesystem sandbox."] : []), ...(externalTools === "provider-configured" ? ["Browser and external MCP permissions follow the provider configuration; terminal network policy does not restrict them."] : [])],
   };

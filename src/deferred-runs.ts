@@ -11,6 +11,7 @@ import { validateVerificationProfile } from "./verification.js";
 import { validateContextBudget } from "./context-budget.js";
 import { exhausted, type Quota } from "./routing.js";
 import { redactText } from "./privacy.js";
+import { assertNoRemoteWorker } from "./run-environment.js";
 import type { AgentId } from "./adapters/types.js";
 import type { LoopSettings } from "./engine.js";
 import type { SourceInput } from "./github.js";
@@ -24,7 +25,8 @@ export interface DeferredRunRequest {
   baseRef?: string; branchPrefix?: string; parentRunId?: string;
   context?: { paths: { path: string }[] };
   agentSettings?: AgentSettings; roleSettings?: Record<string, AgentSettings>;
-  loop: Partial<LoopSettings> & { copy: [] };
+  /** `remoteWorker` survives only in jobs queued by versions with SSH workers; it is kept so such a job is refused at launch rather than started here. */
+  loop: Partial<LoopSettings> & { copy: []; remoteWorker?: { workerId: string; repoMapping: string } };
   trust: "safe"; allowUntrusted: false; approvals: { plan: false; tools: false };
   source?: SourceInput;
 }
@@ -103,8 +105,8 @@ export function sanitizeDeferredRequest(value: unknown): DeferredRunRequest {
     if (typeof number !== "number" || !Number.isFinite(number) || number < min! || number > max!) throw new Error(`Invalid deferred ${key}`);
     loop[key] = number;
   }
-  // The composer sends null for "none" (the single configured check, no worker or container), as POST /api/runs accepts.
-  if (given(loopRaw.remoteWorker)) loop.remoteWorker = validateWorkerSelection(loopRaw.remoteWorker);
+  // The composer sends null for "none" (the single configured check, no container), as POST /api/runs accepts.
+  if (given(loopRaw.remoteWorker)) loop.remoteWorker = { workerId: text((loopRaw.remoteWorker as Record<string, unknown>).workerId, 64, "worker"), repoMapping: text((loopRaw.remoteWorker as Record<string, unknown>).repoMapping, 64, "repository mapping") };
   if (given(loopRaw.verification)) loop.verification = validateVerificationProfile(loopRaw.verification);
   if (given(loopRaw.contextBudget)) loop.contextBudget = validateContextBudget(loopRaw.contextBudget);
   if (given(loopRaw.agentContainer)) loop.agentContainer = validateAgentContainer(loopRaw.agentContainer);
@@ -196,6 +198,7 @@ export class DeferredRuns {
 
   async enqueue(raw: { name?: string; run: unknown; notBefore?: number; waitForProviders?: AgentId[]; maxAttempts?: number; operationId?: string }): Promise<DeferredRunJob> {
     const run = sanitizeDeferredRequest(raw.run), now = this.now();
+    assertNoRemoteWorker(run.loop);
     const notBefore = raw.notBefore ?? now;
     if (!positiveDate(notBefore) || notBefore > now + DEFERRED_RUN_LIMITS.futureMs) throw new Error("Choose a deferred start within the next year");
     if (raw.waitForProviders !== undefined && (!Array.isArray(raw.waitForProviders) || raw.waitForProviders.length > AGENTS.length || raw.waitForProviders.some((provider) => !AGENTS.includes(provider)))) throw new Error("Choose valid providers to wait for");
@@ -424,4 +427,3 @@ async function writeDocument(file: string, document: Document) {
   try { const handle = await open(temporary, "wx", 0o600); try { await handle.writeFile(body); await handle.sync(); } finally { await handle.close(); } await rename(temporary, file); const folder = await open(dirname(file), "r"); try { await folder.sync(); } finally { await folder.close(); } }
   finally { await rm(temporary, { force: true }); }
 }
-import { validateWorkerSelection } from "./remote-workers/protocol.js";

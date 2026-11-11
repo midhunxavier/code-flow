@@ -541,7 +541,7 @@ test("Improve pins policy without blocking workspace edits or new runs, and expl
   const stop = new AbortController(); let turn: Promise<unknown> | undefined;
   const waitFor = async (check: () => boolean | Promise<boolean>) => { const end = Date.now() + 10_000; while (!await check()) { if (Date.now() > end) throw new Error("Improve lease fixture timed out"); await new Promise((resolve) => setTimeout(resolve, 25)); } };
   try {
-    for (const profile of [{ execution: "remote" }, { execution: "container" }, { remoteWorker: { workerId: "fixture", repoMapping: "repo" } }, { agentContainer: { image: "fixture:prepared" } }, { loop: { remoteWorker: { workerId: "fixture", repoMapping: "repo" } } }, { loop: { agentContainer: { image: "fixture:prepared" } } }]) {
+    for (const profile of [{ execution: "remote" }, { execution: "container" }, { agentContainer: { image: "fixture:prepared" } }, { loop: { agentContainer: { image: "fixture:prepared" } } }]) {
       const refused = await api(instance, "/api/improve-prompt", { text: "No fallback", repo, agent: "claude", ...profile }); assert.equal(refused.status, 400, JSON.stringify(refused.body)); assert.match(refused.body.error, /local execution only|cannot fall back/);
     }
     assert.deepEqual(readdirSync(records), [], "unsupported profiles are rejected before any native provider turn");

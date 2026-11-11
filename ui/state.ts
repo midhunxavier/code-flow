@@ -267,7 +267,6 @@ export const projectPickerPurpose = signal<"filter" | "composer" | "chat">("filt
 export const repositoryChoice = signal<{ repository: string; project?: string } | null>(null);
 export const composerRunOptions = signal<{
   taskTeam?: import("../src/task-team.js").TaskTeamConfig;
-  remoteWorker?: import("./remote-workers.js").WorkerChoice;
   container?: { enabled: boolean; image: string; authVolume: string };
   verification?: string;
   verificationProfile?: import("../src/verification.js").VerificationProfile | null;
@@ -979,7 +978,7 @@ export function rolesFor(p: PatternInfo | undefined): Record<string, RoleValue[]
   // Antigravity can't ask for approval: after an explicit Ask for approval, defaults go to Claude or Codex.
   // A draft keeps no container of its own while it matches the project's Docker default.
   const container = options.container ?? readProjectDefaults(repo.value).container;
-  const approvals = options.toolApprovals === true && trust.value !== "safe" && !options.remoteWorker && !container.enabled;
+  const approvals = options.toolApprovals === true && trust.value !== "safe" && !container.enabled;
   const eligibleDefaults = agents.value.filter((a) => {
     const diagnostic = health.value?.find(entry => entry.id === a.id);
     return a.available && supportsRunPermissions(a.id) && (a.id !== "agy" || !approvals && (options.antigravityExecution === "native" || diagnostic?.managedCompatible === true)) && diagnostic?.signedIn !== false && diagnostic?.compatible !== false;

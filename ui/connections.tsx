@@ -1,6 +1,5 @@
 import { SshConnections, executionHost, managesConnections } from "./ssh-projects.js";
 import { ownerOnLocalListener } from "./lib.js";
-import { RemoteWorkersView } from "./remote-workers.js";
 import { RemoteAccess } from "./remote-access.js";
 import { TeamSettings, TeamJoinSettings } from "./collab-settings.js";
 import { lazyView } from "./lazy-view.js";
@@ -12,7 +11,6 @@ import { AcpConnectionsPanel } from "./acp-connections.js";
 export const CONNECTION_PURPOSES = [
   { id: "agents", label: "Coding agents", description: "Connect another coding agent installed on this computer." },
   { id: "workspace", label: "Computers", description: "Open a complete workspace over SSH, with files, terminals and agents on that computer." },
-  { id: "execution", label: "Workers", description: "Send individual agent turns to a provisioned SSH worker while keeping this workspace here." },
   { id: "sharing", label: "Sharing", description: "Open this computer from another device or collaborate with people." },
 ] as const;
 export function ConnectionsView({ purpose = "workspace", connection }: { purpose?: string; connection?: string }) {
@@ -23,7 +21,6 @@ export function ConnectionsView({ purpose = "workspace", connection }: { purpose
     <nav class="purpose-nav" aria-label="Connection purpose">{CONNECTION_PURPOSES.map(item => <a class={`btn ${selected.id === item.id ? "primary" : ""}`} href={`#/settings/connections/${item.id}`} title={item.description} aria-current={selected.id === item.id ? "page" : undefined}>{item.label}</a>)}</nav>
     {selected.id === "agents" ? <AcpConnectionsPanel /> : null}
     {selected.id === "workspace" ? <SshConnections /> : null}
-    {selected.id === "execution" ? <><RemoteWorkersView /><p class="help">To run shared tasks on a teammate’s computer or grant host execution, configure <a href="#/settings/connections/manage">Board and People under Share access</a>.</p></> : null}
     {selected.id === "sharing" ? <>
       <nav class="connection-journeys" aria-label="Share access options">
         {[

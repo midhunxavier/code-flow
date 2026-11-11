@@ -52,8 +52,7 @@ test("Connections consolidates old bookmarks and keeps access setup discoverable
   await page.goto(`${base}/#/settings/ssh`);
   await page.getByRole("navigation", { name: "Connection purpose" }).getByRole("link", { name: "Computers" }).waitFor();
   assert.equal(await page.getByRole("navigation", { name: "Settings categories" }).getByRole("link", { name: "Connections", exact: true }).count(), 1);
-  await page.getByRole("link", { name: "Workers", exact: true }).click();
-  await page.getByRole("heading", { name: /Remote workers/ }).waitFor();
+  assert.equal(await page.getByRole("navigation", { name: "Connection purpose" }).getByRole("link", { name: "Workers", exact: true }).count(), 0);
   await page.goto(`${base}/#/settings/team`);
   await page.getByRole("link", { name: "Open Board" }).waitFor();
 });

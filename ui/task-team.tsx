@@ -35,7 +35,7 @@ export function TaskTeamControl({ run, config, lead, project, onChange, disabled
   const value = owner?.taskTeam ?? config;
   const active = run ? [...runs.value.values()].find(child => child.taskExecution?.taskId === chatTaskId(run) && child.status === "running") : undefined;
   const [busy, setBusy] = useState(false), [error, setError] = useState("");
-  if (run && (run.chatLink?.kind === "side" || run.checkpointOnFinish || run.trigger || run.loop.remoteWorker || run.loop.agentContainer)) return null;
+  if (run && (run.chatLink?.kind === "side" || run.checkpointOnFinish || run.trigger || run.loop.agentContainer)) return null;
   const save = async (next: TaskTeamConfig) => {
     setBusy(true); setError("");
     try {

@@ -361,7 +361,7 @@ function SideComposer({ run, chat }: { run: RunSummary; chat?: SideChat }) {
                 <MenuItem on={mode === "change"} sub="Edit the worktree, commit changes and run the check" onClick={() => { setMode("change"); close(); }}>Change</MenuItem>
               </>}
             </Menu> : null}
-            <ChatControls showPermissions={run.pattern !== "solo" || !!chat} providers={run.pattern === "solo" && !chat ? agents.value.filter(item => item.id === "claude" || item.id === "codex" || item.id === "agy") : undefined} agent={agent} onAgent={(id) => { setAgent(id); store.set("sideAgent", id); }} settings={selectedSettings} onSettings={(value) => setSettings({ ...settings, [agent]: value })} permissions={permissions} onPermissions={setPermissions} restricted={!!run.lockdown || !!run.trigger} approvalsAvailable={!run.loop.remoteWorker && !run.loop.agentContainer} />
+            <ChatControls showPermissions={run.pattern !== "solo" || !!chat} providers={run.pattern === "solo" && !chat ? agents.value.filter(item => item.id === "claude" || item.id === "codex" || item.id === "agy") : undefined} agent={agent} onAgent={(id) => { setAgent(id); store.set("sideAgent", id); }} settings={selectedSettings} onSettings={(value) => setSettings({ ...settings, [agent]: value })} permissions={permissions} onPermissions={setPermissions} restricted={!!run.lockdown || !!run.trigger} approvalsAvailable={!run.loop.agentContainer} />
             <span class="chatbox-hint" />
             <button class="send" aria-label="Send" title="Send message" disabled={!draftReady || busy || !text.trim() || !wt} onClick={send}>
               <Icon name="send" />

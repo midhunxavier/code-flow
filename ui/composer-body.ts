@@ -13,7 +13,7 @@ import { composerRunOptions, repo, projectsStatus, composerProject, task, accept
 /** Build the current saved draft independently of which screen happens to be mounted. */
 export function composerRunBody(p: PatternInfo, profile?: VerificationProfile | null): Record<string, any> {
   const options = composerRunOptions.value, restored = rerunDraft.value;
-  const { taskTeam, remoteWorker, permissionRequirements = [], antigravityExecution, acpExecution } = options;
+  const { taskTeam, permissionRequirements = [], antigravityExecution, acpExecution } = options;
   const nativeAntigravity = antigravityExecution === "native";
   const container = options.container ?? readProjectDefaults(repo.value).container;
   const { enabled: containerEnabled, image: containerImage, authVolume: containerVolume } = container;
@@ -21,7 +21,7 @@ export function composerRunBody(p: PatternInfo, profile?: VerificationProfile | 
   const single = p.id === "solo", roles = rolesFor(p), soloAgent = roles.agent?.[0];
   const soloSettings = soloAgent && soloAgent !== "auto" ? { ...agentSettings.value[soloAgent], ...roleModels.value[p.id]?.agent?.[soloAgent] } : {};
   const savedApprovals = store.get("interactiveApprovals");
-  const approvals = toolApprovalState({ choice: options.toolApprovals ?? (savedApprovals === null ? undefined : savedApprovals === "1"), trust: trust.value, p, roles, remote: !!remoteWorker, container: containerEnabled });
+  const approvals = toolApprovalState({ choice: options.toolApprovals ?? (savedApprovals === null ? undefined : savedApprovals === "1"), trust: trust.value, p, roles, container: containerEnabled });
   return ({
     intent: intentDraft.value,
     repo: repo.value,
@@ -30,7 +30,7 @@ export function composerRunBody(p: PatternInfo, profile?: VerificationProfile | 
     parentRunId: restored?.id,
     task: taskWithCriteria(task.value, acceptanceCriteria.value),
     pattern: p.id,
-    taskTeam: single && taskTeam?.enabled && !remoteWorker && !containerEnabled ? taskTeam : undefined,
+    taskTeam: single && taskTeam?.enabled && !containerEnabled ? taskTeam : undefined,
     checkpointOnFinish: restored?.checkpointOnFinish,
     templateRef: selectedTeamTemplate.value ? { id: selectedTeamTemplate.value.template.id, version: selectedTeamTemplate.value.template.version, inputs: selectedTeamTemplate.value.inputs } : undefined,
     roles,
@@ -59,9 +59,8 @@ export function composerRunBody(p: PatternInfo, profile?: VerificationProfile | 
       maxCostUsd: limits.value.maxCostUsd,
       contextBudget: contextBudget.value,
       verification: verificationProfile ?? undefined,
-      remoteWorker,
-      agentContainer: containerEnabled && !remoteWorker ? { ...restored?.loop.agentContainer, image: containerImage.trim(), authVolume: containerVolume.trim() || undefined, network: restored?.loop.agentContainer?.network ?? true } : undefined,
-      copy: remoteWorker ? [] : restored ? restored.loop.copy ?? [] : repoConfig.value?.config.copy,
+      agentContainer: containerEnabled ? { ...restored?.loop.agentContainer, image: containerImage.trim(), authVolume: containerVolume.trim() || undefined, network: restored?.loop.agentContainer?.network ?? true } : undefined,
+      copy: restored ? restored.loop.copy ?? [] : repoConfig.value?.config.copy,
     },
   });
 }

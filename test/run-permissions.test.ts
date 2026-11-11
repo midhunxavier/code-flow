@@ -24,9 +24,9 @@ test("provider replacement cannot weaken mandatory enforcement", () => {
 test("Antigravity remains file-only at every trust level and rejects unsupported environments", () => {
   for (const trust of ["safe", "standard", "trusted", "full"] as const) {
     for (const solo of [false, true]) for (const mode of ["read", "write"] as const) {
-      for (const environment of [{}, { container: true }, { remote: true }]) {
+      for (const environment of [{}, { container: true }]) {
         const resolve = () => resolveRunPermissions({ policy: createRunPermissions(trust, false, solo, ["workspace-writes", "no-command-network", "no-external-tools"]), provider: "agy", mode, currentTrust: trust, currentTools: false, ...environment });
-        if (process.platform !== "darwin" || "remote" in environment || "container" in environment) assert.throws(resolve, /macOS/);
+        if (process.platform !== "darwin" || "container" in environment) assert.throws(resolve, /macOS/);
         else {
           const p = resolve();
           assert.equal(p.trust, trust); assert.equal(p.mode, mode); assert.equal(p.nativeDelegation, false);
@@ -53,15 +53,17 @@ test("malformed recorded policies are rejected instead of relaxing their restric
   assert.equal(resolveRunPermissions({ policy: createRunPermissions("standard", true, false), provider: "claude", mode: "write", currentTrust: "standard", currentTools: true }).toolApprovals, true, "Claude now supports scoped interactive approvals");
 });
 
-test("child environment inheritance cannot drop isolation, change workers or enable container networking", async () => {
+test("child environment inheritance cannot drop isolation or enable container networking", async () => {
   const { inheritRunEnvironment } = await import("../src/run-environment.js");
-  const parent = { permissions: createRunPermissions("standard", false, false), loop: { agentContainer: { image: "fixture", network: false }, container: { image: "checks", network: false }, remoteWorker: { workerId: "fixture", repoMapping: "repo" } } } as any;
+  const parent = { permissions: createRunPermissions("standard", false, false), loop: { agentContainer: { image: "fixture", network: false }, container: { image: "checks", network: false } } } as any;
   const inherited = inheritRunEnvironment({ maxSteps: 10 }, parent) as any;
   assert.deepEqual(inherited.agentContainer, parent.loop.agentContainer);
-  assert.deepEqual(inherited.remoteWorker, parent.loop.remoteWorker);
   assert.notEqual(inherited.agentContainer, parent.loop.agentContainer);
   assert.equal(inherited.maxSteps, 10);
-  for (const request of [{ agentContainer: null }, { agentContainer: { image: "fixture", network: true } }, { remoteWorker: { workerId: "other", repoMapping: "repo" } }, { container: { image: "checks", network: true } }]) assert.throws(() => inheritRunEnvironment(request, parent), /execution boundary/);
+  for (const request of [{ agentContainer: null }, { agentContainer: { image: "fixture", network: true } }, { container: { image: "checks", network: true } }]) assert.throws(() => inheritRunEnvironment(request, parent), /execution boundary/);
+  const worker = { remoteWorker: { workerId: "fixture", repoMapping: "repo" } };
+  assert.throws(() => inheritRunEnvironment(worker, parent), /SSH worker, which is no longer supported/);
+  assert.throws(() => inheritRunEnvironment({ maxSteps: 10 }, { loop: { ...parent.loop, ...worker } } as any), /SSH worker, which is no longer supported/, "a child never leaves a recorded worker boundary for this computer");
 });
 
 test("mandatory sandbox requirements cannot be bypassed by one-shot command approvals", () => {
@@ -78,7 +80,7 @@ test("native Antigravity requires explicit run authority and leaves other provid
   assert.equal(receipt.isolation, "none"); assert.equal(receipt.trust, "full"); assert.equal(receipt.nativeDelegation, true);
   assert.equal(receipt.externalTools, "provider-configured");
   for (const provider of ["claude", "codex"] as const) assert.deepEqual(resolveRunPermissions({ ...input, provider }), resolveRunPermissions({ ...input, provider, policy: baseline }));
-  for (const patch of [{ remote: true }, { container: true }, { unattended: true }, { currentTrust: "safe" as const }, { turnTrust: "safe" as const }, { policy: { ...policy, required: ["no-external-tools" as const] } }, { policy: { ...policy, toolApprovals: true } }]) assert.throws(() => resolveRunPermissions({ ...input, ...patch }), /Unrestricted Antigravity/);
+  for (const patch of [{ container: true }, { unattended: true }, { currentTrust: "safe" as const }, { turnTrust: "safe" as const }, { policy: { ...policy, required: ["no-external-tools" as const] } }, { policy: { ...policy, toolApprovals: true } }]) assert.throws(() => resolveRunPermissions({ ...input, ...patch }), /Unrestricted Antigravity/);
   assert.equal(validateRunPermissions(JSON.parse(JSON.stringify(policy))).antigravityExecution, "native");
   assert.equal(validateRunPermissions(baseline).antigravityExecution, undefined);
   assert.throws(() => antigravityExecution("native", baseline), /child run/);
@@ -99,7 +101,7 @@ test("ACP agents run only with the explicit unrestricted opt-in, locally, attend
   assert.deepEqual([worker.implementation, worker.nativeDelegation, worker.isolation, worker.toolApprovals, worker.trust], ["acp-native-v1", true, "none", true, "full"]);
   assert.equal(resolveRunPermissions({ ...base, policy, tools: false }).toolApprovals, false);
   assert.equal(resolveRunPermissions({ ...base, policy, provider: "claude" }).nativeDelegation, false, "other providers keep the managed policy");
-  for (const extra of [{ remote: true }, { container: true }, { unattended: true }]) assert.throws(() => resolveRunPermissions({ ...base, policy, ...extra }), /local attended run/);
+  for (const extra of [{ container: true }, { unattended: true }]) assert.throws(() => resolveRunPermissions({ ...base, policy, ...extra }), /local attended run/);
   assert.throws(() => resolveRunPermissions({ ...base, policy, turnTrust: "trusted" }), /require Full access/);
   assert.throws(() => resolveRunPermissions({ ...base, policy: createRunPermissions("full", false, true, ["no-external-tools"], undefined, "native") }), /mandatory boundaries/);
   assert.throws(() => acpExecution("isolated"), /Invalid ACP execution mode/);

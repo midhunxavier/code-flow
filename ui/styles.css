@@ -2455,12 +2455,6 @@
   .advanced-controls .team { margin-top: 0; }
   .advanced-controls .settings-body > .pattern-why { margin: -4px 2px 0; }
   .advanced-controls .section, .advanced-controls details.settings { margin-top: 0; }
-  /* the execution picker (remote-workers.tsx) brings no classes: a labelled field like its neighbours */
-  .advanced-controls [aria-label="Agent execution location"] { display: grid; gap: 10px; }
-  .advanced-controls [aria-label="Agent execution location"] label { display: grid; gap: 6px; font-size: 12px; font-weight: 500; color: var(--text-2); }
-  .advanced-controls [aria-label="Agent execution location"] select { width: 100%; min-height: 34px; padding: 6px 11px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--field); font-size: 14px; font-weight: 400; color: var(--text); transition: border-color .16s var(--ease), box-shadow .16s var(--ease); }
-  .advanced-controls [aria-label="Agent execution location"] select:focus { border-color: var(--focus); box-shadow: 0 0 0 3px var(--ring); outline: none; }
-  .advanced-controls [aria-label="Agent execution location"] .help { margin: 0; }
   /* Repository readiness and dependency checks: a quiet list, a tone pill per row */
   .readiness .settings-body { gap: 12px; }
   .readiness .settings-body > p { margin: 0; }
@@ -2843,10 +2837,10 @@
   .wb-card > details:last-child { margin-bottom: -20px; } /* the last row ends flush with the card */
 
   /* Notices: OntoLab's tone banners (soft fill, tone text, no border) */
-  :is(.workbench, .deferred-runs, .remote-step-receipt, .context-inspector) .msg { margin: 8px 0; padding: 10px 12px; border-radius: var(--radius-sm); background: var(--sunken); color: var(--text-2); font-size: 13px; line-height: 1.5; }
-  :is(.workbench, .deferred-runs, .remote-step-receipt, .context-inspector) .msg.err { background: var(--err-soft); color: var(--err); }
-  :is(.workbench, .deferred-runs, .remote-step-receipt, .context-inspector) .msg.warn { background: var(--warn-soft); color: var(--warn); }
-  :is(.workbench, .deferred-runs, .remote-step-receipt, .context-inspector) .msg.ok { background: var(--ok-soft); color: var(--ok); }
+  :is(.workbench, .deferred-runs, .context-inspector) .msg { margin: 8px 0; padding: 10px 12px; border-radius: var(--radius-sm); background: var(--sunken); color: var(--text-2); font-size: 13px; line-height: 1.5; }
+  :is(.workbench, .deferred-runs, .context-inspector) .msg.err { background: var(--err-soft); color: var(--err); }
+  :is(.workbench, .deferred-runs, .context-inspector) .msg.warn { background: var(--warn-soft); color: var(--warn); }
+  :is(.workbench, .deferred-runs, .context-inspector) .msg.ok { background: var(--ok-soft); color: var(--ok); }
   .workbench .msg p { margin: 0 0 8px; }
   :is(.workbench, .deferred-runs) .badge.err { background: var(--err-soft); color: var(--err); }
   :is(.workbench, .deferred-runs) .badge.run { background: var(--accent-soft); color: var(--accent-ink); }
@@ -2926,14 +2920,6 @@
   .deferred-providers > label { display: inline-flex; margin: 4px 18px 4px 0; }
   .deferred-recovery { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); }
   .deferred-recovery .wb-row { margin: 8px 0; }
-  /* SSH workers and a step's remote receipt (in the run thread) */
-  .worker-probe-result { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border); }
-  .remote-step-receipt { margin: 10px 0; padding: 12px 14px; background: var(--raised); border: 1px solid var(--border); border-radius: var(--radius-sm); font-size: 13px; overflow-wrap: anywhere; }
-  .remote-step-receipt > p { margin: 0 0 4px; }
-  .remote-step-receipt .wb-actions { margin-top: 8px; }
-  .remote-cancel { margin-top: 10px; padding: 10px 12px; border-radius: var(--radius-sm); background: var(--warn-soft); color: var(--warn); }
-  .remote-cancel p { margin: 0 0 8px; }
-  .remote-cancel .btn + .btn { margin-left: 8px; }
   /* The composer's context inspector (onboarding.tsx): its results ruled off below the selection */
   .context-inspector ul { margin: 8px 0; padding-left: 20px; font-size: 13px; }
   .context-inspection-results { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); }

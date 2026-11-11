@@ -57,8 +57,6 @@ Only the local app owner can manage SSH connections. Shared-account and phone se
 - **Another host setup is running:** wait for it to finish. If setup crashed, verify no bootstrap process remains before removing `~/.codeflow/ssh-host/bootstrap.lock`.
 - **Remote agent unavailable:** install and sign in to its official CLI on the server. The app's health dialog shows that server's tools.
 
-This feature differs from [SSH workers](remote-workers.md): workers transfer individual agent turns and their commits. SSH projects keep the complete project and application backend on the server.
-
 ## Validation
 
 `npx tsx --test test/ssh-projects.test.ts` runs the packaged backend in a separate host home using an injected SSH transport. Browser coverage is in `test/e2e/ssh-projects.e2e.ts`. Run `CODEFLOW_TEST_LOOPBACK_SSH=1 npx tsx --test test/ssh-projects-ssh.test.ts` for the real OpenSSH acceptance test. It uses temporary keys, known hosts and an unprivileged loopback SSH daemon, and never edits personal SSH configuration.

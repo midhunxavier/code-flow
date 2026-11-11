@@ -253,17 +253,12 @@ test("folder picker ignores a prior opening's delayed native close event while p
   } finally { await page.close(); }
 });
 
-test("Improve respects SSH and Docker selection and its mode menu remains accessible on a phone", async () => {
+test("Improve respects Docker selection and its mode menu remains accessible on a phone", async () => {
   const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
   try {
     await page.addInitScript((repo) => { localStorage.setItem("repo", repo); localStorage.setItem("project", "alpha"); localStorage.setItem("sideOpen", "0"); }, repos[0]!);
-    await page.route("**/api/remote-workers", (route) => route.fulfill({ contentType: "application/json", body: JSON.stringify([{ id: "ssh", name: "Fixture worker", repoMappings: ["project"], protocol: 1 }]) }));
-    await page.route("**/api/remote-workers/ssh/probe", (route) => route.fulfill({ contentType: "application/json", body: JSON.stringify({ capabilities: { providers: [{ id: "claude", available: true }], repoMappings: ["project"] } }) }));
     await page.goto(`${base}/?token=${token}#/workflows`); await page.getByRole("textbox", { name: "Task", exact: true }).fill("A mobile task");
-    await page.locator(".composer-options > summary").click(); await page.locator(".advanced-controls > summary").click(); await page.getByLabel("Agent execution", { exact: true }).selectOption("ssh");
-    assert.equal(await page.getByRole("button", { name: /^Improve ·/ }).isDisabled(), true);
-    await page.getByText("Improve uses a local provider. Choose This computer to rewrite this task.", { exact: true }).waitFor();
-    await page.getByLabel("Agent execution", { exact: true }).selectOption("");
+    await page.locator(".composer-options > summary").click(); await page.locator(".advanced-controls > summary").click();
     await page.getByText("Agent isolation", { exact: true }).click(); await page.getByRole("checkbox", { name: "Run agents in a prebuilt Docker image", exact: true }).check();
     assert.equal(await page.getByRole("button", { name: /^Improve ·/ }).isDisabled(), true);
     await page.getByText("Improve uses a local provider. Turn off Docker isolation to rewrite this task.", { exact: true }).waitFor();

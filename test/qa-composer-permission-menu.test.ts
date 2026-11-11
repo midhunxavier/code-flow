@@ -39,7 +39,6 @@ test("Run details and the request use the value the control shows (t02-6, t03-6,
   assert.deepEqual(fresh, { tools: true, source: "Default for Claude and Codex conversations", conflict: "" });
   assert.deepEqual(toolApprovalState({ choice: true, trust: "safe", p: solo, roles: { agent: ["claude"] } }), { tools: false, source: "Safe permissions", conflict: "" });
   assert.deepEqual(toolApprovalState({ trust: "standard", p: solo, roles: { agent: ["claude"] }, container: true }), { tools: false, source: "Unavailable with Docker isolation", conflict: "" });
-  assert.equal(toolApprovalState({ choice: true, trust: "standard", p: solo, roles: { agent: ["codex"] }, remote: true }).source, "Unavailable on a remote worker");
   assert.deepEqual(toolApprovalState({ choice: false, trust: "standard", p: solo, roles: { agent: ["claude"] } }), { tools: false, source: "Explicit choice", conflict: "" });
 });
 
@@ -87,5 +86,5 @@ test("the server names approvals when Antigravity refuses them, and keeps the ex
     assert.doesNotMatch(error.message, /Keychain|macOS executor/);
     return true;
   });
-  assert.throws(() => resolveRunPermissions({ policy: createRunPermissions("standard", false, false), provider: "agy", mode: "write", currentTrust: "standard", currentTools: false, remote: true }), new RegExp(AGY_MANAGED_PERMISSION_PROBLEM.slice(0, 40)));
+  assert.throws(() => resolveRunPermissions({ policy: createRunPermissions("standard", false, false), provider: "agy", mode: "write", currentTrust: "standard", currentTools: false, container: true }), new RegExp(AGY_MANAGED_PERMISSION_PROBLEM.slice(0, 40)));
 });

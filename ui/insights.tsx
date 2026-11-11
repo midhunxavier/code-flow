@@ -21,7 +21,7 @@ export function InsightsView({ group }: { group?: string }) {
   // The project you're in (or the runs in none), one repo, or everything.
   const [comparing, setComparing] = useState(false);
   const draft = comparisonDraft.value;
-  const comparisonProblem = comparisonDraftProblem.value || (!draft ? "Configure a task in New run first." : startProblem(patterns.value.find(p => p.id === draft.pattern), draft.roles, true, undefined, draft.antigravityExecution, draft.acpExecution) || (!draft.task.trim() ? "Describe a task in New run first." : ""));
+  const comparisonProblem = comparisonDraftProblem.value || (!draft ? "Configure a task in New run first." : startProblem(patterns.value.find(p => p.id === draft.pattern), draft.roles, true, draft.antigravityExecution, draft.acpExecution) || (!draft.task.trim() ? "Describe a task in New run first." : ""));
   const project = activeProject.value;
   const inProject = !!project || currentProject.value === NONE;
   // A repo is worth its own button when it isn't simply the whole project.

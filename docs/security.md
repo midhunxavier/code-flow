@@ -73,10 +73,6 @@ trusted extension code is imported. [Extensions](extensions.md) are explicit,
 version/hash-pinned owner-trusted server code with full process authority, not
 untrusted sandboxed plugins.
 
-[SSH workers](remote-workers.md) use provisioned targets, strict host keys,
-worker-local credentials and durable private receipts. A disconnected accepted
-turn is uncertain; reconnecting does not execute it again.
-
 A check runs the agents' code (tests, scripts) on your machine, outside Codex's and agy's sandboxes, as your CI would. With **Full access** the agents themselves run without a sandbox too (see [What agents may do](configuration.md#what-agents-may-do-while-building)). Use code-flow on repos and tasks you trust, or run checks in Docker ([isolation](automations.md#isolation)), or code-flow itself inside a container or VM.
 
 Text from issues, PRs, comments and CI logs is treated as untrusted, and runs started from people outside the repo are locked down. Dependabot's PR descriptions and CI logs are fenced as untrusted text too, and so are code scanning messages, which quote the code they flag. **▶ Run app** on a locked-down run asks before it starts that code on your machine. See [Untrusted text](github.md#untrusted-text).

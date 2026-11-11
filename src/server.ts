@@ -14,7 +14,7 @@ import { agentToolBridge, validateAgentTool } from "./agent-tools.js";
 import { HISTORY_STATUSES, type HistoryStatus, type ProjectSection } from "./run-status.js";
 import { modelCatalogStore } from "./model-catalog.js";
 import { runProviderProblem, permissionProviderProblem, createRunPermissions as catalogPermissions } from "./run-permissions.js";
-import { inheritRunEnvironment } from "./run-environment.js";
+import { assertNoRemoteWorker, inheritRunEnvironment } from "./run-environment.js";
 import { TemplateConflictError, teamTemplateStore } from "./team-template-store.js";
 import { fillTeamTemplate, validateTeamTemplate, type TemplateSelection } from "./team-templates.js";
 import { antigravityExecution, AGY_NATIVE_LIMITATION, acpExecution, type AcpExecution, type AntigravityExecution, createRunPermissions, narrowerTrust, resolveRunPermissions, permissionRequirements, type PermissionRequirement } from "./run-permissions.js";
@@ -81,7 +81,6 @@ import { TeamConnections } from "./collab/connections.js";
 import { handleTeamLinkApi, linkInfo } from "./collab/link-api.js";
 import type { CollabActor } from "./collab/model.js";
 import { userInfo } from "node:os";
-import { RemoteWorkers } from "./remote-workers/client.js";
 import { createCoordinatedApi } from "./coordinated-api.js";
 import { Extensions } from "./extensions.js";
 import { ShellLimitError, Shells, type ShellEvent } from "./shell.js";
@@ -180,9 +179,7 @@ const extensions = new Extensions({ register: (providers, workflows) => {
 const projects = new Projects();
 const acpConnections = new AcpConnections((connections) => replaceAcpAdapters(connections.map(createAcpAdapter)));
 let acpChecks = 0;
-const remoteWorkers = new RemoteWorkers();
-await remoteWorkers.load().catch((error) => logError("SSH workers disabled; repair their configuration to enable remote execution", error));
-const manager = new RunManager(findPattern, projects, remoteWorkers);
+const manager = new RunManager(findPattern, projects);
 const filePolicies = new ProjectFilePolicies();
 const fileAccess = new FilesystemAccess(filePolicies, projects, manager);
 configureFilePolicyResolver((repo) => fileAccess.forRepo(repo), { suppressRepositoryCommands: () => fileAccess.hasRestrictions() });
@@ -218,9 +215,9 @@ const hostExecution = new HostExecution({ store: collab, manager, findPattern, m
 const resolveQueuedProviders: Parameters<typeof createDeferredRuns>[1]["resolveProviders"] = (request) => trackPolicyPreparation(async () => {
     const pattern = findPattern(request.pattern);
     if (!pattern) throw new Error("This pattern no longer exists; cancel and review the saved request");
-    const selection = request.loop?.remoteWorker;
-    const { roles } = await validateRoles(pattern, request.roles, request.repo, selection);
-    const inventory = selection ? (await manager.remoteInventory(selection)).providers : await agentAvailability();
+    assertNoRemoteWorker(request.loop);
+    const { roles } = await validateRoles(pattern, request.roles, request.repo);
+    const inventory = await agentAvailability();
     return { roles, installed: new Set(inventory.filter((entry) => entry.available).map((entry) => entry.id)) };
 });
 const deferredRuns = createDeferredRuns(manager, { build: buildStartInput, resolveProviders: resolveQueuedProviders });
@@ -661,23 +658,23 @@ function requestedRoles(pattern: Pattern, input: unknown): Record<string, string
 }
 
 /** Who fills each role; "auto" picks an installed agent whose plan has room (see routing.ts). */
-async function validateRoles(pattern: Pattern, input: unknown, repo?: string, remoteWorker?: LoopSettings["remoteWorker"], requestedTrust?: string, policy?: { required: PermissionRequirement[]; container: boolean; tools: boolean; antigravityExecution?: AntigravityExecution; acpExecution?: AcpExecution }): Promise<{ roles: Record<string, AgentId[]>; notes: string[] }> {
+async function validateRoles(pattern: Pattern, input: unknown, repo?: string, requestedTrust?: string, policy?: { required: PermissionRequirement[]; container: boolean; tools: boolean; antigravityExecution?: AntigravityExecution; acpExecution?: AcpExecution }): Promise<{ roles: Record<string, AgentId[]>; notes: string[] }> {
   assertPolicyExecution(await fileAccess.execution(repo ?? ""), "Provider selection");
   const requested = requestedRoles(pattern, input);
-  const inventory = remoteWorker ? (await manager.remoteInventory(remoteWorker)).providers : await agentAvailability();
+  const inventory = await agentAvailability();
   const installed = new Set(inventory.filter((a) => a.available).map((a) => a.id));
-  const runtimeProblems = new Map(await Promise.all([...installed].map(async id => [id, !remoteWorker && policy && id === "agy" && policy.antigravityExecution !== "native" ? await getAdapter(id).managedAvailability?.() : undefined] as const)));
+  const runtimeProblems = new Map(await Promise.all([...installed].map(async id => [id, policy && id === "agy" && policy.antigravityExecution !== "native" ? await getAdapter(id).managedAvailability?.() : undefined] as const)));
   const trust = requestedTrust ?? (repo ? (await readRepoConfig(repo)).config.trust : undefined);
   const eligible = new Set([...installed].filter((id) => {
     if (runtimeProblems.get(id)) return false;
     if (policy) {
       try {
         const runPolicy = createRunPermissions((trust ?? "standard") as Trust, policy.tools, pattern.id === "solo", policy.required, policy.antigravityExecution, policy.acpExecution);
-        resolveRunPermissions({ policy: runPolicy, provider: id, mode: "write", currentTrust: runPolicy.trust, currentTools: policy.tools, remote: !!remoteWorker, container: policy.container });
+        resolveRunPermissions({ policy: runPolicy, provider: id, mode: "write", currentTrust: runPolicy.trust, currentTools: policy.tools, container: policy.container });
         return true;
       } catch { return false; }
     }
-    return ["auto-team", "solo"].includes(pattern.id) ? id === "claude" || id === "codex" : !id.startsWith("acp:") || trust === "full" && !remoteWorker;
+    return ["auto-team", "solo"].includes(pattern.id) ? id === "claude" || id === "codex" : !id.startsWith("acp:") || trust === "full";
   }));
   if (pattern.id === "auto-team") {
     const supplied = input && typeof input === "object" ? input as Record<string, unknown> : {};
@@ -687,7 +684,7 @@ async function validateRoles(pattern: Pattern, input: unknown, repo?: string, re
   const wantsAuto = Object.values(requested).some((list) => list.includes("auto"));
   const rank = wantsAuto && repo ? rankAgents(manager.list(), repo, { pattern: pattern.id }) : undefined;
   const independence = Object.fromEntries(pattern.roles.flatMap((spec) => spec.independentOf ? [[spec.id, spec.independentOf]] : []));
-  const resolved = resolveAuto(requested, manager.quotaForWorker(remoteWorker?.workerId), eligible, rank, independence);
+  const resolved = resolveAuto(requested, manager.quota, eligible, rank, independence);
   const roles: Record<string, AgentId[]> = {};
   const needed = new Set<AgentId>();
   for (const spec of pattern.roles) {
@@ -714,7 +711,7 @@ const improvingControllers = new Set<AbortController>();
 
 /** The composer's Improve: rewrite the task in one read-only turn (see improve.ts). */
 async function improveTask(body: any, res: ServerResponse) {
-  if (body.execution !== undefined && body.execution !== "local" || body.remoteWorker || body.agentContainer || body.loop?.remoteWorker || body.loop?.agentContainer) throw new HttpError(400, "Prompt improvement supports local execution only; remote and container profiles cannot fall back to a host CLI");
+  if (body.execution !== undefined && body.execution !== "local" || body.agentContainer || body.loop?.agentContainer) throw new HttpError(400, "Prompt improvement supports local execution only; container profiles cannot fall back to a host CLI");
   const text = typeof body.text === "string" ? body.text : "";
   if (!text.trim()) throw new HttpError(400, "Write a task to improve first");
   if (text.length > MAX_IMPROVE_CHARS) throw new HttpError(400, `The task is too long to improve (${MAX_IMPROVE_CHARS.toLocaleString("en")} characters at most)`);
@@ -858,12 +855,6 @@ function validateRoleSettings(input: unknown): Record<string, ReturnType<typeof 
 /** "Done when" check and budgets from the client; commands are the user's own shell commands. */
 function validateLoop(input: unknown): Partial<LoopSettings> {
   const raw = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
-  let remoteWorker: LoopSettings["remoteWorker"];
-  if (raw.remoteWorker !== undefined) {
-    const value = raw.remoteWorker as Record<string, unknown>;
-    if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some((key) => !["workerId", "repoMapping"].includes(key)) || typeof value.workerId !== "string" || typeof value.repoMapping !== "string" || !remoteWorkers.list().some((worker) => worker.id === value.workerId && worker.repoMappings.includes(value.repoMapping as string))) throw new HttpError(400, "Choose an explicitly registered remote worker and repository mapping");
-    remoteWorker = { workerId: value.workerId, repoMapping: value.repoMapping };
-  }
   const text = (key: string) => {
     const value = typeof raw[key] === "string" ? (raw[key] as string).trim() : "";
     if (value.length > 1_000) throw new HttpError(400, `${key} command is too long`);
@@ -878,7 +869,6 @@ function validateLoop(input: unknown): Partial<LoopSettings> {
     return raw[key] as number;
   };
   return {
-    remoteWorker,
     check: text("check"),
     setup: text("setup"),
     copy: Array.isArray(raw.copy) ? raw.copy.filter((p): p is string => typeof p === "string" && !!p.trim()).slice(0, 50) : undefined,
@@ -951,7 +941,7 @@ async function validatedStartInput(body: Record<string, any>): Promise<StartRunI
   if (body.intent !== undefined && !taskIntent(body.intent)) throw new HttpError(400, "Choose a supported task type");
   const parent = typeof body.parentRunId === "string" ? manager.get(body.parentRunId) : undefined;
   if (body.parentRunId !== undefined && !parent) throw new HttpError(400, "Parent run not found; cannot inherit its permissions");
-  const inheritedLoop = inheritRunEnvironment(body.loop ?? {}, parent);
+  const inheritedLoop = await attempt(async () => inheritRunEnvironment(body.loop ?? {}, parent));
   const loop = validateLoop(inheritedLoop);
   if (inheritedLoop.agentContainer) loop.agentContainer = await attempt(async () => validateAgentContainer(inheritedLoop.agentContainer));
   const requiredPermissions = [...new Set([...(parent?.permissions?.required ?? []), ...permissionRequirements(body.permissionRequirements)])];
@@ -959,9 +949,8 @@ async function validatedStartInput(body: Record<string, any>): Promise<StartRunI
   const acpMode = await attempt(async () => acpExecution(body.acpExecution, parent?.permissions));
   const runTrust = parent?.permissions ? narrowerTrust(narrowerTrust(parent.permissions.trust, parent.trust), body.trust ?? parent.trust) : body.trust;
   const runTools = parent?.permissions ? parent.permissions.toolApprovals && !!parent.approvals.tools && body.approvals?.tools !== false : body.approvals?.tools === true;
-  const { roles, notes } = await validateRoles(pattern, body.roles, await repoRoot(repo).catch(() => repo), loop.remoteWorker, runTrust, { required: requiredPermissions, container: !!loop.agentContainer, tools: runTools, antigravityExecution: agyExecution, acpExecution: acpMode });
+  const { roles, notes } = await validateRoles(pattern, body.roles, await repoRoot(repo).catch(() => repo), runTrust, { required: requiredPermissions, container: !!loop.agentContainer, tools: runTools, antigravityExecution: agyExecution, acpExecution: acpMode });
   if (body.loop?.verification) loop.verification = await attempt(async () => validateVerificationProfile(body.loop.verification));
-  if (loop.remoteWorker && (body.approvals?.tools || loop.agentContainer)) throw new HttpError(400, "Remote workers use their provisioned isolation profile and cannot wait for native tool approvals");
   const container = inheritedLoop.container;
   if (container && typeof container.image === "string" && /^[\w./:@-]{1,200}$/.test(container.image)) {
     loop.container = { image: container.image, network: container.network !== false };
@@ -1873,15 +1862,6 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     })));
     return send(res, 200, await attempt(() => sharedAccounts.revokeSessions(parts[2]!, body)));
   }
-  if (parts[1] === "remote-workers") {
-    if (parts.length === 2 && req.method === "GET") return send(res, 200, remoteWorkers.list());
-    if (parts.length === 4 && parts[3] === "probe" && req.method === "POST") {
-      const body = await readJson(req, 8192);
-      if (typeof body.repoMapping !== "string") throw new HttpError(400, "Choose a registered repository mapping");
-      return send(res, 200, await attempt(() => remoteWorkers.probe(parts[2]!, { repoMapping: body.repoMapping })));
-    }
-    throw new HttpError(404, "Unknown remote worker operation");
-  }
   if (parts.join("/") === "api/extensions" && req.method === "GET") return send(res, 200, { api: { major: 1, minor: 0 }, configuration: extensions.configuration(), extensions: extensions.list() });
   if (parts[1] === "acp-connections") {
     if (req.method === "GET" && parts.length === 2) return send(res, 200, acpConnections.snapshot());
@@ -1926,9 +1906,6 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
         return handleTeamLinkApi(req, res, url, parts, { link: entry.link, runner: entry.runner, store: collab, manager, findPattern, agents: () => installed, hubName: collab.ownerName });
       });
     });
-  }
-  if (parts[1] === "runs" && parts.length === 6 && parts[3] === "remote-steps" && ["receipt", "cancel"].includes(parts[5]!) && req.method === "POST") {
-    return send(res, 200, redactExport(await attempt(() => manager.inspectRemoteStep(parts[2]!, parts[4]!, { cancel: parts[5] === "cancel" }))));
   }
 
   if (["readiness", "verification", "workspace", "diagnostics", "v1"].includes(parts[1] ?? "")) {
@@ -2690,7 +2667,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     }
     if (req.method === "POST" && parts[3] === "provider-chat" && parts.length === 4) {
       const body = await readJson(req, 64 * 1024);
-      const { roles } = await validateRoles(findPattern("solo")!, { agent: [body.agent] }, run.repo, run.loop.remoteWorker, typeof body.trust === "string" ? body.trust : run.trust);
+      const { roles } = await validateRoles(findPattern("solo")!, { agent: [body.agent] }, run.repo, typeof body.trust === "string" ? body.trust : run.trust);
       const next = await attempt(() => manager.startProviderChat(run.id, { agent: roles.agent![0]!, settings: body.settings, message: body.message, kind: body.kind, attachments: body.attachments, trust: body.trust, tools: body.tools }));
       return send(res, 201, { id: next.id });
     }

@@ -25,13 +25,12 @@ export function permissionLabel(choice: PermissionChoice, acp = false): string {
  * can ask, the choice is kept but not sent. `conflict` names the roles a mixed team gives to
  * Antigravity, which can't ask: Start explains it instead of the server refusing the run.
  */
-export function toolApprovalState({ choice, trust, p, roles, remote = false, container = false }: {
-  choice?: boolean; trust: Trust; p?: PatternInfo; roles: Record<string, RoleValue[]>; remote?: boolean; container?: boolean;
+export function toolApprovalState({ choice, trust, p, roles, container = false }: {
+  choice?: boolean; trust: Trust; p?: PatternInfo; roles: Record<string, RoleValue[]>; container?: boolean;
 }): { tools: boolean; source: string; conflict: string } {
   // An Auto team's coordinator starts the run; it chooses pool members that fit the run's permissions.
   const providers = (p?.id === "auto-team" ? roles.coordinator ?? [] : Object.values(roles).flat());
-  const unavailable = remote ? "Unavailable on a remote worker"
-    : container ? "Unavailable with Docker isolation"
+  const unavailable = container ? "Unavailable with Docker isolation"
     : trust === "safe" ? "Safe permissions"
     : providers.length && !providers.some(canAskForApproval) ? providers.includes("agy") ? "Antigravity can't ask for approval" : "The selected provider can't ask for approval"
     : "";

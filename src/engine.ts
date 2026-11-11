@@ -13,8 +13,8 @@ import { TaskTeamConflict, TaskReconciliationStale, prepareTaskReconciliation, r
 import { chatTaskId } from "./chat-family.js";
 import { projectReport, projectHistoryCounts } from "./project-report.js";
 import { matchesHistoryFilter, needsYou, type HistoryFilter } from "./run-status.js";
-import { modelCatalogStore, modelEnvironment, resolveModelAssignment, assignmentProblem, workerConstraintProblem, type CapabilityCatalog, type ModelAssignment } from "./model-catalog.js";
-import { inheritRunEnvironment } from "./run-environment.js";
+import { modelCatalogStore, resolveModelAssignment, assignmentProblem, workerConstraintProblem, type CapabilityCatalog, type ModelAssignment } from "./model-catalog.js";
+import { assertNoRemoteWorker, inheritRunEnvironment } from "./run-environment.js";
 import { teamTemplateStore } from "./team-template-store.js";
 import { fillTeamTemplate, validateTeamTemplate, type TeamTemplate, type TemplateSelection } from "./team-templates.js";
 import { runProviderProblem, antigravityExecution, AGY_NATIVE_LIMITATION, acpExecution, ACP_NATIVE_LIMITATION, isAcpProvider, type AcpExecution, type AntigravityExecution, createRunPermissions, validateRunPermissions, narrowerTrust, resolveRunPermissions, type RunPermissionPolicy, type EffectivePermissions, type PermissionRequirement } from "./run-permissions.js";
@@ -115,12 +115,10 @@ import { copyIntoWorktree, readRepoConfig, readRepoConfigAt, type Trust } from "
 import { DevServers } from "./serve.js";
 import { projectOf, ProjectsStorageError, type Project, type Projects } from "./projects.js";
 import { exhausted } from "./routing.js";
-import { assertTransferTree } from "./remote-workers/bundles.js";
 import { assertPolicyExecution, type FilePolicySnapshot } from "./filesystem-policy.js";
 import { assertExtensionBindings, extensionBindings, type ExtensionBinding } from "./extensions.js";
 import { acpBindings, assertAcpBindings } from "./acp-connections.js";
 import type { AcpBinding } from "./adapters/acp-types.js";
-import { RemoteWorkers, type RemoteRunResult } from "./remote-workers/client.js";
 import { rankAgents } from "./stats.js";
 import type { TeamState, TeamInventory, TeamContextManifest, TeamCommandReceipt, TeamMessage } from "./teams.js";
 import { memoryStore, type MemoryRef, type MemorySelection } from "./memory.js";
@@ -186,7 +184,6 @@ export interface Step {
   settings?: { model?: string; effort?: string };
   contextManifest?: TeamContextManifest;
   contextInput?: PromptContextEvidence;
-  remote?: RemoteRunResult["remote"] & { recovered?: boolean };
   mode: AccessMode;
   worktree?: string;
   status: Status;
@@ -717,7 +714,6 @@ export interface PrWatch {
 }
 
 export interface LoopSettings {
-  remoteWorker?: { workerId: string; repoMapping: string };
   /** Shell command code-flow runs itself to decide "done" (e.g. `npm test`). Empty = agents' judgment only. */
   check?: string;
   /** Runs once in every new worktree before agents start (e.g. `npm ci`). */
@@ -898,7 +894,6 @@ export interface DecideParams extends AskParams {
 }
 
 export interface StepOutcome extends RunResult {
-  remote?: Step["remote"];
   stepId: string;
   agent: AgentId;
   memberId?: string;
@@ -973,7 +968,6 @@ export class TeamContext {
    * this, not against HEAD: a check recorded for different code is run again.
    */
   private readonly heads = new Map<string, string>();
-  private readonly remoteCommits = new Map<string, string>();
   /** How many tests the run's check ran in each worktree: the first time, and the latest. */
   private readonly testCounts = new Map<string, { first?: number; last?: number }>();
   /**
@@ -1269,19 +1263,12 @@ export class TeamContext {
    * provider, and a network fetch for agy) are reused rather than probed at every event.
    */
   async capabilityCatalog(provider: AgentId): Promise<CapabilityCatalog> {
-    const remote = this.run.loop.remoteWorker;
-    const context = { agentContainer: this.run.loop.agentContainer, ...(provider === "agy" && this.run.permissions && this.run.permissions.antigravityExecution !== "native" && !remote && !this.run.loop.agentContainer ? { isolatedAgy: true } : {}), ...(this.run.loop.agentContainer ? { cwd: this.run.repo } : {}) };
-    if (remote) {
-      if (process.env.CODEFLOW_MODEL_NETWORK === "offline") return modelCatalogStore.get(provider, { environment:modelEnvironment({},JSON.stringify(remote)), offline:true });
-      const capability = (await this.manager.remoteInventory(remote, true)).providers.find(p => p.id === provider)?.modelCatalog;
-      return modelCatalogStore.get(provider, { environment: modelEnvironment({}, JSON.stringify(remote)), ...(capability ? { reported: capability } : { offline: true }) });
-    }
+    const context = { agentContainer: this.run.loop.agentContainer, ...(provider === "agy" && this.run.permissions && this.run.permissions.antigravityExecution !== "native" && !this.run.loop.agentContainer ? { isolatedAgy: true } : {}), ...(this.run.loop.agentContainer ? { cwd: this.run.repo } : {}) };
     return modelCatalogStore.get(provider, { context });
   }
 
   async teamInventory(previous?: TeamInventory, settings = this.run.agentSettings, options: { models?: boolean } = {}): Promise<TeamInventory> {
-    const remote = this.run.loop.remoteWorker;
-    const availability = remote ? (await this.manager.remoteInventory(remote)).providers : await agentAvailability();
+    const availability = await agentAvailability();
     const catalogs = await Promise.all(availability.map(async ({ id, available }) => {
       if (!available || options.models === false) return undefined;
       if (this.run.modelRouting) {
@@ -1295,13 +1282,12 @@ export class TeamContext {
       }
       const known = previous?.providers.find((p) => p.id === id);
       if (known?.models) return { models: known.models, efforts: known.efforts };
-      if (remote) return undefined;
       try { return await agentCatalog(id); } catch { return undefined; }
     }));
     const permissionProblem = (provider: AgentId) => {
       if (!this.run.permissions) return undefined;
       try {
-        resolveRunPermissions({ policy: this.run.permissions, provider, mode: "write", currentTrust: this.run.trust, currentTools: !!this.run.approvals.tools, remote: !!remote, container: !!this.run.loop.agentContainer, unattended: !!this.run.trigger || !!this.run.lockdown });
+        resolveRunPermissions({ policy: this.run.permissions, provider, mode: "write", currentTrust: this.run.trust, currentTools: !!this.run.approvals.tools, container: !!this.run.loop.agentContainer, unattended: !!this.run.trigger || !!this.run.lockdown });
         return undefined;
       } catch (error) { return (error as Error).message; }
     };
@@ -1312,7 +1298,7 @@ export class TeamContext {
     return {
       at: Date.now(),
       providers: availability.map(({ id, available }, index) => ({
-        id, available, blockedReason: permissionProblem(id) ?? runtimeProblems[index] ?? exhausted(id, this.manager.quotaForWorker(remote?.workerId)), quotaKnown: !!this.manager.quotaForWorker(remote?.workerId)[id],
+        id, available, blockedReason: permissionProblem(id) ?? runtimeProblems[index] ?? exhausted(id, this.manager.quota), quotaKnown: !!this.manager.quota[id],
         limitations: this.run.permissions ? id === "agy" && this.run.permissions.antigravityExecution === "native" ? [AGY_NATIVE_LIMITATION] : isAcpProvider(id) && this.run.permissions.acpExecution === "native" ? [ACP_NATIVE_LIMITATION] : getAdapter(id).managedLimitations : undefined,
         models: catalogs[index]?.models,
         efforts: catalogs[index]?.efforts,
@@ -2470,8 +2456,7 @@ export class TeamContext {
       "commit",
       `${wt.name}|${message}`,
       async () => {
-        const remote = this.remoteCommits.get(wt.name);
-        const sha = (await commitAll(this.run.repo, wt, message, (warning) => this.log(warning, "warn"))) ?? (remote && await resolveCommit(await this.gitAt(wt)) === remote ? remote : await this.recoverCommit(wt, message));
+        const sha = (await commitAll(this.run.repo, wt, message, (warning) => this.log(warning, "warn"))) ?? await this.recoverCommit(wt, message);
 
         if (sha) this.log(`Committed ${sha.slice(0, 8)} on ${wt.branch}: ${message}`);
         return sha;
@@ -2480,7 +2465,6 @@ export class TeamContext {
       async (recorded) => recorded === null || (await this.gitAt(wt).then((at) => isAncestor(at, recorded), () => false)),
     );
     if (sha) this.heads.set(wt.name, sha);
-    this.remoteCommits.delete(wt.name);
     return sha;
   }
 
@@ -2711,7 +2695,6 @@ export class TeamContext {
       const assignment=this.run.steps.find(s=>s.id===outcome.stepId)?.modelAssignment;
       if (member && assignment) member.assignment=assignment;
     }
-    if (outcome.remote?.resultHead && !outcome.remote.ambiguous) this.remoteCommits.set(params.cwd.name, outcome.remote.resultHead);
     return outcome;
 
   }
@@ -2789,7 +2772,7 @@ export class TeamContext {
     const onEvent = (event: AgentEvent) => {
       if (event.kind === "error") event = { ...event, message: this.abortMessage(event.message) };
       if (event.kind === "session") step.sessionId = event.sessionId;
-      if (event.kind === "quota") this.manager.recordQuota(params.agent, event.status, event.windows, this.run.loop.remoteWorker?.workerId);
+      if (event.kind === "quota") this.manager.recordQuota(params.agent, event.status, event.windows);
       if (event.kind === "usage") this.addTokens(step, params.agent, event);
       this.manager.emit(this.run, { type: "agent", stepId: step.id, event });
     };
@@ -2834,10 +2817,10 @@ export class TeamContext {
     const kind = failureKind(result, !!params.resume);
     // Out of plan usage steers "Auto" away from this agent; a per-minute 429 was just retried.
     const usageLimit = kind === "usage_limit";
-    if (usageLimit) this.manager.recordLimit(params.agent, result.resetsAt, this.run.loop.remoteWorker?.workerId);
+    if (usageLimit) this.manager.recordLimit(params.agent, result.resetsAt);
     if (kind === "auth") {
-      this.manager.recordQuota(params.agent, "signed_out", {}, this.run.loop.remoteWorker?.workerId);
-      if (params.agent !== "agy" || !this.run.permissions) result = { ...result, error: this.run.loop.remoteWorker ? `${getAdapter(params.agent).displayName} isn't signed in on the selected worker. Sign in in that machine's terminal, then start a fresh invocation. (${firstLine(result.error)})` : `${getAdapter(params.agent).displayName} isn't signed in. Sign in to it in a terminal, then ${params.role === "follow-up" ? "send another reply" : "resume the run"}. (${firstLine(result.error)})` };
+      this.manager.recordQuota(params.agent, "signed_out", {});
+      if (params.agent !== "agy" || !this.run.permissions) result = { ...result, error: `${getAdapter(params.agent).displayName} isn't signed in. Sign in to it in a terminal, then ${params.role === "follow-up" ? "send another reply" : "resume the run"}. (${firstLine(result.error)})` };
     }
 
     step.endedAt = Date.now();
@@ -2878,7 +2861,7 @@ export class TeamContext {
     if (!result.ok && !params.allowFailure) {
       throw new ProviderStepError(`${params.title} (${params.agent}) failed: ${result.error ?? "unknown error"}`, kind, params.agent);
     }
-    return { ...result, errorKind: result.ok ? undefined : kind, ...(step.remote ? { remote: step.remote } : {}), stepId: step.id, agent: params.agent, memberId: params.memberId, worktree: params.cwd.name };
+    return { ...result, errorKind: result.ok ? undefined : kind, stepId: step.id, agent: params.agent, memberId: params.memberId, worktree: params.cwd.name };
   }
 
   /**
@@ -2964,8 +2947,8 @@ export class TeamContext {
     const name = getAdapter(params.agent).displayName;
     const turnSignal = params.turnSignal ?? this.signal;
     // Only a turn that worked left a conversation worth continuing.
-    const remote = this.run.loop.remoteWorker;
-    let resume = !remote && params.resume?.ok !== false ? params.resume?.sessionId : undefined;
+    assertNoRemoteWorker(this.run.loop);
+    let resume = params.resume?.ok !== false ? params.resume?.sessionId : undefined;
     let prompt = params.resume && !resume ? this.freshPrompt(params) : params.prompt;
     /** What starting over runs: the step's own request. */
     let initial = { resume, prompt };
@@ -2974,7 +2957,7 @@ export class TeamContext {
       if (turnSignal.aborted) return { ok: false, finalText: "", errorKind: "cancelled", error: "Stopped for a revised assignment" };
       await this.manager.assertExecutionAllowed(this.run.repo, this.run, "agent invocation");
       await assertWorktree(this.run.repo, params.cwd);
-      const effective = this.run.permissions ? resolveRunPermissions({ policy: this.run.permissions, provider: params.agent, mode: params.mode, currentTrust: this.run.trust, turnTrust: params.trust, currentTools: this.run.approvals.tools === true, tools: params.tools, container: !!this.run.loop.agentContainer, remote: !!remote, unattended: !!this.run.trigger || !!this.run.lockdown }) : undefined;
+      const effective = this.run.permissions ? resolveRunPermissions({ policy: this.run.permissions, provider: params.agent, mode: params.mode, currentTrust: this.run.trust, turnTrust: params.trust, currentTools: this.run.approvals.tools === true, tools: params.tools, container: !!this.run.loop.agentContainer, unattended: !!this.run.trigger || !!this.run.lockdown }) : undefined;
       // Only these adapters support native delegation in Agent conversations. Preserve Antigravity’s executor receipt.
       if (effective && (params.agent === "claude" || params.agent === "codex") && this.run.pattern === "solo" && !this.run.checkpointOnFinish && !this.run.trigger && !effective.required.length) effective.nativeDelegation = params.mode === "write";
       const turnTrust = effective?.trust ?? (params.trust ?? this.run.trust);
@@ -2989,8 +2972,8 @@ export class TeamContext {
       }
       assertExtensionBindings({ ...this.run, roles: { ...this.run.roles, __dispatch: [params.agent] } });
       assertAcpBindings({ ...this.run, roles: { ...this.run.roles, __dispatch: [params.agent] } });
-      if (params.agent.startsWith("acp:") && (this.run.loop.agentContainer || this.run.loop.remoteWorker || (turnTrust) !== "full")) throw new Error("ACP connections require Full access on the current host; SSH workers and containers are unavailable");
-      if (params.agent.startsWith("plugin:") && (this.run.loop.agentContainer || this.run.loop.remoteWorker || this.run.approvals.tools)) throw new Error("Extension providers support local dispatch only; container, SSH and native approval profiles are unavailable");
+      if (params.agent.startsWith("acp:") && (this.run.loop.agentContainer || (turnTrust) !== "full")) throw new Error("ACP connections require Full access on the current host; containers are unavailable");
+      if (params.agent.startsWith("plugin:") && (this.run.loop.agentContainer || this.run.approvals.tools)) throw new Error("Extension providers support local dispatch only; container and native approval profiles are unavailable");
       this.checkCancelled();
       const assembledPrompt = this.notesFor(step.id) + prompt;
       try { step.contextInput = enforceContextBudget({ prompt: assembledPrompt, jsonSchema: params.schema, resumeSessionId: resume }, this.run.loop.contextBudget); }
@@ -3000,14 +2983,10 @@ export class TeamContext {
       }
       this.manager.emit(this.run, { type: "step", step: { ...step } });
       if (step.contextInput.exceeded) this.log(`${step.title}: explicit invocation context exceeds its warning budget (${step.contextInput.bytes.toLocaleString()} bytes, approximately ${step.contextInput.approximateTokens.toLocaleString()} tokens). Hidden provider history and later file reads are excluded.`, "warn");
-      const remoteSignature = remote ? createHash("sha256").update(JSON.stringify({ agent: params.agent, mode: params.mode, prompt: assembledPrompt, schema: params.schema, settings: params.settings, roleSettings: this.run.roleSettings[params.role], settingsByAgent: this.run.agentSettings[params.agent], trust: turnTrust })).digest("hex") : undefined;
-      const launch = remote ? await this.remember("remote-launch", params.remoteIdentity!, async () => ({ id: randomBytes(16).toString("hex"), stepId: step.id, threadId: params.memberId ?? this.sideTurn ?? params.role, baseCommit: await resolveCommit(await this.gitAt(params.cwd)), signature: remoteSignature! })) : undefined;
-      if (launch && launch.signature !== remoteSignature) throw new Error("The scoped remote invocation inputs changed. Inspect its prior receipt, then intentionally start a new run with the changed instructions.");
-      const recoveringRemote = !!remote && !!launch && !!await this.manager.remoteWorkers?.hasRequest(remote.workerId, launch.id);
-      if (!recoveringRemote && this.run.loop.maxInvocations !== undefined && this.actualInvocations >= this.run.loop.maxInvocations) {
+      if (this.run.loop.maxInvocations !== undefined && this.actualInvocations >= this.run.loop.maxInvocations) {
         this.stop("CLI invocation limit"); this.checkCancelled();
       }
-      if (this.run.cliTeam && !recoveringRemote) {
+      if (this.run.cliTeam) {
         const cli = this.run.cliTeam;
         if ((cli.managedInvocations ?? 0) >= cli.definition.limits.maxInvocations) { this.stop("lifetime CLI invocation limit"); this.checkCancelled(); }
         const assignment = params.cliAssignment ?? params.identity ?? params.title;
@@ -3018,7 +2997,7 @@ export class TeamContext {
         const usedMs = this.elapsedExecutionMs;
         await this.persist(`cli-launch:${randomBytes(12).toString("hex")}`, { stepId: step.id, mode: params.mode, assignment, at: Date.now(), usedMs, reservedMs: Math.min(cli.definition.limits.attemptTimeoutMs, Math.max(0, cli.definition.limits.maxMinutes * 60_000 - usedMs)) });
       }
-      if (this.run.team && !recoveringRemote) {
+      if (this.run.team) {
         if (this.teamBudgetRemaining(params.coordination) <= 0) {
           this.stop(params.coordination ? "coordinator invocation limit" : "team invocation limit");
           this.checkCancelled();
@@ -3028,15 +3007,15 @@ export class TeamContext {
       }
       // Reserve both ceilings before any await so concurrent turns cannot over-admit.
       // A refused retry must not create a durable launch or inflate team usage.
-      if (!recoveringRemote) this.actualInvocations++;
-      if (this.run.team && !recoveringRemote) {
+      this.actualInvocations++;
+      if (this.run.team) {
         await this.persist(`team-launch:${randomBytes(12).toString("hex")}`, { stepId: step.id, memberId: params.memberId, coordination: !!params.coordination, at: Date.now() });
         this.checkCancelled();
         this.run.team.metrics.invocations++;
         if (params.coordination) this.run.team.metrics.coordinatorInvocations++;
         this.publish();
       }
-      if (!recoveringRemote) step.invocations = (step.invocations ?? 0) + 1;
+      step.invocations = (step.invocations ?? 0) + 1;
       const member = this.run.team?.members.find((item) => item.id === params.memberId);
       const task = this.run.team?.tasks.find((item) => item.id === params.taskId);
       const attempt = task?.attempts;
@@ -3048,12 +3027,12 @@ export class TeamContext {
         return activeTurn && !turnSignal.aborted && this.run.status === "running" && !!currentMember && currentMember.status !== "retired" &&
           (!params.taskId || !!currentTask && currentTask.owner === currentMember.id && currentTask.attempts === attempt);
       };
-      const grant = !params.planning && member && (params.agent !== "agy" || effective?.externalTools === "task-scoped" || effective?.implementation === "agy-native-v1") && !params.agent.startsWith("plugin:") && !params.agent.startsWith("acp:") && !this.run.loop.agentContainer && !remote ? await teamToolBridge.issue({
+      const grant = !params.planning && member && (params.agent !== "agy" || effective?.externalTools === "task-scoped" || effective?.implementation === "agy-native-v1") && !params.agent.startsWith("plugin:") && !params.agent.startsWith("acp:") && !this.run.loop.agentContainer ? await teamToolBridge.issue({
         identity: { runId: this.run.id, memberId: member.id, taskId: params.taskId, attempt, stepId: step.id, attemptId: logicalAttemptId },
         handler: (request, identity) => this.teamTool(request, identity, params.cwd, activeCapability), signal: turnSignal, ttlMs: STEP_TIMEOUT_MS,
         isActive: activeCapability,
       }) : undefined;
-      const agentGrant = !params.planning && !params.receiptOnly && !params.leadQuestion && (this.run.pattern === "solo" || !!this.run.taskExecution || this.run.pattern === "auto-team") && !this.run.checkpointOnFinish && !this.run.trigger && !this.run.loop.agentContainer && !remote && ["claude", "codex", "agy"].includes(params.agent) && effective?.externalTools !== "disabled" ? await agentToolBridge.issue({
+      const agentGrant = !params.planning && !params.receiptOnly && !params.leadQuestion && (this.run.pattern === "solo" || !!this.run.taskExecution || this.run.pattern === "auto-team") && !this.run.checkpointOnFinish && !this.run.trigger && !this.run.loop.agentContainer && ["claude", "codex", "agy"].includes(params.agent) && effective?.externalTools !== "disabled" ? await agentToolBridge.issue({
         runId: this.run.id, browserId: `run:${chatTaskId(this.run)}`, resourceOwner: member?.name ?? params.agent, workspace: params.cwd.path, signal: turnSignal, mode: params.mode, full: turnTrust === "full" && !effective?.required.includes("workspace-writes") && !effective?.required.includes("no-command-network"),
         active: () => activeTurn && !turnSignal.aborted && this.run.status === "running" && (!member || activeCapability()),
         actionScope: chatTaskId(this.run),
@@ -3076,7 +3055,7 @@ export class TeamContext {
           excludeCodeflowMcp: !!this.run.cliTeam || !!params.disableTools,
           disableTools: params.disableTools,
           conversation: this.run.pattern === "solo" && !this.run.checkpointOnFinish && !this.run.trigger,
-          onQuestion: this.run.pattern === "solo" && !this.run.checkpointOnFinish && !this.run.trigger && !remote ? async (questions, signal) => {
+          onQuestion: this.run.pattern === "solo" && !this.run.checkpointOnFinish && !this.run.trigger ? async (questions, signal) => {
             this.pauseClock();
             try { return await approvals.ask(this.run.id, step.id, questions, signal); }
             finally { this.resumeClock(); }
@@ -3094,7 +3073,7 @@ export class TeamContext {
           teamTools: grant?.connection,
           agentTools: agentGrant?.connection,
           agentContainer: this.run.loop.agentContainer,
-          interactiveApprovals: effective?.toolApprovals ?? (!remote && !this.run.loop.agentContainer && (params.tools ?? this.run.approvals.tools) === true && !this.run.trigger && !this.run.lockdown),
+          interactiveApprovals: effective?.toolApprovals ?? (!this.run.loop.agentContainer && (params.tools ?? this.run.approvals.tools) === true && !this.run.trigger && !this.run.lockdown),
           onApproval: params.agent.startsWith("plugin:") ? undefined : async (request: import("./adapters/types.js").AgentApprovalRequest, signal: AbortSignal) => {
             this.pauseClock();
             try { return await approvals.request(this.run.id, step.id, request, signal); }
@@ -3105,32 +3084,14 @@ export class TeamContext {
           timeoutMs: this.run.cliTeam?.definition.limits.attemptTimeoutMs ?? STEP_TIMEOUT_MS,
           isPaused: agentGrant ? () => toolWaits > 0 : undefined,
           idleTimeoutMs: STEP_IDLE_MS,
-          onSteerable: params.side || remote || params.agent.startsWith("plugin:") ? undefined : (steer: ((text: string) => Promise<boolean>) | undefined) => this.manager.setSteerer(this.run, step.id, params.agent, steer),
+          onSteerable: params.side || params.agent.startsWith("plugin:") ? undefined : (steer: ((text: string) => Promise<boolean>) | undefined) => this.manager.setSteerer(this.run, step.id, params.agent, steer),
         };
-        if (remote && launch) {
-          const client = this.manager.remoteWorkers!;
-          const value = recoveringRemote ? await client.receipt(remote.workerId, launch.id) : await client.execute({ ...remote, requestId: launch.id, scope: { runId: this.run.id, stepId: launch.stepId, threadId: launch.threadId }, repositoryBase: this.run.baseRef, agent: params.agent, onReceipt: (value) => { step.remote = value; this.manager.emit(this.run, { type: "step", step: { ...step } }); }, options: { ...agentOptions, resumeSessionId: undefined, teamTools: undefined, interactiveApprovals: false, agentContainer: undefined } }, onEvent);
-          step.remote = { ...value.remote, recovered: recoveringRemote || undefined }; this.manager.emit(this.run, { type: "step", step: { ...step } });
-          try {
-            if (value.artifact) {
-              const at = await assertWorktree(this.run.repo, params.cwd);
-              const head = await resolveCommit(at);
-              if (value.remote.ambiguous || turnSignal.aborted) throw new Error("Remote result cannot be imported until its outcome and cancellation are settled");
-              if (head === value.artifact.head) { await verificationIntegrity(at); await client.discardArtifact(value.artifact); }
-              else await client.importArtifact(at, value.artifact, launch.baseCommit);
-            }
-          } catch (error) { if (value.artifact) await client.discardArtifact(value.artifact); throw error; }
-          const { remote: _remote, artifact: _artifact, ...publicResult } = value; result = publicResult;
-          if (recoveringRemote) onEvent({ kind: "status", text: "Recovered the durable remote receipt; no new provider invocation was launched." });
-          if (value.remote.ambiguous) this.stop("ambiguous remote execution; inspect its durable receipt before resuming or starting another invocation");
-        } else {
-          // Team bookkeeping above can yield; recheck immediately before capturing the adapter.
-          assertAcpBindings({ ...this.run, roles: { ...this.run.roles, __dispatch: [params.agent] } });
-          result = await getAdapter(params.agent).run(agentOptions, onEvent);
-        }
+        // Team bookkeeping above can yield; recheck immediately before capturing the adapter.
+        assertAcpBindings({ ...this.run, roles: { ...this.run.roles, __dispatch: [params.agent] } });
+        result = await getAdapter(params.agent).run(agentOptions, onEvent);
       } finally { activeTurn = false; grant?.revoke(); agentGrant?.revoke(); approvals.cancelStep(this.run.id, step.id); }
-      if (params.modelAssignment && !recoveringRemote) await modelCatalogStore.observe(params.modelAssignment, { runId:this.run.id, at:Date.now(), ok:result.ok, effort:params.modelAssignment.effort, durationMs:Math.max(0,Date.now()-step.startedAt), ...(result.errorKind ? {errorKind:result.errorKind} : {}) }).catch(()=>{});
-      if (remote || result.ok || turnSignal.aborted) return result;
+      if (params.modelAssignment) await modelCatalogStore.observe(params.modelAssignment, { runId:this.run.id, at:Date.now(), ok:result.ok, effort:params.modelAssignment.effort, durationMs:Math.max(0,Date.now()-step.startedAt), ...(result.errorKind ? {errorKind:result.errorKind} : {}) }).catch(()=>{});
+      if (result.ok || turnSignal.aborted) return result;
       const kind = failureKind(result, !!resume);
       if (kind === "session_not_found" && resume && !freshSession) {
         // An earlier attempt of this write step may have edited files before failing: the whole
@@ -3453,8 +3414,7 @@ export class RunManager {
   private assertIdleExecution() {
     // A crash may precede the public receipt snapshot, after the private request claim.
     // Resume reconciles that journaled identity; absence of metadata is not proof of exit.
-    const unresolvedRemote = [...this.runs.values()].some((run) => run.steps.some((step) => step.remote ? step.remote.ambiguous || ["accepted", "running", "unknown"].includes(step.remote.state) : run.loop.remoteWorker && (step.kind ?? "agent") === "agent" && ["failed", "stopped", "interrupted"].includes(step.status)));
-    if (this.shuttingDown || this.executionPolicyLease || this.startingRepositories.size || this.starting.size || this.active.size || this.mergeValidating.size || this.repositoryLeases.size || this.readOnlyExecutionLeases.size || this.taskReruns.size || this.taskReviewRequests.size || this.triageClaims.size || this.coldMutations.size || unresolvedRemote || [...this.runs.values()].some((run) => this.busyRun(run))) throw new RunConflictError("Wait for every run, start, validation, read-only execution, workspace edit and unresolved remote receipt before changing global execution state");
+    if (this.shuttingDown || this.executionPolicyLease || this.startingRepositories.size || this.starting.size || this.active.size || this.mergeValidating.size || this.repositoryLeases.size || this.readOnlyExecutionLeases.size || this.taskReruns.size || this.taskReviewRequests.size || this.triageClaims.size || this.coldMutations.size || [...this.runs.values()].some((run) => this.busyRun(run))) throw new RunConflictError("Wait for every run, start, validation, read-only execution and workspace edit before changing global execution state");
   }
   /** Atomically refuse new admissions only after the live execution state is idle. */
   beginIdleShutdown() { this.assertIdleExecution(); this.shuttingDown = true; }
@@ -3480,7 +3440,6 @@ export class RunManager {
     private readonly findPattern: (id: string) => Pattern | undefined = () => undefined,
     /** Where runs are grouped; without it runs record no project. */
     readonly projects?: Projects,
-    readonly remoteWorkers?: RemoteWorkers,
   ) {
     this.bus.setMaxListeners(0);
     this.approvalRunIds = this.pendingApprovalRuns();
@@ -4286,7 +4245,7 @@ export class RunManager {
       if (input.tools !== undefined && typeof input.tools !== "boolean") throw new Error("Invalid approval preference");
       if (run.lockdown && input.trust !== undefined && input.trust !== "safe") throw new Error("Locked-down runs require Safe permissions");
       if (run.trigger && input.trust === "full") throw new Error("Automated runs cannot use Full access");
-      if (input.tools && (run.lockdown || run.trigger || run.loop.remoteWorker || run.loop.agentContainer)) throw new Error("Tool approval prompts require a local interactive run");
+      if (input.tools && (run.lockdown || run.trigger || run.loop.agentContainer)) throw new Error("Tool approval prompts require a local interactive run");
       if (input.settings !== undefined && (!input.settings || typeof input.settings !== "object" || Array.isArray(input.settings))) throw new Error("Invalid model settings");
       const settings = input.settings === undefined ? undefined : validateAgentSettings({ [input.agent]: input.settings })[input.agent] ?? {};
       // An invalid budget is refused before any file is staged.
@@ -4302,7 +4261,7 @@ export class RunManager {
         const changed = input.trust !== undefined && input.trust !== run.trust || input.tools !== undefined && input.tools !== !!run.approvals.tools;
         if (changed && run.status === "running") throw new Error("Wait for active work to finish before changing the run's permissions");
         const next = { ...run.permissions, revision: run.permissions.revision + (changed ? 1 : 0), trust: input.trust ?? run.trust, toolApprovals: input.tools ?? !!run.approvals.tools };
-        resolveRunPermissions({ policy: next, provider: input.agent, mode: kind === "side" && input.side?.mode === "ask" ? "read" : "write", currentTrust: next.trust, currentTools: next.toolApprovals, remote: !!run.loop.remoteWorker, container: !!run.loop.agentContainer, unattended: !!run.trigger || !!run.lockdown });
+        resolveRunPermissions({ policy: next, provider: input.agent, mode: kind === "side" && input.side?.mode === "ask" ? "read" : "write", currentTrust: next.trust, currentTools: next.toolApprovals, container: !!run.loop.agentContainer, unattended: !!run.trigger || !!run.lockdown });
         if (changed) {
           await journalEntry(run.id, `run-permissions:${next.revision}`, next);
           run.permissions = next; run.trust = next.trust; run.approvals.tools = next.toolApprovals;
@@ -4350,7 +4309,7 @@ export class RunManager {
 
   async configureTaskTeam(id: string, raw: unknown): Promise<Run> {
     const chat = this.require(id), owner = this.require(chatTaskId(chat));
-    if (chat.pattern !== "solo" || chat.chatLink?.kind === "side" || chat.checkpointOnFinish || chat.trigger || chat.loop.remoteWorker || chat.loop.agentContainer || owner.archived) throw new Error("Team switching requires an available local Agent conversation");
+    if (chat.pattern !== "solo" || chat.chatLink?.kind === "side" || chat.checkpointOnFinish || chat.trigger || chat.loop.agentContainer || owner.archived) throw new Error("Team switching requires an available local Agent conversation");
     const config = validateTaskTeam(raw);
     if (config.enabled) for (const provider of new Set([config.coordinator, ...config.providers])) {
       resolveRunPermissions({ policy: chat.permissions ?? createRunPermissions(chat.trust, !!chat.approvals.tools, true), provider, mode: "write", currentTrust: chat.trust, currentTools: !!chat.approvals.tools });
@@ -4733,7 +4692,7 @@ export class RunManager {
       const problem = await getAdapter("agy").managedAvailability?.();
       if (problem) throw new Error(problem);
     }
-    if (run.loop.remoteWorker || run.loop.agentContainer) throw new Error("Shared chat tabs currently require a local workspace");
+    if (run.loop.agentContainer) throw new Error("Shared chat tabs currently require a local workspace");
     const providerProblem = runProviderProblem(input.agent, getAdapter(input.agent).displayName, run.permissions);
     if (providerProblem) throw new Error(providerProblem);
     // The new chat runs with the access chosen in the fork dialog, which may only narrow the source's:
@@ -5320,26 +5279,11 @@ export class RunManager {
   }
   /** Latest plan-usage signal per vendor (Claude reports windows; others only "limited"). */
   readonly quota: Partial<Record<AgentId, { status: string; windows: Record<string, { utilization?: number; resetsAt?: number }>; at: number }>> = {};
-  private readonly remoteQuota = new Map<string, RunManager["quota"]>();
-  private readonly remoteProbes = new Map<string, { at: number; value: Awaited<ReturnType<RemoteWorkers["probe"]>> }>();
-  quotaForWorker(workerId?: string): RunManager["quota"] { if (!workerId) return this.quota; let quota = this.remoteQuota.get(workerId); if (!quota) { quota = {}; this.remoteQuota.set(workerId, quota); } return quota; }
-  async remoteInventory(selection: NonNullable<LoopSettings["remoteWorker"]>, discoverModels = false) {
-    if (!this.remoteWorkers || !selection || typeof selection.workerId !== "string" || typeof selection.repoMapping !== "string" || Object.keys(selection).some((key) => !["workerId", "repoMapping"].includes(key)) || !this.remoteWorkers.list().some((worker) => worker.id === selection.workerId && worker.repoMappings.includes(selection.repoMapping))) throw new Error("Choose an explicitly registered remote worker and repository mapping");
-    const key = `${selection.workerId}/${selection.repoMapping}/${discoverModels}`, cached = this.remoteProbes.get(key);
-    if (cached && Date.now() - cached.at < 30_000) return cached.value.capabilities;
-    const value = await this.remoteWorkers.probe(selection.workerId, { repoMapping: selection.repoMapping, ...(discoverModels ? { discoverModels: true } : {}) }); if (!value.capabilities.repoMappings.includes(selection.repoMapping)) throw new Error("Repository mapping is unavailable on the remote worker"); this.remoteProbes.set(key, { at: Date.now(), value }); return value.capabilities;
-  }
-  async inspectRemoteStep(id: string, stepId: string, options: { cancel?: boolean } = {}) {
-    const run = this.require(id), step = run.steps.find((item) => item.id === stepId); if (!step?.remote || !this.remoteWorkers) throw new Error("This step has no owned remote worker request");
-    const expectedScope = { runId: run.id, stepIds: run.steps.filter((item) => item.remote?.workerId === step.remote!.workerId && item.remote.requestId === step.remote!.requestId).map((item) => item.id) };
-    const value = options.cancel ? await this.remoteWorkers.cancel(step.remote.workerId, step.remote.requestId, { expectedScope }) : await this.remoteWorkers.receipt(step.remote.workerId, step.remote.requestId, { downloadArtifact: false, expectedScope });
-    for (const related of run.steps) if (related.remote?.workerId === step.remote.workerId && related.remote.requestId === step.remote.requestId) { related.remote = { ...value.remote, recovered: true }; this.emit(run, { type: "step", step: { ...related } }); } this.emitRun(run); return { remote: step.remote, ok: value.ok, error: value.error, finalText: value.finalText };
-  }
   /** "Run app" dev servers, keyed `${runId}/${worktree}`. */
   readonly devServers = new DevServers();
 
-  recordQuota(agent: AgentId, status: string, windows: Record<string, { utilization?: number; resetsAt?: number }>, workerId?: string) {
-    this.quotaForWorker(workerId)[agent] = { status, windows, at: Date.now() };
+  recordQuota(agent: AgentId, status: string, windows: Record<string, { utilization?: number; resetsAt?: number }>) {
+    this.quota[agent] = { status, windows, at: Date.now() };
     this.saveQuota();
   }
 
@@ -5348,16 +5292,16 @@ export class RunManager {
    * already known (Claude's windows) still say when it ends, so they're kept rather than replaced
    * by nothing — which "Auto" would read as "an hour".
    */
-  recordLimit(agent: AgentId, resetsAt?: number, workerId?: string) {
+  recordLimit(agent: AgentId, resetsAt?: number) {
     const now = Date.now();
     // Without a reset time from the CLI, the known windows say how long the limit lasts: a window it
     // reported full, or else the one that resets soonest. Keeping every window would bench the
     // agent until the last of them (its weekly reset) on a guess; with none known, routing's
     // one-hour default applies.
-    const known = Object.entries(this.quotaForWorker(workerId)[agent]?.windows ?? {}).filter(([, w]) => !!w.resetsAt && w.resetsAt > now);
+    const known = Object.entries(this.quota[agent]?.windows ?? {}).filter(([, w]) => !!w.resetsAt && w.resetsAt > now);
     const full = known.filter(([, w]) => (w.utilization ?? 0) >= 1);
     const soonest = known.sort(([, a], [, b]) => a.resetsAt! - b.resetsAt!).slice(0, 1);
-    this.recordQuota(agent, "limited", resetsAt ? { limit: { resetsAt } } : Object.fromEntries(full.length ? full : soonest), workerId);
+    this.recordQuota(agent, "limited", resetsAt ? { limit: { resetsAt } } : Object.fromEntries(full.length ? full : soonest));
 
   }
 
@@ -5374,23 +5318,19 @@ export class RunManager {
   }
 
   private persistQuota(): Promise<void> {
-    const snapshots = [[QUOTA_FILE, JSON.stringify(this.quota)], [join(CODEFLOW_HOME, "remote-quota.json"), JSON.stringify(Object.fromEntries(this.remoteQuota))]] as const;
+    const snapshot = JSON.stringify(this.quota);
     // Serialize snapshots and track the writes so shutdown cannot leave a timer or
     // rename running after its caller starts removing the workspace.
     this.quotaWrites = this.quotaWrites.then(async () => {
       await mkdir(CODEFLOW_HOME, { recursive: true });
-      const results = await Promise.allSettled(snapshots.map(async ([file, text]) => {
-        const tmp = `${file}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
-        await writeFile(tmp, text);
-        await rename(tmp, file);
-      }));
-      for (const result of results) if (result.status === "rejected") throw result.reason;
+      const tmp = `${QUOTA_FILE}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
+      await writeFile(tmp, snapshot);
+      await rename(tmp, QUOTA_FILE);
     }).catch((error: Error) => logWarn("Couldn't save provider quota", { error: error.message }));
     return this.quotaWrites;
   }
 
   private async loadQuota() {
-    try { const saved = JSON.parse(await readFile(join(CODEFLOW_HOME, "remote-quota.json"), "utf8")); for (const worker of this.remoteWorkers?.list() ?? []) if (saved?.[worker.id] && typeof saved[worker.id] === "object") this.remoteQuota.set(worker.id, saved[worker.id]); } catch { /* Remote quota is unknown until reported. */ }
     try {
       const saved = JSON.parse(await readFile(QUOTA_FILE, "utf8"));
       for (const [agent, q] of Object.entries(saved ?? {})) {
@@ -5767,7 +5707,7 @@ export class RunManager {
     if (this.shuttingDown) throw new Error("code-flow is shutting down; new runs cannot start");
     const filePolicies = await this.assertExecutionAllowed(input.repo, undefined, "run startup");
     if (input.taskTeam) {
-      if (input.pattern.id !== "solo" || input.chatLink?.kind === "side" || input.checkpointOnFinish || input.trigger || input.loop?.remoteWorker || input.loop?.agentContainer) throw new Error("Team switching requires a local Agent conversation");
+      if (input.pattern.id !== "solo" || input.chatLink?.kind === "side" || input.checkpointOnFinish || input.trigger || input.loop?.agentContainer) throw new Error("Team switching requires a local Agent conversation");
       input.taskTeam = validateTaskTeam(input.taskTeam);
     }
     if (input.chatLink) {
@@ -5803,15 +5743,7 @@ export class RunManager {
     if (given.setup === undefined) loop.setup = config.setup;
     if (loop.verification) loop.verification = validateVerificationProfile(loop.verification);
     loop.contextBudget = validateContextBudget(loop.contextBudget);
-    if (Object.values(input.roles).flat().some((id) => id.startsWith("plugin:")) && (loop.agentContainer || loop.remoteWorker || input.approvals?.tools)) throw new Error("Extension providers support local dispatch only; container, SSH and native approval profiles are unavailable");
-    if (loop.remoteWorker) {
-      const inventory = await this.remoteInventory(loop.remoteWorker);
-      if (input.approvals?.tools) throw new Error("Native interactive approvals are unavailable on remote workers");
-      if (loop.agentContainer) throw new Error("Select a registered worker-local container profile; host agent-container settings cannot be forwarded");
-      if (loop.copy?.length) throw new Error("Remote turns do not transfer copied workspace files. Clear copy settings or provision needed worker-local files explicitly.");
-      if (input.pattern.id === "auto-team" && !(input.roles.pool ?? []).some((id) => inventory.providers.some((provider) => provider.id === id && provider.available))) throw new Error("Keep at least one available remote provider in the Auto-team pool");
-      const needed = new Set(input.pattern.id === "auto-team" ? input.roles.coordinator : Object.values(input.roles).flat()); for (const id of needed) if (!inventory.providers.some((provider) => provider.id === id && provider.available)) throw new Error(`${id} is unavailable on the selected remote worker`);
-    }
+    if (Object.values(input.roles).flat().some((id) => id.startsWith("plugin:")) && (loop.agentContainer || input.approvals?.tools)) throw new Error("Extension providers support local dispatch only; container and native approval profiles are unavailable");
     // Docker's CLI alone doesn't run a container: its daemon has to answer too. Asked once, when needed.
     let probe: ReturnType<typeof dockerStatus> | undefined;
     const docker = () => probe ??= dockerStatus();
@@ -5854,7 +5786,6 @@ export class RunManager {
     const baseRef = await resolveCommit(repo, baseLabel).catch(() => {
       throw new Error(`Base branch "${baseLabel}" not found in ${repo}`);
     });
-    if (loop.remoteWorker) await assertTransferTree(repo, baseRef);
     const source = fromGitHub?.source ?? (parent?.repo === repo ? parent.source : undefined);
     const externalSource = parent?.repo === repo ? parent.externalSource : undefined;
     if (fromGitHub && await isCodeHostImport(repo, baseRef)) throw new RunConflictError("This commit is untrusted pull request code fetched by an earlier code-host import. It cannot start an ordinary run.");
@@ -5904,10 +5835,10 @@ export class RunManager {
     if (input.taskTeam?.enabled) for (const provider of new Set([input.taskTeam.coordinator, ...input.taskTeam.providers])) {
       resolveRunPermissions({ policy: runPermissions, provider, mode: "write", currentTrust: trust, currentTools: runPermissions.toolApprovals });
     }
-    if (runPermissions.antigravityExecution === "native") resolveRunPermissions({ policy: runPermissions, provider: "agy", mode: "write", currentTrust: trust, currentTools: inheritedTools, remote: !!loop.remoteWorker, container: !!loop.agentContainer, unattended: !!input.trigger || !!lockdown });
+    if (runPermissions.antigravityExecution === "native") resolveRunPermissions({ policy: runPermissions, provider: "agy", mode: "write", currentTrust: trust, currentTools: inheritedTools, container: !!loop.agentContainer, unattended: !!input.trigger || !!lockdown });
     if (runPermissions) {
       const initialProviders = input.pattern.id === "auto-team" ? input.roles.coordinator ?? [] : Object.values(input.roles).flat();
-      for (const provider of initialProviders) resolveRunPermissions({ policy: runPermissions, provider, mode: input.pattern.id === "auto-team" ? "read" : "write", currentTrust: trust, currentTools: runPermissions.toolApprovals, remote: !!loop.remoteWorker, container: !!loop.agentContainer, unattended: !!input.trigger || !!lockdown });
+      for (const provider of initialProviders) resolveRunPermissions({ policy: runPermissions, provider, mode: input.pattern.id === "auto-team" ? "read" : "write", currentTrust: trust, currentTools: runPermissions.toolApprovals, container: !!loop.agentContainer, unattended: !!input.trigger || !!lockdown });
     }
     // An untrusted PR's branch can rewrite AGENTS.md too: read conventions from where it started.
     const conventions = parent?.lockdown ? parent.conventions ?? "" : await readConventions(repo, lockdown && reviewBase ? reviewBase : baseRef).catch(() => "");
@@ -5991,7 +5922,7 @@ export class RunManager {
       trigger: input.trigger,
       parentRunId: input.parentRunId,
       chatLink: input.chatLink ? { ...input.chatLink } : undefined,
-      checkpointOnFinish: input.checkpointOnFinish || !!input.trigger || !!loop.remoteWorker || undefined,
+      checkpointOnFinish: input.checkpointOnFinish || !!input.trigger || undefined,
       teamRerun: input.teamRerun ? structuredClone(input.teamRerun) : undefined,
       // With no source to mark, a run on someone else's words says so in its source trust.
       inheritedSourceTrust:
@@ -6057,7 +5988,7 @@ export class RunManager {
     if (planRejected(run)) throw new RunConflictError("This plan was rejected. Edit the task and start a new run for a fresh plan.");
     this.managedContinuation(run, cliInternal);
     if (!run) throw new Error("Run not found");
-    if (run.steps.some((step) => step.remote?.ambiguous)) throw new RunConflictError("Inspect or cancel the ambiguous remote receipt before resuming this run");
+    assertNoRemoteWorker(run.loop);
     this.assertNoWorkspaceLease(run.repo);
     if (this.busyRun(run)) throw new RunConflictError("This run is already running or validating a merge");
     const pattern = this.findPattern(run.pattern);
@@ -6075,7 +6006,6 @@ export class RunManager {
     this.stoppedWhileStarting.delete(id);
     try {
       await this.assertExecutionAllowed(run.repo, run, "run resume");
-      if (run.loop.remoteWorker) await this.remoteInventory(run.loop.remoteWorker);
       this.assertNoWorkspaceLease(run.repo);
       // The last attempt may still be wrapping up (listing its work, the inbox): let it finish.
       await this.active.get(id)?.catch(() => undefined);
@@ -6133,14 +6063,14 @@ export class RunManager {
     // An explicit Resume is permission to re-probe the blocked logical call. Do not
     // clear unrelated providers or relax the recorded permission/independent-review policy.
     if (run.providerRecovery) {
-      const quota = this.quotaForWorker(run.loop.remoteWorker?.workerId);
+      const quota = this.quota;
       for (const provider of run.providerRecovery.providers) if (!(provider === "agy" && quota[provider]?.status === "signed_out")) delete quota[provider];
       this.saveQuota();
     }
     // Explicit recovery may follow a repaired or unlocked native login. A cached catalog or
     // version check is not evidence of authentication: require fresh discovery in the recorded execution mode
     // before clearing the cooldown. Recovery never changes the run’s permission mode.
-    if (run.permissions && !run.loop.remoteWorker && !run.loop.agentContainer && (Object.values(run.roles).some(providers => providers.includes("agy")) || run.teamResumeConfig?.config.providers.includes("agy") || run.teamResumeConfig?.config.coordinator === "agy") && this.quota.agy?.status === "signed_out") {
+    if (run.permissions && !run.loop.agentContainer && (Object.values(run.roles).some(providers => providers.includes("agy")) || run.teamResumeConfig?.config.providers.includes("agy") || run.teamResumeConfig?.config.coordinator === "agy") && this.quota.agy?.status === "signed_out") {
       resolveRunPermissions({ policy: run.permissions, provider: "agy", mode: "write", currentTrust: run.trust, currentTools: !!run.approvals.tools });
       const startedAt = Date.now();
       const catalog = await modelCatalogStore.get("agy", { context: run.permissions.antigravityExecution === "native" ? {} : { isolatedAgy: true }, force: true });

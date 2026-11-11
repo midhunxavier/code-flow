@@ -87,7 +87,7 @@ Both modes use http://localhost:4318 and `.codeflow-dev` as their home directory
 
 The composer remains visible while you read. Enter sends; Shift + Enter adds a line. Messages sent while a turn runs queue with their selected settings. Files and unsent drafts survive reload. Mode changes affect future work, and accepted Team tasks keep their original scope and settings. See the [chat guide](conversational-tasks.md) for source selection, chat context import, allowances and recovery.
 
-Initial Team preparation supports local Git repositories with Claude/Codex managed participants. Other providers remain available in Agent mode; remote and container execution use **Existing workflows**.
+Initial Team preparation supports local Git repositories with Claude/Codex managed participants. Other providers remain available in Agent mode; container execution uses **Existing workflows**.
 
 ## Your first run
 

@@ -64,7 +64,7 @@ Read the story: [Describe the team. Code Flow builds the workflow.](https://midh
 
 - [Project integrations](project-integrations.md) · [Claude Desktop and Codex app](desktop-mcp.md)
 - [Team collaboration](team-collaboration.md) · [Shared project accounts](shared-projects.md)
-- [SSH projects](ssh-projects.md) · [Remote workers](remote-workers.md)
+- [SSH projects](ssh-projects.md)
 - [Automations and remote access](automations.md) · [Notifications](notifications.md)
 
 ## Operate safely

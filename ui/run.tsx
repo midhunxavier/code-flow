@@ -87,7 +87,6 @@ import { ProjectChip } from "./projects.js";
 import { AutoTeam, TeamQuestionCard } from "./team.js";
 import { ProjectMemory } from "./memory.js";
 import { GithubReviewThreadsPanel } from "./github-review-threads.js";
-import { RemoteStepReceipt } from "./remote-workers.js";
 import type { MergeValidation } from "../src/merge-validation.js";
 import { loadStepTranscript, transcriptVersion, useRunStream, type RunData } from "./run-feed.js";
 import { defaultFollowupCalls, followupMinimumCalls, teamAwaitingAnswer, teamNeedsResume, teamStatusLabel, wholeMinutes } from "./team-state.js";
@@ -1978,7 +1977,7 @@ export function ConversationBar({ run, steps, chat, onOpenChat }: { run: RunSumm
   const signedOut = !running ? replySignInIssue(run, replyAgent, health.value) : undefined;
   const latestReply = !running ? run.followUps.filter(turn => !turn.side).at(-1) : undefined;
   const latestReplyFailed = latestReply?.status === "failed";
-  const authFailed = !run.loop.remoteWorker && !run.loop.agentContainer && latestReplyFailed && steps.find(step => step.id === latestReply?.stepId)?.errorKind === "auth";
+  const authFailed = !run.loop.agentContainer && latestReplyFailed && steps.find(step => step.id === latestReply?.stepId)?.errorKind === "auth";
   if (!takes) return undelivered.length ? <div class="convo"><UndeliveredNotes notes={undelivered} /></div> : null;
 
   const send = async () => {
@@ -2177,7 +2176,7 @@ export function ConversationBar({ run, steps, chat, onOpenChat }: { run: RunSumm
                 </select>
               </label>
             )}
-            {!running && chosen !== "team" && replyAgent && !(chat && (runs.value.get(chatTaskId(run)) ?? run).taskTeam?.enabled) ? <ChatControls acpAllowed={run.permissions?.acpExecution === "native"} showPermissions={run.chatLink?.kind !== "side"} providers={run.chatLink?.kind === "side" ? agents.value.filter(item => item.id === "claude" || item.id === "codex" || item.id === "agy") : undefined} agent={replyAgent} onAgent={chat && draftReady ? agent => setHandoff({ agent, settings: agent === replyAgent ? selectedSettings : replySettings[agent] ?? {} }) : undefined} resetPermissionsOnAgentChange={!chat} settings={selectedSettings} onSettings={(value) => setReplySettings({ ...replySettings, [replyAgent]: value })} permissions={selectedPermissions} onPermissions={setReplyPermissions} restricted={!!run.lockdown || !!run.trigger} approvalsAvailable={!run.loop.remoteWorker && !run.loop.agentContainer} unrestricted={replyAgent === "agy" && run.permissions?.antigravityExecution === "native"} /> : null}
+            {!running && chosen !== "team" && replyAgent && !(chat && (runs.value.get(chatTaskId(run)) ?? run).taskTeam?.enabled) ? <ChatControls acpAllowed={run.permissions?.acpExecution === "native"} showPermissions={run.chatLink?.kind !== "side"} providers={run.chatLink?.kind === "side" ? agents.value.filter(item => item.id === "claude" || item.id === "codex" || item.id === "agy") : undefined} agent={replyAgent} onAgent={chat && draftReady ? agent => setHandoff({ agent, settings: agent === replyAgent ? selectedSettings : replySettings[agent] ?? {} }) : undefined} resetPermissionsOnAgentChange={!chat} settings={selectedSettings} onSettings={(value) => setReplySettings({ ...replySettings, [replyAgent]: value })} permissions={selectedPermissions} onPermissions={setReplyPermissions} restricted={!!run.lockdown || !!run.trigger} approvalsAvailable={!run.loop.agentContainer} unrestricted={replyAgent === "agy" && run.permissions?.antigravityExecution === "native"} /> : null}
             {chat && soloAgent ? <TaskTeamControl run={run} lead={soloAgent} /> : null}
             {run.chatLink?.kind === "side" ? <span class="help">Read only</span> : null}
             <span class="chatbox-hint" title={hint}>
@@ -2215,7 +2214,6 @@ function Transcript({ run, step, data }: { run: RunSummary; step?: Step; data: R
   const model = modelNote(run, step.agent, step.settings);
   return (
     <div class="transcript" role="group" aria-label={`Transcript of ${step.title}`}>
-      {step.remote ? <RemoteStepReceipt key={`${run.id}/${step.id}`} runId={run.id} step={step} /> : null}
       <div class="tr-head">
         {page ? <span class="row"><button class="btn small" disabled={page.loading || !page.before} onClick={() => { setShown(PAGE); void loadStepTranscript(run.id, step!.id, page.before); }}>Earlier events</button><button class="btn small" disabled={page.loading} onClick={() => { setShown(PAGE); void loadStepTranscript(run.id, step!.id); }}>Latest events</button>{page.loading ? <span role="status">Loading transcript…</span> : null}{page.historical ? <span>Viewing earlier events</span> : null}{page.error ? <span role="alert">{page.error}</span> : null}</span> : null}
         {model ? <span>{model}</span> : null}
@@ -2458,7 +2456,6 @@ export async function editAndRerun(run: RunSummary) {
   if (request !== rerunRequest || route.value !== origin || repo.value !== run.repo) return;
   rerunDraft.value = structuredClone({ id: run.id, repo: run.repo, loop: run.loop, approvals: run.approvals ?? {}, source: run.source, checkpointOnFinish: run.checkpointOnFinish, baseRef: run.baseRef, task: run.task, contextPaths: (run.context?.paths ?? []).map(c => ({ path: c.path, type: c.type })) });
   composerRunOptions.value = {
-    remoteWorker: run.loop.remoteWorker,
     container: { enabled: !!run.loop.agentContainer, image: run.loop.agentContainer?.image ?? "", authVolume: run.loop.agentContainer?.authVolume ?? "" },
     verification: run.loop.verification ? "restored" : "",
     verificationProfile: run.loop.verification ?? null,
@@ -2568,7 +2565,7 @@ function ProviderChatDialog({ run, initialAgent, initialSettings, initialPermiss
   const [settings, setSettings] = useState(initialSettings);
   // The new chat starts with the reply box's choice, within this chat's current level: a child
   // never gets more access than its source, and only a source that asks for approval passes it on.
-  const approvalsAvailable = !!run.approvals.tools && !run.loop.remoteWorker && !run.loop.agentContainer;
+  const approvalsAvailable = !!run.approvals.tools && !run.loop.agentContainer;
   const [permissions, setPermissions] = useState<ChatPermissions>(() => ({ trust: narrowerTrust(run.trust, initialPermissions.trust), tools: initialPermissions.tools && approvalsAvailable && asksForApproval(initialAgent) }));
   const [message, setMessage] = useState(initialMessage);
   const [images, setImages] = useState(attachments);

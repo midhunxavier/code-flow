@@ -33,8 +33,8 @@ async function seed(states: { status: DeferredRunStatus; attempts?: number }[]) 
 
 test("composer bodies that send null for 'none' save like POST /api/runs accepts them", () => {
   // runBody() in ui/composer.tsx sends null for the default "Single configured check".
-  const run = sanitizeDeferredRequest({ ...request(), loop: { ...request().loop, check: "", setup: "", verification: null, remoteWorker: null, agentContainer: null, contextBudget: null } });
-  assert.equal(run.loop.verification, undefined); assert.equal(run.loop.remoteWorker, undefined); assert.equal(run.loop.agentContainer, undefined); assert.equal(run.loop.contextBudget, undefined);
+  const run = sanitizeDeferredRequest({ ...request(), loop: { ...request().loop, check: "", setup: "", verification: null, agentContainer: null, contextBudget: null } });
+  assert.equal(run.loop.verification, undefined); assert.equal(run.loop.agentContainer, undefined); assert.equal(run.loop.contextBudget, undefined);
   assert.equal(run.loop.check, undefined, "an empty check uses the project's configured check at launch");
   assert.deepEqual(Object.keys(JSON.parse(JSON.stringify(run.loop))).sort(), ["copy", "maxMinutes", "maxSteps"]);
   // Malformed values are still refused; only null means "none".

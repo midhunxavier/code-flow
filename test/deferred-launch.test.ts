@@ -29,12 +29,15 @@ test("bridge pins unattended policy and launch identity and waits for a durable 
   assert.deepEqual(events, ["persist:run-1"]); assert.equal((await queue.list())[0]!.status, "started");
 });
 
-test("remote deferred readiness uses the selected worker quota lane rather than host credentials", async () => {
-  const { host, inputs } = fakeHost(); host.quota = { claude: { status: "limited", at: Date.now(), windows: {} } }; let inspected = "";
-  host.quotaForWorker = (workerId) => { inspected = workerId!; return {}; };
-  const run = sanitizeDeferredRequest({ ...request(), loop: { check: "true", remoteWorker: { workerId: "worker", repoMapping: "project" } } });
-  const queue = createDeferredRuns(host, { file: join(await directory(), "remote-queue.json"), resolveProviders: resolved, build, persist: async () => {} });
-  await queue.load(); await queue.enqueue({ run }); await queue.tick(); assert.equal(inspected, "worker"); assert.equal(inputs.length, 1); assert.equal((await queue.list())[0]!.status, "started");
+test("a queued start saved for an SSH worker is refused rather than started on this computer", async () => {
+  const { host, inputs } = fakeHost(), file = join(await directory(), "remote-queue.json");
+  const queue = createDeferredRuns(host, { file, resolveProviders: resolved, build, persist: async () => {} });
+  await queue.load();
+  await assert.rejects(queue.enqueue({ run: { ...request(), loop: { check: "true", remoteWorker: { workerId: "worker", repoMapping: "project" } } } }), /SSH worker, which is no longer supported/);
+  const job = await queue.enqueue({ run: request() }), document = JSON.parse(await readFile(file, "utf8"));
+  document.jobs[0].run.loop.remoteWorker = { workerId: "worker", repoMapping: "project" }; await writeFile(file, JSON.stringify(document));
+  const stored = (await queue.list())[0]!; assert.equal(stored.id, job.id); assert.deepEqual(stored.run.loop.remoteWorker, { workerId: "worker", repoMapping: "project" }, "the saved boundary is kept, not dropped");
+  await queue.tick(); assert.equal(inputs.length, 0); const refused = (await queue.list())[0]!; assert.equal(refused.status, "failed"); assert.match(refused.reason ?? "", /SSH worker, which is no longer supported/);
 });
 
 test("build rejection and missing parents are safe failures, while post-start or persistence errors remain unknown", async () => {

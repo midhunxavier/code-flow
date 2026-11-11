@@ -4,8 +4,7 @@ import { lstat, open, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { git, resolveCommit, withRepoLock } from "../git.js";
-import { assertTransferTree, boundedBundle, gitChecked, sha256 } from "../remote-workers/bundles.js";
-import { COMMIT_ID, DIGEST, MAX_BUNDLE_BYTES, RemoteWorkerError } from "../remote-workers/protocol.js";
+import { assertTransferTree, boundedBundle, COMMIT_ID, DIGEST, gitChecked, GitTransferError, MAX_BUNDLE_BYTES, sha256 } from "./git-transfer.js";
 import { CollabError } from "./model.js";
 
 /** A checkpoint problem the caller can act on, as a CollabError so handleTeamApi and the link API answer its `status` (400 bad input, 404 missing, 409 reconcile first, 413 too large, 504 Git timed out) instead of a generic 500. */
@@ -19,12 +18,12 @@ export interface CheckpointManifest { id: string; commit: string; baseCommit: st
 export interface CheckpointBundle { file: string; size: number; sha256: string; ref: string }
 export interface CheckpointContextInput { note: string; requirements: string; decisions: string[]; testResults?: { ok: boolean; command: string; at: number }; remaining: string; changedFiles: string[]; commit: string; branch: string }
 
-/** Checkpoints get a ref namespace of their own: HEAD, branches and the remote-worker transfer refs stay untouched by an import. */
+/** Checkpoints get a ref namespace of their own: HEAD and branches stay untouched by an import. */
 export function checkpointRef(id: string) { if (!CHECKPOINT_ID.test(id)) throw new CheckpointError("Checkpoint ids are 32 hexadecimal characters."); return `refs/codeflow/team/${id}`; }
 
-/** bundles.ts explains failures in provisioned-worker words; a teammate reading a checkpoint error needs checkpoint words and an action. */
+/** git-transfer.ts explains failures in Git bundle words; a teammate reading a checkpoint error needs checkpoint words and an action. */
 function translate(error: unknown, what: string): Error {
-  if (error instanceof CheckpointError || !(error instanceof RemoteWorkerError)) return error instanceof Error ? error : new Error(String(error));
+  if (error instanceof CheckpointError || !(error instanceof GitTransferError)) return error instanceof Error ? error : new Error(String(error));
   const text = error.message;
   if (text.includes("exceeds 64 MiB")) return new CheckpointError("This checkpoint's Git bundle exceeds 64 MiB. Rebase the work onto a newer base commit or split the task, then retry.", 413);
   if (text.includes("exceeded 30 seconds")) return new CheckpointError("Creating the checkpoint's Git bundle took longer than 30 seconds. Retry when the repository is idle.", 504);
@@ -34,7 +33,7 @@ function translate(error: unknown, what: string): Error {
   if (text.includes("20,000 files") || text.includes("256 KiB")) return new CheckpointError("This commit's tree exceeds 20,000 files, 256 MiB or 100 attribute files (256 KiB of attributes), which a team checkpoint cannot carry.");
   return new CheckpointError(`Git could not ${what}: ${text}`);
 }
-async function checked(repo: string, args: string[], failure: (detail: string) => CheckpointError) { try { return await gitChecked(repo, args); } catch (error) { throw error instanceof RemoteWorkerError ? failure(error.message) : error; } }
+async function checked(repo: string, args: string[], failure: (detail: string) => CheckpointError) { try { return await gitChecked(repo, args); } catch (error) { throw error instanceof GitTransferError ? failure(error.message) : error; } }
 const short = (commit: string) => commit.slice(0, 12);
 
 /** The bundle holds only the commits above `baseCommit` (teammates' repositories have the base already) and names its head with a temporary ref this process owns by compare-and-swap, so a crash never leaves a ref pointing anywhere else. */

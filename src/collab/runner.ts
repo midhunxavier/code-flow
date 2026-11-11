@@ -10,7 +10,7 @@ import type { LoopSettings, Pattern, Run, RunEvent, RunManager } from "../engine
 import { assertWorktree, commitAll, git, repoRoot, resolveCommit, uncommittedCount } from "../git.js";
 import { logError } from "../log.js";
 import { redactText } from "../privacy.js";
-import { assertTransferTree } from "../remote-workers/bundles.js";
+import { assertTransferTree } from "./git-transfer.js";
 import type { Trust } from "../repo-config.js";
 import { taskDraftPattern } from "../patterns/task-draft.js";
 import { checkpointContext, checkpointRef, createCheckpointBundle, ensureCheckpointBranch, importCheckpointBundle } from "./checkpoints.js";

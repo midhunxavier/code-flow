@@ -46,7 +46,6 @@ before(async () => {
   const history = join(directory, "home", "runs");
   await mkdir(history, { recursive: true });
   for (const [id, loop] of [
-    ["retry-remote", { remoteWorker: { workerId: "missing-worker", repoMapping: "original-repository" } }],
     ["retry-container", { agentContainer: { image: "prepared-agent:v1", authVolume: "original-login", network: false, memoryMb: 512, cpus: 2 } }],
     ["retry-untrusted", {}],
     ["retry-pr", {}],
@@ -270,11 +269,6 @@ test("retry retains container isolation and never falls back from an unavailable
   await page.getByText("Container launch inspected without executing", { exact: true }).waitFor();
   assert.deepEqual(request.loop.agentContainer, { image: "prepared-agent:v1", authVolume: "original-login", network: false, memoryMb: 512, cpus: 2 });
   assert.equal(request.parentRunId, "retry-container");
-  await edit("retry-remote");
-  if (!await page.getByLabel("Agent execution", { exact: true }).isVisible()) await page.locator(".advanced-controls > summary").click();
-  assert.equal(await page.getByLabel("Agent execution", { exact: true }).inputValue(), "missing-worker");
-  await until(() => page.getByRole("button", { name: /^(Start run|Send)$/ }).isDisabled(), value => value);
-  assert.match(await page.locator(".composer-summary").innerText(), /worker/i);
   assert.deepEqual(errors, []);
 });
 

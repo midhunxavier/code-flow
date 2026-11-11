@@ -30,6 +30,6 @@ export function setupRecovery(output: string): string {
 
 /** This machine's diagnostics cannot describe a worker or container's credentials. */
 export function replySignInIssue(run: Pick<RunSummary, "loop">, agent: AgentId | undefined, diagnostics: readonly Health[] | null): Health | undefined {
-  if (!agent || run.loop.remoteWorker || run.loop.agentContainer) return;
+  if (!agent || run.loop.agentContainer) return;
   return diagnostics?.find(item => item.id === agent && item.installed && item.signedIn === false);
 }
