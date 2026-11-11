@@ -996,12 +996,6 @@
   .project-memory > .help { margin: 8px 0 0; }
   .project-memory > .at-row { justify-content: flex-start; gap: 8px; margin-top: 12px; }
   .memory-list { display: grid; gap: 10px; margin-top: 12px; }
-  .knowledge-graph { margin-top: 12px; font-size: 13px; }
-  .knowledge-graph label { display: grid; gap: 6px; margin: 12px 0; }
-  .knowledge-connections { overflow-x: auto; contain: inline-size; }
-  .knowledge-graph table { width: 100%; min-width: 720px; border-collapse: collapse; }
-  .knowledge-graph th, .knowledge-graph td { text-align: left; vertical-align: top; padding: 8px 10px; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; }
-  .knowledge-graph th { color: var(--text-2); font-weight: 600; white-space: nowrap; }
   .memory-card { border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); padding: 12px 14px; font-size: 13px; overflow-wrap: anywhere; }
   .memory-card > .at-row { flex-wrap: wrap; }
   .memory-card > .at-row > b { font-size: 14px; font-weight: 600; }
@@ -2740,35 +2734,6 @@
   .result > .verify-profile ul { margin: 6px 0; padding-left: 34px; display: grid; gap: 4px; color: var(--text-2); }
   .result > .verify-profile .help { margin: 4px 0 0 15px; }
 
-  /* ---------- Project memory: health, provenance and onboarding ---------- */
-  .memory-analysis > .help { margin: 8px 0 0; }
-  .memory-analysis > .btn { margin-top: 8px; }
-  .memory-analysis > .msg { margin: 8px 0 0; }
-  .memory-analysis > details { margin-top: 10px; }
-  .memory-analysis details > summary { min-height: 28px; }
-  /* what a disclosure holds lines up with its title, past the chevron */
-  .memory-analysis > details > :not(summary) { margin-left: 15px; }
-  .memory-analysis details .help { margin: 6px 0; }
-  .memory-analysis details details { margin-top: 8px; }
-  .memory-analysis ul { margin: 6px 0; padding-left: 18px; display: grid; gap: 6px; }
-  .memory-analysis li > p { margin: 4px 0; }
-  .memory-analysis pre { margin: 6px 0; max-height: none; overflow: visible; overflow-wrap: anywhere; } /* bounded snippets: shown whole, no keyboard-unreachable scroller */
-  .memory-analysis .btn.primary { margin: 4px 0; }
-  /* an entry named in a sentence: a link-like button that scrolls to (and focuses) its card */
-  .mem-link { display: inline; padding: 0; border: 0; background: none; font: inherit; color: var(--accent-ink); text-decoration: underline; text-underline-offset: 2px; text-align: left; cursor: pointer; }
-  .mem-link:hover { color: var(--text); }
-  .memory-graph { overflow: auto; max-height: 380px; margin: 8px 0; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--sunken); }
-  .memory-graph svg { display: block; font-family: var(--sans); }
-  .mem-edge { fill: none; stroke: var(--muted); stroke-width: 1.25px; }
-  .memory-graph marker path { fill: none; stroke: var(--muted); stroke-width: 1.25px; }
-  .mem-node { cursor: pointer; outline: none; }
-  .mem-node rect { fill: var(--raised); stroke: var(--border-strong); stroke-width: 1px; filter: drop-shadow(var(--shadow)); transition: fill .16s var(--ease); }
-  .mem-node.ref rect { fill: var(--bg); stroke-dasharray: 4 3; filter: none; }
-  .mem-node:hover rect { fill: var(--hover); }
-  .mem-node.on rect { fill: var(--selected); stroke: var(--ink); stroke-width: 1.5px; }
-  .mem-node:focus-visible rect { stroke: var(--focus); stroke-width: 2px; }
-  .mem-node text { fill: var(--muted); font-size: 11px; }
-  .mem-node .mem-title { fill: var(--text); font-size: 12px; font-weight: 600; }
   /* deleting an entry asks first: an error-tone banner holding the question, the impact preview and the two answers */
   .memory-confirm { flex-basis: 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 14px; border-radius: var(--radius-sm); background: var(--err-soft); }
   .memory-confirm > .help { flex-basis: 100%; margin: 0; font-size: 12.5px; line-height: 1.5; color: var(--text-2); }

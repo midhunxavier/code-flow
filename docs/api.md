@@ -214,26 +214,18 @@ persistent `Idempotency-Key`. Notification storage/configuration failure returns
 503 and leaves delivery off. See [configuration, disclosure, and delivery
 limitations](notifications.md).
 
-## Project memory analysis and revision commands
+## Project memory revision commands
 
 | Operation | Request | Behavior |
 | --- | --- | --- |
 | `GET /projects/:id/memory` | optional `repo` query | List authorized project entries. A supplied repository must belong to the project. |
 | `POST /projects/:id/memory/commands` | `op=create\|approve\|update\|delete\|feedback` plus operation fields | Run user-authorized revision commands. All existing-entry mutations require exact `id` and `expectedRevision`; conflicts return 409. Client authority/origins are not forwarded. |
-| `GET /projects/:id/memory/analysis` | `repo` query (optional for a single-repo project) | Return bounded provenance, freshness, duplicates/semantic claims, deletion impact and curated onboarding with exact source revisions and truncation indicators. |
-| `POST /projects/:id/memory/analysis/publish` | `repo`, `expectedSources` from `analysis.onboarding.sourceRefs` | Recompute and publish eligible user-authored onboarding guidance with pinned provenance. Changed sources return 409; no eligible sources returns 400. |
 
 Create accepts `repo`, `title`, `body`, optional `paths`, `tags`, and
 `applicability`. Update accepts editable fields and optional `accept: true`; an
 ordinary edit never accepts a proposal automatically. Feedback accepts `rating`,
 optional `note` and `runId`; a run reference must have selected that exact entry
-revision. Analysis is heuristic and bounded: lexical similarity does not infer
-contradictions on its own. Deterministic semantic claims compare supported
-policies and structured boolean/text/numeric intervals only across overlapping
-applicability; unsupported prose is counted. Git freshness checks do not
-establish semantic correctness. See [supported claims](memory-claims.md).
-Publication excludes imported/private/untrusted material and prior onboarding
-summaries. Memory APIs remain owner-only; shared project roles use the separate
+revision. Memory APIs remain owner-only; shared project roles use the separate
 closed review surface described below.
 
 ## Automation inspection and replay

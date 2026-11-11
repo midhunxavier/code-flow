@@ -105,7 +105,6 @@ import { Notes, NotesConflictError } from "./notes.js";
 import { HttpError, readJson, readLoginJson, send } from "./http.js";
 import { handleWorkspaceApi } from "./workspace-api.js";
 import { TeamPlanEditError } from "./workflow-control.js";
-import { analyzeProjectMemory } from "./memory-analysis.js";
 import { redactExport } from "./privacy.js";
 import { validateVerificationProfile, renderVerificationReport } from "./verification.js";
 import { CODEFLOW_HOME, autoTeamEnabled, envNumber, PORT } from "./config.js";
@@ -2212,25 +2211,6 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
       const requested = url.searchParams.get("repo");
       if (requested && !project.repos.includes(requested)) throw new HttpError(400, "That repository is not in this project");
       const repos = requested ? [requested] : project.repos;
-      if (parts[4] === "graph" && !parts[5] && req.method === "GET") {
-        const repo = requested ?? (project.repos.length === 1 ? project.repos[0] : undefined);
-        if (!repo) throw new HttpError(400, "Choose a repository in this project");
-        return send(res, 200, await attempt(() => memoryStore.graph({ repo, projectId: id, scope: "project" }, { kind: "user", repo, projectId: id })));
-      }
-      if (parts[4] === "analysis") {
-        const body = req.method === "POST" ? await readJson(req) : {};
-        const repo = typeof body.repo === "string" ? body.repo : requested ?? (project.repos.length === 1 ? project.repos[0] : undefined);
-        if (!repo || !project.repos.includes(repo)) throw new HttpError(400, "Choose a repository in this project");
-        const entries = await memoryStore.list({ repo, projectId: id, scope: "project" }, { kind: "user", repo, projectId: id });
-        const analysis = await attempt(() => analyzeProjectMemory({ repo, projectId: id, entries }));
-        if (req.method === "GET" && !parts[5]) return send(res, 200, analysis);
-        if (req.method === "POST" && parts[5] === "publish") {
-          if (!Array.isArray(body.expectedSources) || JSON.stringify(body.expectedSources) !== JSON.stringify(analysis.onboarding.sourceRefs)) throw new HttpError(409, "The onboarding sources changed. Review the current summary before publishing");
-          if (!analysis.onboarding.sourceRefs.length) throw new HttpError(400, "There is no current trusted user guidance to publish");
-          return send(res, 201, await attempt(() => memoryStore.propose({ scope: "project", repo, projectId: id, title: analysis.onboarding.title, body: analysis.onboarding.body, tags: ["onboarding-summary"], derivedFrom: analysis.onboarding.sourceRefs, sourceRefs: analysis.onboarding.sourceRefs.map((ref) => `${ref.id}@${ref.revision}`) }, { kind: "user", repo, projectId: id }, { expectedSources: analysis.onboarding.sourceRefs })));
-        }
-        throw new HttpError(404, "Unknown memory analysis operation");
-      }
       if (req.method === "GET" && !parts[4]) {
         const entries = (await Promise.all(repos.map((repo) => memoryStore.list({ repo, projectId: id, scope: "project" }, { kind: "user", repo, projectId: id })))).flat();
         return send(res, 200, entries.sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id)));

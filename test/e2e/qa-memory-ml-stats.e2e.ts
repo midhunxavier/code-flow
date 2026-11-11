@@ -42,13 +42,6 @@ test("memory conflict preserves draft without raw ID or duplicate alert and sing
   const entry = (await api(endpoint()))[0]; await api(endpoint() + "/commands", { op: "update", id: entry.id, expectedRevision: entry.revision, body: "Other tab revision" });
   await card.getByRole("button", { name: "Save knowledge", exact: true }).click(); await card.getByLabel("Resolve memory revision conflict", { exact: true }).waitFor(); assert.equal(await card.getByRole("alert").count(), 0); assert.equal(await card.getByLabel("Memory knowledge", { exact: true }).inputValue(), "My local draft"); assert.doesNotMatch(await card.innerText(), /Memory revision conflict: m-/);
 });
-test("curated onboarding original contradictory policies and duplicate text are excluded before save", async () => {
-  const p = await open("#/settings/projects"); const panel = await memory(p);
-  for (const [title, body] of [["Guest policy A", "Always permit guest requests"], ["Guest policy B", "Never allow guest requests"], ["Dup one", "Use the broker fixture from conftest for every integration test."], ["Dup two", "Use the broker fixture from conftest for every integration test."]]) await createMemory(p, title!, body!);
-  await panel.getByText("Advanced memory tools", { exact: true }).click(); await panel.getByText("Curated project onboarding", { exact: true }).click(); const curated = panel.locator("details").filter({ has: p.locator("summary", { hasText: /^Curated project onboarding$/ }) });
-  const markdown = await curated.locator(".md").innerText(); assert.doesNotMatch(markdown, /guest requests/); assert.equal(markdown.match(/Use the broker fixture/g)?.length, 1);
-  await curated.getByRole("button", { name: "Save onboarding as project knowledge", exact: true }).click(); await until(() => api(endpoint()), entries => entries.some((e: any) => e.tags.includes("onboarding-summary"))); const saved = (await api(endpoint())).find((e: any) => e.tags.includes("onboarding-summary")); assert.doesNotMatch(saved.body, /guest requests/); assert.equal(saved.body.match(/Use the broker fixture/g)?.length, 1);
-});
 test("run memory manifest displays one titled entry after planning omission then worker inclusion", { timeout: 60000 }, async () => {
   const entry = await api(endpoint() + "/commands", { op: "create", repo, title: "Readme guidance", body: "Use README for project notes.", paths: ["README.md"] });
   const run = await api("/api/runs", { repo, project, pattern: "auto-team", task: "Add README notes", roles: { coordinator: ["claude"], builder: ["codex"], reviewer: ["claude"] }, loop: { check: "true", maxSteps: 25, maxMinutes: 5 }, trust: "standard" });

@@ -146,9 +146,8 @@ test("full remote backend browses, edits, runs checks and agents, streams termin
     assert.equal((await readFile(join(f.localHome, "ssh-hosts.json"), "utf8")).includes(remote.token), false);
     const project = (await call("/api/projects"))[0];
     const knowledge = await call(`/api/projects/${project.id}/memory/commands`, { op: "create", repo: project.repos[0], title: "Remote contract", body: "Check the remote contract", paths: ["remote.txt"] });
-    const graph = await call(`/api/projects/${project.id}/memory/graph`);
-    assert.ok(graph.entities.some((entity: any) => entity.key === "remote.txt"));
-    assert.ok(graph.relationships.some((edge: any) => edge.evidence.id === knowledge.id));
+    const entries = await call(`/api/projects/${project.id}/memory`);
+    assert.ok(entries.some((entry: any) => entry.id === knowledge.id && entry.paths?.includes("remote.txt")));
     assert.equal((await readFile(join(state, "memory.sqlite"))).subarray(0, 15).toString(), "SQLite format 3", "the bundled SSH host writes SQLite without npm installation");
     const policy = await call(`/api/projects/${project.id}/filesystem-policy`);
     await call(`/api/projects/${project.id}/filesystem-policy`, { revision: policy.revision, read: { allow: ["."], deny: ["private"] }, write: { allow: ["."], deny: [] } }, "PUT");

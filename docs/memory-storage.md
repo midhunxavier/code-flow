@@ -1,6 +1,6 @@
 # Project memory
 
-Open Project memory to search saved guidance, then use Knowledge graph to follow links to files, runs, commits and source memories. Review provenance before applying an entry to new work.
+Open Project memory to search, add, edit and review saved guidance.
 
 ## Explore project knowledge
 
@@ -38,7 +38,6 @@ The graph uses `entities` and `relationships` tables. Every relationship identif
 
 For retrieval, Code Flow first filters to accepted, visible, current, branch-applicable and path-applicable memories. Text matches seed a traversal of at most two hops through the recorded relationships (at most 1,000 edges). Connected memories receive a small ranking boost, and the selection manifest explains it. This never broadens access or path scope and cannot use a private or stale memory as a hidden bridge. Existing character and entry budgets still apply; replay resolves the exact recorded revisions rather than running search again.
 
-Expand **Project memory → Knowledge graph** to filter connections and inspect their source revisions. The inspector includes proposals for review; it does not approve them. `GET /api/projects/:id/memory/graph?repo=<absolute-path>` exposes the same bounded, authenticated project view and reports truncation.
 
 Run journals, settings and the older recurring-review lessons under `learnings/` retain their existing formats. SQLite is used for the structured agent-memory system; this is not a migration of all application state.
 
