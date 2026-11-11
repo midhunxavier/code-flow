@@ -109,6 +109,7 @@ import {
   type Snapshot,
   type Worktree,
 } from "./git.js";
+import { findFolderMirror, importFolder, isFolderMirror } from "./folders.js";
 import { appendLine, deleteRunHistory, flushWrites, journalEntry, listDeletedRunIds, listRunIds, loadJournal, readJsonLines, rewriteLines, waitForRunWrites, RUNS_DIR } from "./store.js";
 import { compactRunLog, decodeRunLog, RunLogWriter } from "./run-log.js";
 import { branchDiff, workspaceDiff, mergeInto, openPullRequest, pullRequestTarget, removeWorktrees, unsavedWork, type DiffFile } from "./ship.js";
@@ -3375,10 +3376,19 @@ export interface StartRunInput {
 
 const QUOTA_FILE = join(CODEFLOW_HOME, "quota.json");
 
+/** The repository a run starts in: a repository, or the mirror of a folder Code Flow already has (src/folders.ts). */
+async function startRepository(path: string): Promise<string> {
+  return repoRoot(path).catch(async (err) => {
+    const mirror = await findFolderMirror(path);
+    if (!mirror) throw err;
+    return mirror;
+  });
+}
+
 export class RunManager {
   private projectTeamShippingGuard?: (run: Run, branch: string) => Promise<void>;
   setProjectTeamShippingGuard(guard: (run: Run, branch: string) => Promise<void>) { this.projectTeamShippingGuard = guard; }
-  private async managedShipping(run: Run, branch: string) { if (run.testRun) throw new Error("This is a test run. Archive it instead of publishing or merging its changes."); if (run.projectTeam) { if (!this.projectTeamShippingGuard) throw new Error("Project team service unavailable"); await this.projectTeamShippingGuard(run, branch); } }
+  private async managedShipping(run: Run, branch: string) { if (isFolderMirror(run.repo)) throw new Error("This run worked on a copy of a folder. Applying results back to the folder isn't available yet: the result stays in this run, where you can read its changes."); if (run.testRun) throw new Error("This is a test run. Archive it instead of publishing or merging its changes."); if (run.projectTeam) { if (!this.projectTeamShippingGuard) throw new Error("Project team service unavailable"); await this.projectTeamShippingGuard(run, branch); } }
   private projectTeamGuard?: (run: Run) => Promise<void>;
   setProjectTeamGuard(guard: (run: Run) => Promise<void>) { this.projectTeamGuard = guard; }
   private projectTeamDeletionGuard?: (run: Run, deletingProject?: string) => void;
@@ -5674,7 +5684,7 @@ export class RunManager {
 
   async start(input: StartRunInput): Promise<Run> {
     if (this.shuttingDown) throw new Error("code-flow is shutting down; new runs cannot start");
-    const repo = await realpath(await repoRoot(input.repo));
+    const repo = await realpath(await startRepository(input.repo));
     this.assertNoWorkspaceLease(repo);
     if (this.shuttingDown) throw new Error("code-flow is shutting down; new runs cannot start");
     this.startingRepositories.set(repo, (this.startingRepositories.get(repo) ?? 0) + 1);
@@ -5718,7 +5728,7 @@ export class RunManager {
 
   /** Admission without creating a run: comparisons use the single-run checks before dispatch. */
   async validateStart(input: StartRunInput): Promise<void> {
-    const repo = await realpath(await repoRoot(input.repo));
+    const repo = await realpath(await startRepository(input.repo));
     this.assertNoWorkspaceLease(repo);
     await this.prepareStart({ ...input, repo });
     if (input.branchPrefix?.trim()) await validateBranchPrefix(repo, input.branchPrefix.trim().replace(/^\/+|\/+$/g, ""));
@@ -5809,6 +5819,8 @@ export class RunManager {
       if (state === "unreachable") throw new Error(`Isolation runs checks in a Docker container, but Docker isn't running (${detail}). Start Docker and try again.`);
     }
     const repo = await repoRoot(input.repo);
+    // A folder project's run works on its mirror, brought up to date with the folder first.
+    if (isFolderMirror(repo)) await importFolder(repo);
     if (input.requireProjectRepo && (!this.projects?.available || !input.project || !this.projects.get(input.project)?.repos.includes(repo))) {
       throw new Error("The repository is no longer an explicit member of the requested project");
     }

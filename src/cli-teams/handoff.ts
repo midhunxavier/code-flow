@@ -1,4 +1,5 @@
 import type { Run } from "../engine.js";
+import { isFolderMirror } from "../folders.js";
 import { git } from "../git.js";
 import { digest, fail } from "./model.js";
 
@@ -17,6 +18,7 @@ export function handoffBase(run: Run, find: (id: string) => Run | undefined): st
 /** Applies a pinned task delta, not the user's pre-existing source snapshot. */
 export async function prepareHandoff(run: Run, find: (id: string) => Run | undefined) {
   const state = run.cliTeam!;
+  if (isFolderMirror(run.repo)) fail("handoff_unavailable", "This task worked on a copy of a folder. Applying results back to the folder isn't available yet; inspect the preserved work instead.");
   if (run.status !== "done" || state.outcome !== "verified_changes") fail("handoff_unavailable", "Finish verification before applying changes. Inspect or continue the preserved work first.");
   const artifacts = Object.values(state.artifacts), result = artifacts.filter(a => a.kind === "result").at(-1);
   const target = result && state.artifacts[String(result.data.primary)];

@@ -3,6 +3,7 @@ import { mkdir, readFile, realpath, rename, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import type { AgentSettings } from "./adapters/types.js";
 import { CODEFLOW_HOME } from "./config.js";
+import { ensureFolderMirror, folderOfMirror } from "./folders.js";
 import { git, repoRoot } from "./git.js";
 import { logError } from "./log.js";
 
@@ -38,6 +39,11 @@ export interface Project {
   defaults?: ProjectDefaults;
   /** Canonical repositories for which this project is the default. */
   defaultRepos?: string[];
+  /**
+   * The folders among `repos`: a repo that is a folder's mirror, and the folder it copies. Filled
+   * in on every copy a caller gets, never saved (see src/folders.ts).
+   */
+  folders?: { mirror: string; path: string }[];
 }
 
 export interface ProjectsStatus {
@@ -331,11 +337,13 @@ export class Projects {
    * names can't end up the same once shortened.
    */
   private add(repo: string, createdAt = Date.now()): Project {
-    const base = basename(repo) || repo;
+    // A mirror is named after the folder it copies, not after its own "source" folder.
+    const named = folderOfMirror(repo) ?? repo;
+    const base = basename(named) || named;
     const fit = (suffix = "") => `${base.slice(0, MAX_NAME - suffix.length)}${suffix}`;
     const taken = (name: string) => this.projects.some((p) => p.name.toLowerCase() === name.toLowerCase());
     let name = fit();
-    if (taken(name)) name = fit(` (${basename(dirname(repo)).slice(0, 20)})`);
+    if (taken(name)) name = fit(` (${basename(dirname(named)).slice(0, 20)})`);
     for (let i = 2; taken(name); i++) name = fit(` ${i}`);
     const project: Project = { id: `p-${randomBytes(4).toString("hex")}`, name, repos: [repo], createdAt, revision: 0 };
     this.projects.push(project);
@@ -375,16 +383,20 @@ async function checkRepos(input: unknown[], current: string[] = []): Promise<str
       continue;
     }
     if (!path.startsWith("/")) throw new Error("Repositories must be absolute paths");
-    const root = await repoRoot(path).catch(() => {
-      throw new Error(`${path} isn't a git repository`);
-    });
+    // A folder that isn't a repository joins as its mirror (docs/design/folder-projects.md).
+    const root = await repoRoot(path).catch(() => ensureFolderMirror(path));
     if (!repos.includes(root)) repos.push(root);
   }
   return repos;
 }
 
+/** A copy for callers, with the folder each mirror in it copies (never saved: the mirror records it). */
 function copy(p: Project): Project {
-  return structuredClone(p);
+  const project = structuredClone(p);
+  const folders = project.repos.flatMap((mirror) => { const path = folderOfMirror(mirror); return path ? [{ mirror, path }] : []; });
+  if (folders.length) project.folders = folders;
+  else delete project.folders;
+  return project;
 }
 
 function isProject(p: unknown): p is Project {

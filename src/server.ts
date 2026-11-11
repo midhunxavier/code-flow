@@ -118,6 +118,7 @@ import { detectCheck } from "./checks.js";
 import { findPattern, patterns } from "./patterns/index.js";
 import { listDirectories } from "./fs.js";
 import { git, listBranches, repoRoot, worktreeRoot, type GitCwd } from "./git.js";
+import { ensureFolderMirror, findFolderMirror } from "./folders.js";
 import { stat } from "node:fs/promises";
 import { folderSizes, remoteBranches } from "./ship.js";
 import { computeStats, rankAgents } from "./stats.js";
@@ -649,9 +650,17 @@ async function requestedRepo(url: URL): Promise<string> {
   return validRepo(url.searchParams.get("repo") ?? "");
 }
 
-async function validRepo(requested: string): Promise<string> {
+/**
+ * The repository a request names. A folder that isn't a repository stands for its mirror
+ * (src/folders.ts): one it already has, or with `openFolder` (starting a run) a new one.
+ */
+async function validRepo(requested: string, opts: { openFolder?: boolean } = {}): Promise<string> {
   if (!requested.startsWith("/")) throw new HttpError(400, "Repository must be an absolute path");
-  return attempt(() => repoRoot(requested));
+  return attempt(() => repoRoot(requested).catch(async (err) => {
+    const mirror = opts.openFolder ? await ensureFolderMirror(requested) : await findFolderMirror(requested);
+    if (!mirror) throw err;
+    return mirror;
+  }));
 }
 
 /**
@@ -971,7 +980,7 @@ async function validatedStartInput(body: Record<string, any>): Promise<StartRunI
   if (!repo.startsWith("/")) throw new HttpError(400, "Repository must be an absolute path");
   if (body.parentRunId !== undefined && (typeof body.parentRunId !== "string" || !manager.get(body.parentRunId))) throw new HttpError(409, "The original run is no longer available. Reload before starting a continuation so its source restrictions can be retained.");
   await attempt(async () => assertPolicyExecution(await fileAccess.execution(repo), "Run preparation"));
-  repo = await validRepo(repo);
+  repo = await validRepo(repo, { openFolder: true });
   if (body.trust !== undefined && !["safe", "standard", "trusted", "full"].includes(body.trust)) throw new HttpError(400, "Choose Safe, Standard, Trusted or Full access");
   for (const field of ["loop", "options", "agentSettings", "roleSettings"]) if (body[field] !== undefined && (!body[field] || typeof body[field] !== "object" || Array.isArray(body[field]))) throw new HttpError(400, `${field} must be an object`);
   if (body.projectSelection === "explicit" && !projects.get(body.project)?.repos.includes(await repoRoot(repo))) throw new HttpError(409, "This repository is no longer an explicit member of the selected project");
