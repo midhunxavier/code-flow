@@ -23,6 +23,7 @@ import { ExtensionsPanel } from "./extensions.js";
 import { ProjectRunSettings } from "./project-run-settings.js";
 import { DependencyDiscovery } from "./dependency-health.js";
 import { PromptImprovementSettings } from "./prompt-improvement.js";
+import { CodexProfileSetting } from "./codex-profile.js";
 import { WorkbenchRetentionPanel } from "./retention.js";
 import { downloadArtifact } from "./workbench.js";
 import {
@@ -112,6 +113,7 @@ function AgentSettings() {
     <div class="settings-actions"><button class="btn" disabled={busy || providersRefreshing.value} onClick={async () => { setBusy(true); try { await refreshProviders(); } finally { setBusy(false); } }}>{busy || providersRefreshing.value ? "Checking…" : "Refresh providers"}</button><button class="btn" onClick={() => { healthOpen.value = true; }}>Health</button></div>
     {healthError.value && !paused ? <p class="msg err" role="alert">{healthError.value}</p> : null}
     <PromptImprovementSettings />
+    <CodexProfileSetting />
     <details class="settings"><summary>Check this computer</summary><div class="settings-body"><DependencyDiscovery /></div></details>
   </>;
 }
