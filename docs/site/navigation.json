@@ -31,8 +31,7 @@
     "architecture-explorer",
     "memory-storage",
     "memory-claims",
-    "coordinated-changes",
-    "model-training"
+    "coordinated-changes"
   ],
   "Connect and collaborate": [
     "project-integrations",

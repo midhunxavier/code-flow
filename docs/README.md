@@ -58,7 +58,7 @@ Read the story: [Describe the team. Code Flow builds the workflow.](https://midh
 - [Project conventions](project-conventions.md) · [Checkpoints and reversions](checkpoint-review.md)
 - [Service launch profiles](launch-profiles.md) · [Code intelligence](code-intelligence.md) · [Architecture explorer](architecture-explorer.md)
 - [Project memory and knowledge graph](memory-storage.md) · [Semantic claim review](memory-claims.md)
-- [Coordinated repository changes](coordinated-changes.md) · [Model training preview](model-training.md)
+- [Coordinated repository changes](coordinated-changes.md)
 
 ## Connect and collaborate
 

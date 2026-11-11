@@ -3,7 +3,6 @@ import { ActivityView } from "./activity.js";
 import { TeamBoardView } from "./collab-board.js";
 import { browserPerformance } from "./performance.js";
 import { DesktopUpdatesCard } from "./desktop-updates.js";
-import { MlSettingsCard } from "./ml/settings.js";
 import { ConnectionsView } from "./connections.js";
 import type { ComponentChildren } from "preact";
 import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
@@ -102,7 +101,6 @@ function GeneralSettings() {
       <SettingsRow title="Show archived chats" description="Include archived work in your chat list."><button class="settings-switch" role="switch" aria-label="Show archived chats" aria-checked={railView.value.archived} onClick={() => setRailView({ archived: !railView.value.archived })}><span /></button></SettingsRow>
       <SettingsRow title="Keyboard shortcuts" description="Move around your workspace without leaving the keyboard."><button class="btn small" onClick={() => { shortcutsOpen.value = true; }}>View shortcuts</button></SettingsRow>
     </SettingsCard>
-    <MlSettingsCard />
   </>;
 }
 function AgentSettings() {

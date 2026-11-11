@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, readFile } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { analyzeProjectMemory } from "../src/memory-analysis.js";
@@ -53,8 +53,4 @@ test("stale save restore and publication name the actual blocked action", async 
     await assert.rejects(store.publish("p", { repo: home, revision: 1, sourceHash: null, head: "a".repeat(40) }, { repos: [home], actor: "user", isIdle: () => true }), /Nothing was published/);
     assert.equal((await store.get("p")).text, "second\n");
   } finally { await rm(home, { recursive: true, force: true }); }
-});
-test("ML docs identify the saved Settings choice as deployment control", async () => {
-  const docs = await readFile(new URL("../docs/model-training.md", import.meta.url), "utf8");
-  assert.doesNotMatch(docs, /Removing `CODEFLOW_ML_ENABLED` blocks/); assert.match(docs, /Disable model training.*blocks deployment/);
 });

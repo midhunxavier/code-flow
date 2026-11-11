@@ -12,8 +12,6 @@ import { MAX_BROWSER_UPLOAD } from "./browser-files.js";
 import { chatTaskId } from "./chat-family.js";
 import { agentToolBridge, validateAgentTool } from "./agent-tools.js";
 import { HISTORY_STATUSES, type HistoryStatus, type ProjectSection } from "./run-status.js";
-import { MlService } from "./ml/service.js";
-import { handleMlApi } from "./ml/api.js";
 import { modelCatalogStore } from "./model-catalog.js";
 import { runProviderProblem, permissionProviderProblem, createRunPermissions as catalogPermissions } from "./run-permissions.js";
 import { inheritRunEnvironment } from "./run-environment.js";
@@ -195,15 +193,6 @@ await remoteWorkers.load().catch((error) => logError("SSH workers disabled; repa
 const manager = new RunManager(findPattern, projects, remoteWorkers);
 const filePolicies = new ProjectFilePolicies();
 const fileAccess = new FilesystemAccess(filePolicies, projects, manager);
-const ml = new MlService({ authorize: async (project, selected) => {
-  const repo = await repoRoot(selected);
-  if (!projects.get(project)?.repos.includes(repo)) throw new HttpError(409, "The repository is no longer an explicit member of this project");
-  assertPolicyExecution(await fileAccess.execution(repo), "Model training");
-  const commit = (await git(["rev-parse", "HEAD"], repo)).stdout.trim();
-  if (!projects.get(project)?.repos.includes(repo)) throw new HttpError(409, "Project membership changed");
-  return { repo, commit };
-} });
-let mlReady = false;
 const filteredTasks = new FilteredTasks({
   authorize: async (project, repo) => {
     if (!projects.get(project)?.repos.includes(repo)) throw new FilteredTaskError("The project or its explicit repository membership changed", 409);
@@ -1762,7 +1751,6 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
       const body = await readJson(req, 64 * 1024);
       return send(res, 200, await attempt(() => fileAccess.update(project.id, body, async (commit, next) => {
         if (!filteredTasksReady || filteredTasks.active()) throw new FilePolicyError("Finish or explicitly cancel and reconcile filtered tasks before changing policy; unavailable task storage must be repaired first", 409);
-        if (!mlReady || ml.active()) throw new FilePolicyError("Pause retraining schedules and finish training, inference, registry operations and exports before changing filesystem policy", 409);
         if (policyIsRestrictive(next) && extensions.list().length) throw new FilePolicyError("Disable configured extensions and restart before applying a restriction. Previously imported trusted JavaScript can retain background host authority, including a bundle rejected after initialization.", 409);
         const terminals = shells.list().filter((shell) => shell.status === "running").length;
         if (terminals || teamTerminals.active() || manager.devServers.list().some((service) => service.status === "running")) throw new FilePolicyError(`${terminals ? `Close the ${terminals === 1 ? "open terminal" : `${terminals} open terminals`} (side panel → Terminal)` : "Close terminals"} and stop development services before changing filesystem policy`, 409);
@@ -1798,12 +1786,6 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     if (req.method !== "GET") { auth.claimable = false; manager.noteActivity(); }
     const handle = () => handleTaskConversations(req, res, url, parts, taskConversations);
     return req.method !== "GET" || ["source", "models"].includes(parts[2] ?? "") || parts[3] === "source" ? trackPolicyPreparation(handle) : handle();
-  }
-  if (parts[1] === "ml") {
-    if (via !== "local") throw new HttpError(403, "Use the owner app on the project computer for model training");
-    if (!mlReady) throw new HttpError(503, "ML storage is unavailable; repair its private records before continuing");
-    if (req.method !== "GET") { auth.claimable = false; manager.noteActivity(); }
-    if (await handleMlApi(req, res, url, parts.slice(1), ml)) return;
   }
   if (parts[1] === "browser") {
     if (fileAccess.hasRestrictions()) throw new HttpError(403, "Interactive browsing is paused under filesystem restrictions");
@@ -3018,8 +3000,6 @@ await collab.load();
 await teamConnections.load();
 await fileAccess.all().catch((error) => logError("Filesystem policy is unavailable; protected operations and extension loading remain disabled until the private policy file is repaired", error));
 filteredTasksReady = await filteredTasks.load().then(() => true, (error) => { logError("Filtered tasks unavailable; policy activation remains blocked until task receipts are repaired", error); return false; });
-mlReady = await ml.load().then(() => true, (error) => { logError("ML storage unavailable; inspect its private records before executing more work", error); return false; });
-if (mlReady) ml.start();
 if (!fileAccess.hasRestrictions()) await extensions.load().catch((error) => logError("Extension configuration could not be loaded; built-in workflows remain available", error));
 else { extensions.defer("A custom filesystem policy is active. Clear it and restart to load extensions."); logWarn("Extensions deferred: custom filesystem policy cannot isolate trusted plugin initialization; clear the policy and restart to load extensions"); }
 await codeHostsApi.service.load();
@@ -3282,7 +3262,6 @@ async function stop(reason: string, code = 0) {
   docsHelp.close();
   for (const controller of improvingControllers) controller.abort();
   await filteredTasks.close().catch((err) => logError("Filtered task shutdown failed; inspect its durable unknown receipt before retrying", err));
-  await ml.close().catch((err) => logError("Training controller shutdown failed; admitted jobs remain on their workers", err));
   await chatsStopped;
   await manager.shutdown().catch((err) => logError("Shutdown failed", err));
   await cliTransport?.close().catch((err) => logError("CLI bridge shutdown failed", err));
@@ -3303,7 +3282,7 @@ if (process.env.CODEFLOW_CLI_HEADLESS === "1" && process.env.CODEFLOW_MANAGED_RE
   setInterval(() => { void checkUpdates(CODEFLOW_HOME).catch(() => undefined); }, 6 * 60 * 60 * 1000).unref();
   /** What holds an update back, in words `codeflow updates status` shows. */
   const updateBlocker = () =>
-    !cliReady || !taskConversationsReady || !filteredTasksReady || !mlReady ? "Code Flow is still starting"
+    !cliReady || !taskConversationsReady || !filteredTasksReady ? "Code Flow is still starting"
     : cliTransport?.holding ? "a start confirmation is open"
     : activeHttpRequests || cliTransport?.inFlight ? "a request is in progress"
     : policyPreparations.size ? "agent settings are being prepared"
@@ -3311,7 +3290,6 @@ if (process.env.CODEFLOW_CLI_HEADLESS === "1" && process.env.CODEFLOW_MANAGED_RE
     : ownerHubStreams.size ? "a linked team runner is connected"
     : extensions.list().length ? "an extension is running"
     : filteredTasks.active() ? "a filtered task is running"
-    : ml.active() ? "a training job is running"
     : teamTerminals.active() ? "a team terminal is open"
     : shells.list().some(s => s.status === "running") ? "a terminal command is running"
     : manager.devServers.list().some(s => s.status === "running") ? "an app preview is running"
