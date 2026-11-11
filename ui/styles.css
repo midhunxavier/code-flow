@@ -1617,6 +1617,9 @@
   .small-dialog label.check:has(input:disabled) { opacity: .55; }
   .small-dialog .msg.err { margin: 0; padding: 10px 12px; border-radius: var(--radius-sm); background: var(--err-soft); white-space: pre-line; overflow-wrap: anywhere; font-size: 13px; }
   .ship-panel .help, .conflicts .msg { margin: 0; }
+  .ship-panel code { overflow-wrap: anywhere; }
+  .folder-applies { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+  .folder-applies li { display: flex; gap: 8px; align-items: center; justify-content: space-between; flex-wrap: wrap; padding-top: 6px; border-top: 1px solid var(--border); color: var(--text-2); }
   .field.inline { width: auto; display: inline-block; min-height: 30px; padding: 4px 10px; font-size: 13px; }
   label.check { display: flex; gap: 6px; align-items: center; font-size: 12px; color: var(--muted); }
   .conflicts { display: grid; gap: 8px; }

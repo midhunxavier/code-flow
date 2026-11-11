@@ -146,8 +146,8 @@ async function checkedOutAt(repo: string, branch: string): Promise<string | unde
 
 export type MergeOutcome =
   /** `warning`: merged, but something about it needs a look (git stopped while a hook ran). */
-  | { ok: true; commit: string; method: "checkout" | "ref"; warning?: string }
-  | { ok: false; conflicts: string[]; message: string };
+  | { ok: true; commit: string; method: "checkout" | "ref" | "folder"; warning?: string }
+  | { ok: false; conflicts: string[]; message: string; resolvable?: false };
 
 /**
  * How long a merge in a checkout (yours, or a worktree) may take. It runs that checkout's hooks
