@@ -1,8 +1,9 @@
 import { git, resolveCommit } from "./git.js";
 
-export const CODE_HOST_IMPORTS = "refs/codeflow/external/";
+// The GitLab/Bitbucket review workflow that fetched PR code has been removed. Repositories can still
+// hold its imports, so ordinary runs keep refusing those commits.
 const LEGACY = "refs/heads/codeflow/external/";
-export const CODE_HOST_PROVENANCE = "refs/codeflow/untrusted-code/";
+const CODE_HOST_PROVENANCE = "refs/codeflow/untrusted-code/";
 const SHA = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
 
 /** Provenance outlives preview refs: selecting the same imported head by SHA must not bypass isolation. */
@@ -17,12 +18,18 @@ export async function isCodeHostImport(repo: string, ref: string): Promise<boole
   const legacy = await git(["for-each-ref", "--format=%(refname) %(objectname)", LEGACY], repo);
   if (legacy.code) throw new Error("Cannot inspect legacy code-host imports");
   const refs = legacy.stdout.split("\n").filter(Boolean).map(line => line.split(" "));
-  if (refs.length) return (await legacyImportedHistory(repo, refs)).commits.includes(head);
-  return false;
+  if (!refs.length) return false;
+  const { commits, anchor } = await legacyImportedHistory(repo, refs);
+  // Make the finding durable: once marked, deleting or renaming the legacy branches cannot launder their commits.
+  if (commits.length) {
+    const marked = await git(["update-ref", "--stdin"], repo, { input: commits.map(commit => `update ${CODE_HOST_PROVENANCE}${commit} ${anchor}\n`).join("") });
+    if (marked.code) throw new Error("Cannot retain imported code provenance");
+  }
+  return commits.includes(head);
 }
 
-/** Pin existing local trust before importing any object; application preview/provenance refs grant none. */
-export async function trustedCodeHostCommits(repo: string): Promise<string[]> {
+/** Existing local trust; application preview/provenance refs grant none. */
+async function trustedCodeHostCommits(repo: string): Promise<string[]> {
   const listed = await git(["for-each-ref", "--count=4097", "--format=%(refname) %(objecttype) %(objectname)", "refs/heads", "refs/remotes", "refs/tags"], repo);
   if (listed.code) throw new Error("Cannot inspect existing repository history before code-host import");
   const refs = listed.stdout.split("\n").filter(Boolean).map(line => line.split(" "));
@@ -53,33 +60,4 @@ async function legacyImportedHistory(repo: string, refs: string[][]): Promise<{ 
   const commits = history.stdout.trim().split("\n").filter(Boolean);
   if (commits.length > 1000 || commits.some(commit => !SHA.test(commit))) throw new Error("Legacy code-host history exceeds the 1,000-commit import limit; retain its refs for inspection");
   return { commits, anchor: trusted[0] ?? tips[0] };
-}
-
-export async function removeCodeHostImport(repo: string, imported: { branch: string; into: string }): Promise<void> {
-  for (const ref of [imported.branch, imported.into]) {
-    if (!ref.startsWith(CODE_HOST_IMPORTS)) throw new Error("Refusing to remove a non-preview ref");
-    const removed = await git(["update-ref", "-d", ref], repo);
-    if (removed.code) throw new Error("Cannot remove expired code-host preview refs");
-  }
-}
-
-/** Called once per repository after restart; no preview survives a service restart. */
-export async function clearOrphanedCodeHostImports(repo: string): Promise<void> {
-  const listed = await git(["for-each-ref", "--format=%(refname) %(objectname)", CODE_HOST_IMPORTS, LEGACY], repo);
-  if (listed.code) throw new Error("Cannot inspect code-host preview refs");
-  const refs = listed.stdout.split("\n").filter(Boolean).map(line => line.split(" "));
-  // Record both legacy source and target histories before dropping ordinary branch names.
-  const { commits, anchor } = await legacyImportedHistory(repo, refs);
-  if (commits.length) {
-    const marked = await git(["update-ref", "--stdin"], repo, { input: commits.map(commit => `update ${CODE_HOST_PROVENANCE}${commit} ${anchor}\n`).join("") });
-    if (marked.code) throw new Error("Cannot retain imported code provenance");
-  }
-  const worktrees = await git(["worktree", "list", "--porcelain", "-z"], repo);
-  if (worktrees.code) throw new Error("Cannot inspect checkouts before cleaning legacy imports");
-  const checkedOut = new Set(worktrees.stdout.split("\0").filter(line => line.startsWith("branch ")).map(line => line.slice(7)));
-  for (const [ref] of refs) {
-    if (!ref || checkedOut.has(ref)) continue;
-    const removed = await git(["update-ref", "-d", ref], repo);
-    if (removed.code) throw new Error("Cannot remove orphaned code-host preview refs");
-  }
 }

@@ -7,7 +7,6 @@ import { gzip, gunzip } from "node:zlib";
 import { promisify } from "node:util";
 import { acquireLock } from "./store.js";
 import { disableRestoredDeferredRuns } from "./deferred-runs.js";
-import { disableRestoredCodeHostActions } from "./code-hosts.js";
 import { disableRestoredCoordinatedChanges } from "./repo-coordination.js";
 import { StrictRunLogReader } from "./run-log.js";
 import { MemoryStore } from "./memory.js";
@@ -201,7 +200,6 @@ export async function restoreEncryptedBackup(input: { input: string; destination
         cancelledCoordinatedChanges = restored.cancelled;
         data = Buffer.from(JSON.stringify(restored.document, null, 2));
       }
-      if (file.path === "code-host-operations.json") data = Buffer.from(JSON.stringify(disableRestoredCodeHostActions(JSON.parse(data.toString("utf8"))), null, 2));
       const handle = await open(target, "wx", 0o600);
       try { await handle.writeFile(data); await handle.sync(); } finally { await handle.close(); }
       await syncDirectory(dirname(target));

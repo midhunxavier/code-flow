@@ -1509,17 +1509,6 @@ export function applyTemplate(t: Template, pick?: SourcePick, values: Record<str
   source.value = pick ? { ...pick, ciLogs: !!t.ciLogs } : null;
 }
 
-/** External issues choose an issue workflow, never a prior PR-review template. */
-export function applyExternalIssue(value: import("../src/integrations.js").ExternalSource) {
-  batch(() => {
-    const template = templates.value.find(template => template.id === "fix-issue");
-    if (template) applyTemplate(template);
-    else { setPattern("solo"); setAcceptanceCriteria([]); source.value = null; }
-    setTask("Address the selected issue. Add appropriate checks and explain the result.");
-    externalSource.value = value;
-  });
-}
-
 export const markSeen = (id: string) => post(`/api/runs/${id}/seen`).catch(() => {});
 
 // ---------------------------------------------------------------- start branch and its configuration
