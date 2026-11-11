@@ -222,13 +222,10 @@ function ProjectEditor({ project, onDone, onCreated }: { project?: Project; onDo
     let count: number;
     try { const latest = (await refreshProjectCounts())[project.id]; if (!latest) throw new Error("Project counts are unavailable; retry before deleting"); count = latest.live + latest.archived; }
     catch (error) { setError((error as Error).message); return; }
-    // Deleting archives the project's missions (see ProjectTeams.releaseProject), so name them first.
-    const missions = await api<{ teams: { name: string; projectId: string; status: string }[] }>(`/api/project-teams?project=${encodeURIComponent(project.id)}`).then((data) => data.teams.filter((t) => t.projectId === project.id && t.status !== "archived").map((t) => `“${t.name}”`), () => []);
     await loadAutomations();
-    const remaining = automations.value.filter(a => !a.target && automationProject(a.run)?.id === project.id).length;
+    const remaining = automations.value.filter(a => automationProject(a.run)?.id === project.id).length;
     const automationWarning = remaining ? ` Its ${plural(remaining, "automation")} ${remaining === 1 ? "remains" : "remain"} saved with the current on/off settings. Future runs fall back to the repository's project (or create one if needed); saved automations will appear under Without a project.` : "";
-    const archived = missions.length ? ` Its ${missions.length === 1 ? "mission" : "missions"} ${missions.join(", ")} will be archived: ${missions.length === 1 ? "its" : "their"} mission history and budget records are kept, and results waiting for approval can no longer be approved.` : "";
-    if (!await confirmAction(`Delete the project “${project.name}”? ${count ? `${count === 1 ? "Its" : "All"} ${plural(count, "run")}, including archived runs and related chats, will be permanently deleted. This cannot be undone. Stop active runs before deleting. Git branches, worktrees and repository files are kept.` : "It has no runs."} Its saved draft and draft attachments will also be deleted.${archived}${automationWarning}`, {"title":"Delete this project?","confirmLabel":"Delete project","danger":true})) return;
+    if (!await confirmAction(`Delete the project “${project.name}”? ${count ? `${count === 1 ? "Its" : "All"} ${plural(count, "run")}, including archived runs and related chats, will be permanently deleted. This cannot be undone. Stop active runs before deleting. Git branches, worktrees and repository files are kept.` : "It has no runs."} Its saved draft and draft attachments will also be deleted.${automationWarning}`, {"title":"Delete this project?","confirmLabel":"Delete project","danger":true})) return;
     setBusy(true); setError("");
     try {
       await api(`/api/projects/${project.id}`, { method: "DELETE" });

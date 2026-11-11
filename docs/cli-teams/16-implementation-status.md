@@ -27,7 +27,7 @@ The chat adapter adds per-chat serialized mutations, durable idempotent receipts
 
 The fixed composer and independent reading area preserve reader position. Task details contains settings, allowances, queued messages, file context, actual participant/session receipts, guidance delivery, prior executions and worktrees. The primary result contains the final deliverable, with evidence fetched separately.
 
-The public MCP surface now has fourteen tools, including explicit diff preview and checkout handoff. The private lead/preparation patterns are excluded from the workflow picker. Legacy workflows, templates, saved drafts, other providers, remote/container execution, automation, project missions and human collaboration retain their compatibility paths. See the [chat guide](../conversational-tasks.md).
+The public MCP surface now has fourteen tools, including explicit diff preview and checkout handoff. The private lead/preparation patterns are excluded from the workflow picker. Legacy workflows, templates, saved drafts, other providers, remote/container execution, automation and human collaboration retain their compatibility paths. See the [chat guide](../conversational-tasks.md).
 
 A bounded real-provider acceptance run `2611022351-02ef53a8` completed with `verified_changes`: Claude `claude-haiku-5-5` at high effort implemented a small fix, the unchanged test passed, and Codex `gpt-6-luna` at high effort independently approved the same code. Both assignments recorded native CLI session receipts. The original checkout and staging index remained unchanged. This proves the local managed-provider path on the installed versions; it does not certify every CLI version or native-host interaction.
 

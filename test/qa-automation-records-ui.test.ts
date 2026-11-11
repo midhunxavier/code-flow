@@ -49,7 +49,7 @@ after(async () => { await stop(); await browser?.close(); if (evidence) { await 
 test("global automation routes reject bad purposes and extra path segments; valid and legacy routes work", { timeout: 60_000 }, async () => {
   for (const suffix of ["bogus", "Once", "repeat/extra", "repeat/"]) { await open(`#/automations/${suffix}`); await page.getByRole("heading", { name: "This link is invalid" }).waitFor(); }
   await shot("01-invalid-route");
-  for (const kind of ["once", "repeat", "backlog", "missions"]) { await open(`#/automations/${kind}`); assert.equal(await page.getByRole("navigation", { name: "Scheduling purpose" }).locator('[aria-current="page"]').getAttribute("href"), `#/automations/${kind}`); }
+  for (const kind of ["once", "repeat", "backlog"]) { await open(`#/automations/${kind}`); assert.equal(await page.getByRole("navigation", { name: "Scheduling purpose" }).locator('[aria-current="page"]').getAttribute("href"), `#/automations/${kind}`); }
   await open("#/settings/automations"); await page.getByRole("heading", { name: "Scheduling", exact: true }).waitFor();
 });
 
@@ -113,7 +113,7 @@ test("composer saved automation survives project deletion and warns about future
 });
 
 
-test("legacy load warnings clear after schedule repair; mission guards return 409 with no mutation", { timeout: 60_000 }, async () => {
+test("legacy load warnings clear after schedule repair; removed mission projections are ignored", { timeout: 60_000 }, async () => {
   await stop(); const file = join(home, "triggers.json"), list = JSON.parse(await readFile(file, "utf8"));
   list.push({ id: "t-bad-schedule", name: "Repair schedule record", enabled: true, revision: 1, run: run(), schedule: { every: -1 }, webhook: false, isolate: false, token: "q".repeat(48), createdAt: Date.now() });
   list.push({ id: "t-legacy-explicit", name: "Legacy explicit record", enabled: true, revision: 1, run: { ...run(), project: "p-deleted-fixture", projectSelection: "explicit" }, webhook: true, isolate: false, token: "l".repeat(48), createdAt: Date.now() });
@@ -128,18 +128,7 @@ test("legacy load warnings clear after schedule repair; mission guards return 40
   const row = page.locator(".auto-row", { hasText: "Repair schedule record" }); await row.getByText(/Turned off: its schedule couldn't be read/).waitFor(); assert.doesNotMatch(await row.innerText(), /couldn.t start:.*Turned off/i);
   if (!await row.getByText("Schedule and next times", { exact: true }).isVisible()) await row.getByRole("button", { name: "Edit", exact: true }).click(); await row.getByText("Schedule and next times", { exact: true }).click(); await row.getByLabel("Schedule for Repair schedule record", { exact: true }).selectOption("every"); await row.getByLabel("Minutes", { exact: true }).fill("30"); await row.getByRole("button", { name: "Save schedule", exact: true }).click(); await until(() => record("t-bad-schedule"), v => !v.lastError && v.schedule?.every === 30, "schedule repair"); await row.getByRole("switch", { name: "Repair schedule record: on", exact: true }).check(); await until(() => record("t-bad-schedule"), v => v.enabled, "re-enable repaired record"); await page.reload(); await row.getByText(/Next:/).waitFor(); assert.doesNotMatch(await row.innerText(), /Turned off/); await shot("07-repaired-schedule");
   const legacy = await api("/api/automations/t-legacy-explicit/run", {}); const legacyRun = await until(() => api(`/api/runs/${legacy.id}`), v => v.status !== "running", "legacy explicit marker fallback"); assert.equal(legacyRun.project, project);
-  const before = await record("t-managed"); for (const [method, body] of [["POST", { name: "Bad edit" }], ["DELETE", undefined]] as const) { const result = await request("/api/automations/t-managed", body, method); assert.equal(result.status, 409); assert.match(result.value.error, /project mission/); } assert.deepEqual(await record("t-managed"), before);
-});
-
-test("a mission created in the UI keeps ownership of its projected automation", { timeout: 60_000 }, async () => {
-  const settings = await api("/api/project-teams/settings"); await api("/api/project-teams/settings", { enabled: true, revision: settings.revision });
-  await open(`#/project/${project}/automation/missions`); await page.getByRole("button", { name: "Create a mission", exact: true }).click(); const form = page.locator("form.pt-form");
-  await form.getByRole("button", { name: "Configure manually", exact: true }).click();
-  await form.getByLabel("Mission", { exact: true }).fill("Record ownership QA"); await form.getByLabel("Intended users").fill("Developers"); await form.getByLabel("Verification command").fill("true"); await form.getByRole("button", { name: "Save draft mission", exact: true }).click(); await form.waitFor({ state: "detached" });
-  const teams = await api(`/api/project-teams?project=${project}`), team = teams.teams.find((t: any) => t.mission.objective === "Record ownership QA" || t.mission.goal === "Record ownership QA") ?? teams.teams.at(-1);
-  const a = (await api("/api/automations")).find((a: any) => a.target?.teamId === team.id); assert.ok(a, "mission projection exists");
-  for (const [method, body] of [["POST", { enabled: true }], ["DELETE", undefined]] as const) { const result = await request(`/api/automations/${a.id}`, body, method); assert.equal(result.status, 409); assert.match(result.value.error, /project mission/); }
-  assert.deepEqual(await record(a.id), a); await shot("11-managed-mission");
+  assert.equal((await api("/api/automations")).some((a: any) => a.id === "t-managed"), false); assert.equal((await api("/api/automations/storage")).state, "ready");
 });
 
 test("corrupt and unreadable storage show recovery status, retain originals and return an actionable 503", { timeout: 90_000 }, async () => {

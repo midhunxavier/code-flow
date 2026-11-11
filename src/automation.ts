@@ -20,7 +20,6 @@ export { validateSchedule, type Schedule };
 
 export interface Trigger {
   id: string;
-  target?: { kind: "project-team"; teamId: string };
   name: string;
   creationKey?: string;
   creationHash?: string;
@@ -127,9 +126,6 @@ export class AutomationStorageError extends Error {
   readonly status = 503;
   constructor() { super("Automations can't be changed: storage is unavailable. Fix access to triggers.json, then restart CodeFlow; existing records have been preserved."); }
 }
-export class ManagedAutomationError extends Error {
-  readonly status = 409;
-}
 export class AutomationValidationError extends Error {
   readonly status = 400;
 }
@@ -172,8 +168,6 @@ const WEBHOOK_RUNS_PER_HOUR = 10;
 const HOUR = 3_600_000;
 /** A scheduled time missed while code-flow was closed or asleep still fires if it's at most this late. */
 export const MISSED_GRACE_MS = HOUR;
-/** A mission occurrence whose admission was refused is tried again at most this often, within the grace. */
-const ADMISSION_RETRY_MS = 5 * 60_000;
 
 const FILE = join(CODEFLOW_HOME, "triggers.json");
 const SWEEP_KINDS: SweepKind[] = ["issues", "dependabot", "alerts"];
@@ -284,24 +278,6 @@ export function describeSchedule(schedule?: Schedule): string {
 
 export class Automations {
   private triggers: Trigger[] = [];
-  private managed?: { fire: (teamId: string, operationId: string) => Promise<FireResult>; preview: (teamId: string) => Promise<AutomationPreview>; tick: () => Promise<void> };
-  setProjectTeams(hooks: NonNullable<Automations["managed"]>) { this.managed = hooks; }
-  /**
-   * Internal projection: execution settings remain owned by the team's versioned mission.
-   * `hostEnabled`: this host permits missions to run; when it doesn't, the schedule is disarmed.
-   */
-  async syncProjectTeam(team: { id: string; name: string; repo: string; projectId: string; status: string; mission: { schedule: Schedule }; schedule?: Schedule; scheduleEnabled?: boolean }, hostEnabled = true) {
-    this.requireWritable();
-    const id = `t-${team.id}`, previous = this.get(id);
-    if (previous && previous.target?.teamId !== team.id) throw new Error("Managed automation identity collision");
-    // Saved as the server saves any schedule (current zone names), so a restart reads back the same one.
-    const enabled = hostEnabled && team.status === "active" && team.scheduleEnabled !== false, schedule = validateSchedule(team.schedule ?? team.mission.schedule)!;
-    const next: Trigger = { ...previous, id, revision: previous?.revision ?? 1, target: { kind: "project-team", teamId: team.id }, name: team.name, run: { repo: team.repo, project: team.projectId, pattern: "auto-team", task: `Project mission: ${team.name}` }, schedule, enabled, webhook: false, isolate: false, token: previous?.token ?? randomBytes(24).toString("hex"), createdAt: previous?.createdAt ?? Date.now(), nextAt: enabled ? previous?.enabled && JSON.stringify(previous.schedule) === JSON.stringify(schedule) ? previous.nextAt : nextFire(schedule, Date.now()) : undefined };
-    if (previous && JSON.stringify(previous) === JSON.stringify(next)) return id;
-    this.triggers = [...this.triggers.filter((t) => t.id !== id), next];
-    try { await this.save(true); } catch (error) { this.triggers = this.triggers.filter((t) => t.id !== id); if (previous) this.triggers.push(previous); throw error; }
-    return id;
-  }
   private timer?: ReturnType<typeof setInterval>;
   private unsubscribe?: () => void;
   private saving: Promise<unknown> = Promise.resolve();
@@ -326,8 +302,6 @@ export class Automations {
    * first tick fires them even if it comes after the hour's grace ran out meanwhile.
    */
   private readonly resumed = new Map<string, { due: number; at: number }>();
-  /** Per mission automation: the occurrence whose admission was refused, its event, and when to try again. */
-  private readonly admissionRetries = new Map<string, { due: number; eventId: string; at: number }>();
 
   constructor(
     private readonly manager: RunManager,
@@ -374,6 +348,8 @@ export class Automations {
     }
     let rejected = 0;
     for (const entry of entries) {
+      // Schedules projected from removed project missions; the mission records stay on disk unused.
+      if (entry && typeof entry === "object" && "target" in entry) continue;
       const t = readTrigger(entry);
       if (t) this.triggers.push(t);
       else rejected++;
@@ -435,7 +411,6 @@ export class Automations {
   async update(id: string, patch: Partial<Pick<Trigger, "name" | "enabled" | "schedule" | "webhook" | "isolate" | "image" | "run" | "revision" | "onceAt" | "missedPolicy">> & { rotateToken?: boolean }) {
     this.requireWritable();
     const t = this.require(id);
-    if (t.target) throw new ManagedAutomationError("Edit this automation from its project mission");
     const { rotateToken, revision, ...rest } = patch;
     if (revision !== undefined && revision !== t.revision) throw new AutomationConflictError();
     requireTrigger({ ...t, ...rest });
@@ -468,7 +443,7 @@ export class Automations {
 
   async remove(id: string) {
     this.requireWritable();
-    if (this.require(id).target) throw new ManagedAutomationError("Archive this automation from its project mission");
+    this.require(id);
     this.triggers = this.triggers.filter((t) => t.id !== id);
     await this.save();
   }
@@ -500,7 +475,6 @@ export class Automations {
    */
   async tick(now = Date.now()) {
     if (this.stopped) return;
-    await this.managed?.tick().catch((error) => logError("Project team recovery failed", error));
     let changed = false;
     for (const t of this.triggers) {
       if (this.stopped) return;
@@ -525,25 +499,6 @@ export class Automations {
       // the computer slept again for the hour since).
       const kept = this.resumed.get(t.id);
       const judgedAt = kept?.due === due && now - kept.at <= MISSED_GRACE_MS ? kept.at : now;
-      if (t.target) {
-        // A refused admission keeps its occurrence for a later try (the same operation ID can't
-        // start two cycles), but with one warning and one event, not one per tick.
-        const retry = this.admissionRetries.get(t.id)?.due === due ? this.admissionRetries.get(t.id) : undefined;
-        if (retry && now < retry.at && stillDue(t.schedule, due, judgedAt)) continue;
-        if (stillDue(t.schedule, due, judgedAt)) {
-          const eventId = retry?.eventId ?? this.recordEvent(t, { via: "schedule" }).id;
-          try { await this.fire(t.id, { via: "schedule", occurrence: `schedule:${due}`, eventId }); }
-          catch (error) {
-            if (!retry) logWarn(`Project mission "${t.name}" couldn't start its scheduled cycle; trying again every few minutes for up to an hour`, { automation: t.id, error: (error as Error).message });
-            this.admissionRetries.set(t.id, { due, eventId, at: now + ADMISSION_RETRY_MS });
-            continue;
-          }
-        }
-        else this.recordMissed(t, due);
-        this.resumed.delete(t.id);
-        this.admissionRetries.delete(t.id);
-        t.nextAt = nextFire(t.schedule, now); await this.save(true); continue;
-      }
       this.resumed.delete(t.id);
       t.nextAt = nextFire(t.schedule, now);
       changed = true;
@@ -666,7 +621,6 @@ export class Automations {
   /** List the same candidates and execution settings without claiming items or starting agents. */
   async dryRun(id: string, raw: FireInput = { via: "manual" }): Promise<AutomationPreview> {
     const t = this.require(id);
-    if (t.target) { if (!this.managed) throw new Error("Project missions are unavailable on this host"); return this.managed.preview(t.target.teamId); }
     const input = validateFireInput(raw);
     const { config, error: configError } = await readRepoConfig(t.run.repo);
     const busy = this.busy(t);
@@ -739,12 +693,6 @@ export class Automations {
 
   private async fireOne(t: Trigger, input: FireInput): Promise<FireResult> {
     if (!t.enabled && input.via !== "manual") return { skipped: "This automation is disabled" };
-    if (t.target) {
-      if (!this.managed || input.via === "webhook") throw new Error("A project mission automation runs only through its mission, never from a webhook");
-      const result = await this.managed.fire(t.target.teamId, input.occurrence ?? `manual:${input.eventId}`);
-      t.lastFiredAt = Date.now(); t.lastRunId = result.run?.id ?? t.lastRunId; t.lastError = result.skipped;
-      return result;
-    }
     if (t.sweep) return this.fireSweep(t, input);
     const duplicate = this.duplicateSource(t, input);
     if (duplicate) return { skipped: duplicate, deduplicated: true };
@@ -1072,7 +1020,6 @@ function readTrigger(raw: any): Trigger | undefined {
   if (typeof raw.id !== "string" || !raw.id || typeof raw.token !== "string" || raw.token.length < 16) return undefined;
   const run = raw.run;
   if (!run || typeof run !== "object" || typeof run.repo !== "string" || typeof run.pattern !== "string" || typeof run.task !== "string") return undefined;
-  if (raw.target && (raw.target.kind !== "project-team" || !/^pt-[a-f0-9]{24}$/.test(raw.target.teamId))) return undefined;
   const problems: string[] = [];
   let schedule: Schedule | undefined;
   try {
@@ -1105,7 +1052,6 @@ function readTrigger(raw: any): Trigger | undefined {
   if (problems.length) logWarn(`Automation "${raw.name ?? raw.id}" was turned off: ${problems.join("; ")}`);
   return {
     id: raw.id,
-    target: raw.target,
     creationKey: typeof raw.creationKey === "string" ? raw.creationKey : undefined,
     creationHash: typeof raw.creationHash === "string" ? raw.creationHash : undefined,
     name: typeof raw.name === "string" && raw.name.trim() ? raw.name.slice(0, 80) : "Automation",

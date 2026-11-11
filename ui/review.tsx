@@ -110,7 +110,7 @@ export function Review({ id, branch }: { id: string; branch: string }) {
   const file = files?.find((f) => f.path === selected);
   const totals = files?.reduce((t, f) => ({ add: t.add + f.additions, del: t.del + f.deletions }), { add: 0, del: 0 });
   const merged = files?.filter((f) => f.mergedFrom) ?? [];
-  const canSend = summary?.status === "done" && !summary.projectTeam && !!worktree && !!recipient && (comments.length > 0 || general.trim().length > 0);
+  const canSend = summary?.status === "done" && !!worktree && !!recipient && (comments.length > 0 || general.trim().length > 0);
   // Drafts on a file the branch no longer changes have no diff to show them in.
   const gone = files ? comments.filter((c) => !files.some((f) => f.path === c.file)) : [];
 
@@ -222,9 +222,7 @@ export function Review({ id, branch }: { id: string; branch: string }) {
         <div class="review-feedback-actions">
           <p class="help">Send feedback to start an agent revision and rerun configured checks. Click a diff line to add a specific comment.</p>
         <div class="review-send">
-          {summary?.projectTeam ? (
-            <a class="btn" href={`#/project/${summary.project}/automation/missions`}>Use mission revision controls</a>
-          ) : summary?.status === "done" ? (
+          {summary?.status === "done" ? (
             <>
               <span class="review-to">Send to</span>
               <AgentPicker value={recipient} fixed={!!provider} placeholder={run || runError ? "Choose an agent…" : "Loading recipient…"} onChange={setAgent} />

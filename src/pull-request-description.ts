@@ -33,7 +33,7 @@ export function pullRequestDescription(run: Run, patternName: string, visualBody
   const summary = run.summary?.trim() ? `## Summary\n\n${clipped(clean(run.summary), 20_000)}` : "";
   const visual = visualBody ? clipped(clean(visualBody), 20_000) : "";
   const start = [required, summary, visual].filter(Boolean).join("\n\n");
-  const task = clean(run.projectTeam ? run.task.split("\n")[0]! : run.task);
+  const task = clean(run.task);
   // Escaping keeps arbitrary task text from closing the collapsed details element.
   const escaped = task.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   const open = "\n\n<details><summary>Task given to the agents</summary>\n\n<pre>", close = "</pre>\n</details>";

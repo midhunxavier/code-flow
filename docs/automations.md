@@ -9,7 +9,7 @@ Open Project → More → Automation → Repeat for recurring work, Inbox for re
 
 Set up a run in the composer (task, team, check, settings), then choose **More run actions → Schedule… → Repeat**. It runs unattended. **AI team** works only in a live Agent conversation, so a task with it switched on cannot be scheduled: turn it off to schedule one agent, or choose **Team — dynamic plan** in Advanced to schedule a team.
 
-Open **Scheduling** from the sidebar or press **a** to manage recurring tasks, deferred runs, backlog processing and project missions. **Inbox** is a separate sidebar destination for questions, blocked work, failures and results. Older `#/settings/automations` links open the Scheduling page.
+Open **Scheduling** from the sidebar or press **a** to manage recurring tasks, deferred runs and backlog processing. **Inbox** is a separate sidebar destination for questions, blocked work, failures and results. Older `#/settings/automations` links open the Scheduling page.
 
 ## Projects
 

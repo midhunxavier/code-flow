@@ -147,7 +147,7 @@ export async function prepareTeamRerun(source: TeamRerunSource, value: unknown):
 }
 
 /** Replay must restore baseline completion after ordinary cleanPlan would erase its runtime state. */
-export function projectTeamRerunPlan(seed: TeamRerunSeed): RerunTeamPlan { return structuredClone(seed.plan); }
+export function rerunPlanFromSeed(seed: TeamRerunSeed): RerunTeamPlan { return structuredClone(seed.plan); }
 
 /** Public source artifacts stay fenced as untrusted evidence, separate from the new user's instructions. */
 export function retainedBaselinePrompt(seed: TeamRerunSeed, taskId?: string): string {

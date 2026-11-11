@@ -15,7 +15,7 @@ test("all documentation pages produce portable links, anchors and no local assis
   for (const file of await readdir(directory))
     if (file.endsWith(".html"))
       pages.set(file, await readFile(resolve(directory, file), "utf8"));
-  assert.ok(pages.size >= 50);
+  assert.ok(pages.size >= 45);
   assert.match(await readFile(resolve(root, "public/docs/index.html"), "utf8"), /id="help-panel"/);
   const broken: string[] = [];
   for (const [file, html] of pages) {

@@ -79,7 +79,7 @@ test("legacy connection links resolve to one purpose-based hub", () => {
   for (const [legacy, group] of [["ssh", "workspace"], ["team", "manage"], ["remote-access", "devices"]]) {
     assert.deepEqual(parseRouteHash(`#/settings/${legacy}`), { view: "settings", section: "connections", group });
   }
-  for (const kind of ["once", "repeat", "backlog", "missions"]) assert.deepEqual(parseRouteHash(hashFor({ view: "automations", kind })), { view: "automations", kind });
+  for (const kind of ["once", "repeat", "backlog"]) assert.deepEqual(parseRouteHash(hashFor({ view: "automations", kind })), { view: "automations", kind });
 });
 
 test("complete templates retain agent settings and validate execution options without changing legacy templates", () => {

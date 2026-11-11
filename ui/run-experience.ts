@@ -125,7 +125,7 @@ export function agentReviewLabel(run: RunSummary, branch?: string): string {
 }
 
 export interface NextAction {
-  kind: "approval" | "question" | "resume" | "provider" | "check" | "revise" | "review" | "triage" | "mission" | "rerun" | "publish-review" | "provider-limit";
+  kind: "approval" | "question" | "resume" | "provider" | "check" | "revise" | "review" | "triage" | "rerun" | "publish-review" | "provider-limit";
   title: string;
   detail: string;
   label: string;
@@ -143,8 +143,6 @@ export function nextRunAction(run: RunSummary): NextAction | null {
     return null;
   }
   if (run.supersededBy) return null;
-  // A mission run is never resumed: its mission starts a new bounded cycle or revision instead.
-  if (run.projectTeam && ["failed", "interrupted", "stopped", "cancelled"].includes(run.status)) return { kind: "mission", title: "Continue from the project mission", detail: `${run.status === "interrupted" ? "Code Flow stopped while this run was in progress." : run.error || run.stopReason || "Execution stopped before completion."} Mission runs can't be resumed; start a new cycle or request a revision from the mission.`, label: "Open the mission" };
   if (["failed", "interrupted", "stopped", "cancelled"].includes(run.status)) {
     if (planRejected(run)) return { kind: "rerun", title: "You rejected the plan", detail: "This run ended at the rejected checkpoint. Edit the task and start a new run for a fresh plan.", label: "Edit & run again" };
     if (run.providerLimit || /^usage limit of /.test(run.stopReason ?? "")) return { kind: "provider-limit", title: `${run.providerLimit?.name ?? run.stopReason?.replace(/^usage limit of /, "") ?? "The provider"} reached its usage limit`, detail: `${run.providerLimit?.resetsAt ? `Reset reported for ${new Date(run.providerLimit.resetsAt).toLocaleString()}. ` : ""}Resume after the reset or switch the provider for this role. Recorded work is kept; a larger run budget does not change this limit.`, label: "Check provider usage" };

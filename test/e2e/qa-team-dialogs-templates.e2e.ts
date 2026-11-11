@@ -129,15 +129,6 @@ test("save-from-run is a focused editor and publishes the run strategy without c
   const saved = (await api(`/api/team-templates?project=${project}`)).templates.find((entry: any) => entry.id === definition.id); assert.equal(saved.name, "Captured QA strategy"); assert.deepEqual(saved.tasks, definition.tasks);
 });
 
-test("the reusable-team version limit reaches the UI with a recovery instruction and unchanged history", async () => {
-  const configuration = { coordinator: "claude", pool: ["claude"], agentSettings: {}, roleSettings: {} };
-  let definition = await api("/api/project-teams/definitions", { operationId: "qa-limit-1", name: "Bounded team", configuration });
-  definition = definition.definition ?? definition;
-  for (let revision = 2; revision <= 100; revision++) { const value = await api(`/api/project-teams/definitions/${definition.id}`, { operationId: `qa-limit-${revision}`, revision: revision - 1, name: "Bounded team", configuration }); definition = value.definition ?? value; }
-  const p = await open(`project/${project}/automation/missions`); await p.getByText("Reusable agent teams (1)", { exact: true }).click(); await p.getByRole("button", { name: "Edit reusable team", exact: true }).click();
-  const form = p.getByRole("form", { name: "Edit reusable agent team" }); await form.getByLabel("Agent team name").fill("More changes"); const response = p.waitForResponse(response => response.url().endsWith(`/definitions/${definition.id}`) && response.request().method() === "POST"); await form.getByRole("button", { name: "Save new team version" }).click(); assert.equal((await response).status(), 409); await form.getByRole("alert").filter({ hasText: /100-version limit.*Create a new/ }).waitFor();
-});
-
 test("server rollout disables new team toggles while existing enabled teams can be turned off", async () => {
   const existing = await start({ task: "Answer directly", taskTeam: team }); await done(existing.id);
   const p = await open(`project/${project}/new`); const toggle = p.getByRole("switch", { name: "AI team", exact: true }); await toggle.click();

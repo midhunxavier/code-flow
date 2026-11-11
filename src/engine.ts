@@ -120,9 +120,6 @@ import { exhausted } from "./routing.js";
 import { assertTransferTree } from "./remote-workers/bundles.js";
 import { assertPolicyExecution, type FilePolicySnapshot } from "./filesystem-policy.js";
 import { assertExtensionBindings, extensionBindings, type ExtensionBinding } from "./extensions.js";
-import { assertProjectTeamChanges } from "./project-team-policy.js";
-import { providerEligibility } from "./provider-eligibility.js";
-import type { ProjectTeamRun, DiscoveryReceipt } from "./project-team-model.js";
 import { acpBindings, assertAcpBindings } from "./acp-connections.js";
 import type { AcpBinding } from "./adapters/acp-types.js";
 import { RemoteWorkers, type RemoteRunResult } from "./remote-workers/client.js";
@@ -399,8 +396,6 @@ export interface Run {
   taskPriorities?: Record<string, number>;
   intent?: import("./experience.js").TaskIntent;
   outcome?: { decision: "accepted" | "needs-work"; branch: string; head: string; at: number };
-  projectTeam?: ProjectTeamRun;
-  projectDiscovery?: DiscoveryReceipt;
   extensions?: ExtensionBinding[];
   acpConnections?: AcpBinding[];
   filePolicies?: FilePolicySnapshot[];
@@ -2458,7 +2453,6 @@ export class TeamContext {
   async commit(wt: Worktree, message: string): Promise<string | null> {
     await this.manager.assertExecutionAllowed(this.run.repo, this.run, "Git checkpoint");
     this.checkCancelled();
-    await assertProjectTeamChanges(wt.path, this.run);
     const sha = await this.remember(
       "commit",
       `${wt.name}|${message}`,
@@ -2619,7 +2613,6 @@ export class TeamContext {
   /** Run one agent turn as a visible step in this run. */
   async ask(params: AskParams): Promise<StepOutcome> {
     this.checkCancelled();
-    if (this.run.projectTeam?.phase === "discovery" && params.mode !== "read") throw new Error("Project discovery cannot dispatch a write turn");
     if (params.resume && params.resume.agent !== params.agent) {
       throw new Error(`Cannot resume a ${params.resume.agent} session with ${params.agent}`);
     }
@@ -2944,7 +2937,6 @@ export class TeamContext {
       const followUp = this.run.followUps.find(turn => turn.stepId === step.id);
       if (followUp) followUp.warning = warning;
     }
-    if (params.mode === "write" && this.run.projectTeam) await assertProjectTeamChanges(params.cwd.path, this.run);
     return result;
   }
 
@@ -2982,7 +2974,6 @@ export class TeamContext {
         if (problem) throw new Error(problem);
         step.modelAssignment = params.modelAssignment;
       }
-      if (this.run.projectTeam) { const reason = providerEligibility(params.agent, { trust: turnTrust, unattended: true, projectTeam: true }); if (reason) throw new Error(reason); }
       assertExtensionBindings({ ...this.run, roles: { ...this.run.roles, __dispatch: [params.agent] } });
       assertAcpBindings({ ...this.run, roles: { ...this.run.roles, __dispatch: [params.agent] } });
       if (params.agent.startsWith("acp:") && (this.run.loop.agentContainer || this.run.loop.remoteWorker || (turnTrust) !== "full")) throw new Error("ACP connections require Full access on the current host; SSH workers and containers are unavailable");
@@ -3323,7 +3314,6 @@ export interface StartRunInput {
   /** Explicit opt-in for ACP agents, which run outside the managed permission policy. */
   acpExecution?: AcpExecution;
   intent?: import("./experience.js").TaskIntent;
-  projectTeam?: ProjectTeamRun;
   /** Internal durable admission barrier; never accepted from HTTP bodies. */
   beforeDispatch?: (run: Run) => Promise<void>;
   pattern: Pattern;
@@ -3386,15 +3376,8 @@ async function startRepository(path: string): Promise<string> {
 }
 
 export class RunManager {
-  private projectTeamShippingGuard?: (run: Run, branch: string) => Promise<void>;
-  setProjectTeamShippingGuard(guard: (run: Run, branch: string) => Promise<void>) { this.projectTeamShippingGuard = guard; }
-  private async managedShipping(run: Run, branch: string, kind: "merge" | "publish" = "publish") { if (kind === "publish" && isFolderMirror(run.repo)) throw new Error("This run worked on a copy of a folder, which has no branches or pull requests to publish to. Apply the result to the folder instead."); if (run.testRun) throw new Error("This is a test run. Archive it instead of publishing or merging its changes."); if (run.projectTeam) { if (!this.projectTeamShippingGuard) throw new Error("Project team service unavailable"); await this.projectTeamShippingGuard(run, branch); } }
-  private projectTeamGuard?: (run: Run) => Promise<void>;
-  setProjectTeamGuard(guard: (run: Run) => Promise<void>) { this.projectTeamGuard = guard; }
-  private projectTeamDeletionGuard?: (run: Run, deletingProject?: string) => void;
-  setProjectTeamDeletionGuard(guard: (run: Run, deletingProject?: string) => void) { this.projectTeamDeletionGuard = guard; }
+  private async managedShipping(run: Run, kind: "merge" | "publish" = "publish") { if (kind === "publish" && isFolderMirror(run.repo)) throw new Error("This run worked on a copy of a folder, which has no branches or pull requests to publish to. Apply the result to the folder instead."); if (run.testRun) throw new Error("This is a test run. Archive it instead of publishing or merging its changes."); }
   private managedContinuation(run: Run, cliInternal = false) {
-    if (run.projectTeam) throw new Error("Continue this result through its project mission so its scope, budget and independent review are preserved");
     if (run.cliTeam && !cliInternal) throw new Error("Continue this conversational run through its CLI/MCP proposal so its scope, settings and verification remain explicit");
   }
   private readonly mergeValidating = new Map<string, AbortController>();
@@ -3452,7 +3435,7 @@ export class RunManager {
     const fresh = await this.filesystemPolicyGuard?.(repo, run) ?? [];
     if (this.executionPolicyLease) throw new RunConflictError("Filesystem policy activation holds the global execution lease");
     assertPolicyExecution([...(run?.filePolicies ?? []), ...fresh], surface);
-    if (run) { assertExtensionBindings(run); assertAcpBindings(run); if (run.projectTeam) { if (!this.projectTeamGuard) throw new Error("Project team service is unavailable"); await this.projectTeamGuard(run); } }
+    if (run) { assertExtensionBindings(run); assertAcpBindings(run); }
     return structuredClone(fresh);
   }
   private assertIdleExecution() {
@@ -3787,7 +3770,6 @@ export class RunManager {
 
   setTaskPriority(id: string, input: { taskId: string; priority: number; revision: number }) {
     const run = this.require(id);
-    if (run.projectTeam) throw new Error("Use the project mission's revision controls for managed runs");
     if (!run.team) throw new Error("Only a team's planned tasks can be prioritized");
     if (!Number.isInteger(input.revision)) throw new Error("Send the plan revision you are prioritizing");
     if (run.team.revision !== input.revision) throw new RunConflictError("The team plan changed. Refresh before prioritizing a task");
@@ -3922,14 +3904,9 @@ export class RunManager {
     try { await this.deleteRunRecord(run); } finally { this.deletingRuns.delete(id); }
   }
 
-  private assertRunDeletable(run: Run, deletingTogether = new Set<string>(), deletingProject?: string) {
+  private assertRunDeletable(run: Run, deletingTogether = new Set<string>()) {
     const id = run.id;
     if (this.busyRun(run) || this.active.has(id) || this.coldMutations.has(id)) throw new RunConflictError("Finish or stop the run before deleting it");
-    if (run.projectTeam) {
-      if (!this.projects?.available || !this.projectTeamDeletionGuard) throw new RunConflictError("Project mission history could not be checked. Restore access to projects and missions before deleting this run.");
-      try { this.projectTeamDeletionGuard(run, deletingProject); }
-      catch (error) { throw new RunConflictError((error as Error).message); }
-    }
     if (this.allSummaries().some(other => !deletingTogether.has(other.id) && (other.chatLink?.workspaceId === id || other.taskExecution?.taskId === id || other.taskExecution?.chatId === id))) throw new RunConflictError("This chat owns a shared workspace. Archive it to retain the other tabs, or delete the related chats first.");
   }
 
@@ -3987,7 +3964,7 @@ export class RunManager {
       const repos = new Set([...project.repos, ...runs.map(run => run.repo)]);
       if (this.startingProjects.has(id) || [...repos].some(repo => this.startingRepositories.has(repo))) throw new RunConflictError("Wait for starting runs to finish before deleting this project");
       // Check every run before deleting any, then prevent resumes, moves and new related chats.
-      for (const run of runs) this.assertRunDeletable(run, ids, id);
+      for (const run of runs) this.assertRunDeletable(run, ids);
       const ordered: Run[] = [], pending = new Map(runs.map(run => [run.id, run]));
       while (pending.size) {
         const leaves = [...pending.values()].filter(run => ![...pending.values()].some(other => other.chatLink?.workspaceId === run.id || other.taskExecution?.taskId === run.id || other.taskExecution?.chatId === run.id));
@@ -4942,7 +4919,7 @@ export class RunManager {
 
   async merge(id: string, input: { branch: string; into: string; archiveAfter?: boolean; requireValidation?: boolean; allowConflictMarkers?: boolean }) {
     const run = this.require(id);
-    await this.managedShipping(run, input.branch, "merge");
+    await this.managedShipping(run, "merge");
     if (this.busyRun(run)) throw new RunConflictError("Wait for the run to finish before merging");
     assertResultBranch(run, input.branch);
     const folder = folderOfMirror(run.repo);
@@ -4960,7 +4937,7 @@ export class RunManager {
     const verified = run.mergeValidation;
     if (input.requireValidation && (!verified?.tree || verified.branch !== input.branch || verified.into !== input.into || verified.report?.state !== "verified" || verified.conflicts.length)) throw new Error("Validate this merge target successfully before merging");
     if (folder) return this.applyToFolder(run, input.branch, folder, marked, input.archiveAfter);
-    const outcome = await mergeInto(run.repo, input.branch, input.into, `Merge ${input.branch} into ${input.into} (code-flow run ${run.id})`, input.requireValidation ? verified : run.projectTeam ? { source: run.verification!.head!, target: await resolveCommit(run.repo, `refs/heads/${input.into}`) } : undefined);
+    const outcome = await mergeInto(run.repo, input.branch, input.into, `Merge ${input.branch} into ${input.into} (code-flow run ${run.id})`, input.requireValidation ? verified : undefined);
     if (outcome.ok) {
       run.merges.push({ branch: input.branch, into: input.into, commit: outcome.commit, at: Date.now() });
       this.emit(run, { type: "log", level: "info", text: `Merged ${input.branch} into ${input.into} (${outcome.commit.slice(0, 8)})` });
@@ -5053,7 +5030,7 @@ export class RunManager {
   async updateResultPr(id: string, input: { branch: string; expectedHead: string }) {
     return this.withDeliveryAction(id, async () => {
       const run = this.require(id);
-      await this.managedShipping(run, input.branch);
+      await this.managedShipping(run);
       const delivery = await this.resultDelivery(id, input.branch, true);
       if (!delivery.pr || delivery.pr.headRefOid !== input.expectedHead) throw new RunConflictError("The PR changed. Refresh its status before updating.");
       if (delivery.action !== "update") throw new Error(delivery.detail);
@@ -5067,7 +5044,7 @@ export class RunManager {
   async mergeResultPr(id: string, input: { branch: string; expectedHead: string; method: MergeMethod }) {
     return this.withDeliveryAction(id, async () => {
       const run = this.require(id);
-      await this.managedShipping(run, input.branch);
+      await this.managedShipping(run);
       const delivery = await this.resultDelivery(id, input.branch, true);
       const pr = delivery.pr;
       if (!pr || pr.headRefOid !== input.expectedHead) throw new RunConflictError("The PR changed. Review the current commit before merging.");
@@ -5098,7 +5075,7 @@ export class RunManager {
    */
   async mergePr(id: string, input: { branch: string; method: MergeMethod; archiveAfter?: boolean }) {
     const run = this.require(id);
-    await this.managedShipping(run, input.branch);
+    await this.managedShipping(run);
     if (this.busyRun(run)) throw new RunConflictError("Wait for the run to finish before merging");
     assertResultBranch(run, input.branch);
     const url = run.prs[input.branch];
@@ -5147,7 +5124,7 @@ export class RunManager {
   /** Push a result branch and open a pull request for it. */
   async pullRequest(id: string, input: { branch: string; into: string }) {
     const run = this.require(id);
-    await this.managedShipping(run, input.branch);
+    await this.managedShipping(run);
     // Opening one can merge into the branch (to catch up with a squash-merged base) and pushes it:
     // not under a turn that's still working on it (a follow-up, a side chat), whoever asks.
     if (this.busyRun(run)) throw new RunConflictError("Wait for the run to finish before opening a pull request");
@@ -5157,7 +5134,7 @@ export class RunManager {
     const visualBody = visual.files.length ? visualEvidenceMarkdown(await githubRepositoryUrl(run.repo), visual.head, visual.files) : "";
     const body = pullRequestDescription(run, this.findPattern(run.pattern)?.name ?? run.pattern, visualBody);
     const existingPr = run.prs[input.branch];
-    const { url, caughtUp, note } = await openPullRequest(run.repo, input.branch, input.into, title, body, run.baseRef, run.projectTeam ? { expectedHead: run.verification!.head! } : undefined);
+    const { url, caughtUp, note } = await openPullRequest(run.repo, input.branch, input.into, title, body, run.baseRef);
     if (note) this.emit(run, { type: "log", level: "warn", text: note });
     if (caughtUp) {
       this.emit(run, {
@@ -5188,7 +5165,7 @@ export class RunManager {
   /** Push a result branch to the pull request the run started from (fast-forward only). */
   async pushToPr(id: string, input: { branch: string }) {
     const run = this.require(id);
-    await this.managedShipping(run, input.branch);
+    await this.managedShipping(run);
     if (this.busyRun(run)) throw new RunConflictError("Wait for the run to finish before pushing");
     const source = run.source;
     if (source?.kind !== "pr") throw new Error("This run didn't start from a pull request");
@@ -5784,8 +5761,6 @@ export class RunManager {
       input.taskTeam = validateTaskTeam(input.taskTeam);
       if (input.taskTeam.enabled && !autoTeamEnabled()) throw new Error("Team is disabled on this server");
     }
-    if (input.projectTeam && (!input.beforeDispatch || !input.trigger || input.pattern.id !== "auto-team")) throw new Error("Managed runs require an internal durable admission and Auto team");
-    if (input.parentRunId && this.get(input.parentRunId)?.projectTeam && !input.projectTeam) throw new Error("Continue this result from its project mission's revision controls");
     if (input.chatLink) {
       const source = this.get(input.chatLink.sourceId), owner = this.get(input.chatLink.workspaceId);
       if (input.pattern.id !== "solo" || source?.pattern !== "solo" || owner?.pattern !== "solo" || source.repo !== input.repo || owner.repo !== input.repo || input.parentRunId !== source.id || (source.chatLink?.workspaceId ?? source.id) !== owner.id || owner.archived) throw new Error("The shared chat workspace is unavailable");
@@ -5965,7 +5940,6 @@ export class RunManager {
       filePolicies,
       extensions,
       acpConnections,
-      projectTeam: input.projectTeam ? structuredClone(input.projectTeam) : undefined,
       pattern: input.pattern.id,
       templateCatalog: input.pattern.id === "auto-team" ? (await teamTemplateStore.list(placed?.project.id)).templates.filter(t => t.autoEnabled && !t.workflow && JSON.stringify(t).length <= 16000).sort((a, b) => a.id.localeCompare(b.id)).slice(0, 6).map(t => structuredClone(t)) : undefined,
       teamTemplate: input.teamTemplate ? { template: validateTeamTemplate(input.teamTemplate.template), inputs: { ...input.teamTemplate.inputs } } : undefined,
@@ -6322,8 +6296,6 @@ export class RunManager {
    * Its branches survive cleanup so a later reply can reopen the workspace.
    */
   private async toInbox(run: Run) {
-    // Managed cycles own publication; discovery reports are valuable with an empty diff.
-    if (run.projectTeam) return;
     if (run.status === "cancelled" || run.status === "interrupted") return;
     if (run.triage && !["pending", "empty"].includes(run.triage.state)) return; // you already decided; automatic archives can be revisited
     // "done" describes the agent's turn, not its checks. Failed, timed-out or missing

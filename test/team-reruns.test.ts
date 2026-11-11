@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { dependentTaskClosure, prepareTeamRerun, projectTeamRerunPlan, retainedBaselinePrompt, TeamRerunError, validateTeamRerunSeed, type TeamRerunSource } from "../src/team-reruns.js";
+import { dependentTaskClosure, prepareTeamRerun, rerunPlanFromSeed, retainedBaselinePrompt, TeamRerunError, validateTeamRerunSeed, type TeamRerunSource } from "../src/team-reruns.js";
 import { teamPlanPolicy } from "../src/workflow-control.js";
 import { readyTasks } from "../src/patterns/auto-team-model.js";
 import type { TeamState, TeamTask } from "../src/teams.js";
@@ -65,7 +65,7 @@ test("seed IDs and checksum are deterministic across request order and independe
   const second = await prepareTeamRerun(source, { ...request, taskIds: ["verify", "build"], instructions: { verify: "Inspect again", build: "Build again" } });
   assert.deepEqual(first, second);
   const serialized = JSON.parse(JSON.stringify(first)); validateTeamRerunSeed(serialized, teamPlanPolicy(source.team!, source));
-  const restored = projectTeamRerunPlan(serialized); restored.tasks[1]!.status = "running"; restored.members[0]!.sessionId = "new-child-session";
+  const restored = rerunPlanFromSeed(serialized); restored.tasks[1]!.status = "running"; restored.members[0]!.sessionId = "new-child-session";
   assert.equal(first.plan.tasks[1]!.status, "pending"); assert.equal(first.plan.members[0]!.sessionId, undefined);
   serialized.plan.tasks[1]!.owner = "reviewer";
   assert.throws(() => validateTeamRerunSeed(serialized, teamPlanPolicy(source.team!, source)), /accepted execution cannot be replayed/);

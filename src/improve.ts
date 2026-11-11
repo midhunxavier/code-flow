@@ -7,7 +7,6 @@ import { tmpdir } from "node:os";
 import { childEnv } from "./env.js";
 import { defaultImproveChoice, improveEfforts, IMPROVE_AGENTS, type ImproveAgent, type ImproveChoice } from "./improve-settings.js";
 import { sensitiveContextPath } from "./context-inspection.js";
-import { MISSION_DRAFT_SCHEMA, missionDraftInstructions, validateMissionDraft } from "./mission-draft.js";
 
 /**
  * Improve in the composer: one short read-only turn that rewrites a rough task so an agent can act
@@ -137,14 +136,8 @@ export async function improvePrompt(
   return { prompt, summary: `${result!.summary.replace(/\s+/g, " ").trim().slice(0, MAX_SUMMARY_CHARS - scope.length - 1)} ${scope}`.trim() };
 }
 
-export async function draftMission(agent: AgentId, req: ImproveRequest, opts: { signal?: AbortSignal; onEvent?: (e: AgentEvent) => void } = {}) {
-  const { answer } = await structuredDraftTurn(agent, { ...req, mode: "quick" }, opts, true);
-  try { return { draft: validateMissionDraft(answer) }; }
-  catch (error) { throw new ImproveError(`${(error as Error).message}. Try drafting again.`); }
-}
-
-/** Both drafting flows share the same private workspace, CLI limits and cleanup. */
-async function structuredDraftTurn(agent: AgentId, req: ImproveRequest, opts: { signal?: AbortSignal; onEvent?: (e: AgentEvent) => void }, mission = false) {
+/** One structured turn in a private workspace, with the CLI limits and cleanup. */
+async function structuredDraftTurn(agent: AgentId, req: ImproveRequest, opts: { signal?: AbortSignal; onEvent?: (e: AgentEvent) => void }) {
   const cancelled = () => { if (opts.signal?.aborted) throw new ImproveError("Stopped.", "cancelled"); };
   cancelled();
   if (!req.text?.trim() || req.text.length > MAX_IMPROVE_CHARS || !["quick", "repo"].includes(req.mode)) throw new ImproveError("Choose a nonempty task within the prompt improvement limit.", "other");
@@ -173,14 +166,14 @@ async function structuredDraftTurn(agent: AgentId, req: ImproveRequest, opts: { 
     cancelled();
     result = await adapter.run(
       {
-        prompt: mission ? missionDraftInstructions(req.text) : improveInstructions(req, context),
+        prompt: improveInstructions(req, context),
         cwd: workspace,
         mode: "read",
         trust: "safe",
         questionProtocol: "structured",
         interactiveApprovals: false,
         ...settings,
-        jsonSchema: mission ? MISSION_DRAFT_SCHEMA : SCHEMA,
+        jsonSchema: SCHEMA,
         signal: opts.signal,
         timeoutMs: TIMEOUT_MS[req.mode],
         idleTimeoutMs: 90_000,

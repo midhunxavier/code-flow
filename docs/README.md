@@ -47,7 +47,7 @@ Read the story: [Describe the team. Code Flow builds the workflow.](https://midh
 
 ## Work with agents
 
-- [Claude Code and Codex terminal setup](cli-conversational-teams.md) · [Team patterns](patterns.md) · [Auto team](auto-team.md) · [Project missions](project-teams.md)
+- [Claude Code and Codex terminal setup](cli-conversational-teams.md) · [Team patterns](patterns.md) · [Auto team](auto-team.md)
 - [Runs and the workspace](runs.md) · [Review inbox](review-inbox.md) · [Verification](verification.md)
 - [GitHub and shipping](github.md) · [GitHub review threads](github-review-threads.md)
 - [Selective task reruns](task-reruns.md) · [Deferred starts](deferred-runs.md)
@@ -89,4 +89,4 @@ These documents record implementation decisions and evidence at a particular poi
 
 [Project README](../README.md) · [Getting started](getting-started.md)
 
-Project collaboration lives in **More → Board** and **More → People**. Scheduled tasks, backlogs and missions live in **More → Automation**; configured Board and Automation tabs stay visible. Global Inbox and Scheduling cover the current computer.
+Project collaboration lives in **More → Board** and **More → People**. Scheduled tasks and backlogs live in **More → Automation**; configured Board and Automation tabs stay visible. Global Inbox and Scheduling cover the current computer.

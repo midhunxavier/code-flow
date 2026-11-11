@@ -134,12 +134,10 @@ test("scheduling shares four purposes and comparisons live in Insights", { timeo
   await page.getByRole("dialog", { name: "Start later", exact: true }).getByRole("button", { name: "Close", exact: true }).click();
   await page.goto(`${base}/#/automations/once`);
   await page.getByRole("navigation", { name: "Scheduling purpose" }).waitFor();
-  assert.equal(await page.getByRole("navigation", { name: "Scheduling purpose" }).getByRole("link").count(), 4);
+  assert.equal(await page.getByRole("navigation", { name: "Scheduling purpose" }).getByRole("link").count(), 3);
   await page.getByRole("region", { name: "Deferred runs", exact: true }).waitFor();
   await page.getByRole("link", { name: "Process a backlog", exact: true }).click();
   await page.getByRole("heading", { name: "Scheduled backlog work", exact: true }).waitFor();
-  await page.getByRole("link", { name: "Pursue a mission", exact: true }).click();
-  await page.getByText("Choose a project to create or manage its missions.").waitFor();
   await page.goto(`${base}/#/workflows`);
   await page.getByLabel("Task", { exact: true }).fill("Compare this task");
   await page.goto(`${base}/#/settings/insights`);

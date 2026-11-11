@@ -32,8 +32,6 @@ import type { Socket } from "node:net";
 import { CertificateRenewal } from "./certificate-renewal.js";
 import { loadRemoteCertificate, saveRemoteCertificate, validateRemoteCertificate, certificateHostname, inspectEnvironmentCertificate, certificateCoversHost, certificateTimeInvalid, type CertificateInfo, type RemoteCertificate } from "./remote-tls.js";
 import { requestTailscaleCertificate } from "./tailscale.js";
-import { ProjectTeams } from "./project-teams.js";
-import { handleProjectTeams } from "./project-teams-api.js";
 import { SshProjects } from "./ssh-projects/manager.js";
 import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { ProjectFilePolicies, FilePolicyError, assertPolicyExecution, configureFilePolicyResolver, filterPolicyDiff, policyIsRestrictive } from "./filesystem-policy.js";
@@ -122,10 +120,10 @@ import { listSweep, runSweep, sourceKeys, type SweepKind } from "./sweeps.js";
 import { parseImproveSettings, IMPROVE_AGENTS, type ImproveAgent } from "./improve-settings.js";
 import { exhausted, resolveAuto } from "./routing.js";
 import { DocsHelp, serveDocs, parseHelpRequest } from "./docs-help.js";
-import { improvePrompt, draftMission, assertImproveEnvironment, ImproveError, MAX_IMPROVE_CHARS, type ImproveRequest } from "./improve.js";
+import { improvePrompt, assertImproveEnvironment, ImproveError, MAX_IMPROVE_CHARS, type ImproveRequest } from "./improve.js";
 import { templates } from "./templates.js";
 import { PrWatcher } from "./watch.js";
-import { AutomationStorageError, ManagedAutomationError, AutomationValidationError, AutomationConflictError, Automations, describeSchedule, readWebhook, validateSchedule, previewSchedule } from "./automation.js";
+import { AutomationStorageError, AutomationValidationError, AutomationConflictError, Automations, describeSchedule, readWebhook, validateSchedule, previewSchedule } from "./automation.js";
 import { canonicalTimeZone } from "./schedule-rules.js";
 import { detectTailscale, isTailscaleIPv4, type TailscaleStatus } from "./tailscale.js";
 import { changeRemote, isOwnAddress, lanAddresses, loadRemote, renderRemote, saveRemote, tokenMatches, type RemoteSettings } from "./remote.js";
@@ -251,15 +249,14 @@ sharedAccounts.onChange(() => { void teamTerminals.reap().catch((error) => logEr
 const notes = new Notes();
 const watcher = new PrWatcher(manager);
 const automations = new Automations(manager, (body, extra) => trackPolicyPreparation(async () => { if (!body.chatRecipe) return startFromBody(body, extra); if (!taskConversationsReady) throw new HttpError(503, "Chat automation is paused: repair chat storage and restart Code Flow"); return conversations.startAutomation(body, extra.trigger!, body.automationOccurrence, extra.untrustedText); }), (repo, kind) => trackPolicyPreparation(async () => { assertPolicyExecution(await fileAccess.execution(repo), "Automation source discovery"); return listSweep(repo, kind, manager.list()); }));
-const projectTeams = new ProjectTeams({ manager, projects, automations, build: buildStartInput, allowed: async (repo) => assertPolicyExecution(await fileAccess.execution(repo), "Project missions") });
 async function pausePolicyBackground() {
-  const results = await Promise.allSettled([watcher.stop(), automations.stop(), projectTeams.stop(), deferredRuns.stop(), coordinatedApi.service.stop(), ...(notificationsReady ? [notifications.stop()] : [])]);
+  const results = await Promise.allSettled([watcher.stop(), automations.stop(), deferredRuns.stop(), coordinatedApi.service.stop(), ...(notificationsReady ? [notifications.stop()] : [])]);
   // Queue deadlines do not prove a child readiness request ended. Retain the underlying work too.
   while (policyPreparations.size) await Promise.allSettled([...policyPreparations]);
   const failure = results.find((result) => result.status === "rejected"); if (failure?.status === "rejected") throw failure.reason;
 }
 function startPolicyBackground() {
-  projectTeams.start(); watcher.start(); automations.start(envNumber("CODEFLOW_SCHEDULER_TICK_MS", 30_000, { min: 100 })); if (!deferredFault) deferredRuns.start(); coordinatedApi.service.start();
+  watcher.start(); automations.start(envNumber("CODEFLOW_SCHEDULER_TICK_MS", 30_000, { min: 100 })); if (!deferredFault) deferredRuns.start(); coordinatedApi.service.start();
   if (notificationsReady) notifications.start();
 }
 let remote: RemoteSettings;
@@ -610,7 +607,7 @@ async function attempt<T>(fn: () => Promise<T>): Promise<T> {
   try {
     return await fn();
   } catch (err) {
-    throw err instanceof HttpError ? err : new HttpError(err instanceof AutomationStorageError || err instanceof ManagedAutomationError || err instanceof AutomationValidationError || err instanceof AutomationConflictError || err instanceof CollabError || err instanceof TeamPlanEditError || err instanceof TeamRerunError || err instanceof ConventionsError || err instanceof SharedAccountError || err instanceof SharedPathError || err instanceof CollaborationReviewError || err instanceof FilePolicyError ? err.status : err instanceof MemoryConflictError || err instanceof RunConflictError || err instanceof DeferredRunConflictError || err instanceof RetentionPolicyConflictError || err instanceof TemplateConflictError || err instanceof ProjectConflictError ? 409 : err instanceof ProjectsStorageError ? 500 : 400, (err as Error).message);
+    throw err instanceof HttpError ? err : new HttpError(err instanceof AutomationStorageError || err instanceof AutomationValidationError || err instanceof AutomationConflictError || err instanceof CollabError || err instanceof TeamPlanEditError || err instanceof TeamRerunError || err instanceof ConventionsError || err instanceof SharedAccountError || err instanceof SharedPathError || err instanceof CollaborationReviewError || err instanceof FilePolicyError ? err.status : err instanceof MemoryConflictError || err instanceof RunConflictError || err instanceof DeferredRunConflictError || err instanceof RetentionPolicyConflictError || err instanceof TemplateConflictError || err instanceof ProjectConflictError ? 409 : err instanceof ProjectsStorageError ? 500 : 400, (err as Error).message);
   }
 }
 
@@ -719,7 +716,7 @@ const MAX_IMPROVING = 3;
 const improvingControllers = new Set<AbortController>();
 
 /** The composer's Improve: rewrite the task in one read-only turn (see improve.ts). */
-async function improveTask(body: any, res: ServerResponse, mission = false) {
+async function improveTask(body: any, res: ServerResponse) {
   if (body.execution !== undefined && body.execution !== "local" || body.remoteWorker || body.agentContainer || body.loop?.remoteWorker || body.loop?.agentContainer) throw new HttpError(400, "Prompt improvement supports local execution only; remote and container profiles cannot fall back to a host CLI");
   const text = typeof body.text === "string" ? body.text : "";
   if (!text.trim()) throw new HttpError(400, "Write a task to improve first");
@@ -743,7 +740,6 @@ async function improveTask(body: any, res: ServerResponse, mission = false) {
         ? { kind: body.source.kind, number: body.source.number, title: typeof body.source.title === "string" ? body.source.title.slice(0, 200) : undefined }
         : undefined,
   };
-  if (mission && !projects.get(body.projectId)?.repos.includes(request.repo)) throw new HttpError(400, "Choose a repository belonging to this project");
   if (improving >= MAX_IMPROVING) throw new HttpError(429, "Other tasks are being improved right now. Try again in a moment.");
   // Closing the request (Stop in the composer, or leaving the page) stops the turn.
   improving++; improvingControllers.add(stop);
@@ -764,8 +760,7 @@ async function improveTask(body: any, res: ServerResponse, mission = false) {
       await manager.assertExecutionAllowed(request.repo, undefined, "Prompt improvement");
       stop.signal.throwIfAborted(); manager.noteActivity();
       try {
-        if (mission) await projectTeams.draftDefaults(body.projectId, request.repo);
-        const result = await (mission ? draftMission : improvePrompt)(agent, request, { signal: stop.signal, onEvent: (event) => { if (event.kind === "quota") manager.recordQuota(agent, event.status, event.windows); } });
+        const result = await improvePrompt(agent, request, { signal: stop.signal, onEvent: (event) => { if (event.kind === "quota") manager.recordQuota(agent, event.status, event.windows); } });
         return send(res, 200, { ...result, agent });
       } catch (error) {
         if (!(error instanceof ImproveError)) throw error;
@@ -925,7 +920,7 @@ async function buildStartInput(body: Record<string, any>): Promise<StartRunInput
 
 async function validatedStartInput(body: Record<string, any>): Promise<StartRunInput> {
   if (body.cliTeam !== undefined || body.cliTeamExecutionId !== undefined || ["cli-team", "task-prepare"].includes(body.pattern)) throw new HttpError(400, "Conversational teams start through an accepted proposal");
-  if (body.taskExecution !== undefined || body.teamTurns !== undefined || body.deferred !== undefined || body.teamRerun !== undefined || body.coordination !== undefined || body.projectTeam !== undefined || body.beforeDispatch !== undefined || body.requireProjectRepo !== undefined) throw new HttpError(400, "Launch identities and selective rerun seeds are assigned by the server");
+  if (body.taskExecution !== undefined || body.teamTurns !== undefined || body.deferred !== undefined || body.teamRerun !== undefined || body.coordination !== undefined || body.beforeDispatch !== undefined || body.requireProjectRepo !== undefined) throw new HttpError(400, "Launch identities and selective rerun seeds are assigned by the server");
   if (body.projectSelection !== undefined && body.projectSelection !== "explicit") throw new HttpError(400, "Unknown project selection mode");
   if (body.projectSelection === "explicit" && (!projects.available || typeof body.project !== "string" || !projects.get(body.project))) throw new HttpError(409, "Choose an available project before starting");
   if (body.templateCatalog !== undefined || body.teamTemplate !== undefined || body.permissions !== undefined) throw new HttpError(400, "Template snapshots and run authority are assigned by the server");
@@ -1402,12 +1397,6 @@ const topics: Record<string, TopicSource> = {
     publish();
     return stop;
   },
-  "project-teams"(projectId, _after, deliver) {
-    if (fileAccess.hasRestrictions() || !projects.get(projectId)) throw new TopicError(403, "Project mission scope is unavailable");
-    const generation = filesystemFeedRevision;
-    const publish = () => { if (generation === filesystemFeedRevision && !fileAccess.hasRestrictions() && projects.get(projectId)) deliver({ type: "snapshot", teams: projectTeams.list(projectId), definitions: projectTeams.teamLibrary(), definitionFaults: Object.fromEntries(projectTeams.definitions.faults), ...projectTeams.configuration() }); };
-    const off = projectTeams.store.subscribe(publish); publish(); return off;
-  },
   /**
    * Every run's status changes, for the sidebar and notifications. A first connection (or one
    * from before a restart, or that missed too much) starts with the whole list, in step with the
@@ -1749,8 +1738,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
   }
   if (parts[1] === "docs-help" && req.method === "POST") parseHelpRequest(await readJson(req, 64 * 1024, { timeoutMs: 10_000 }));
   // Check before ownerGate/validRepo: even repository discovery can invoke Git in its cwd.
-  if (parts[1] === "improve-prompt" || parts[1] === "project-teams" && parts[2] === "draft") {
-    if (req.method !== "POST" || parts.length !== (parts[1] === "improve-prompt" ? 2 : 3)) throw new HttpError(404, "Unknown drafting operation");
+  if (parts[1] === "improve-prompt") {
+    if (req.method !== "POST" || parts.length !== 2) throw new HttpError(404, "Unknown drafting operation");
     await attempt(async () => assertImproveEnvironment());
   }
   await attempt(() => fileAccess.ownerGate(req, url, parts));
@@ -1930,8 +1919,6 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     if (req.method === "DELETE" && parts[2] && parts.length === 3) return send(res, 200, await attempt(() => acpConnections.remove(Number(url.searchParams.get("revision")), parts[2]!)));
     throw new HttpError(404, "Unknown ACP connection operation");
   }
-  if (parts[1] === "project-teams" && parts[2] === "draft") return improveTask({ ...await readJson(req, 128 * 1024), mode: "quick" }, res, true);
-  if (parts[1] === "project-teams") return handleProjectTeams(projectTeams, req, res, parts, url);
   if (parts[1] === "coordinated-changes") return coordinatedApi.handle(req, res, parts);
   // The team board: served here in hub mode, forwarded to the team server under this computer's runner credential in linked mode. The link itself (connect, mappings, start/stop/hand over on this computer) is always local and the owner's own.
   if (parts[1] === "team-terminals") return handleTeamTerminals(req, res, parts, teamTerminals, () => ownerActor(collab.ownerName), () => sharedMutation(req));
@@ -2281,8 +2268,6 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     }
     if (id && req.method === "DELETE") {
       await attempt(() => manager.removeProject(id));
-      // Its missions are archived so their repositories can take new ones; the project is gone either way.
-      await projectTeams.releaseProject(id).catch((error) => logError(`Couldn't archive the missions of deleted project ${id}`, error));
       return send(res, 200, { deleted: true });
     }
   }
@@ -2963,7 +2948,6 @@ await fileAccess.all().catch((error) => logError("Filesystem policy is unavailab
 if (!fileAccess.hasRestrictions()) await extensions.load().catch((error) => logError("Extension configuration could not be loaded; built-in workflows remain available", error));
 else { extensions.defer("A custom filesystem policy is active. Clear it and restart to load extensions."); logWarn("Extensions deferred: custom filesystem policy cannot isolate trusted plugin initialization; clear the policy and restart to load extensions"); }
 await automations.load();
-await projectTeams.load().catch((error) => { projectTeams.store.faults.set("storage", (error as Error).message); logError("Project teams disabled: their private storage cannot be read", error); });
 deferredFault = await deferredRuns.load().then(() => undefined, (error) => { logError(`Deferred runs disabled: repair ${deferredRuns.file} and restart`, error); return (error as Error).message; });
 await coordinatedApi.service.load().then(
   () => coordinatedApi.recover().catch((error) => logError("A coordinated launch requires manual recovery", error)),
@@ -2980,7 +2964,6 @@ if (!tlsConfigured) {
 await certificateRenewal.load().catch((error) => logWarn((error as Error).message));
 await phoneSessions.load().catch((error) => logError("Phone pairing disabled: session storage cannot be read", error));
 if (notificationsReady) {
-  projectTeams.store.subscribe(() => { for (const team of projectTeams.list()) void notifications.observeProjectTeam(team).catch((error) => logError("Project team notification could not be retained", error)); });
   manager.subscribeAll((run) => { if (!run.deleted) void notifications.observe(run).catch((error) => logError("Notification event could not be retained", error)); });
   approvals.subscribe(() => {
     for (const request of approvals.list()) {
@@ -3214,7 +3197,6 @@ async function stop(reason: string, code = 0) {
   await Promise.race([teamConnections.close(), new Promise((resolve) => setTimeout(resolve, 5000).unref())]).catch((err) => logError("Team runner shutdown failed", err));
   await hostExecution.close().catch((err) => logError("Host execution shutdown failed", err));
   await collab.close().catch((err) => logError("Team board shutdown failed", err));
-  await projectTeams.stop().catch((err) => logError("Project team shutdown failed", err));
   await coordinatedApi.service.stop().catch((err) => logError("Coordinated changes shutdown failed", err));
   await deferredRuns.stop().catch((err) => logError("Deferred queue shutdown failed", err));
   docsHelp.close();

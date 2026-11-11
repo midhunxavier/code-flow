@@ -198,7 +198,7 @@ test("owner stream sharing stays private across shared-account sign-in and uses 
   const state = await api("/api/accounts");
   const created = await api("/api/accounts", { revision: state.revision, username: "stream-viewer", displayName: "Stream viewer", password: "a long stream boundary password", roles: { [projects[0].id]: "viewer" } });
   assert.ok(created.users?.some((user: { username: string }) => user.username === "stream-viewer"), created.error);
-  // Use a fixed page: restoring a composer draft can add a project-team subscription.
+  // Use a fixed page: restoring a composer draft can add a subscription.
   const ownerPage = await context.newPage();
   await ownerPage.goto(`${BASE}/?token=${TOKEN}#/projects`); await ownerPage.getByRole("button", { name: "New chat", exact: true }).waitFor();
   await streamsAre({ streams: 1, subscriptions: 4 }, "the owner watches its one private stream");
