@@ -105,7 +105,7 @@ npm test           # unit + workflow tests against fake CLIs
 npm run test:e2e   # the real UI in Chrome (headless) against a server with fake agents
 ```
 
-CI (`.github/workflows/ci.yml`) runs the typecheck and `npm test` on every push and pull request: Ubuntu with Node 22.13 and 24, macOS with Node 22. The required browser job exercises critical workflows and accessibility. A separate job tests the packaged VS Code extension in the actual editor host. [Provider compatibility](provider-compatibility.md) continuously probes official version/help contracts without account or inference requests.
+CI (`.github/workflows/ci.yml`) runs the typecheck and `npm test` on every push and pull request: Ubuntu with Node 22.13 and 24, macOS with Node 22. The required browser job exercises critical workflows and accessibility. [Provider compatibility](provider-compatibility.md) continuously probes official version/help contracts without account or inference requests.
 
 The suite runs every pattern end to end against fake `claude` / `codex` / `agy` binaries (`test/fake-bin`). Each fake emits that vendor's real JSONL format, so tests cost no quota.
 
@@ -153,7 +153,7 @@ The GitHub tests cover untrusted issues (lockdown, fenced text, Docker or your c
 
 ## Dynamic team control and replay
 
-A live tool command and its receipt are fsynced together before acknowledgement. The scheduler records which command batch it consumes at each boundary, so replay cannot inject a future reply into an earlier task. Completion batches likewise record observed order before serial integration. One server owns the journal; no dispatch lease or outbox is needed. See the [implementation plan](dynamic-teams-implementation-plan.md) for the invariants.
+A live tool command and its receipt are fsynced together before acknowledgement. The scheduler records which command batch it consumes at each boundary, so replay cannot inject a future reply into an earlier task. Completion batches likewise record observed order before serial integration. One server owns the journal; no dispatch lease or outbox is needed.
 
 The scoped loopback bridge is separate from the user API and its bearer token. Official adapters receive a temporary stdio MCP configuration for supported turns. Memory tools inherit the active member, project, task and source provenance from the engine. Native spawning controls, sandbox support and nested usage limitations are exposed through the capability inventory. Supervisor shares decomposition/integration primitives while retaining its public ID and historical replay identities.
 

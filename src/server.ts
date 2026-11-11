@@ -12,8 +12,6 @@ import { MAX_BROWSER_UPLOAD } from "./browser-files.js";
 import { chatTaskId } from "./chat-family.js";
 import { agentToolBridge, validateAgentTool } from "./agent-tools.js";
 import { HISTORY_STATUSES, type HistoryStatus, type ProjectSection } from "./run-status.js";
-import { MlService } from "./ml/service.js";
-import { handleMlApi } from "./ml/api.js";
 import { modelCatalogStore } from "./model-catalog.js";
 import { runProviderProblem, permissionProviderProblem, createRunPermissions as catalogPermissions } from "./run-permissions.js";
 import { inheritRunEnvironment } from "./run-environment.js";
@@ -43,8 +41,6 @@ import { readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { ProjectFilePolicies, FilePolicyError, assertPolicyExecution, configureFilePolicyResolver, filterPolicyDiff, policyIsRestrictive } from "./filesystem-policy.js";
 import { FilesystemAccess } from "./filesystem-access.js";
 import { createCodeHostsApi } from "./code-hosts-api.js";
-import { FilteredTasks, FilteredTaskError } from "./filtered-tasks.js";
-import { handleFilteredTasksApi } from "./filtered-tasks-api.js";
 import { createServer as createSecureServer } from "node:https";
 import { PhoneSessions } from "./phone-sessions.js";
 import { deviceLabel } from "./phone-device-label.js";
@@ -72,7 +68,6 @@ import { readRepoConfig, readRepoConfigAt, saveRepoCommands, type Trust } from "
 import { codexProfileStatus, saveCodexProfile } from "./codex-profile.js";
 import { openFolder } from "./serve.js";
 import { appCommand } from "./app-command.js";
-import { LaunchProfiles, LaunchProfileError, readLaunchProfiles } from "./launch-profiles.js";
 import { TeamRerunError } from "./team-reruns.js";
 import { ConventionsStore, ConventionsError } from "./conventions.js";
 import { discoverDependencies } from "./dependency-health.js";
@@ -196,25 +191,6 @@ await remoteWorkers.load().catch((error) => logError("SSH workers disabled; repa
 const manager = new RunManager(findPattern, projects, remoteWorkers);
 const filePolicies = new ProjectFilePolicies();
 const fileAccess = new FilesystemAccess(filePolicies, projects, manager);
-const ml = new MlService({ authorize: async (project, selected) => {
-  const repo = await repoRoot(selected);
-  if (!projects.get(project)?.repos.includes(repo)) throw new HttpError(409, "The repository is no longer an explicit member of this project");
-  assertPolicyExecution(await fileAccess.execution(repo), "Model training");
-  const commit = (await git(["rev-parse", "HEAD"], repo)).stdout.trim();
-  if (!projects.get(project)?.repos.includes(repo)) throw new HttpError(409, "Project membership changed");
-  return { repo, commit };
-} });
-let mlReady = false;
-const filteredTasks = new FilteredTasks({
-  authorize: async (project, repo) => {
-    if (!projects.get(project)?.repos.includes(repo)) throw new FilteredTaskError("The project or its explicit repository membership changed", 409);
-    const policies = await fileAccess.forRepo(repo);
-    if (!projects.get(project)?.repos.includes(repo)) throw new FilteredTaskError("The project or its explicit repository membership changed", 409);
-    return policies;
-  },
-  withRepository: (repo, operation) => manager.withIdleRepository(repo, operation, { kind: "filtered task", owner: "filtered-tasks" }),
-});
-let filteredTasksReady = false;
 configureFilePolicyResolver((repo) => fileAccess.forRepo(repo), { suppressRepositoryCommands: () => fileAccess.hasRestrictions() });
 manager.setFilesystemPolicyGuard((repo, run) => fileAccess.execution(repo, run));
 let filesystemFeedRevision = 0;
@@ -257,8 +233,6 @@ const deferredRuns = createDeferredRuns(manager, { build: buildStartInput, resol
 /** Set at startup: an unreadable queue file disables deferred runs only, and is kept for repair. */
 let deferredFault: string | undefined = "Deferred runs are still loading";
 const coordinatedApi = createCoordinatedApi({ manager, projects, build: buildStartInput, resolveProviders: resolveQueuedProviders });
-const launchProfiles = new LaunchProfiles(manager.devServers);
-manager.onWorkspaceStop((runId) => launchProfiles.stopMatching(`${runId}/`));
 const integrations = new Integrations();
 const codeHostsApi = createCodeHostsApi({ integrations, manager, projects, build: buildStartInput });
 const integrationWarnings: string[] = [];
@@ -1762,8 +1736,6 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     if (req.method === "PUT") {
       const body = await readJson(req, 64 * 1024);
       return send(res, 200, await attempt(() => fileAccess.update(project.id, body, async (commit, next) => {
-        if (!filteredTasksReady || filteredTasks.active()) throw new FilePolicyError("Finish or explicitly cancel and reconcile filtered tasks before changing policy; unavailable task storage must be repaired first", 409);
-        if (!mlReady || ml.active()) throw new FilePolicyError("Pause retraining schedules and finish training, inference, registry operations and exports before changing filesystem policy", 409);
         if (policyIsRestrictive(next) && extensions.list().length) throw new FilePolicyError("Disable configured extensions and restart before applying a restriction. Previously imported trusted JavaScript can retain background host authority, including a bundle rejected after initialization.", 409);
         const terminals = shells.list().filter((shell) => shell.status === "running").length;
         if (terminals || teamTerminals.active() || manager.devServers.list().some((service) => service.status === "running")) throw new FilePolicyError(`${terminals ? `Close the ${terminals === 1 ? "open terminal" : `${terminals} open terminals`} (side panel → Terminal)` : "Close terminals"} and stop development services before changing filesystem policy`, 409);
@@ -1772,13 +1744,6 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
       })));
     }
     throw new HttpError(405, "Use GET or PUT for filesystem policy");
-  }
-  if (parts[1] === "filtered-tasks") {
-    await attempt(() => fileAccess.sharedGate(req));
-    if (!filteredTasksReady) throw new HttpError(503, "Filtered task storage is unavailable; repair its private records before execution or policy changes");
-    auth.claimable = false;
-    if (req.method === "POST" && parts.length === 2) manager.noteActivity();
-    if (await handleFilteredTasksApi(req, res, url, parts.slice(1), filteredTasks)) return;
   }
   if (parts[1] === "docs-help" && req.method === "POST") parseHelpRequest(await readJson(req, 64 * 1024, { timeoutMs: 10_000 }));
   // Check before ownerGate/validRepo: even repository discovery can invoke Git in its cwd.
@@ -1799,12 +1764,6 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     if (req.method !== "GET") { auth.claimable = false; manager.noteActivity(); }
     const handle = () => handleTaskConversations(req, res, url, parts, taskConversations);
     return req.method !== "GET" || ["source", "models"].includes(parts[2] ?? "") || parts[3] === "source" ? trackPolicyPreparation(handle) : handle();
-  }
-  if (parts[1] === "ml") {
-    if (via !== "local") throw new HttpError(403, "Use the owner app on the project computer for model training");
-    if (!mlReady) throw new HttpError(503, "ML storage is unavailable; repair its private records before continuing");
-    if (req.method !== "GET") { auth.claimable = false; manager.noteActivity(); }
-    if (await handleMlApi(req, res, url, parts.slice(1), ml)) return;
   }
   if (parts[1] === "browser") {
     if (fileAccess.hasRestrictions()) throw new HttpError(403, "Interactive browsing is paused under filesystem restrictions");
@@ -2771,29 +2730,6 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
       }
     }
     if (parts[3] === "human-rework" && req.method === "POST") { const body = await readJson(req); return send(res, 201, await attempt(() => manager.recordHumanRework(run.id, body))); }
-    if (parts[3] === "launch-profiles") {
-      const body = req.method === "POST" ? await readJson(req) : {};
-      const name = typeof body.worktree === "string" ? body.worktree : url.searchParams.get("worktree");
-      const worktree = run.worktrees.find((tree) => tree.name === name);
-      if (!worktree) throw new HttpError(400, "Choose a worktree owned by this run");
-      const key = `${run.id}/${worktree.name}/launch`;
-      if (req.method === "DELETE") return send(res, 200, { stopped: launchProfiles.stop(key) });
-      const config = await readLaunchProfiles(worktree.path);
-      if (req.method === "GET") return send(res, 200, redactExport({ ...config, session: launchProfiles.get(key) ?? null }));
-      if (req.method === "POST") {
-        const profile = config.profiles.find((profile) => profile.id === body.profile);
-        if (!profile) throw new HttpError(400, config.error ?? "Choose a configured launch profile");
-        const abort = new AbortController(); res.once("close", () => abort.abort());
-        try {
-          manager.noteActivity();
-          return send(res, 201, redactExport(await launchProfiles.start(key, worktree.path, profile, { signal: abort.signal, lockdown: run.lockdown, allowUntrusted: body.allowUntrusted === true })));
-        } catch (error) {
-          if (error instanceof LaunchProfileError) throw Object.assign(new HttpError(error.status, error.message), { confirm: error.confirm });
-          throw new HttpError(400, (error as Error).message);
-        }
-      }
-      throw new HttpError(404, "Unknown launch profile operation");
-    }
     if (req.method === "GET" && parts[3] === "events") return await streamTopic(req, res, "run", run.id);
     if (["GET", "POST"].includes(req.method ?? "") && parts[3] === "team-resolution") return send(res, 200, await attempt(async () => manager.taskResolution(run.id, url.searchParams.get("execution") ?? "", req.method === "POST" ? await readJson(req, 2 * 1024 * 1024) : undefined)));
     if (req.method === "POST" && parts[3] === "team-resume") return send(res, 200, await attempt(async () => manager.resumeTaskTeam(run.id, (await readJson(req)).execution)));
@@ -3028,9 +2964,6 @@ await acpConnections.load().catch((error) => logError("ACP connections unavailab
 await collab.load();
 await teamConnections.load();
 await fileAccess.all().catch((error) => logError("Filesystem policy is unavailable; protected operations and extension loading remain disabled until the private policy file is repaired", error));
-filteredTasksReady = await filteredTasks.load().then(() => true, (error) => { logError("Filtered tasks unavailable; policy activation remains blocked until task receipts are repaired", error); return false; });
-mlReady = await ml.load().then(() => true, (error) => { logError("ML storage unavailable; inspect its private records before executing more work", error); return false; });
-if (mlReady) ml.start();
 if (!fileAccess.hasRestrictions()) await extensions.load().catch((error) => logError("Extension configuration could not be loaded; built-in workflows remain available", error));
 else { extensions.defer("A custom filesystem policy is active. Clear it and restart to load extensions."); logWarn("Extensions deferred: custom filesystem policy cannot isolate trusted plugin initialization; clear the policy and restart to load extensions"); }
 await codeHostsApi.service.load();
@@ -3273,7 +3206,6 @@ async function stop(reason: string, code = 0) {
     closeLanConnections();
     watcher.stop();
     approvals.close();
-    launchProfiles.stopAll();
     shells.closeAll();
     previews.closeAll();
     sshPreviews.closeAll();
@@ -3292,8 +3224,6 @@ async function stop(reason: string, code = 0) {
   await deferredRuns.stop().catch((err) => logError("Deferred queue shutdown failed", err));
   docsHelp.close();
   for (const controller of improvingControllers) controller.abort();
-  await filteredTasks.close().catch((err) => logError("Filtered task shutdown failed; inspect its durable unknown receipt before retrying", err));
-  await ml.close().catch((err) => logError("Training controller shutdown failed; admitted jobs remain on their workers", err));
   await chatsStopped;
   await manager.shutdown().catch((err) => logError("Shutdown failed", err));
   await cliTransport?.close().catch((err) => logError("CLI bridge shutdown failed", err));
@@ -3314,15 +3244,13 @@ if (process.env.CODEFLOW_CLI_HEADLESS === "1" && process.env.CODEFLOW_MANAGED_RE
   setInterval(() => { void checkUpdates(CODEFLOW_HOME).catch(() => undefined); }, 6 * 60 * 60 * 1000).unref();
   /** What holds an update back, in words `codeflow updates status` shows. */
   const updateBlocker = () =>
-    !cliReady || !taskConversationsReady || !filteredTasksReady || !mlReady ? "Code Flow is still starting"
+    !cliReady || !taskConversationsReady ? "Code Flow is still starting"
     : cliTransport?.holding ? "a start confirmation is open"
     : activeHttpRequests || cliTransport?.inFlight ? "a request is in progress"
     : policyPreparations.size ? "agent settings are being prepared"
     : improvingControllers.size ? "a prompt is being improved"
     : ownerHubStreams.size ? "a linked team runner is connected"
     : extensions.list().length ? "an extension is running"
-    : filteredTasks.active() ? "a filtered task is running"
-    : ml.active() ? "a training job is running"
     : teamTerminals.active() ? "a team terminal is open"
     : shells.list().some(s => s.status === "running") ? "a terminal command is running"
     : manager.devServers.list().some(s => s.status === "running") ? "an app preview is running"

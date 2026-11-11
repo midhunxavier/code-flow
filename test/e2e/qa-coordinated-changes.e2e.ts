@@ -59,7 +59,7 @@ test("route project and typed task drafts survive project changes, including few
     if (target === smallProject) assert.equal(await panel.getByLabel("Repository for repo2", { exact: true }).inputValue(), "");
   }
   await shot("project-drafts-preserved", panel.getByLabel("Task for repo2", { exact: true }));
-  await page.getByRole("button", { name: "Services", exact: true }).click();
+  await page.getByRole("button", { name: "Context", exact: true }).click();
   let release!: () => void; const gate = new Promise<void>(resolve => { release = resolve; });
   await page.route("**/api/projects", async route => { await gate; await route.continue(); });
   await page.getByRole("button", { name: "Coordinated changes", exact: true }).click();

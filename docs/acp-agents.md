@@ -85,7 +85,7 @@ Both Kilo and Cline passed the same two-turn acceptance test on October 19, 2026
 | Kilo 7.8.12 | `kilo/kilo-auto/free` | 52.0 s | 2 | Passed both turns and session restoration |
 | Cline 3.0.73 | `anthropic/claude-sonnet-5.5` | 24.8 s | 5 | Passed both turns and session restoration |
 
-The [sanitized acceptance receipts](evaluations/acp-live-2026-10-19.json) record run IDs, commits, streamed event counts and checked assertions. Each run changed a baseline with three failing tests into four passing tests without modifying those tests, then produced a second clean commit after restoring the same session. The Cline run exposed and verified a fix for file-edit approvals: its native editor supplies `rawInput.path` without ACP `locations`, which the adapter now carries into the approval inbox. These observations establish compatibility for the listed versions and models; model availability and task success can vary.
+The sanitized acceptance receipts (2026-10-19, kept in Git history) record run IDs, commits, streamed event counts and checked assertions. Each run changed a baseline with three failing tests into four passing tests without modifying those tests, then produced a second clean commit after restoring the same session. The Cline run exposed and verified a fix for file-edit approvals: its native editor supplies `rawInput.path` without ACP `locations`, which the adapter now carries into the approval inbox. These observations establish compatibility for the listed versions and models; model availability and task success can vary.
 
 ---
 

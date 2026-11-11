@@ -142,13 +142,10 @@ Further optimization should follow real profiles. SQLite-backed search, Rust mod
 additional worker offloading and adaptive process limits remain architectural options,
 not requirements for these bounded paths.
 
-## Before/after and native comparison
-
-See the [measured results](performance-results.md) and committed raw samples.
+## Before/after comparison
 
 `npm run benchmark:compare -- --baseline <commit> --trials 7` builds the baseline
-from a Git archive, the current TypeScript app, and a temporary copy with the
-experimental Rust transcript reader. It uses identical synthetic fixtures and real
+from a Git archive and the current app. It uses identical synthetic fixtures and real
 HTTP servers plus Chrome. One browser warmup precedes repeated fresh browser
 contexts, and variant order rotates. The OS filesystem cache remains warm. Default
 fixtures have 1,000, 5,000 and 100,000 events. `--scenarios small,medium` selects a
@@ -162,8 +159,7 @@ page with Earlier navigation. API timing likewise compares full replay to the
 latest page, not equal-size responses. Browser received bytes are decoded resource
 bytes, not compressed wire bytes. Heap is JavaScript heap after forced GC, not
 whole-process memory. Timeouts are failures, never silently replaced with a timing.
-Agent execution and provider inference are excluded. See the Rust experiment's
-[README](../experiments/rust-transcript/README.md) for its scope and parity test.
+Agent execution and provider inference are excluded.
 
 ---
 

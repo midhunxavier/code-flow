@@ -5,7 +5,6 @@ import { ProjectRunSettings } from "./project-run-settings.js";
 import { openChat } from "./chat-state.js";
 import { executionLabel } from "./run-experience.js";
 import { lazyView } from "./lazy-view.js";
-const MlWorkspace = lazyView(() => import("./ml/workspace.js").then(module => module.MlWorkspace));
 import type { ProjectReport, HistoryPage } from "../src/project-report.js";
 import { runSearchText } from "../src/run-history.js";
 import { checksLabel, type ProjectSection as HistorySection } from "../src/run-status.js";
@@ -39,7 +38,7 @@ export function ProjectView({ id, section, repository, tool, kind }: { id: strin
     const bounds = nav.getBoundingClientRect(), tab = active.getBoundingClientRect();
     if (tab.left < bounds.left) nav.scrollLeft += tab.left - bounds.left;
     else if (tab.right > bounds.right) nav.scrollLeft += tab.right - bounds.right;
-  }, [id, section, projects.value, features.ml]);
+  }, [id, section, projects.value]);
   const [savedTask, setSavedTask] = useState("");
   useEffect(() => { let live = true; setSavedTask(""); if (draftsReady.value) void savedDraftTask(id).then(value => { if (live) setSavedTask(value); }, () => {}); return () => { live = false; }; }, [id, draftsReady.value, composerProject.value]);
   const draftTask = composerProject.value === id ? task.value : savedTask;
@@ -64,8 +63,7 @@ export function ProjectView({ id, section, repository, tool, kind }: { id: strin
     </header>
     <nav ref={navigation} class="project-tabs" aria-label="Project navigation">
       {/* The work first (what is happening, what happened, what runs by itself), then how the project is set up. */}
-      {([[undefined, "Overview"], ["board", "Board"], ["runs", "History"], ["automation", "Automation"], ["ml", "ML"], "setup", ["repositories", "Repositories"], ["connections", "Connections"], ["people", "People"], ["settings", "Project settings"]] as const)
-        .filter(entry => entry === "setup" || entry[0] !== "ml" || features.ml || section === "ml")
+      {([[undefined, "Overview"], ["board", "Board"], ["runs", "History"], ["automation", "Automation"], "setup", ["repositories", "Repositories"], ["connections", "Connections"], ["people", "People"], ["settings", "Project settings"]] as const)
         .map(entry => entry === "setup" ? <span key="setup" class="project-tabs-divider" aria-hidden="true" /> : <a key={entry[0] ?? "overview"} class={`btn ${section === entry[0] ? "primary" : ""}`} href={destination(entry[0])} aria-current={section === entry[0] ? "page" : undefined}>{entry[1]}</a>)}
     </nav>
     {!section ? <>
@@ -76,7 +74,7 @@ export function ProjectView({ id, section, repository, tool, kind }: { id: strin
       <ProjectTeamsInbox projectId={id} />
       <ProjectOverview key={id} id={id} />
       <a class="btn" href={destination("runs")}>View history</a>
-    </> : section === "ml" ? <MlWorkspace key={id} project={p} /> : section === "board" ? <TeamBoardView project={id} embedded navigate={navigateTeam} /> : section === "people" ? <TeamPeopleView project={id} embedded navigate={navigateTeam} /> : section === "connections" ? <IntegrationsScreen key={id} projectId={id} /> : section === "automation" ? <SchedulingView key={id} projectId={id} kind={kind} /> : section === "runs" ? <><ProjectChatHistory key={`chats:${id}`} projectId={id}/><ProjectRuns key={id} projectId={id} /></> : section === "repositories" ? <>
+    </> : section === "board" ? <TeamBoardView project={id} embedded navigate={navigateTeam} /> : section === "people" ? <TeamPeopleView project={id} embedded navigate={navigateTeam} /> : section === "connections" ? <IntegrationsScreen key={id} projectId={id} /> : section === "automation" ? <SchedulingView key={id} projectId={id} kind={kind} /> : section === "runs" ? <><ProjectChatHistory key={`chats:${id}`} projectId={id}/><ProjectRuns key={id} projectId={id} /></> : section === "repositories" ? <>
       <div class="project-repository-head"><h2>Repositories</h2><button class="btn" onClick={() => addRepositoryToProject(id)}><Icon name="plus" />Add repository</button></div>
       {!p.repos.length ? <p class="help">No repositories yet. Add a repository from {computerLabel()} to use its files and tools.</p> : <div class="project-repository-list">{p.repos.map(folder => <a class={`pp-card project-repository ${selectedRepository === folder ? "selected" : ""}`} href={hashFor({ view: "project", id, section: "repositories", repository: folder, tool: "code" })}><strong>{baseName(folder)}</strong><code>{folder}</code><span>Open repository tools →</span></a>)}</div>}
       {selectedRepository ? <WorkbenchView key={`${id}:${selectedRepository}`} projectId={id} initialFolder={selectedRepository} initialTool={tool} onNavigate={(folder, nextTool) => { route.value = { view: "project", id, section: "repositories", repository: folder, tool: nextTool }; }} /> : p.repos.length ? <p class="help">Choose a repository to inspect its files, checks, services and history.</p> : null}

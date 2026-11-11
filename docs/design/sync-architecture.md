@@ -2,7 +2,7 @@
 
 Status: proposal, written 2026-11-10 against commit `2d38420`. Nothing here is implemented yet.
 
-This document is the final design from the Auto team brainstorm. It covers how Code Flow keeps its state consistent, and how it should behave, when someone uses it from Claude Code, the Codex CLI, the Claude and Codex desktop apps, a web browser, the Code Flow desktop app, VS Code, or another computer. It lists what to remove, what to add and what to re-architect, then gives a phased rollout.
+This document is the final design from the Auto team brainstorm. It covers how Code Flow keeps its state consistent, and how it should behave, when someone uses it from Claude Code, the Codex CLI, the Claude and Codex desktop apps, a web browser, the Code Flow desktop app, or another computer. It lists what to remove, what to add and what to re-architect, then gives a phased rollout.
 
 ## 0. Evidence base
 
@@ -13,7 +13,7 @@ Every recommendation cites at least one audit finding. Each finding was re-check
 | ID | Finding | Evidence |
 |---|---|---|
 | C1 | The desktop app and `codeflow start` always launch their own server. When a CLI-started owner already holds `server.lock`, they wait 20 s and exit with "Another code-flow server…". | `integrations/desktop/main.cjs:86-92`, `bin/launcher.mjs:120-127`, `src/store.ts:550-551`, `src/server.ts:155` |
-| C2 | The owner gets a random port on every launch, both from desktop and as a CLI headless owner. Browser storage, the sign-in cookie and the VS Code server URL/token are all keyed by origin, so they stop matching after a relaunch. | `integrations/desktop/main.cjs:20,67`, `src/cli-teams/client.ts:24-32`, `src/server.ts:399`, `integrations/vscode/extension.cjs:11,24` |
+| C2 | The owner gets a random port on every launch, both from desktop and as a CLI headless owner. Browser storage and the sign-in cookie are keyed by origin, so they stop matching after a relaunch. | `integrations/desktop/main.cjs:20,67`, `src/cli-teams/client.ts:24-32`, `src/server.ts:399` |
 | C3 | The owner's lifetime is tied to whichever launcher started it. Quitting desktop stops the owner that CLI sessions are using. The CLI then waits up to 60 s and starts a new owner on another port. | `src/server.ts:3275` (the audit cited `:3270`, which has drifted), `src/cli-teams/client.ts:58-72` |
 | C4 | Project auto-create checks `forRepo` outside the projects mutex and matches repo paths as exact strings. Concurrent sessions, or a git worktree, can therefore create duplicate projects. | `src/cli-teams/workspace.ts:23-25`, `src/projects.ts:166-177` |
 | C5 | Each CLI task is stored three times (CLI control journal, then task conversation, then chat) and reconciled only at the next startup. | `src/cli-teams/workspace.ts:28-31`, `src/cli-teams/service.ts:67-73`, `src/cli-teams/service.ts:24`, `src/conversational/service.ts:17`, `src/conversational/chats.ts:25` |
@@ -56,7 +56,7 @@ Sol also asked that the existing safeguards be kept: exact-revision (hash-pinned
 - **P1. One store, one owner, many clients.** A *store* is a `CODEFLOW_HOME` directory. Exactly one owner process serves it, which `server.lock` already enforces (`src/store.ts:550`). Every surface is a client of that owner, and none spawns a second one.
 - **P2. Server-side state is the source of truth.** The browser keeps only ephemeral UI state, such as scroll position and which panel is open. Preferences, drafts and trust settings move to the owner (C6, C11).
 - **P3. One record per concept.** A task, preference or project is stored once. Other views derive from it; they are not mirrored copies (C5, C6).
-- **P4. One event feed with resumable cursors** is shared by the browser, desktop, CLI follow and VS Code. Polling is a fallback only while the feed is down (C7, S6).
+- **P4. One event feed with resumable cursors** is shared by the browser, desktop and CLI follow. Polling is a fallback only while the feed is down (C7, S6).
 - **P5. Stores have explicit identity, and there is no implicit cross-store sync.** WSL, Docker, remote and other-machine stores are *different stores*. Reaching one from another is an explicit binding that the user can see (S1, team contract). We do not promise that every surface on one machine syncs automatically.
 - **P6. Approval is pinned to a revision and never mints a session.** Recovering from an expired or missed approval goes through the normal sign-in and then returns to the same revision (S4).
 - **P7. Repositories have a logical identity**, separate from how a path is spelled (C4, S8).
@@ -91,7 +91,7 @@ Every surface shows the store name and environment in a persistent indicator: th
 
 ### 3.2 Attach-or-start, for every entry point
 
-There is one discovery routine, extracted from `connectRuntime` (`src/cli-teams/client.ts:56-72`) and shared by desktop (`integrations/desktop/main.cjs:66-92`), `codeflow start` (`bin/launcher.mjs:120-127`), `codeflow mcp`/`terminal` and VS Code:
+There is one discovery routine, extracted from `connectRuntime` (`src/cli-teams/client.ts:56-72`) and shared by desktop (`integrations/desktop/main.cjs:66-92`), `codeflow start` (`bin/launcher.mjs:120-127`), and `codeflow mcp`/`terminal`:
 
 1. Read the descriptor and check that the PID is alive and the protocol is compatible. If it is, **attach**: open the window or browser at the descriptor's origin.
 2. If no descriptor exists, take the lock (`acquireLock` already arbitrates simultaneous starts, as noted in the `src/cli-teams/client.ts` header comment) and start the owner as a **service** (§3.4).
@@ -101,9 +101,8 @@ The "Another code-flow server…" error (C1) then becomes unreachable in normal 
 
 ### 3.3 Stable origin and session
 
-- Each store gets a **stable port**, chosen once, stored in `store.json` and reused (default 4317, as in `bin/launcher.mjs:27`; on a collision, pick a port and persist it). This fixes the origin-keyed cookie (`src/server.ts:399`), localStorage (`ui/lib.ts:109`) and the VS Code server URL (C2).
+- Each store gets a **stable port**, chosen once, stored in `store.json` and reused (default 4317, as in `bin/launcher.mjs:27`; on a collision, pick a port and persist it). This fixes the origin-keyed cookie (`src/server.ts:399`), and localStorage (`ui/lib.ts:109`) (C2).
 - The owner token persists for the store's lifetime instead of being regenerated on each desktop launch (`integrations/desktop/main.cjs:20`). It is rotated only on explicit sign-out or reset.
-- VS Code discovers the origin and pairs through the descriptor instead of defaulting to `127.0.0.1:4317` (`integrations/vscode/extension.cjs:11,24`).
 
 ### 3.4 Owner lifetime separate from windows
 
@@ -177,7 +176,7 @@ The UI copy, docs and new APIs use these names. The old routes stay as aliases f
 | # | Remove | Why | Evidence | Replacement |
 |---|---|---|---|---|
 | R-1 | Unconditional server spawn in desktop and `codeflow start` | It collides with a running owner and fails after 20 s | C1: `integrations/desktop/main.cjs:86-92`, `bin/launcher.mjs:120-127` | Attach-or-start (§3.2) |
-| R-2 | Random per-launch port and per-launch desktop token | They split cookies, localStorage and the VS Code config | C2: `main.cjs:20,67`, `client.ts:24-32` | Stable port and token per store (§3.3) |
+| R-2 | Random per-launch port and per-launch desktop token | They split cookies and localStorage | C2: `main.cjs:20,67`, `client.ts:24-32` | Stable port and token per store (§3.3) |
 | R-3 | Owner stopping when the launcher disconnects | Quitting desktop kills CLI-started work | C3: `src/server.ts:3275` | Service lifetime (§3.4) |
 | R-4 | Per-repo `codeflow-<repo>-<hash>` Codex entries, and in time the `codeflow terminal` masking | They duplicate tool sets and risk the wrong repo | C6, S3: `desktop.ts:51,61`, `terminal.ts:4-10` | One broker entry with per-conversation repo selection (§3.9) |
 | R-5 | Startup-only `reconcileWorkspace` mirror repair, and in time the separate chat copy of CLI tasks | Three stores drift apart | C5: `service.ts:67-73`, `workspace.ts:28-31` | One task record plus projections (§3.5) |
@@ -198,7 +197,7 @@ The UI copy, docs and new APIs use these names. The old routes stay as aliases f
 |---|---|---|---|
 | A-1 | `store.json` with `storeId` and environment, plus the extended owner descriptor (`startedBy`, `lifetime`, `origin`) | The foundation for identity, attaching and bridging | S1, C1 |
 | A-2 | Store and environment indicator on every surface, and `codeflow status` | Users can see which state they are in | S1, C2 |
-| A-3 | Shared attach-or-start library used by desktop, `start`, CLI, MCP and VS Code | One way to find the owner | C1, C3 |
+| A-3 | Shared attach-or-start library used by desktop, `start`, CLI and MCP | One way to find the owner | C1, C3 |
 | A-4 | Owner service mode, a tray "Stop service" action with runs grouped by origin, and idle exit | Owner lifetime separate from any one window | C3; existing dialog `main.cjs:172-185` |
 | A-5 | Atomic `resolveRepo` with realpath and git-common-dir canonicalization, plus a per-repo default project | Ends duplicate projects and "first match" routing | C4, S8 |
 | A-6 | Server-side preferences with user, project and repo scopes, and per-chat drafts | Consistent settings everywhere | C6, C11 |
@@ -271,10 +270,6 @@ Each surface answers the same five questions the same way: *Which store am I on?
 - Changing workspace folders shows a store switch, not lost history (S1).
 - Work moves in or out only through team handovers.
 
-**VS Code extension**
-- Discovers the origin from the descriptor and pairs once (C2, `integrations/vscode/extension.cjs:11,24`).
-- Shows the same store indicator and connection state as the browser.
-
 **Another computer, team hub**
 - The task shows its logical repository. Accepting or fetching a handover pre-fills the clone path saved for this device (A-13).
 - The UI calls it a "team handover" (§3.12), never just a "handoff".
@@ -315,11 +310,11 @@ Each phase can ship on its own and has observable acceptance signals.
   - No doc claims universal same-machine sync.
 
 **Phase 1: one owner per store**
-- Work: A-3 (attach-or-start), R-1, R-2 (stable port and token), A-4 and R-3 (service lifetime), VS Code discovery.
+- Work: A-3 (attach-or-start), R-1, R-2 (stable port and token), A-4 and R-3 (service lifetime).
 - Acceptance:
   - Starting a CLI task, then opening desktop, then `codeflow start` gives one owner PID, and no "Another code-flow server" error appears.
   - Quitting the desktop window leaves a CLI-started run `running`.
-  - A relaunch keeps the same origin, sign-in, drafts and VS Code connection.
+  - A relaunch keeps the same origin, sign-in and drafts.
   - An e2e test covers CLI-first, desktop-first and simultaneous starts.
 
 **Phase 2: one record per concept**
