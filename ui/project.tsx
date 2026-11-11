@@ -8,7 +8,7 @@ import { lazyView } from "./lazy-view.js";
 import type { ProjectReport, HistoryPage } from "../src/project-report.js";
 import { runSearchText } from "../src/run-history.js";
 import { checksLabel, type ProjectSection as HistorySection } from "../src/run-status.js";
-import { SchedulingView } from "./scheduling.js";
+import { AutomationManagement, SchedulingView } from "./scheduling.js";
 import { TeamBoardView } from "./collab-board.js";
 import { IntegrationsScreen } from "./integration-connections.js";
 import { ProjectShare } from "./project-share.js";
@@ -75,7 +75,7 @@ export function ProjectView({ id, section, repository, tool, kind }: { id: strin
       </section>
       <ProjectOverview key={id} id={id} />
       <a class="btn" href={destination("runs")}>View history</a>
-    </> : section === "board" ? <TeamBoardView project={id} embedded navigate={navigateTeam} /> : section === "people" ? <TeamPeopleView project={id} embedded navigate={navigateTeam} /> : section === "connections" ? <IntegrationsScreen key={id} projectId={id} /> : section === "automation" ? <SchedulingView key={id} projectId={id} kind={kind} /> : section === "runs" ? <><ProjectChatHistory key={`chats:${id}`} projectId={id}/><ProjectRuns key={id} projectId={id} /></> : section === "repositories" ? <>
+    </> : section === "board" ? <TeamBoardView project={id} embedded navigate={navigateTeam} /> : section === "people" ? <TeamPeopleView project={id} embedded navigate={navigateTeam} /> : section === "connections" ? <IntegrationsScreen key={id} projectId={id} /> : section === "automation" ? kind ? <AutomationManagement key={id} projectId={id} /> : <SchedulingView key={id} projectId={id} /> : section === "runs" ? <><ProjectChatHistory key={`chats:${id}`} projectId={id}/><ProjectRuns key={id} projectId={id} /></> : section === "repositories" ? <>
       <div class="project-repository-head"><h2>Repositories</h2><button class="btn" onClick={() => addRepositoryToProject(id)}><Icon name="plus" />Add repository</button></div>
       {!p.repos.length ? <p class="help">No repositories yet. Add a repository from {computerLabel()} to use its files and tools.</p> : <div class="project-repository-list">{p.repos.map(folder => <a class={`pp-card project-repository ${selectedRepository === folder ? "selected" : ""}`} href={hashFor({ view: "project", id, section: "repositories", repository: folder, tool: "code" })}><strong>{baseName(folder)}</strong><code>{shownPath(folder)}</code><span>{isFolderMirror(folder) ? "Folder · not a Git repository. Open its tools →" : "Open repository tools →"}</span></a>)}</div>}
       {selectedRepository ? <WorkbenchView key={`${id}:${selectedRepository}`} projectId={id} initialFolder={selectedRepository} initialTool={tool} onNavigate={(folder, nextTool) => { route.value = { view: "project", id, section: "repositories", repository: folder, tool: nextTool }; }} /> : p.repos.length ? <p class="help">Choose a repository to inspect its files, checks, services and history.</p> : null}

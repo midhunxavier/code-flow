@@ -70,20 +70,20 @@ test("the workflow run keeps one team template library and no browser presets", 
   await page.keyboard.press("Escape");
 });
 
-test("scheduling shares four purposes and comparisons live in Insights", { timeout: 45_000 }, async () => {
+test("scheduling shares one Automations page and comparisons live in Insights", { timeout: 45_000 }, async () => {
   await page.getByRole("button", { name: "Run actions", exact: true }).click();
   assert.equal(await page.getByRole("menuitem", { name: "Compare setups…", exact: true }).count(), 0);
   await page.getByRole("menuitem", { name: "Schedule…", exact: true }).click();
-  const choices = page.getByRole("dialog", { name: "Schedule work", exact: true });
-  await choices.getByRole("button", { name: /Run once later/ }).click();
-  await page.getByRole("dialog", { name: "Start later", exact: true }).waitFor();
-  await page.getByRole("dialog", { name: "Start later", exact: true }).getByRole("button", { name: "Close", exact: true }).click();
+  await page.waitForURL((url) => url.hash === "#/automations/manage");
+  for (const way of ["Run once later", "Repeat on a schedule or event", "Work through a GitHub backlog"]) await page.getByRole("heading", { name: way, exact: true }).waitFor();
+  await page.getByRole("button", { name: "Run once later", exact: true }).click();
+  await page.getByRole("dialog", { name: "Run once later", exact: true }).waitFor();
+  await page.getByRole("dialog", { name: "Run once later", exact: true }).getByRole("button", { name: "Close", exact: true }).click();
   await page.goto(`${base}/#/automations/once`);
-  await page.getByRole("navigation", { name: "Automation purpose" }).waitFor();
-  assert.equal(await page.getByRole("navigation", { name: "Automation purpose" }).getByRole("link").count(), 3);
-  await page.getByRole("region", { name: "Deferred runs", exact: true }).waitFor();
-  await page.getByRole("link", { name: "Process a backlog", exact: true }).click();
-  await page.getByRole("heading", { name: "Scheduled backlog work", exact: true }).waitFor();
+  await page.getByRole("region", { name: "Run once later queue", exact: true }).waitFor();
+  await page.getByRole("heading", { name: "Saved automations", exact: true }).waitFor();
+  await page.goto(`${base}/#/automations/backlog`);
+  await page.getByRole("heading", { name: "Work through a GitHub backlog", exact: true }).waitFor();
   await page.goto(`${base}/#/workflows`);
   await page.getByLabel("Task", { exact: true }).fill("Compare this task");
   await page.goto(`${base}/#/insights`);

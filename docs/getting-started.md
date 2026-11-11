@@ -91,7 +91,7 @@ Initial Team preparation supports local Git repositories with Claude/Codex manag
 
 ## Your first run
 
-On this computer every new-work link opens a chat. Choose **Open workflow run** in a new chat (or go to `#/workflows`) for the run form: fixed workflows, team templates, start later and schedules. On a phone, another device or an SSH host the same form is the start screen, headed **New run**:
+On this computer every new-work link opens a chat. Choose **Open workflow run** in a new chat (or go to `#/workflows`) for the run form: fixed workflows, team templates, run once later and schedules. On a phone, another device or an SSH host the same form is the start screen, headed **New run**:
 
 
 ![The composer: a task and its workflow, Plan → Build → Review, with the check that decides when it's done (demo data)](images/composer-light.png)
@@ -122,7 +122,7 @@ git merge codeflow/<run>/build
 
 ## Return to a project
 
-Open a project in the sidebar. **Overview** shows work needing attention, running work and recent results; **Runs** searches that project's history and can include archived runs. **Repositories** opens files, verification, context, history and services for a specific repository or run worktree. Existing Workspace bookmarks remain supported. **Project settings** keeps project editing and outcome metrics accessible. **More → Board** opens shared tasks on this project’s owning computer; **More → People** shows members, repository keys and authorized access controls. **More → Automation** contains Run once later, Repeat and Process a backlog. Board and Automation become visible tabs when configured, even when the optional Board shortcut is off. Command search finds every destination.
+Open a project in the sidebar. **Overview** shows work needing attention, running work and recent results; **Runs** searches that project's history and can include archived runs. **Repositories** opens files, verification, context, history and services for a specific repository or run worktree. Existing Workspace bookmarks remain supported. **Project settings** keeps project editing and outcome metrics accessible. **More → Board** opens shared tasks on this project’s owning computer; **More → People** shows members, repository keys and authorized access controls. **More → Automation** creates an automation for the project; the **Automations** page lists everything scheduled and offers Run once later, Repeat on a schedule or event, and Work through a GitHub backlog. Board and Automation become visible tabs when configured, even when the optional Board shortcut is off. Command search finds every destination.
 
 ![Project Overview groups the saved draft, work needing attention and recent results on its owning computer (demo data)](images/project-light.png)
 

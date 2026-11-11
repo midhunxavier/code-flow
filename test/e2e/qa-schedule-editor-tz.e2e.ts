@@ -212,7 +212,7 @@ test("the save-automation dialog keeps an emptied interval empty and blocks what
   await page.getByRole("textbox", { name: "Task", exact: true }).fill("Repeat dialog QA");
   await page.getByRole("button", { name: "Run actions", exact: true }).click();
   await page.getByRole("menuitem", { name: "Schedule…" }).click();
-  await page.getByRole("dialog", { name: "Schedule work" }).getByRole("button", { name: /^Repeat/ }).click();
+  await page.getByRole("button", { name: "Repeat on a schedule or event", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Save as automation" });
   const saveButton = dialog.getByRole("button", { name: "Save automation", exact: true });
   await dialog.getByLabel("Automation time zone", { exact: true }).fill("Mars/Olympus");

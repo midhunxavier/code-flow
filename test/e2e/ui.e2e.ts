@@ -1254,9 +1254,10 @@ test("project defaults stay repository-scoped and a run creates its worktree fro
     await fresh.getByLabel("Task", { exact: true }).fill("Verify selected branch and project defaults");
     await fresh.locator(".taskbox").getByRole("button", { name: "Run actions", exact: true }).click();
     await fresh.getByRole("menuitem", { name: "Schedule…", exact: true }).click();
-    await fresh.getByRole("dialog", { name: "Schedule work" }).getByRole("button", { name: /Run once later/ }).click();
-    await fresh.getByRole("dialog", { name: "Start later", exact: true }).waitFor();
-    await fresh.getByRole("dialog", { name: "Start later", exact: true }).getByRole("button", { name: "Close", exact: true }).click();
+    await fresh.getByRole("button", { name: "Run once later", exact: true }).click();
+    await fresh.getByRole("dialog", { name: "Run once later", exact: true }).waitFor();
+    await fresh.getByRole("dialog", { name: "Run once later", exact: true }).getByRole("button", { name: "Close", exact: true }).click();
+    await fresh.getByRole("link", { name: "Back to the run form", exact: true }).click();
     await fresh.getByRole("button", { name: "Send", exact: true }).click();
     await fresh.waitForURL(/#\/run\//);
     const id = fresh.url().split("/run/")[1];

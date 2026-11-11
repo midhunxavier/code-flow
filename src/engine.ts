@@ -497,7 +497,6 @@ export interface Run {
   teamRerun?: TeamRerunSeed;
   /** Durable queue identity, constructed by the server rather than a run request body. */
   deferred?: { jobId: string; claimId: string; attempt: number };
-  coordination?: { jobId: string; nodeId: string; claimId: string; attempt: number };
   /** Source trust follows related work even when the child has no GitHub source. */
   inheritedSourceTrust?: "trusted" | "untrusted" | "unknown";
   supersededBy?: string;
@@ -530,7 +529,7 @@ export interface Run {
    * Started by an automation (schedule, webhook, or "Run now") or a sweep, rather than by you
    * one at a time: its result waits in the inbox.
    */
-  trigger?: { id: string; name: string; via: "schedule" | "webhook" | "manual" | "sweep" | "deferred" | "coordination" };
+  trigger?: { id: string; name: string; via: "schedule" | "webhook" | "manual" | "sweep" | "deferred" };
   /** Your decision on an automation's result: it waits in the inbox until you make one. */
   triage?: { state: "pending" | "approved" | "rejected" | "empty"; at: number; note?: string; warning?: string };
   /** Changes to tests in each result branch that could make the check pass without a fix. */
@@ -3310,7 +3309,6 @@ export interface StartRunInput {
   checkpointOnFinish?: boolean;
   teamRerun?: TeamRerunSeed;
   deferred?: Run["deferred"];
-  coordination?: Run["coordination"];
   requireProjectRepo?: boolean;
   /** Internal discussion path must not register its empty private workspace as a project. */
   unscopedDiscussion?: boolean;
@@ -5815,7 +5813,7 @@ export class RunManager {
         // Even without a check: a pattern can run commands of its own (test-first runs the
         // tester's test command), and every command code-flow runs for this run goes in it.
         loop.container = { image: config.image ?? "node:22", network: false };
-      } else if (input.allowUntrusted || parent?.lockdownOnHost && !["deferred", "coordination"].includes(input.trigger?.via ?? "")) {
+      } else if (input.allowUntrusted || parent?.lockdownOnHost && input.trigger?.via !== "deferred") {
         lockdownOnHost = true;
       } else if (loop.check || loop.setup) {
         throw new UntrustedSourceError(lockdown, (await docker()).state === "unreachable");
@@ -5889,7 +5887,6 @@ export class RunManager {
       taskExecution: input.taskExecution ? { ...input.taskExecution } : undefined,
       intent: input.intent,
       deferred: input.deferred ? structuredClone(input.deferred) : undefined,
-      coordination: input.coordination ? { jobId: input.coordination.jobId, nodeId: input.coordination.nodeId, claimId: input.coordination.claimId, attempt: input.coordination.attempt } : undefined,
       repo,
       ...(isFolderMirror(repo) && folderOfMirror(repo) ? { folder: folderOfMirror(repo) } : {}),
       project: placed?.project.id,

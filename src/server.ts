@@ -81,7 +81,6 @@ import { TeamConnections } from "./collab/connections.js";
 import { handleTeamLinkApi, linkInfo } from "./collab/link-api.js";
 import type { CollabActor } from "./collab/model.js";
 import { userInfo } from "node:os";
-import { createCoordinatedApi } from "./coordinated-api.js";
 import { Extensions } from "./extensions.js";
 import { ShellLimitError, Shells, type ShellEvent } from "./shell.js";
 import { cursorSeq, StreamHub, TopicError, type Deliver, type TopicSource } from "./stream.js";
@@ -224,7 +223,6 @@ const resolveQueuedProviders: Parameters<typeof createDeferredRuns>[1]["resolveP
 const deferredRuns = createDeferredRuns(manager, { build: buildStartInput, resolveProviders: resolveQueuedProviders });
 /** Set at startup: an unreadable queue file disables deferred runs only, and is kept for repair. */
 let deferredFault: string | undefined = "Deferred runs are still loading";
-const coordinatedApi = createCoordinatedApi({ manager, projects, build: buildStartInput, resolveProviders: resolveQueuedProviders });
 const integrationWarnings: string[] = [];
 const notifications = new Notifications();
 const notificationsReady = await notifications.load(undefined, { allowInvalidAdministratorConfig: true }).then(() => true, (error) => { logError("Notifications disabled: delivery state cannot be read", error); integrationWarnings.push("Notification delivery storage is unavailable. Repair it and restart; other app-managed connections remain available."); return false; });
@@ -245,13 +243,13 @@ const notes = new Notes();
 const watcher = new PrWatcher(manager);
 const automations = new Automations(manager, (body, extra) => trackPolicyPreparation(async () => { if (!body.chatRecipe) return startFromBody(body, extra); if (!taskConversationsReady) throw new HttpError(503, "Chat automation is paused: repair chat storage and restart Code Flow"); return conversations.startAutomation(body, extra.trigger!, body.automationOccurrence, extra.untrustedText); }), (repo, kind) => trackPolicyPreparation(async () => { assertPolicyExecution(await fileAccess.execution(repo), "Automation source discovery"); return listSweep(repo, kind, manager.list()); }));
 async function pausePolicyBackground() {
-  const results = await Promise.allSettled([watcher.stop(), automations.stop(), deferredRuns.stop(), coordinatedApi.service.stop(), ...(notificationsReady ? [notifications.stop()] : [])]);
+  const results = await Promise.allSettled([watcher.stop(), automations.stop(), deferredRuns.stop(), ...(notificationsReady ? [notifications.stop()] : [])]);
   // Queue deadlines do not prove a child readiness request ended. Retain the underlying work too.
   while (policyPreparations.size) await Promise.allSettled([...policyPreparations]);
   const failure = results.find((result) => result.status === "rejected"); if (failure?.status === "rejected") throw failure.reason;
 }
 function startPolicyBackground() {
-  watcher.start(); automations.start(envNumber("CODEFLOW_SCHEDULER_TICK_MS", 30_000, { min: 100 })); if (!deferredFault) deferredRuns.start(); coordinatedApi.service.start();
+  watcher.start(); automations.start(envNumber("CODEFLOW_SCHEDULER_TICK_MS", 30_000, { min: 100 })); if (!deferredFault) deferredRuns.start();
   if (notificationsReady) notifications.start();
 }
 let remote: RemoteSettings;
@@ -908,7 +906,7 @@ async function buildStartInput(body: Record<string, any>): Promise<StartRunInput
 
 async function validatedStartInput(body: Record<string, any>): Promise<StartRunInput> {
   if (body.cliTeam !== undefined || body.cliTeamExecutionId !== undefined || ["cli-team", "task-prepare"].includes(body.pattern)) throw new HttpError(400, "Conversational teams start through an accepted proposal");
-  if (body.taskExecution !== undefined || body.teamTurns !== undefined || body.deferred !== undefined || body.teamRerun !== undefined || body.coordination !== undefined || body.beforeDispatch !== undefined || body.requireProjectRepo !== undefined) throw new HttpError(400, "Launch identities and selective rerun seeds are assigned by the server");
+  if (body.taskExecution !== undefined || body.teamTurns !== undefined || body.deferred !== undefined || body.teamRerun !== undefined || body.beforeDispatch !== undefined || body.requireProjectRepo !== undefined) throw new HttpError(400, "Launch identities and selective rerun seeds are assigned by the server");
   if (body.projectSelection !== undefined && body.projectSelection !== "explicit") throw new HttpError(400, "Unknown project selection mode");
   if (body.projectSelection === "explicit" && (!projects.available || typeof body.project !== "string" || !projects.get(body.project))) throw new HttpError(409, "Choose an available project before starting");
   if (body.templateCatalog !== undefined || body.teamTemplate !== undefined || body.permissions !== undefined) throw new HttpError(400, "Template snapshots and run authority are assigned by the server");
@@ -1882,7 +1880,6 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     if (req.method === "DELETE" && parts[2] && parts.length === 3) return send(res, 200, await attempt(() => acpConnections.remove(Number(url.searchParams.get("revision")), parts[2]!)));
     throw new HttpError(404, "Unknown ACP connection operation");
   }
-  if (parts[1] === "coordinated-changes") return coordinatedApi.handle(req, res, parts);
   // The team board: served here in hub mode, forwarded to the team server under this computer's runner credential in linked mode. The link itself (connect, mappings, start/stop/hand over on this computer) is always local and the owner's own.
   if (parts[1] === "team-terminals") return handleTeamTerminals(req, res, parts, teamTerminals, () => ownerActor(collab.ownerName), () => sharedMutation(req));
   if (parts[1] === "host-execution") return handleHostExecution(req, res, parts, hostExecution, ownerActor(collab.ownerName), () => sharedMutation(req));
@@ -2880,10 +2877,6 @@ if (!fileAccess.hasRestrictions()) await extensions.load().catch((error) => logE
 else { extensions.defer("A custom filesystem policy is active. Clear it and restart to load extensions."); logWarn("Extensions deferred: custom filesystem policy cannot isolate trusted plugin initialization; clear the policy and restart to load extensions"); }
 await automations.load();
 deferredFault = await deferredRuns.load().then(() => undefined, (error) => { logError(`Deferred runs disabled: repair ${deferredRuns.file} and restart`, error); return (error as Error).message; });
-await coordinatedApi.service.load().then(
-  () => coordinatedApi.recover().catch((error) => logError("A coordinated launch requires manual recovery", error)),
-  (error) => logError("Coordinated changes disabled: their private storage cannot be read", error),
-);
 if (!deferredFault) await recoverDeferredRuns(deferredRuns, manager).catch((error) => logError("A deferred launch requires manual recovery", error));
 remote = await loadRemote();
 if (!tlsConfigured) {
@@ -3128,7 +3121,6 @@ async function stop(reason: string, code = 0) {
   await Promise.race([teamConnections.close(), new Promise((resolve) => setTimeout(resolve, 5000).unref())]).catch((err) => logError("Team runner shutdown failed", err));
   await hostExecution.close().catch((err) => logError("Host execution shutdown failed", err));
   await collab.close().catch((err) => logError("Team board shutdown failed", err));
-  await coordinatedApi.service.stop().catch((err) => logError("Coordinated changes shutdown failed", err));
   await deferredRuns.stop().catch((err) => logError("Deferred queue shutdown failed", err));
   docsHelp.close();
   for (const controller of improvingControllers) controller.abort();

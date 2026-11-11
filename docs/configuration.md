@@ -19,7 +19,7 @@ Open **Settings** at the bottom of the sidebar, press **⌘, / Ctrl+,**, or sear
 
 Appearance, run defaults and sidebar preferences save in this browser, separately for each SSH workspace. SSH definitions and the team link with its repository mappings save on the local server; project, access, notification and retention settings save on the machine hosting that workspace; team board tasks, checkpoints and runner registrations save on the team server the link points to. Controls with a **Save** action keep their existing explicit save behavior. Numeric run limits save when you leave the field; invalid values restore the previous setting.
 
-**Project → Repository tools** contains verification, code editing, dependency and context inspection, checkpoints and coordinated changes. **Inbox**, **Automations** and **Insights** are sidebar destinations; **Board** joins them once a team is connected. Older Settings URLs such as `#/settings/inbox` redirect to the current destinations.
+**Project → Repository tools** contains verification, code editing, dependency and context inspection and checkpoints. **Inbox**, **Automations** and **Insights** are sidebar destinations; **Board** joins them once a team is connected. Older Settings URLs such as `#/settings/inbox` redirect to the current destinations.
 
 ## Per-repo config
 

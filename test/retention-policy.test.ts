@@ -125,14 +125,6 @@ test("project guidance and any live derived reference protect memory bodies and 
   await assert.rejects(store.retireMaintenance([{ id: entry.id, revision: entry.revision }]), /provenance source/); await assert.rejects(store.retireMaintenance([{ id: project.id, revision: project.revision }]), /project guidance/);
 });
 
-test("retained coordination launch and dependency receipts preserve exact source records", async () => {
-  const f = await fixture(); await writeRun(f, "coordinated-source"); const otherRepo = join(f.directory, "other-repo"); await mkdir(otherRepo); execFileSync("git", ["init", "-q", "-b", "main"], { cwd: otherRepo });
-  const { CoordinatedChanges } = await import("../src/repo-coordination.js");
-  const coordinator = new CoordinatedChanges({ file: join(f.home, "coordinated-changes.json"), pin: async (run) => ({ repo: run.repo, commit: "a".repeat(40) }), launch: async () => ({ runId: "coordinated-source" }), validateResult: async () => ({ status: "running" }), previewShipping: async () => { throw new Error("not used"); }, ship: async () => { throw new Error("not used"); } });
-  await coordinator.load(); await coordinator.create({ project: "p-fixture", name: "Keep exact receipts", nodes: [f.repo, otherRepo].map((repo, index) => ({ id: `repo${index}`, dependsOn: index ? ["repo0"] : [], run: { repo, pattern: "solo", task: "Implement coordinated fixture", roles: {}, options: {} } })) }); await coordinator.tick();
-  const plan = await previewRetention({ home: f.home, now }); assert.equal(plan.targets.length, 0); assert.ok(plan.protected.some((item) => item.id === "coordinated-source" && /retained coordinated change/.test(item.reason)));
-});
-
 test("any changed policy, file, reference or forged manifest aborts before deleting any target", async () => {
   for (const change of ["policy", "log", "attachment", "child", "forged"] as const) {
     const f = await fixture(); const run = await writeRun(f, "old", {}, true); const plan = await previewRetention({ home: f.home, now });

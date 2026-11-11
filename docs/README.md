@@ -50,7 +50,7 @@ Read the story: [Describe the team. Code Flow builds the workflow.](https://midh
 - [Claude Code and Codex terminal setup](cli-conversational-teams.md) · [Team patterns](patterns.md) · [Auto team](auto-team.md)
 - [Runs and the workspace](runs.md) · [Review inbox](review-inbox.md) · [Verification](verification.md)
 - [GitHub and shipping](github.md) · [GitHub review threads](github-review-threads.md)
-- [Selective task reruns](task-reruns.md) · [Deferred starts](deferred-runs.md)
+- [Selective task reruns](task-reruns.md) · [Run once later](deferred-runs.md)
 
 ## Make the workspace yours
 
@@ -58,7 +58,6 @@ Read the story: [Describe the team. Code Flow builds the workflow.](https://midh
 - [Project conventions](project-conventions.md) · [Checkpoints and reversions](checkpoint-review.md)
 - [Code intelligence](code-intelligence.md) · [Architecture explorer](architecture-explorer.md)
 - [Project memory](memory-storage.md)
-- [Coordinated repository changes](coordinated-changes.md)
 
 ## Connect and collaborate
 

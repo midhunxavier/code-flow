@@ -67,8 +67,8 @@ test("a run belongs to the project it recorded; runs from before projects, to th
   assert.equal(projectOf({ repo: "/r/three" }, list), undefined);
 });
 
-test("strict coordinated placement cannot revive membership revoked ahead of it in the project queue", async () => {
-  const file = join(mkdtempSync(join(tmpdir(), "codeflow-projects-strict-")), "projects.json"), projects = new Projects(file); await projects.load(); const project = await projects.create({ name: "Strict coordinated project", repos: [api, web] });
+test("strict placement cannot revive membership revoked ahead of it in the project queue", async () => {
+  const file = join(mkdtempSync(join(tmpdir(), "codeflow-projects-strict-")), "projects.json"), projects = new Projects(file); await projects.load(); const project = await projects.create({ name: "Strict project", repos: [api, web] });
   const removed = projects.update(project.id, { repos: [api] });
   const placement = projects.place(web, { requested: project.id, lenient: true, requireRepo: true });
   await removed; await assert.rejects(placement, /no longer an explicit member/); assert.deepEqual(projects.get(project.id)!.repos, [api]);

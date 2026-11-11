@@ -10,7 +10,7 @@ import { AgentTag, CantRunNote } from "./bits.js";
 import { Icon } from "./icons.js";
 import { ago, api, ApiError, sharedGet, baseName, copy, post, showToast, showError, STATUS_TEXT } from "./lib.js";
 import { AUTOMATION_MANAGEMENT } from "./navigation.js";
-import { activeProject, projectCounts, filterActive, setRunFilter, historyNextCursor, historyLoadingMore, loadOlderRuns, ALL, currentProject, inScope, NONE, patternName, projectFor, projects, route, runs, selectProject } from "./state.js";
+import { activeProject, projectCounts, filterActive, setRunFilter, historyNextCursor, historyLoadingMore, loadOlderRuns, ALL, currentProject, inScope, NONE, patternName, projectFor, projects, route, runs, scheduleRequest, selectProject } from "./state.js";
 import type { Project, RunSummary } from "./types.js";
 import { ProjectButton } from "./projects.js";
 import { SCHEDULED_TEAM_NOTICE, usesTaskTeam } from "./deferred-runs.js";
@@ -140,7 +140,7 @@ export function ScheduleEditor({ automation: a, save, onChange, zoneRequired = f
 }
 
 // ---------------------------------------------------------------- page
-export function AutomationsView({ mode = "all", category, projectId, showScope = true }: { mode?: "all" | "inbox" | "automations"; category?: "repeat" | "backlog"; projectId?: string; showScope?: boolean }) {
+export function AutomationsView({ mode = "all", projectId, showScope = true }: { mode?: "all" | "inbox" | "automations"; projectId?: string; showScope?: boolean }) {
   useEffect(() => {
     return pollVisible(loadAutomations, 15_000);
   }, []);
@@ -173,9 +173,8 @@ export function AutomationsView({ mode = "all", category, projectId, showScope =
     if (grouping === "none") return { id: "all", label: "All attention items" };
     const project = projectFor(run); return { id: project?.id ?? "unassigned", label: project?.name ?? "Without a project" };
   });
-  const matching = automations.value.filter(a => !category || (category === "backlog" ? !!a.sweep : !a.sweep));
-  const list = matching.filter((a) => automationInScope(a, scope));
-  const elsewhere = matching.filter(a => !automationInScope(a, scope));
+  const list = automations.value.filter((a) => automationInScope(a, scope));
+  const elsewhere = automations.value.filter(a => !automationInScope(a, scope));
   const withoutProject = elsewhere.filter(a => !automationProject(a.run)).length;
   const project = projects.value.find(p => p.id === scope);
   const here = project ? ` in ${project.name}` : scoped ? " without a project" : "";
@@ -205,7 +204,7 @@ export function AutomationsView({ mode = "all", category, projectId, showScope =
 
       {mode !== "inbox" ? <section class="section auto-card" aria-labelledby="automations-title">
         <h2 class="section-title" id="automations-title">
-          {category === "backlog" ? "Scheduled backlog work" : category === "repeat" ? "Repeating tasks and webhooks" : "Saved automations"} {list.length ? <span class="n">{list.length}</span> : null}
+          Saved automations {list.length ? <span class="n">{list.length}</span> : null}
         </h2>
         {automationLoadError.value ? <p class="msg err automation-storage-note" role="alert">Automations could not be refreshed: {automationLoadError.value} <button class="btn small" onClick={() => void loadAutomations()}>Retry</button></p> : null}
         {automationStorage.value?.state === "unavailable" ? <p class="msg err automation-storage-note" role="alert">Automation storage is unavailable: {automationStorage.value.reason}. Existing records have been preserved. Fix access to <code>{automationStorage.value.source}</code>, then restart Code Flow.</p> : automationStorage.value?.state === "recovered" ? <p class="msg warn automation-storage-note" role="status">Automation storage was recovered: {automationStorage.value.reason}. Original records were preserved in <code>{automationStorage.value.backup}</code>; only readable records are shown.</p> : null}
@@ -214,7 +213,7 @@ export function AutomationsView({ mode = "all", category, projectId, showScope =
           list.map((a) => <AutomationRow key={a.id} a={a} scoped={scoped} />)
         ) : (
           <p class="help empty">
-            {automationStorage.value?.state === "unavailable" || automationLoadError.value ? "Saved automations are hidden until storage can be read." : category ? <>None{here} yet. Set up a task in a workflow run, then choose <b>Schedule → Repeat</b>.</> : <>No automations{here} yet. Choose <a href="#/automations">Create automation</a>, or select <b>Automate this</b> on a reviewed approach in chat.</>}
+            {automationStorage.value?.state === "unavailable" || automationLoadError.value ? "Saved automations are hidden until storage can be read." : <>No automations{here} yet. Choose <a href="#/automations">Create automation</a>, or select <b>Automate this</b> on a reviewed approach in chat.</>}
           </p>
         )}
       </section> : null}
@@ -589,6 +588,7 @@ export function SaveAutomationDialog({ body, onClose }: { body: Record<string, a
       });
       await loadAutomations();
       showToast("Automation saved");
+      scheduleRequest.value = null;
       onClose();
       // Show the project it went in (from "No project", its repo's), as starting a run does.
       const p = automationProject(saved.run);

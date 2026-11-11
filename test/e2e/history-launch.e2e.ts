@@ -321,13 +321,13 @@ test("filesystem policy enforces scoped app reads/writes and globally blocks exe
   await panel.getByRole("status").getByText("Filesystem policy revision 1 applied.", { exact: true }).waitFor();
   const request = (path: string, body?: unknown, method = "POST") => fetch(base + path, { headers: { ...headers, "content-type": "application/json" }, ...(body !== undefined ? { method, body: JSON.stringify(body) } : {}) });
   for (const prefix of ["/api", "/api/v1"]) {
-    for (const path of ["/stats", "/memory", "/automations", "/deferred-runs", "/coordinated-changes", "/notifications", "/maintenance"]) assert.equal((await request(prefix + path)).status, 403, `unscoped private data ${path}`);
+    for (const path of ["/stats", "/memory", "/automations", "/deferred-runs", "/notifications", "/maintenance"]) assert.equal((await request(prefix + path)).status, 403, `unscoped private data ${path}`);
     assert.equal((await request(`${prefix}/file?repo=${encodeURIComponent(repo)}&path=private/credentials.txt`)).status, 403);
     assert.equal((await request(`${prefix}/repo-config?repo=${encodeURIComponent(join(repo, "api"))}`)).status, 403, "subdirectory aliases cannot bypass repository policy");
     assert.equal((await request(`${prefix}/projects/${project.id}/summary`)).status, 403);
     assert.equal((await request(`${prefix}/runs?limit=100&status=passed`).then(response => response.json())).total, 0, "filtered totals exclude restricted history");
     assert.equal((await request(`${prefix}/runs/history-125/export?transcript=1`)).status, 403); assert.equal((await request(`${prefix}/runs/history-125/events`)).status, 403);
-    for (const path of ["/runs", "/readiness", "/verification", "/shells", "/preview", "/snapshot", "/automations", "/deferred-runs", "/coordinated-changes"]) { const response = await request(prefix + path, { repo: otherRepo, pattern: "solo", task: "A different repository cannot read protected host files", roles: { agent: ["claude"] }, trust: "full", execute: true }); assert.equal(response.status, 409, path); }
+    for (const path of ["/runs", "/readiness", "/verification", "/shells", "/preview", "/snapshot", "/automations", "/deferred-runs"]) { const response = await request(prefix + path, { repo: otherRepo, pattern: "solo", task: "A different repository cannot read protected host files", roles: { agent: ["claude"] }, trust: "full", execute: true }); assert.equal(response.status, 409, path); }
   }
   assert.equal((await request("/api/health").then((response) => response.json())).interactiveTerminal, false, "health does not launch an interpreter under restrictions");
   const before = readdirSync(records).length;

@@ -2513,11 +2513,6 @@
   .agent-isolation .help { margin: 0; }
   .iso-field { display: grid; gap: 6px; font-size: 12px; font-weight: 500; color: var(--text-2); }
   .iso-field > .field { font-weight: 400; } /* the label's 500 stops at the field, like every other composer field */
-  /* Start later (deferred-runs.tsx inside the composer): fields at the composer's 14px/400, not their label's
-     12px/500; the actions 34px like the other sections', the queue under a hairline below the form */
-  .deferred-start .deferred-runs label > .field { font-size: 14px; font-weight: 400; }
-  .deferred-start .deferred-runs > .wb-actions .btn.small { height: 34px; padding: 0 13px; font-size: 13px; border-radius: var(--radius-sm); }
-  .deferred-start .deferred-runs > details[open] + .wb-actions { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border); }
   /* segmented switches in the composer's settings (agent permissions): a label never wraps inside its 28px button */
   .composer .settings-body .segmented button { white-space: nowrap; }
   /* the file tree's footer key (composer.tsx FileTree): the same tones as the tree's status letters */
@@ -2765,8 +2760,8 @@
 
   /* A tool is a card (History stacks a few); its h2 heads it and the line under the h2 says what it does.
      The deferred-run queue and the shared accounts (shared.tsx) are cards here and plain elsewhere. */
-  .wb-card, .wb-main > :is(.deferred-runs, .shared-accounts) { min-width: 0; padding: 18px 20px 20px; background: var(--raised); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); overflow-wrap: anywhere; }
-  .wb-card > :last-child, .wb-main > :is(.deferred-runs, .shared-accounts) > :last-child { margin-bottom: 0; }
+  .wb-card, .wb-main > :is(.deferred-runs, .shared-accounts), .automation-management > .deferred-runs { min-width: 0; padding: 18px 20px 20px; background: var(--raised); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); overflow-wrap: anywhere; }
+  .wb-card > :last-child, .wb-main > :is(.deferred-runs, .shared-accounts) > :last-child, .automation-management > .deferred-runs > :last-child { margin-bottom: 0; }
   .wb-card > h2, .deferred-runs > .section-title, .wb-main > .shared-accounts > h2 { display: flex; align-items: center; gap: 8px; margin: 0 0 4px; font-size: 14px; font-weight: 600; letter-spacing: 0; line-height: 1.4; color: var(--text); }
   .deferred-runs > .section-title .count { background: var(--sunken); color: var(--text-2); }
   :is(.wb-card, .deferred-runs) p { margin: 8px 0; font-size: 13px; line-height: 1.55; }
@@ -2796,8 +2791,6 @@
   :is(.wb-card, .deferred-runs) textarea.field { resize: vertical; }
   :is(.wb-card, .deferred-runs) fieldset { min-width: 0; margin: 12px 0; padding: 0; border: 0; }
   :is(.wb-card, .deferred-runs) legend { padding: 0; margin: 0 0 6px; font-size: 12px; font-weight: 500; color: var(--text-2); }
-  /* the shared accounts' role group is frameless like every other field group here (only a coordinated
-     change's per-repository tasks are inset boxes: repeated items, like .wb-item) */
   .wb-main > .shared-accounts .shared-roles-set { padding: 0; border: 0; border-radius: 0; }
   .wb-main > .shared-accounts .shared-roles-set > legend { padding: 0; margin: 0 0 8px; }
   .wb-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr)); gap: 12px 16px; max-width: 720px; margin: 12px 0; }
@@ -2839,7 +2832,7 @@
   :is(.workbench, .deferred-runs) .badge.err { background: var(--err-soft); color: var(--err); }
   :is(.workbench, .deferred-runs) .badge.run { background: var(--accent-soft); color: var(--accent-ink); }
 
-  /* Items inside a tool (a destination, a queued run, a worker, a coordinated change): inset boxes on the
+  /* Items inside a tool (a destination, a queued run, a worker): inset boxes on the
      paper tone, the way project memory shows its entries */
   .wb-list { display: grid; gap: 10px; margin: 12px 0; }
   .wb-list:empty { display: none; }
@@ -2899,18 +2892,7 @@
   .filesystem-policy-grid label > textarea.field { width: 100%; min-width: 0; font: 12.5px/1.5 var(--mono); } /* paths: outranks the wrapped-field type above */
   .filesystem-policy-saved { white-space: pre-wrap; overflow-wrap: anywhere; }
   .filesystem-policy-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
-  /* Coordinated changes: each repository's task an inset group; a change's repositories ruled apart */
-  fieldset.coordination-task { margin: 12px 0; padding: 10px 14px 4px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); }
-  .coordination-task > legend { padding: 0 4px; margin-left: -4px; font-weight: 600; color: var(--text); }
-  .coordination-deps { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 16px; margin: 0 0 12px; font-size: 12px; font-weight: 500; color: var(--text-2); }
-  .coordination-deps > label { margin: 0; }
-  .coordination-node { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); }
-  .coordination-node > h3:first-child { margin: 0 0 4px; }
-  .coordination-node > .wb-item-head { margin: 0 0 4px; }
-  .coordination-node > .wb-item-head > h3 { font-size: 13px; } /* a repository inside a change: a step below the change's name */
-  .coordination-node > p { margin: 4px 0; }
-  /* Deferred runs (here and in the composer's settings) */
-  .settings-body > .deferred-runs { margin-top: 0; }
+  /* Run once later (deferred-runs.tsx) */
   .deferred-providers > label { display: inline-flex; margin: 4px 18px 4px 0; }
   .deferred-recovery { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); }
   .deferred-recovery .wb-row { margin: 8px 0; }
@@ -3717,7 +3699,6 @@ dialog.picker.team-build-dialog { max-height: min(780px, calc(100dvh - 32px)); }
 /* Shared task-focused navigation and code editing surfaces. */
 .purpose-nav, .template-entry { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 16px 0; }
 .purpose-nav .btn { white-space: normal; text-align: left; }
-.purpose-choices { display: grid; gap: 12px; }
 .code-browser { min-width: 0; padding: 16px; }
 .code-browser .field, .code-browser pre { max-width: 100%; }
 .code-browser .wb-row { flex-wrap: wrap; }
@@ -3745,7 +3726,7 @@ dialog.picker.team-build-dialog { max-height: min(780px, calc(100dvh - 32px)); }
 .change-impact { margin-top: 16px; }
 .change-impact li { overflow-wrap: anywhere; }
 .change-impact pre { overflow: auto; max-height: 300px; }
-.connections-hub, .scheduling-hub { min-width: 0; }
+.connections-hub { min-width: 0; }
 @media (max-width: 600px) { .purpose-nav { display: grid; grid-template-columns: 1fr; } .code-browser { padding: 10px; } .code-browser .wb-diff { grid-template-columns: 1fr; } }
 
 /* Project navigation keeps location and the current work visible together. */
@@ -4489,11 +4470,9 @@ dialog.rail::backdrop { background: rgb(0 0 0 / .28); }
 .rail-archive-view .rail-archive-toggle { padding: 2px 0; }
 .rail-history:empty { display: none; }
 
-/* Keep creation focused; saved automations belong to settings. */
-.automation-manage-link { display: flex; justify-content: center; margin-top: 12px; }
+/* One place for everything scheduled: the ways to automate, the run-once-later queue, saved automations. */
 .automation-management { min-width: 0; }
 .automation-management > .page-head { flex-wrap: wrap; gap: 12px; }
-.automation-management .automation-legacy { margin-top: 24px; }
 /* Diffs get the main canvas, with optional human review below. */
 .changes-review-tools { flex: none; max-height: 50%; overflow: auto; border-top: 1px solid var(--border); }
 .changes-review-tools:empty { display: none; }

@@ -1,29 +1,29 @@
 # Automations and away mode
 
-Open Project → More → Automations → Repeat for recurring work, Inbox for results that need attention, and Automations → Run once later for a single task that should start later. Keep the application running when a scheduled task is due.
+Open **Automations** in the sidebar for everything scheduled, and Inbox for results that need attention. The Automations page offers three ways to automate: **Run once later** for a single task that should start later, **Repeat on a schedule or event** for recurring work, and **Work through a GitHub backlog** for one run per issue, dependency update or security alert. Keep the application running when a scheduled task is due.
 
 
 ![Project Automation keeps scheduled work and repository selection in the project (demo data)](images/project-automation-light.png)
 
 ## Choose the right trigger
 
-Set up a run in the composer (task, team, check, settings), then choose **More run actions → Schedule… → Repeat**. It runs unattended. **AI team** works only in a live Agent conversation, so a task with it switched on cannot be scheduled: turn it off to schedule one agent, or choose **Team — dynamic plan** in Advanced to schedule a team.
+Set up a run in the composer (task, team, check, settings), then choose **Run actions → Schedule…**. The configured run opens on the Automations page; choose **Repeat on a schedule or event** there. It runs unattended. **AI team** works only in a live Agent conversation, so a task with it switched on cannot be scheduled: turn it off to schedule one agent, or choose **Team — dynamic plan** in Advanced to schedule a team.
 
-Open **Automations** in the sidebar to manage saved automations, recurring tasks, deferred runs and backlog processing; **Create automation** there, or pressing **a**, starts a new one. **Inbox** is a separate sidebar destination for questions, blocked work, failures and results. Older `#/settings/automations` links open the Automations page.
+Open **Automations** in the sidebar to see the run-once-later queue beside saved automations and to start any of the three ways; **Create automation** there, or pressing **a**, starts a new one. **Inbox** is a separate sidebar destination for questions, blocked work, failures and results. Older `#/settings/automations` links open the Automations page.
 
 ## Projects
 
 An automation's runs start in the [project](runs.md#projects) you were in when you saved it (from *All projects*, in its repository's project). If that project is deleted later, they start in the repository's project. Turning it off and on, or making a new webhook secret, keeps its project.
 
-**Project → Automation** always lists that project’s saved work, regardless of the sidebar filter or composer draft. Choose its repository here before configuring a task or opening backlog items. Run once later and Repeat open the canonical project composer to describe the task; choosing backlog items restores that project’s saved agent workflow without leaving Automation. Multi-repository projects require a visible choice. Saved schedules for other repositories in the same project stay discoverable.
+A project’s automation page (`#/project/<id>/automation/repeat`) always lists that project’s queued runs and saved automations, regardless of the sidebar filter or composer draft. Choose its repository there before configuring a task or opening backlog items. **Run once later** and **Repeat on a schedule or event** open the canonical project composer to describe the task; choosing backlog items restores that project’s saved agent workflow without leaving Automation. Multi-repository projects require a visible choice. Saved schedules for other repositories in the same project stay discoverable.
 
-Global **Automations → Repeat** uses the project filter beside its title. Inbox lists the results waiting for you. When other projects have some too, a line says how many, with **show all** to switch to *All projects*. The **Inbox** count in the sidebar counts attention items across projects, so nothing waiting for you is out of sight.
+The global **Automations** page uses the project filter beside its title. Inbox lists the results waiting for you. When other projects have some too, a line says how many, with **show all** to switch to *All projects*. The **Inbox** count in the sidebar counts attention items across projects, so nothing waiting for you is out of sight.
 
 ## When it runs
 
 - at a time on chosen weekdays (e.g. weekdays at 07:00), or every *N* minutes (at least 5, at most 10080: a week);
 - from a webhook;
-- or when you press **Run now** on the **Automations → Repeat** page.
+- or when you press **Run now** on the **Automations** page.
 
 A time of day runs in the time zone you choose, your browser's by default. One saved without a zone (through the API, or by an older backlog sweep) runs in the server's local time; **Schedule and next times** keeps it that way, with its next runs in that zone, until you pick one.
 

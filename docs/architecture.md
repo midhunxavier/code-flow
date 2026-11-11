@@ -87,7 +87,7 @@ Implement `AgentAdapter` in `src/adapters/`, then register it in `src/adapters/i
 
 Owner-configured providers and workflows can also use [versioned extensions](extensions.md) without modifying the built-in registry. They use namespaced IDs, explicit capability/API negotiation, reviewed bundle hashes and per-run version pins. Additional provider capabilities remain unknown until separately verified.
 
-The HTTP boundaries for shared access, the team board and its linked runners, filesystem policy, coordinated changes and workspace operations live in separate modules. SSH framing/artifacts/receipts, durable queues, memory claim analysis and Git shipping each have independent contracts and focused tests. [Run storage](run-storage.md) separates recovery/projection from execution and bounds archived detail hydration. These boundaries retain server-owned authority and replay identities rather than moving them into client request bodies.
+The HTTP boundaries for shared access, the team board and its linked runners, filesystem policy and workspace operations live in separate modules. SSH framing/artifacts/receipts, durable queues, memory claim analysis and Git shipping each have independent contracts and focused tests. [Run storage](run-storage.md) separates recovery/projection from execution and bounds archived detail hydration. These boundaries retain server-owned authority and replay identities rather than moving them into client request bodies.
 
 ## Development
 

@@ -38,11 +38,11 @@ export function CommandPalette() {
   const serverMatches = new Set(saved?.runs.map(item => item.id));
   const actions: Command[] = [
     { id: "new", label: "New chat", detail: "Actions", icon: "plus", run: () => { openChat(); } },
-    ...(chatAllowed() ? [{ id: "workflow-run", label: "Open workflow run", detail: "Actions · fixed workflows, team templates, start later and schedules", icon: "layers", run: () => { void openComposer(); } } satisfies Command] : []),
+    ...(chatAllowed() ? [{ id: "workflow-run", label: "Open workflow run", detail: "Actions · fixed workflows, team templates, run once later and schedules", icon: "layers", run: () => { void openComposer(); } } satisfies Command] : []),
     { id: "docs", label: "Help & documentation", detail: "Guides, search and Ask code-flow using your local CLI", icon: "help", run: () => { window.open("/docs/", "_blank", "noopener"); } },
     { id: "settings", label: "Settings", detail: "Preferences, agents and remote connections", icon: "sliders", run: () => (route.value = { view: "settings" }) },
     { id: "inbox", label: "Inbox", detail: "Questions, failures and results needing review", icon: "bell", run: () => (route.value = { view: "inbox" }) },
-    { id: "automations", label: "Automations", detail: "Schedules, saved automations and deferred runs", aliases: ["scheduling"], icon: "clock", run: () => (route.value = { view: "automations", kind: AUTOMATION_MANAGEMENT }) },
+    { id: "automations", label: "Automations", detail: "Run once later, repeat on a schedule or event, GitHub backlogs", aliases: ["scheduling"], icon: "clock", run: () => (route.value = { view: "automations", kind: AUTOMATION_MANAGEMENT }) },
     { id: "workspace", label: "Repository tools", detail: "Workspace · code, checks and repositories", icon: "files", run: () => (route.value = repositoryToolsRoute()) },
     { id: "insights", label: "Insights", detail: "Run results and usage", icon: "chart", run: () => (route.value = { view: "insights" }) },
     { id: "team", label: "Board", detail: "People team collaboration tasks, hand-overs and your team inbox", icon: "people", run: () => (route.value = { view: "team" }) },

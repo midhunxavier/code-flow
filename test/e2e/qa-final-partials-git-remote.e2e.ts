@@ -1,8 +1,8 @@
 import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { copyFile, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -52,7 +52,7 @@ before(async () => {
   execFileSync(process.execPath, ["scripts/build-ui.mjs"], { cwd: root }); await start(); project = (await api("/api/projects", { name: "Final Git fixture", repos: [repo, sibling] })).id; other = (await api("/api/projects", { name: "Other destination", repos: [sibling] })).id;
   browser = await chromium.launch({ channel: "chrome", headless: true });
 });
-after(async () => { await browser?.close(); await writeFile(join(gate, "release-late"), "release").catch(() => {}); await stop(); for (const file of await readdir(docker).catch(() => [])) { if (!file.endsWith(".json")) continue; const owned = JSON.parse(await readFile(join(docker, file), "utf8")); try { process.kill(-owned.pid, "SIGKILL"); } catch {} } if (evidence) { await mkdir(evidence, { recursive: true }); await writeFile(join(evidence, "server.log"), output); await writeFile(join(evidence, "observations.json"), JSON.stringify({ errors, console, failedRequests, observations }, null, 2)); } await rm(directory, { recursive: true, force: true }); });
+after(async () => { await browser?.close(); await stop(); for (const file of await readdir(docker).catch(() => [])) { if (!file.endsWith(".json")) continue; const owned = JSON.parse(await readFile(join(docker, file), "utf8")); try { process.kill(-owned.pid, "SIGKILL"); } catch {} } if (evidence) { await mkdir(evidence, { recursive: true }); await writeFile(join(evidence, "server.log"), output); await writeFile(join(evidence, "observations.json"), JSON.stringify({ errors, console, failedRequests, observations }, null, 2)); } await rm(directory, { recursive: true, force: true }); });
 
 test("backlog loading is visible and a changed destination cannot dispatch stale picks", { timeout: 60000 }, async () => {
   await writeFile(join(gate, "hold-gh"), "hold"); const page = await open(`/project/${project}/automation/backlog`);
@@ -86,7 +86,6 @@ test("inverse staging refuses dirty and moved worktrees without changing bytes; 
   } finally { await page.close(); }
 });
 
-async function coordinationPanel(page: Page) { await page.goto(`${base}/#/project/${project}/repositories`); await page.getByRole("link", { name: /Open repository tools/ }).first().click(); await page.getByRole("button", { name: "Coordinated changes", exact: true }).click(); }
 test("checkpoint restore and deletion confirmations preserve HEAD; only owned checkpoints can actually fork", { timeout: 60000 }, async () => {
   const historyRepo = join(directory, "history"); git(directory, "clone", "-q", repo, historyRepo); const older = git(historyRepo, "rev-parse", "HEAD"); git(historyRepo, "commit", "--allow-empty", "-qm", "run starts after older history");
   const historyProject = (await api("/api/projects", { name: "History fixture", repos: [historyRepo] })).id; const result = await run("Checkpoint restore fixture", { repo: historyRepo, project: historyProject }), tree = result.worktrees[0].path;
@@ -101,28 +100,6 @@ test("checkpoint restore and deletion confirmations preserve HEAD; only owned ch
     const response = page.waitForResponse(r => r.url().endsWith(`/api/runs/${result.id}/fork`) && r.request().method() === "POST"); await fork.click(); const receipt = await response; assert.equal(receipt.status(), 201); const created = await receipt.json(); await page.waitForURL(url => url.hash === `#/run/${created.id}`); const child = await finished(created.id); assert.equal(child.status, "done"); assert.equal(child.baseRef, result.baseRef); assert.equal(git(child.worktrees[0].path, "merge-base", result.baseRef, "HEAD"), result.baseRef); await shot(page, "checkpoint-base-fork-opened"); observations.push({ features: ["GIT-28", "GIT-30"], olderRefused: refused.status, restored: true, deletionConfirmed: true, forkId: child.id, forkBase: child.baseRef });
   } finally { await page.close(); }
 });
-const jobRequest = (name: string) => ({ project, name, nodes: [repo, sibling].map((repository, i) => ({ id: `repo${i + 1}`, dependsOn: i ? ["repo1"] : [], run: { repo: repository, pattern: "solo", task: i ? "Must wait for dependency" : name, roles: { agent: ["claude"] }, loop: { check: "true" } } })) });
-const job = async (id: string) => (await api("/api/coordinated-changes")).find((value: any) => value.id === id);
-test("cancel before a held launch receipt retains the result and never dispatches its dependent", { timeout: 60000 }, async () => {
-  const created = await api("/api/coordinated-changes", jobRequest("QA_LATE_RECEIPT")); await until(async () => existsSync(join(gate, "late-run")), Boolean); const runId = await readFile(join(gate, "late-run"), "utf8"); const result = await finished(runId); assert.equal(result.status, "done"); const retainedHead = git(repo, "rev-parse", result.artifacts[0].branch);
-  const page = await open(`/project/${project}/repositories`); try { await coordinationPanel(page); const card = page.getByRole("article", { name: "Coordinated change QA_LATE_RECEIPT", exact: true }); await card.getByRole("button", { name: "Cancel coordinated change", exact: true }).click(); await page.getByRole("dialog", { name: "Cancel coordinated change?", exact: true }).getByRole("button", { name: "Cancel coordinated change", exact: true }).click(); await until(() => job(created.id), value => value.cancelRequested); await writeFile(join(gate, "release-late"), "release"); const cancelled = await until(() => job(created.id), value => value.nodes[0].status === "cancelled" && value.nodes[0].runId === runId); await pause(1300); assert.equal((await job(created.id)).nodes[1].attempts, 0); assert.equal(cancelled.status, "cancelled"); assert.equal(git(repo, "rev-parse", result.artifacts[0].branch), retainedHead); assert.ok((await api(`/api/runs/${runId}`)).artifacts.length); await page.getByRole("button", { name: "Refresh coordinated changes", exact: true }).click(); await shot(page, "cancel-late-receipt"); observations.push({ feature: "GIT-33", runId, status: cancelled.status, downstreamAttempts: cancelled.nodes[1].attempts }); } finally { await page.close(); }
-});
-
-test("an unknown launch can be explicitly linked after it becomes discoverable without restarting", { timeout: 60000 }, async () => {
-  const created = await api("/api/coordinated-changes", jobRequest("QA_UNKNOWN_RECEIPT")); await until(() => job(created.id), value => value.nodes[0].status === "unknown"); const runId = await readFile(join(gate, "unknown-run"), "utf8"); await finished(runId); assert.ok(!(await api("/api/runs")).some((r: any) => r.id === runId));
-  const page = await open(`/project/${project}/repositories`); try { await coordinationPanel(page); const card = page.getByRole("article", { name: "Coordinated change QA_UNKNOWN_RECEIPT", exact: true }); await card.getByLabel("Matching run for repo1", { exact: true }).waitFor(); await writeFile(join(gate, "discover-unknown"), "discover"); assert.ok((await api("/api/runs")).some((r: any) => r.id === runId)); assert.equal((await job(created.id)).nodes[0].status, "unknown"); await card.getByLabel("Matching run for repo1", { exact: true }).fill(runId); const link = async () => { const response = page.waitForResponse(r => r.request().method() === "POST" && new URL(r.url()).pathname.endsWith("/nodes/repo1/attach")); await card.getByRole("button", { name: "Link matching run repo1", exact: true }).click(); return response; };
-    let linked = await link();
-    if (linked.status() === 409) {
-      assert.equal((await linked.json()).error, "This coordinated change changed. Refresh before acting.");
-      await card.getByRole("alert").filter({ hasText: "Refresh before acting" }).waitFor();
-      const current = await job(created.id); assert.equal(current.nodes[0].status, "unknown", "A stale link leaves the launch claim untouched");
-      await page.getByRole("button", { name: "Refresh coordinated changes", exact: true }).click();
-      await card.getByText(new RegExp(`revision ${current.revision}$`)).waitFor();
-      linked = await link();
-    }
-    assert.equal(linked.status(), 200, await linked.text()); const ready = await until(() => job(created.id), value => value.status === "ready"); assert.equal(ready.nodes[0].runId, runId); assert.equal(ready.nodes[0].attempts, 1); assert.equal(ready.nodes[1].attempts, 1); await page.getByRole("button", { name: "Refresh coordinated changes", exact: true }).click(); await shot(page, "unknown-manually-linked"); observations.push({ feature: "GIT-34", runId, ready }); } finally { await page.close(); }
-});
-
 test("read-only planner and reviewer tracked edits are restored while the source checkout is untouched", { timeout: 60000 }, async () => {
   const before = snapshot(repo), result = await run("QA_TRACKED_READ_EDIT", { pattern: "pipeline", roles: { planner: ["claude"], builder: ["claude"], reviewer: ["claude"] } }); assert.deepEqual(snapshot(repo), before); assert.equal(await readFile(join(repo, "README.md"), "utf8"), "untouched source\n"); for (const tree of result.worktrees) assert.equal(await readFile(join(tree.path, "README.md"), "utf8"), "untouched source\n"); const page = await open(`/run/${result.id}`); try { await page.getByText("Details and publishing", { exact: true }).click(); await page.getByText(/^Activity log/).click(); await page.locator(".activity .log").getByText(/read.only|changed files|undid|restored/i).first().waitFor(); await shot(page, "tracked-readonly-edits-restored"); observations.push({ feature: "GIT--GAP-01", result: result.status, warnings: result.warnings }); } finally { await page.close(); }
 });

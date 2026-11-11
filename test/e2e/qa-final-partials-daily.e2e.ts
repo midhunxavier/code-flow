@@ -127,15 +127,15 @@ test("RUN--GAP-05: actual webhook HTML and unsafe links stay inert in history an
 test("daily scheduling: save and cancel through the composer, then one deferred launch survives restart", async () => {
   const p=await page(); await p.getByRole("textbox",{name:"Task",exact:true}).fill("Daily deferred fixture");
   await p.locator("#main-content").getByRole("button",{name:"Run actions",exact:true}).click(); await p.getByRole("menuitem",{name:"Schedule…",exact:true}).click();
-  await p.getByRole("button",{name:/Run once later/}).click();
-  const dialog=p.getByRole("dialog",{name:"Start later",exact:true});
-  await dialog.getByText("Queue this run configuration",{exact:true}).click();
-  await dialog.getByLabel("Deferred run label",{exact:true}).fill("Daily saved for later");
-  await dialog.getByLabel("Deferred start condition",{exact:true}).selectOption("at");
-  await dialog.getByRole("button",{name:"Save deferred run",exact:true}).click();
-  const card=dialog.getByRole("article",{name:"Deferred run Daily saved for later",exact:true});
+  await p.getByRole("button",{name:"Run once later",exact:true}).click();
+  const dialog=p.getByRole("dialog",{name:"Run once later",exact:true});
+  await dialog.getByText("Run once later with this configuration",{exact:true}).click();
+  await dialog.getByLabel("Run once later label",{exact:true}).fill("Daily saved for later");
+  await dialog.getByLabel("Run once later start condition",{exact:true}).selectOption("at");
+  await dialog.getByRole("button",{name:"Save to run once later",exact:true}).click();
+  const card=dialog.getByRole("article",{name:"Run once later: Daily saved for later",exact:true});
   await card.getByText("Waiting for start time",{exact:true}).waitFor(); await shot(p,"deferred-composer-waiting");
-  await card.getByRole("button",{name:"Cancel deferred run",exact:true}).click(); await card.getByText("Cancelled",{exact:true}).waitFor();
+  await card.getByRole("button",{name:"Cancel queued run",exact:true}).click(); await card.getByText("Cancelled",{exact:true}).waitFor();
   const job=await api("/api/deferred-runs",{name:"Daily restart launch",run:runInput("Start once after restart",{loop:{check:"true",maxSteps:4,maxMinutes:1}}),notBefore:Date.now()+1500});
   await p.context().close(); await stop(); await pause(1550); await start();
   const started=await until(()=>api("/api/deferred-runs"),rows=>rows.some((j:any)=>j.id===job.id&&j.status==="started"));

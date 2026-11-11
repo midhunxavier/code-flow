@@ -18,7 +18,7 @@ import { intentDraft, WorkflowRecommendation } from "./experience.js";
 import { composerRunBody } from "./composer-body.js";
 import { NumberField, numberInputProblem } from "./number-field.js";
 import { EXECUTION_LIMITS, MAX_COMPARE_RUNS, acceptanceCriteriaProblem, executionLimitsProblem, numberProblem, taskTeamLimitsProblem } from "../src/start-input-validation.js";
-import { SCHEDULE_KINDS, type ScheduleKind } from "./scheduling.js";
+import { AUTOMATION_MANAGEMENT } from "./navigation.js";
 import { improveSettings } from "./improve-settings.js";
 import { IMPROVE_NAMES } from "../src/improve-settings.js";
 import { ModelSelect } from "./model-select.js";
@@ -34,7 +34,6 @@ import { api, showToast, ApiError, baseName, enc, fmtSize, post, readBase64, sho
 import { useDialog } from "./app.js";
 import { AcceptanceEditor, ContextInspector, EffectiveSettings, ProviderSetupPrompt, RepositoryReadiness } from "./onboarding.js";
 import { rerunDraft } from "./rerun-draft.js";
-import { DeferredRunsPanel } from "./deferred-runs.js";
 import { contextBudget } from "./context-budget.js";
 import {
   agents,
@@ -115,6 +114,7 @@ import {
   target,
   chatDrafts,
   takeDrafts,
+  scheduleRequest,
   type RoleValue,
 } from "./state.js";
 import { ProjectButton, openRepository } from "./projects.js";
@@ -122,7 +122,6 @@ import { computerLabel } from "./ssh-projects.js";
 import { readProjectDefaults, projectDefaultsVersion } from "./project-defaults.js";
 import { SourceChip, Templates } from "./github.js";
 import { chatAllowed } from "./chat-state.js";
-import { SaveAutomationDialog } from "./automations.js";
 import { Icon } from "./icons.js";
 import { Menu, MenuItem, MenuTitle } from "./panel-bits.js";
 import { POLICY_PAUSED, PolicyPauseNotice } from "./policy-pause.js";
@@ -234,9 +233,7 @@ export function Composer() {
   const choosePermissions = (value: ChatPermissions) => { setTrust(value.trust); setToolApprovals(value.tools); store.set("interactiveApprovals", value.tools ? "1" : "0"); };
   const problem = startProblem(p, roles, true, nativeAntigravity ? "native" : "isolated", nativeAcp ? "native" : undefined) || approvals.conflict || (containerEnabled && !containerImage.trim() ? "Choose a prebuilt agent image in Advanced → Agent isolation." : "") || (automaticChecks && profileLoading ? "Loading verification profile…" : automaticChecks && profileError ? "Verification profile unavailable. Choose another profile in Advanced → Checks." : "");
 
-  const [scheduling, setScheduling] = useState(false);
   const runBody = composerRunBody;
-  const [scheduleKind, setScheduleKind] = useState<ScheduleKind | null>(null);
   const start = async () => {
     if (problem || !p || starting || automaticChecks && profileLoading) return;
     if (containerEnabled && !containerImage.trim()) { setError("Choose a prebuilt agent image"); return; }
@@ -339,7 +336,7 @@ export function Composer() {
         {!single ? <><PermissionMenu permissions={{ trust: runTrust, tools: approvals.tools }} onPermissions={choosePermissions} approvalsAvailable={!containerEnabled && Object.values(roles).flat().some(canAskForApproval)} agent={Object.values(roles).flat().find((id) => id.startsWith("acp:")) as AgentId | undefined} unrestricted={nativeAntigravity && Object.values(roles).flat().some(id => id === "agy" || id === "auto")} acpAllowed={nativeAcp} /></> : null}
         <button class="btn primary task-start" disabled={!!problem || starting} onClick={start} title={problem || "Start run (⌘↵)"}>{starting ? "Starting…" : single ? "Send" : "Start run"}<Icon name="send" /></button>
         <Menu above label="Run actions" icon="more" class="chat-choice">{(close) => <>
-          <MenuItem disabled={!!problem} onClick={() => { close(); setScheduleKind(null); setScheduling(true); }}><Icon name="clock" />Schedule…</MenuItem>
+          <MenuItem disabled={!!problem} onClick={() => { close(); if (!p) return; scheduleRequest.value = runBody(p); route.value = { view: "automations", kind: AUTOMATION_MANAGEMENT }; }}><Icon name="clock" />Schedule…</MenuItem>
         </>}</Menu>
       </>} />
       {error ? <div ref={startError} class="msg err composer-start-error" role="alert" tabIndex={-1}>{error}</div> : null}
@@ -427,22 +424,8 @@ export function Composer() {
         {p ? <EffectiveSettings p={p} checkMode={checkMode} toolApprovals={approvals} verificationProfile={verificationProfile} container={{ enabled: containerEnabled, image: containerImage, authVolume: containerVolume, network: restored?.loop.agentContainer?.network }} /> : null}
         </div>
       </details>
-
-      {scheduling && p && !scheduleKind ? <ScheduleChoiceDialog onClose={() => setScheduling(false)} onChoose={kind => { if (kind === "backlog") { setScheduling(false); route.value = { view: "automations", kind }; } else setScheduleKind(kind); }} /> : null}
-      {scheduling && p && scheduleKind === "once" ? <ScheduleRunDialog body={runBody(p)} onClose={() => setScheduling(false)} /> : null}
-      {scheduling && p && scheduleKind === "repeat" ? <SaveAutomationDialog body={runBody(p)} onClose={() => setScheduling(false)} /> : null}
     </div>
   );
-}
-
-function ScheduleChoiceDialog({ onClose, onChoose }: { onClose: () => void; onChoose: (kind: ScheduleKind) => void }) {
-  const ref = useDialog(true, onClose);
-  return <dialog ref={ref} class="picker" aria-labelledby="schedule-choice-title"><div class="picker-inner"><div class="picker-head"><h3 id="schedule-choice-title">Schedule work</h3></div><div class="dialog-body purpose-choices">{SCHEDULE_KINDS.map(item => <button class="settings-result" onClick={() => onChoose(item.id)}><span><strong>{item.label}</strong><span>{item.description}</span></span></button>)}</div><div class="picker-foot"><button class="btn" onClick={onClose}>Cancel</button></div></div></dialog>;
-}
-
-function ScheduleRunDialog({ body, onClose }: { body: Record<string, any>; onClose: () => void }) {
-  const ref = useDialog(true, onClose);
-  return <dialog ref={ref} class="picker" aria-labelledby="schedule-run-title"><div class="picker-inner"><div class="picker-head"><h3 id="schedule-run-title">Start later</h3></div><div class="dialog-body"><DeferredRunsPanel runRequest={body} project={body.project} repo={body.repo} /></div><div class="picker-foot"><button class="btn" onClick={onClose}>Close</button></div></div></dialog>;
 }
 
 /** The repository (and its current branch) the run works in. */

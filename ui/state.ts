@@ -1487,6 +1487,8 @@ export interface SourcePick {
   numbers?: number[];
 }
 export const templates = signal<Template[]>([]);
+/** The run the Workflow run form configured and handed to the Automations page to be scheduled. */
+export const scheduleRequest = signal<Record<string, any> | null>(null);
 /** The sweep dialog, open with the sweep template you picked. */
 export const sweepPicker = signal<Template | null>(null);
 /** The issue or PR the next run starts from. */

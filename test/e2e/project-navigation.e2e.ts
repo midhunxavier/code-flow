@@ -269,7 +269,7 @@ test("project Automation ignores global filters and preserves saved schedules an
   await page.getByText("Alpha scheduled task", { exact: true }).waitFor();
   assert.equal(await page.getByText("Beta scheduled task", { exact: true }).count(), 0);
   assert.equal(await page.getByLabel("Automation repository").inputValue(), repoA);
-  await page.getByRole("link", { name: "Process a backlog", exact: true }).click();
+  await page.getByRole("heading", { name: "Work through a GitHub backlog", exact: true }).waitFor();
   const requests: string[] = [];
   await page.route("**/api/github/sweep?*", async request => { requests.push(request.request().url()); await request.fulfill({ json: { items: [], notices: [] } }); });
   try {

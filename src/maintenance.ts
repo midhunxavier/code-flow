@@ -6,7 +6,6 @@ import { gzip, gunzip } from "node:zlib";
 import { promisify } from "node:util";
 import { acquireLock } from "./store.js";
 import { disableRestoredDeferredRuns } from "./deferred-runs.js";
-import { disableRestoredCoordinatedChanges } from "./repo-coordination.js";
 import { StrictRunLogReader } from "./run-log.js";
 import { MemoryStore } from "./memory.js";
 
@@ -169,7 +168,7 @@ export async function restoreEncryptedBackup(input: { input: string; destination
   const finalPath = join(parent, basename(destination));
   const staging = join(parent, `.${basename(destination)}.restore-${randomBytes(8).toString("hex")}`);
   await mkdir(staging, { mode: 0o700 });
-  let disabledAutomations = 0; let disabledNotifications = 0; let cancelledDeferredRuns = 0; let cancelledCoordinatedChanges = 0; let restoredBytes = 0;
+  let disabledAutomations = 0; let disabledNotifications = 0; let cancelledDeferredRuns = 0; let restoredBytes = 0;
   try {
     for (const file of manifest.files) {
       const target = join(staging, file.path);
@@ -193,11 +192,6 @@ export async function restoreEncryptedBackup(input: { input: string; destination
         cancelledDeferredRuns = restored.cancelled;
         data = Buffer.from(JSON.stringify(restored.document, null, 2));
       }
-      if (file.path === "coordinated-changes.json") {
-        const restored = disableRestoredCoordinatedChanges(JSON.parse(data.toString("utf8")));
-        cancelledCoordinatedChanges = restored.cancelled;
-        data = Buffer.from(JSON.stringify(restored.document, null, 2));
-      }
       const handle = await open(target, "wx", 0o600);
       try { await handle.writeFile(data); await handle.sync(); } finally { await handle.close(); }
       await syncDirectory(dirname(target));
@@ -208,7 +202,7 @@ export async function restoreEncryptedBackup(input: { input: string; destination
     await rename(staging, finalPath);
     await syncDirectory(parent);
   } catch (error) { await rm(staging, { recursive: true, force: true }); throw error; }
-  return { destination: finalPath, files: manifest.files.length, bytes: restoredBytes, createdAt: manifest.createdAt, omitted: manifest.omitted, disabledAutomations, disabledNotifications, cancelledDeferredRuns, cancelledCoordinatedChanges };
+  return { destination: finalPath, files: manifest.files.length, bytes: restoredBytes, createdAt: manifest.createdAt, omitted: manifest.omitted, disabledAutomations, disabledNotifications, cancelledDeferredRuns };
 }
 
 interface LogData { text: string; lines: string[]; events: Array<Record<string, any>>; snapshot: Record<string, any>; bytes: number; mtimeMs: number }

@@ -108,16 +108,6 @@ test("restoring encrypted backups cancels queued and ambiguous deferred work wit
   assert.ok(jobs.filter((job) => job.status === "cancelled").every((job) => /backup restore/.test(job.reason!)));
 });
 
-test("encrypted restore disables coordinated dispatch while retaining exact unknown launch receipts", async (t) => {
-  const { root, home } = await fixture(t); const { CoordinatedChanges } = await import("../src/repo-coordination.js");
-  const canonical = await realpath(root), repos = [join(canonical, "api"), join(canonical, "web")]; for (const repo of repos) { await mkdir(repo); execFileSync("git", ["init", "-q", "-b", "main"], { cwd: repo }); }
-  const file = join(home, "coordinated-changes.json"), options = { file, pin: async (run: { repo: string }) => ({ repo: run.repo, commit: "a".repeat(40) }), launch: async () => ({ runId: "unexpected" }), validateResult: async () => ({ status: "running" as const }), previewShipping: async () => { throw new Error("unexpected shipping"); }, ship: async () => { throw new Error("unexpected shipping"); } };
-  const coordinator = new CoordinatedChanges(options); await coordinator.load(); await coordinator.create({ project: "p-fixture", name: "Pending recovery", nodes: repos.map((repo, index) => ({ id: `repo${index}`, dependsOn: index ? ["repo0"] : [], run: { repo, pattern: "solo", task: "Pending repository work", roles: { agent: ["claude"] }, options: {} } })) });
-  const saved = JSON.parse(await readFile(file, "utf8")); Object.assign(saved.jobs[0].nodes[0], { status: "claimed", claimId: "crashed-owned-claim", claimedAt: Date.now(), attempts: 1, dependencies: [] }); await writeFile(file, JSON.stringify(saved));
-  const backup = join(root, "coordinated.cfb"); await createEncryptedBackup({ home, output: backup, password: PASSWORD }); const destination = join(root, "restored-coordination"); const report = await restoreEncryptedBackup({ input: backup, destination, password: PASSWORD }); assert.equal(report.cancelledCoordinatedChanges, 1);
-  let launches = 0; const restored = new CoordinatedChanges({ ...options, file: join(destination, "coordinated-changes.json"), launch: async () => { launches++; return { runId: "unexpected" }; } }); await restored.load(); await restored.tick(); assert.equal(launches, 0); const job = (await restored.list())[0]!; assert.equal(job.status, "cancelled"); assert.equal(job.nodes[0]!.status, "unknown"); assert.equal(job.nodes[0]!.claimId, "crashed-owned-claim"); assert.equal(job.nodes[1]!.status, "cancelled");
-});
-
 test("incorrect passwords and tampered archives leave no restored directory", async (t) => {
   const { root, home } = await fixture(t);
   await writeFile(join(home, "memory.json"), "[]");

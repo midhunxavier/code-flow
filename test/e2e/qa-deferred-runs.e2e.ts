@@ -34,10 +34,12 @@ async function composer(task: string) {
   await page.getByRole("textbox", { name: "Task", exact: true }).fill(task);
   return { page, errors };
 }
-async function schedule(page: Page, kind: "Run once later" | "Repeat") {
+async function schedule(page: Page, kind: "Run once later" | "Repeat on a schedule or event") {
+  const back = page.getByRole("link", { name: "Back to the run form", exact: true });
+  if (await back.count()) await back.click();
   await page.getByRole("button", { name: "Run actions", exact: true }).click();
   await page.getByRole("menuitem", { name: "Schedule…" }).click();
-  await page.getByRole("dialog", { name: "Schedule work" }).getByRole("button", { name: new RegExp(`^${kind}`) }).click();
+  await page.locator(".automation-management").getByRole("button", { name: kind, exact: true }).click();
 }
 
 before(async () => {
@@ -62,15 +64,15 @@ after(async () => { await browser?.close(); if (child && child.exitCode === null
 test("the composer's default configuration saves as a deferred run", { timeout: 60_000 }, async () => {
   const { page, errors } = await composer("Deferred with the single configured check");
   await schedule(page, "Run once later");
-  const dialog = page.getByRole("dialog", { name: "Start later" });
-  await dialog.getByText("Queue this run configuration", { exact: true }).click();
-  await dialog.getByLabel("Deferred start condition", { exact: true }).selectOption("at");
+  const dialog = page.getByRole("dialog", { name: "Run once later" });
+  await dialog.getByText("Run once later with this configuration", { exact: true }).click();
+  await dialog.getByLabel("Run once later start condition", { exact: true }).selectOption("at");
   const saved = page.waitForResponse((response) => response.url().endsWith("/api/deferred-runs") && response.request().method() === "POST");
-  await dialog.getByRole("button", { name: "Save deferred run", exact: true }).click();
+  await dialog.getByRole("button", { name: "Save to run once later", exact: true }).click();
   const response = await saved;
   assert.equal(response.status(), 201, await response.text());
   assert.equal(JSON.parse(response.request().postData()!).run.loop.verification, undefined, "the composer no longer sends null for the default");
-  await dialog.getByRole("article", { name: "Deferred run Deferred with the single configured check" }).getByText("Waiting for start time", { exact: true }).waitFor();
+  await dialog.getByRole("article", { name: "Run once later: Deferred with the single configured check" }).getByText("Waiting for start time", { exact: true }).waitFor();
   assert.equal(await dialog.getByRole("alert").count(), 0);
   const job = (await api<DeferredRunJob[]>("/api/deferred-runs")).find((item) => item.name === "Deferred with the single configured check")!;
   assert.equal(job.status, "waiting-time"); assert.ok(job.notBefore > Date.now()); assert.equal(job.run.loop.verification, undefined);
@@ -78,25 +80,26 @@ test("the composer's default configuration saves as a deferred run", { timeout: 
   await page.close(); await cancelAll();
 });
 
-test("with AI team on, Run once later and Repeat explain why they cannot save the team", { timeout: 60_000 }, async () => {
+test("with AI team on, Run once later and Repeat on a schedule or event explain why they cannot save the team", { timeout: 60_000 }, async () => {
   const { page, errors } = await composer("Deferred with an AI team");
   await page.getByRole("switch", { name: "AI team", exact: true }).click();
   assert.equal(await page.getByRole("switch", { name: "AI team", exact: true }).getAttribute("aria-checked"), "true");
   await schedule(page, "Run once later");
-  const later = page.getByRole("dialog", { name: "Start later" });
-  await later.getByText("Queue this run configuration", { exact: true }).click();
+  const later = page.getByRole("dialog", { name: "Run once later" });
+  await later.getByText("Run once later with this configuration", { exact: true }).click();
   await later.getByRole("status").filter({ hasText: "AI team works only in a live Agent conversation" }).waitFor();
-  assert.equal(await later.getByRole("button", { name: "Save deferred run", exact: true }).isDisabled(), true);
+  assert.equal(await later.getByRole("button", { name: "Save to run once later", exact: true }).isDisabled(), true);
   await later.getByRole("button", { name: "Close", exact: true }).click();
-  await schedule(page, "Repeat");
+  await schedule(page, "Repeat on a schedule or event");
   const repeat = page.getByRole("dialog", { name: "Save as automation" });
   await repeat.getByRole("status").filter({ hasText: "AI team works only in a live Agent conversation" }).waitFor();
   await repeat.getByText("Runs this task with this agent and these settings", { exact: false }).waitFor();
   assert.equal(await repeat.getByRole("button", { name: "Save automation", exact: true }).isDisabled(), true);
   await repeat.getByRole("button", { name: "Cancel", exact: true }).click();
   // Switching the team off schedules the single agent as before.
+  await page.getByRole("link", { name: "Back to the run form", exact: true }).click();
   await page.getByRole("switch", { name: "AI team", exact: true }).click();
-  await schedule(page, "Repeat");
+  await schedule(page, "Repeat on a schedule or event");
   assert.equal(await page.getByRole("dialog", { name: "Save as automation" }).getByRole("status").count(), 0);
   assert.equal(await page.getByRole("dialog", { name: "Save as automation" }).getByRole("button", { name: "Save automation", exact: true }).isEnabled(), true);
   assert.equal((await api<DeferredRunJob[]>("/api/deferred-runs")).filter((job) => job.name === "Deferred with an AI team").length, 0);
@@ -112,16 +115,16 @@ test("a stale second tab shows the job's current status without an outdated conf
   await api(`/api/projects/${strict}`, { repos: [] });
   await until(() => api<DeferredRunJob[]>("/api/deferred-runs").then((jobs) => jobs.find((job) => job.id === rejected.id)!), (job) => job.status === "failed", 30_000);
   const a = await open(`#/automations/once`), b = await open(`#/automations/once`);
-  const cards = (page: Page) => ({ cancel: page.getByRole("article", { name: "Deferred run Two tab cancel" }), retry: page.getByRole("article", { name: "Deferred run Two tab retry" }) });
+  const cards = (page: Page) => ({ cancel: page.getByRole("article", { name: "Run once later: Two tab cancel" }), retry: page.getByRole("article", { name: "Run once later: Two tab retry" }) });
   for (const page of [a.page, b.page]) { await cards(page).cancel.getByText("Waiting for start time", { exact: true }).waitFor(); await cards(page).retry.getByText("Start rejected", { exact: true }).waitFor(); }
 
-  await cards(a.page).cancel.getByRole("button", { name: "Cancel deferred run", exact: true }).click();
+  await cards(a.page).cancel.getByRole("button", { name: "Cancel queued run", exact: true }).click();
   await cards(a.page).cancel.getByText("Cancelled", { exact: true }).waitFor();
-  await cards(b.page).cancel.getByRole("button", { name: "Cancel deferred run", exact: true }).click();
+  await cards(b.page).cancel.getByRole("button", { name: "Cancel queued run", exact: true }).click();
   await cards(b.page).cancel.getByText("Cancelled", { exact: true }).waitFor();
   assert.equal(await cards(b.page).cancel.getByRole("alert").count(), 0, "a repeat cancel already has its outcome");
 
-  await cards(a.page).retry.getByRole("button", { name: "Cancel deferred run", exact: true }).click();
+  await cards(a.page).retry.getByRole("button", { name: "Cancel queued run", exact: true }).click();
   await cards(a.page).retry.getByText("Cancelled", { exact: true }).waitFor();
   await cards(b.page).retry.getByRole("button", { name: "Retry after reviewing the failure", exact: true }).click();
   await cards(b.page).retry.getByText("Cancelled", { exact: true }).waitFor({ timeout: 3000 }); // refreshed at once, not on the next poll
@@ -140,14 +143,14 @@ test("finished records can be removed one at a time or cleared for the listed sc
   const waiting = await api<DeferredRunJob>("/api/deferred-runs", { name: "Still waiting", run: request(), notBefore: Date.now() + 60 * 60_000 });
   for (const name of ["Finished one", "Finished two"]) { const job = await api<DeferredRunJob>("/api/deferred-runs", { name, run: request(), notBefore: Date.now() + 60 * 60_000 }); await api(`/api/deferred-runs/${job.id}/cancel`, { expectedRevision: job.revision }); }
   const { page, errors } = await open(`#/project/${encodeURIComponent(project)}/automation/once`);
-  const one = page.getByRole("article", { name: "Deferred run Finished one" });
+  const one = page.getByRole("article", { name: "Run once later: Finished one" });
   await one.getByRole("button", { name: "Remove record", exact: true }).click(); await one.waitFor({ state: "detached" });
-  assert.equal(await page.getByRole("article", { name: "Deferred run Still waiting" }).getByRole("button", { name: "Remove record" }).count(), 0, "open work cannot be removed");
+  assert.equal(await page.getByRole("article", { name: "Run once later: Still waiting" }).getByRole("button", { name: "Remove record" }).count(), 0, "open work cannot be removed");
   const finished = (await api<DeferredRunJob[]>("/api/deferred-runs")).filter((job) => job.run.project === project && ["started", "cancelled"].includes(job.status)).length;
   await page.getByRole("button", { name: `Clear finished (${finished})`, exact: true }).click();
-  await page.getByRole("dialog", { name: "Clear finished deferred runs?" }).getByRole("button", { name: "Remove records", exact: true }).click();
-  await page.getByRole("article", { name: "Deferred run Finished two" }).waitFor({ state: "detached" });
-  await page.getByRole("article", { name: "Deferred run Still waiting" }).waitFor();
+  await page.getByRole("dialog", { name: "Clear finished runs?" }).getByRole("button", { name: "Remove records", exact: true }).click();
+  await page.getByRole("article", { name: "Run once later: Finished two" }).waitFor({ state: "detached" });
+  await page.getByRole("article", { name: "Run once later: Still waiting" }).waitFor();
   assert.equal(await page.getByRole("button", { name: /^Clear finished/ }).count(), 0);
   assert.deepEqual((await api<DeferredRunJob[]>("/api/deferred-runs")).filter((job) => job.run.project === project).map((job) => job.id), [waiting.id]);
   assert.deepEqual(errors, []);
@@ -159,26 +162,26 @@ test("an untouched earliest-start suggestion is refreshed instead of going stale
   await page.route(base + "/deferred-fixture", (route) => route.fulfill({ contentType: "text/html", body: fixture }));
   await page.clock.install({ time: new Date() });
   await page.goto(base + "/deferred-fixture");
-  await page.getByText("Queue this run configuration", { exact: true }).click();
-  await page.getByLabel("Deferred run label", { exact: true }).fill("Suggested start");
+  await page.getByText("Run once later with this configuration", { exact: true }).click();
+  await page.getByLabel("Run once later label", { exact: true }).fill("Suggested start");
   await page.clock.fastForward("00:30:00");
-  await page.getByLabel("Deferred start condition", { exact: true }).selectOption("at");
-  const field = page.getByLabel("Deferred earliest start", { exact: true });
+  await page.getByLabel("Run once later start condition", { exact: true }).selectOption("at");
+  const field = page.getByLabel("Run once later earliest start", { exact: true });
   const pageNow = () => page.evaluate(() => Date.now());
   assert.ok(new Date(await field.inputValue()).getTime() > await pageNow() + 55 * 60_000, "choosing a time suggests an hour from now, not from when the form opened");
   await page.clock.fastForward("01:01:00");
-  await page.getByRole("button", { name: "Save deferred run", exact: true }).click();
+  await page.getByRole("button", { name: "Save to run once later", exact: true }).click();
   await page.getByRole("alert").filter({ hasText: "The suggested start time passed while this was open" }).waitFor();
   assert.ok(new Date(await field.inputValue()).getTime() > await pageNow(), "the field moves to a future time for review");
   assert.equal((await api<DeferredRunJob[]>("/api/deferred-runs")).filter((job) => job.name === "Suggested start").length, 0, "nothing is saved without review");
-  await page.getByRole("button", { name: "Save deferred run", exact: true }).click();
-  await page.getByRole("article", { name: "Deferred run Suggested start" }).waitFor();
+  await page.getByRole("button", { name: "Save to run once later", exact: true }).click();
+  await page.getByRole("article", { name: "Run once later: Suggested start" }).waitFor();
   const job = (await api<DeferredRunJob[]>("/api/deferred-runs")).find((item) => item.name === "Suggested start")!;
   assert.equal(job.status, "waiting-time"); assert.ok(job.notBefore > Date.now());
   // A time you typed is kept exactly and still has to be in the future.
-  await page.getByLabel("Deferred run label", { exact: true }).fill("Typed start");
+  await page.getByLabel("Run once later label", { exact: true }).fill("Typed start");
   await field.fill("2020-01-01T09:00");
-  await page.getByRole("button", { name: "Save deferred run", exact: true }).click();
+  await page.getByRole("button", { name: "Save to run once later", exact: true }).click();
   await page.getByRole("alert").filter({ hasText: "Choose a future local start time." }).waitFor();
   assert.equal(await field.inputValue(), "2020-01-01T09:00");
   await page.close(); await cancelAll();
@@ -203,7 +206,7 @@ test("an unreadable queue is reported once and the panel and project page stop p
     page.on("request", (sent) => { if (new URL(sent.url()).pathname.endsWith("/api/deferred-runs") && sent.method() === "GET") reads.push(sent.url()); });
     await page.clock.install();
     await page.goto(`${faultBase}/#/project/${encodeURIComponent(faultProject)}/automation/once`);
-    const panel = page.getByRole("region", { name: "Deferred runs" });
+    const panel = page.getByRole("region", { name: "Run once later queue" });
     await panel.getByRole("alert").filter({ hasText: /Deferred runs are unavailable: Deferred queue cannot be read/ }).waitFor();
     await panel.getByRole("alert").filter({ hasText: /deferred-runs\.json and restart code-flow/ }).waitFor();
     await page.waitForTimeout(500);

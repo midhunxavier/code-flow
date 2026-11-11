@@ -353,23 +353,13 @@ team server and never start a run again. See [team
 collaboration](team-collaboration.md) for roles, hand-overs, checkpoints and
 limits.
 
-## Coordination and extensions
+## Extensions
 
 | Operation | Request | Behavior |
 | --- | --- | --- |
-| `GET /coordinated-changes` | none | List durable multi-repository jobs and their current claims. |
-| `POST /coordinated-changes` | `project`, `name`, `nodes`, optional `operationId` | Create 2–10 explicitly configured repository tasks with a verified dependency DAG. |
-| `POST /coordinated-changes/:id/cancel` | `expectedRevision` | Cancel further dispatch; preserve accepted execution receipts. |
-| `POST /coordinated-changes/:id/shipping-preview` | `expectedRevision`, `targets` | Validate the current source/target/tree matrix without merging. |
-| `POST /coordinated-changes/:id/nodes/:node/retry` | `expectedRevision`, optional `acknowledgeUnknown` | Explicitly retry after inspecting an uncertain claim. |
-| `POST /coordinated-changes/:id/nodes/:node/attach` | `expectedRevision`, `runId` | Attach only an exact matching durable launch receipt. |
-| `POST /coordinated-changes/:id/nodes/:node/ship` | `expectedRevision`, `previewId` | Merge one unchanged verified local candidate; no automatic remote push. |
-| `POST /coordinated-changes/:id/nodes/:node/recover-shipping` | `expectedRevision`, `commit` | Confirm the exact reviewed parents/tree after an uncertain local merge. |
 | `GET /extensions` | none | Inspect host API version and explicitly configured trusted provider/workflow bundles. |
 
-Coordination ships each repository separately;
-there is no atomic transaction across repositories. See [coordinated
-changes](coordinated-changes.md). Extension installation is server configuration,
+Extension installation is server configuration,
 not an HTTP operation; immutable version/hash pins are rechecked before
 execution. See [trusted extension contracts](extensions.md).
 

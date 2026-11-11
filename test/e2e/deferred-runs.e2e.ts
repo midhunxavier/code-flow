@@ -45,13 +45,13 @@ test("browser explicitly saves and cancels a future safe request and the API rej
   for (const extra of [{ deferred: { jobId: "forged", claimId: "forged", attempt: 1 } }, { context: { attachments: [{ name: "secret", data: "eA==" }] } }]) {
     const response = await fetch(base + "/api/deferred-runs", { method: "POST", headers, body: JSON.stringify({ run: { ...request(), ...extra } }) }); assert.equal(response.status, 400);
   }
-  await page.goto(base + "/deferred-fixture"); await page.getByText("Queue this run configuration", { exact: true }).click();
-  await page.getByLabel("Deferred run label", { exact: true }).fill("Later from browser"); await page.getByLabel("Deferred start condition", { exact: true }).selectOption("at");
-  await page.getByRole("button", { name: "Save deferred run", exact: true }).click();
-  const card = page.getByRole("article", { name: "Deferred run Later from browser", exact: true }); await card.waitFor();
+  await page.goto(base + "/deferred-fixture"); await page.getByText("Run once later with this configuration", { exact: true }).click();
+  await page.getByLabel("Run once later label", { exact: true }).fill("Later from browser"); await page.getByLabel("Run once later start condition", { exact: true }).selectOption("at");
+  await page.getByRole("button", { name: "Save to run once later", exact: true }).click();
+  const card = page.getByRole("article", { name: "Run once later: Later from browser", exact: true }); await card.waitFor();
   const job = (await api<DeferredRunJob[]>("/api/deferred-runs"))[0]!;
   assert.equal(job.status, "waiting-time"); assert.ok(job.notBefore > Date.now()); assert.equal(job.run.trust, "safe"); assert.deepEqual(job.run.loop.copy, []); assert.deepEqual(job.run.approvals, { plan: false, tools: false });
-  await card.getByRole("button", { name: "Cancel deferred run", exact: true }).click(); await card.getByText("Cancelled", { exact: true }).waitFor();
+  await card.getByRole("button", { name: "Cancel queued run", exact: true }).click(); await card.getByText("Cancelled", { exact: true }).waitFor();
   assert.equal((await api<DeferredRunJob[]>("/api/deferred-runs"))[0]!.attempts, 0); assert.equal((await api<Run[]>("/api/runs")).length, 0);
   assert.doesNotMatch(await readFile(join(home, "deferred-runs.json"), "utf8"), /must-not-copy|"attachments"/);
 });
@@ -73,7 +73,7 @@ test("elapsed start survives restart, fake-agent launch persists exact claim, an
   const jobs = await api<DeferredRunJob[]>("/api/deferred-runs"); assert.equal(jobs.find((item) => item.id === job.id)!.status, "started"); const unknown = jobs.find((item) => item.id === mismatch.id)!; assert.equal(unknown.status, "unknown");
   assert.equal((await api<Run[]>("/api/runs")).length, 1, "startup reconciliation never launches duplicate work");
   const wrong = await fetch(base + `/api/deferred-runs/${unknown.id}/attach`, { method: "POST", headers, body: JSON.stringify({ expectedRevision: unknown.revision, runId: run.id }) }); assert.equal(wrong.status, 409);
-  await page.goto(base + "/deferred-fixture"); const card = page.getByRole("article", { name: "Deferred run Unknown mismatched launch", exact: true });
+  await page.goto(base + "/deferred-fixture"); const card = page.getByRole("article", { name: "Run once later: Unknown mismatched launch", exact: true });
   await card.waitFor(); assert.equal(await card.getByRole("button", { name: "Retry unknown launch", exact: true }).isDisabled(), true);
   await card.getByRole("button", { name: "Cancel queue recovery", exact: true }).click(); await card.getByText("Cancelled", { exact: true }).waitFor();
   // A cancelled claim that had created a run before crashing is recovered as cancelled.
