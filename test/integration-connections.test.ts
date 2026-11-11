@@ -1,59 +1,73 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { IntegrationConnections, describeGitRemote } from "../src/integration-connections.js";
-import { Integrations } from "../src/integrations.js";
+import { Integrations, type ReadOnlySourceProvider } from "../src/integrations.js";
 import { Notifications } from "../src/notifications.js";
+
+const extension: ReadOnlySourceProvider = {
+  kinds: ["issue"],
+  async list(c, kind, request) { const { data } = await request("issues"); return { items: (data as any[]).map(v => ({ integration: c.id, provider: c.provider, kind, key: String(v.number), title: v.title, body: v.body })), truncated: false }; },
+  async get() { throw new Error("unused"); },
+};
 
 async function fixture() {
   const directory = await mkdtemp(join(tmpdir(), "connection-store-")), calls: { url: string; headers: Headers; body?: string }[] = [];
   const fetcher = (async (input, options) => {
     const url = String(input), headers = new Headers(options?.headers); calls.push({ url, headers, body: options?.body as string });
-    if (headers.get("PRIVATE-TOKEN") === "bad-secret-token") return new Response("bad-secret-token must never be shown", { status: 401 });
     if (url.includes("hooks.example.test")) return new Response("ok");
-    const item = { iid: 7, title: "Issue fixture", description: `Untrusted source with reflected credential: ${headers.get("PRIVATE-TOKEN")}`, state: "opened", web_url: "https://gitlab.example.test/org/repo/issues/7" };
-    return Response.json(/\/issues\/7$/.test(url) ? item : [item]);
+    return Response.json([{ number: 7, title: "Issue fixture", body: "Untrusted source" }]);
   }) as typeof fetch;
   const environment = { ADMIN_TOKEN: "administrator-original-token" };
-  const integrations = new Integrations({ environment, fetch: fetcher });
-  await integrations.load([{ id: "admin-gitlab", provider: "gitlab", project: "org/admin", credentialEnv: "ADMIN_TOKEN" }]);
+  const integrations = new Integrations({ environment, adapters: { extension }, fetch: fetcher });
+  await integrations.load([{ id: "admin-source", provider: "extension", project: "org/admin", credentialEnv: "ADMIN_TOKEN", baseUrl: "https://source.example.test/api/" }]);
   const notifications = new Notifications({ file: join(directory, "notifications.json"), environment: {}, fetch: fetcher }); await notifications.load([]);
-  const create = () => new IntegrationConnections({ integrations, notifications, directory: join(directory, "private"), fetch: fetcher });
+  const create = () => new IntegrationConnections({ integrations, notifications, directory: join(directory, "private") });
   const store = create(); await store.load();
   return { directory, calls, environment, integrations, notifications, store, create, clean: async () => { await notifications.stop(); await rm(directory, { recursive: true, force: true }); } };
 }
-const draft = { provider: "gitlab" as const, name: "Work GitLab", scope: "org/repo", credential: "private-managed-token", baseUrl: "https://gitlab.example.test/api/v4/" };
+const draft = { provider: "webhook" as const, name: "Team updates", url: "https://hooks.example.test/private?key=hidden-webhook-token", credential: "webhook-bearer-secret" };
+const AAD = Buffer.from("code-flow-integrations-v1");
+async function readState(directory: string) {
+  const key = await readFile(join(directory, "private/master.key")), sealed = JSON.parse(await readFile(join(directory, "private/connections.enc"), "utf8"));
+  const decipher = createDecipheriv("aes-256-gcm", key, Buffer.from(sealed.iv, "base64")); decipher.setAAD(AAD); decipher.setAuthTag(Buffer.from(sealed.tag, "base64"));
+  return JSON.parse(Buffer.concat([decipher.update(Buffer.from(sealed.data, "base64")), decipher.final()]).toString("utf8"));
+}
+async function writeState(directory: string, state: unknown) {
+  const key = await readFile(join(directory, "private/master.key")), iv = randomBytes(12), cipher = createCipheriv("aes-256-gcm", key, iv); cipher.setAAD(AAD);
+  const data = Buffer.concat([cipher.update(JSON.stringify(state), "utf8"), cipher.final()]);
+  await writeFile(join(directory, "private/connections.enc"), JSON.stringify({ version: 1, iv: iv.toString("base64"), tag: cipher.getAuthTag().toString("base64"), data: data.toString("base64") }), { mode: 0o600 });
+}
 
 test("tested connection keeps secrets encrypted, retains project scope, reconnects and preserves administrator configuration", async () => {
   const f = await fixture();
   try {
-    await assert.rejects(f.store.testDraft({ ...draft, credential: "bad-secret-token" }), error => /HTTP 401/.test(String(error)) && !String(error).includes("bad-secret-token"));
+    await assert.rejects(f.store.testDraft({ ...draft, url: "http://hooks.example.test/insecure" }), /HTTPS/);
+    await assert.rejects(f.store.testDraft({ provider: "gitlab" as any, name: "Removed", scope: "org/repo" }), /supported service/);
     assert.equal(f.store.list().length, 1);
     const test = await f.store.testDraft(draft);
     const { id } = await f.store.connect(test.testId, { projectId: "p-first", repository: "/local/repo" });
     assert.deepEqual(f.store.bindings("p-first"), [{ projectId: "p-first", repository: "/local/repo", connectionId: id }]);
     assert.equal(f.store.list().find(c => c.id === id)?.administratorManaged, false);
-    assert.equal(f.store.list().find(c => c.id === "admin-gitlab")?.administratorManaged, true);
-    const source = await f.integrations.importSource(id, "issue", "7", { project: "p-first", repository: "/local/repo" });
-    assert.doesNotMatch(JSON.stringify(source), /private-managed-token/); assert.match(source.body, /\[REDACTED\]/);
-    assert.deepEqual(f.integrations.resolveSource(source.id).projectContext, { project: "p-first", repository: "/local/repo" });
-    assert.doesNotMatch(JSON.stringify(f.store.list()), /private-managed-token|credentialRef|usernameRef|TOKEN/);
-    assert.doesNotMatch(await readFile(join(f.directory, "private/connections.enc"), "utf8"), /private-managed-token|org\/repo/);
+    assert.equal(f.store.list().find(c => c.id === "admin-source")?.administratorManaged, true);
+    assert.doesNotMatch(JSON.stringify(f.store.list()), /hidden-webhook-token|webhook-bearer-secret|credentialRef|urlRef|TOKEN/);
+    assert.doesNotMatch(await readFile(join(f.directory, "private/connections.enc"), "utf8"), /hidden-webhook-token|Team updates/);
     assert.equal((await stat(join(f.directory, "private/master.key"))).mode & 0o777, 0o600);
     assert.equal((await stat(join(f.directory, "private/connections.enc"))).mode & 0o777, 0o600);
     assert.deepEqual(f.environment, { ADMIN_TOKEN: "administrator-original-token" }, "managed secrets do not enter process or caller environments");
-    const restored = f.create(); await restored.load(); assert.equal(restored.get(id).scope, "org/repo");
-    await assert.rejects(restored.testDraft({ ...draft, id, credential: "bad-secret-token" }), /401/);
-    await f.integrations.items(id, "issue"); assert.equal(f.calls.at(-1)?.headers.get("PRIVATE-TOKEN"), draft.credential, "failed reconnect preserves working credentials");
-    const second = await restored.testDraft({ ...draft, id, credential: "rotated-managed-token" }); await restored.connect(second.testId);
-    assert.throws(() => f.integrations.resolveSource(source.id), /expired or is unknown/);
-    await f.integrations.items(id, "issue"); assert.equal(f.calls.at(-1)?.headers.get("PRIVATE-TOKEN"), "rotated-managed-token");
-    await assert.rejects(restored.disconnect("admin-gitlab"), /Administrator-managed/);
+    const restored = f.create(); await restored.load(); assert.equal(restored.get(id).scope, "hooks.example.test");
+    await assert.rejects(restored.testDraft({ ...draft, id, url: "https://hooks.slack.com.example.test/" , provider: "slack" }), /same service/);
+    const second = await restored.testDraft({ ...draft, id, url: undefined, credential: "rotated-bearer-secret" }); await restored.connect(second.testId);
+    await f.notifications.test(id); await f.notifications.drain();
+    assert.equal(f.calls.at(-1)?.headers.get("authorization"), "Bearer rotated-bearer-secret", "an empty URL keeps the saved destination while the token rotates");
+    assert.match(f.calls.at(-1)!.url, /hidden-webhook-token/);
+    assert.deepEqual(await restored.testExisting("admin-source"), { message: "Connection verified." });
+    await assert.rejects(restored.disconnect("admin-source"), /Administrator-managed/);
     await restored.disconnect(id); assert.equal(restored.bindings("p-first").length, 0);
-    await assert.rejects(f.integrations.items(id, "issue"), /not found/);
-    await f.integrations.items("admin-gitlab", "issue"); assert.equal(f.calls.at(-1)?.headers.get("PRIVATE-TOKEN"), "administrator-original-token");
+    assert.equal(f.notifications.list().length, 0);
   } finally { await f.clean(); }
 });
 
@@ -66,9 +80,10 @@ test("connection tests are single-use and stale reconnect tests cannot replace n
     const a = await f.store.testDraft({ ...draft, id, credential: "first-replacement-token" });
     const b = await f.store.testDraft({ ...draft, id, credential: "stale-replacement-token" });
     await f.store.connect(a.testId); await assert.rejects(f.store.connect(b.testId), /Connection changed/);
-    await f.integrations.items(id, "issue"); assert.equal(f.calls.at(-1)?.headers.get("PRIVATE-TOKEN"), "first-replacement-token");
-    await assert.rejects(f.store.testDraft({ ...draft, baseUrl: "http://insecure.test" }), /HTTPS/);
-    await assert.rejects(f.store.testDraft({ ...draft, baseUrl: "https://user:password@host.test" }), /credentials/);
+    await f.notifications.test(id); await f.notifications.drain();
+    assert.equal(f.calls.at(-1)?.headers.get("authorization"), "Bearer first-replacement-token");
+    await assert.rejects(f.store.testDraft({ ...draft, url: "https://user:password@hooks.example.test/" }), /credentials/);
+    await assert.rejects(f.store.testDraft({ provider: "slack", name: "Slack", url: "https://hooks.example.test/not-slack" }), /Slack incoming webhook/);
   } finally { await f.clean(); }
 });
 
@@ -76,7 +91,7 @@ test("notification connections start off, send only explicit tests, persist pref
   const f = await fixture();
   try {
     const before = f.calls.length;
-    const checked = await f.store.testDraft({ provider: "webhook", name: "Team updates", url: "https://hooks.example.test/private?key=hidden-webhook-token", credential: "webhook-bearer-secret" });
+    const checked = await f.store.testDraft(draft);
     assert.match(checked.message, /use Send test notification/);
     const { id } = await f.store.connect(checked.testId, { projectId: "p-first", repository: "/local/repo" });
     assert.equal(f.calls.length, before); assert.equal(f.notifications.list().find(c => c.id === id)?.settings.enabled, false);
@@ -92,6 +107,26 @@ test("notification connections start off, send only explicit tests, persist pref
   } finally { await f.clean(); }
 });
 
+test("saved connections for removed services stay on disk, hidden and unused", async () => {
+  const f = await fixture();
+  try {
+    const checked = await f.store.testDraft(draft); await f.store.connect(checked.testId);
+    const state = await readState(f.directory);
+    state.connections.push({ id: "connection-removed", name: "Old GitLab", provider: "gitlab", scope: "org/repo", baseUrl: "https://gitlab.example.test/api/v4/", auth: "private-token", credentialRef: "secret-old", usernameRef: "secret-old-user", updatedAt: 1 });
+    state.bindings.push({ projectId: "p-first", repository: "/local/repo", connectionId: "connection-removed" });
+    Object.assign(state.secrets, { "secret-old": "old-gitlab-token", "secret-old-user": "old-user" });
+    await writeState(f.directory, state);
+    const next = f.create(); await next.load();
+    assert.ok(!next.list().some(c => c.id === "connection-removed"));
+    assert.throws(() => next.get("connection-removed"), /not found/);
+    await assert.rejects(f.integrations.items("connection-removed", "issue"), /not found/);
+    const another = await next.testDraft({ ...draft, name: "Second destination" }); await next.connect(another.testId);
+    const saved = await readState(f.directory);
+    assert.ok(saved.connections.some((c: any) => c.id === "connection-removed"), "the saved record is preserved");
+    assert.equal(saved.secrets["secret-old"], "old-gitlab-token"); assert.equal(saved.secrets["secret-old-user"], "old-user");
+  } finally { await f.clean(); }
+});
+
 test("corrupt credential storage fails closed and is preserved", async () => {
   const f = await fixture();
   try {
@@ -102,9 +137,9 @@ test("corrupt credential storage fails closed and is preserved", async () => {
   } finally { await f.clean(); }
 });
 
-test("Git remote suggestions identify code hosts without disclosing embedded credentials", () => {
+test("Git remote suggestions identify GitHub without disclosing embedded credentials", () => {
   assert.deepEqual(describeGitRemote("git@github.com:org/repo.git"), { provider: "github", scope: "org/repo", host: "github.com" });
-  assert.deepEqual(describeGitRemote("https://user:token@gitlab.example.test/group/repo.git?private=value"), { provider: "gitlab", scope: "group/repo", host: "gitlab.example.test" });
+  assert.deepEqual(describeGitRemote("https://user:token@gitlab.example.test/group/repo.git?private=value"), { provider: undefined, scope: "group/repo", host: "gitlab.example.test" });
   assert.equal(describeGitRemote("/local/private/repository"), undefined);
   assert.equal(describeGitRemote("javascript:alert(1)"), undefined);
 });

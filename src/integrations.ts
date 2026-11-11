@@ -9,13 +9,11 @@ export interface IntegrationConfig {
   name: string;
   provider: string;
   baseUrl: string;
-  /** Optional explicit Git HTTPS root for a self-hosted code provider. */
-  gitBaseUrl?: string;
-  /** GitLab project path/ID, Bitbucket workspace/repository, Linear team key/ID, or Jira project key. */
+  /** The provider's project, repository or team identifier. */
   project: string;
   credentialEnv: string;
   usernameEnv?: string;
-  auth: "bearer" | "basic" | "api-key" | "private-token";
+  auth: "bearer" | "basic" | "api-key";
 }
 export interface ExternalSourceItem {
   integration: string;
@@ -39,146 +37,31 @@ export interface ExternalSource extends ExternalSourceItem {
   untrusted: true;
   /** Project context chosen and validated by the server when importing. */
   projectContext?: { project: string; repository: string };
-  /** Server-fetched code provenance; clients never establish these commit identities. */
-  code?: { previewId: string; head: string; target: string; base: string };
-}
-export interface CodeHostSession {
-  config: IntegrationConfig & { provider: "gitlab" | "bitbucket"; gitBaseUrl: string };
-  request(path: string, input?: { method?: "GET" | "POST" | "PUT" | "DELETE"; body?: unknown; signal?: AbortSignal }): Promise<{ data: any; headers: Headers }>;
-  /** Scoped process-only Git headers; never pass these to an agent or persist them. */
-  gitEnvironment(remote: string): NodeJS.ProcessEnv;
 }
 export interface ExternalSourcePage { items: ExternalSourceItem[]; nextCursor?: string; truncated: boolean }
 export type IntegrationRequest = (path: string, query?: { query: string; variables: Record<string, unknown> }) => Promise<{ data: any; headers: Headers }>;
-/** Extensions receive a host-bound, bounded, read-only request client. No account mutation API exists. */
+/** No source providers are built in. Extensions receive a host-bound, bounded, read-only request client. No account mutation API exists. */
 export interface ReadOnlySourceProvider {
   kinds: ExternalSourceKind[];
   list(config: IntegrationConfig, kind: ExternalSourceKind, request: IntegrationRequest, cursor?: string): Promise<ExternalSourcePage>;
   get(config: IntegrationConfig, kind: ExternalSourceKind, key: string, request: IntegrationRequest): Promise<ExternalSourceItem>;
 }
 
-const DEFAULTS: Record<string, { base: string; auth: IntegrationConfig["auth"] }> = {
-  gitlab: { base: "https://gitlab.com/api/v4/", auth: "private-token" },
-  bitbucket: { base: "https://api.bitbucket.org/2.0/", auth: "bearer" },
-  linear: { base: "https://api.linear.app/", auth: "api-key" },
-  jira: { base: "", auth: "basic" },
-};
 const ENV_NAME = /^[A-Z_][A-Z0-9_]{0,99}$/;
 const PAGE_SIZE = 50;
 const RESPONSE_LIMIT = 2 * 1024 * 1024;
 const IMPORT_TTL = 30 * 60_000;
 const text = (value: unknown, limit = 20_000) => typeof value === "string" ? value.slice(0, limit) : "";
 const urlOf = (value: unknown) => { try { const url = new URL(String(value)); return ["https:", "http:"].includes(url.protocol) && !url.username && !url.password ? url.href : undefined; } catch { return undefined; } };
-const numberKey = (key: string) => { if (!/^[1-9]\d{0,11}$/.test(key)) throw new Error("Source key must be a positive issue or pull request number"); return key; };
-const pageNumber = (cursor?: string) => { const page = Number(cursor ?? "1"); if (!Number.isInteger(page) || page < 1 || page > 20) throw new Error("Page must be between 1 and 20"); return page; };
-const item = (config: IntegrationConfig, kind: ExternalSourceKind, values: Omit<ExternalSourceItem, "integration" | "provider" | "kind">): ExternalSourceItem => ({ integration: config.id, provider: config.provider, kind, ...values });
-
-/** Converts Jira's structured description to bounded plain text without interpreting HTML. */
-export function documentText(value: unknown): string {
-  if (typeof value === "string") return value.slice(0, 20_000);
-  let visited = 0;
-  const parts: string[] = [];
-  const visit = (node: any, depth: number) => {
-    if (!node || typeof node !== "object" || depth > 12 || ++visited > 3_000) return;
-    if (typeof node.text === "string") parts.push(node.text.slice(0, 20_000));
-    if (node.type === "hardBreak") parts.push("\n");
-    if (Array.isArray(node.content)) for (const child of node.content.slice(0, 500)) visit(child, depth + 1);
-    if (["paragraph", "heading", "listItem"].includes(node.type)) parts.push("\n");
-  };
-  visit(value, 0); return parts.join("").trim().slice(0, 20_000);
-}
-
-const gitlab: ReadOnlySourceProvider = {
-  kinds: ["issue", "pr"],
-  async list(c, kind, request, cursor) {
-    const page = pageNumber(cursor);
-    const { data, headers } = await request(`projects/${encodeURIComponent(c.project)}/${kind === "pr" ? "merge_requests" : "issues"}?state=opened&per_page=${PAGE_SIZE}&page=${page}`);
-    if (!Array.isArray(data)) throw new Error("GitLab returned an invalid source list");
-    const more = !!headers.get("x-next-page") || data.length >= PAGE_SIZE;
-    return { items: data.slice(0, PAGE_SIZE).map((v) => gitlabItem(c, kind, v)), nextCursor: more && page < 20 ? String(page + 1) : undefined, truncated: more && page >= 20 };
-  },
-  async get(c, kind, key, request) {
-    const { data } = await request(`projects/${encodeURIComponent(c.project)}/${kind === "pr" ? "merge_requests" : "issues"}/${numberKey(key)}`);
-    return gitlabItem(c, kind, data);
-  },
-};
-function gitlabItem(c: IntegrationConfig, kind: ExternalSourceKind, v: any) {
-  if (!v || !Number.isSafeInteger(v.iid) || v.iid < 1) throw new Error("GitLab returned an invalid source");
-  return item(c, kind, { key: String(v.iid), title: text(v.title, 500), body: text(v.description), url: urlOf(v.web_url), state: text(v.state, 80), sourceBranch: text(v.source_branch, 250) || undefined, targetBranch: text(v.target_branch, 250) || undefined, sha: text(v.sha, 100) || undefined });
-}
-
-const bitbucket: ReadOnlySourceProvider = {
-  kinds: ["issue", "pr"],
-  async list(c, kind, request, cursor) {
-    const page = pageNumber(cursor);
-    const { data } = await request(`${bitbucketPath(c)}/${kind === "pr" ? "pullrequests" : "issues"}?pagelen=${PAGE_SIZE}&page=${page}${kind === "pr" ? "&state=OPEN" : ""}`);
-    if (!Array.isArray(data?.values)) throw new Error("Bitbucket returned an invalid source list");
-    return { items: data.values.slice(0, PAGE_SIZE).map((v: any) => bitbucketItem(c, kind, v)), nextCursor: data.next && page < 20 ? String(page + 1) : undefined, truncated: !!data.next && page >= 20 };
-  },
-  async get(c, kind, key, request) {
-    const { data } = await request(`${bitbucketPath(c)}/${kind === "pr" ? "pullrequests" : "issues"}/${numberKey(key)}`);
-    return bitbucketItem(c, kind, data);
-  },
-};
-const bitbucketPath = (c: IntegrationConfig) => `repositories/${c.project.split("/").map(encodeURIComponent).join("/")}`;
-function bitbucketItem(c: IntegrationConfig, kind: ExternalSourceKind, v: any) {
-  if (!v || !Number.isSafeInteger(v.id) || v.id < 1) throw new Error("Bitbucket returned an invalid source");
-  return item(c, kind, { key: String(v.id), title: text(v.title, 500), body: text(kind === "pr" ? v.description : v.content?.raw), url: urlOf(v.links?.html?.href), state: text(v.state, 80), sourceBranch: text(v.source?.branch?.name, 250) || undefined, targetBranch: text(v.destination?.branch?.name, 250) || undefined, sha: text(v.source?.commit?.hash, 100) || undefined });
-}
-
-const LINEAR_FIELDS = "id identifier title description url state { name } team { id key }";
-const linear: ReadOnlySourceProvider = {
-  kinds: ["issue"],
-  async list(c, kind, request, cursor) {
-    const uuid = /^[0-9a-f-]{36}$/i.test(c.project);
-    const connection = `nodes { ${LINEAR_FIELDS} } pageInfo { hasNextPage endCursor }`;
-    const body = uuid ? `team(id: $team) { issues(first: 50, after: $after) { ${connection} } }` : `issues(first: 50, after: $after, filter: { team: { key: { eq: $team } } }) { ${connection} }`;
-    const { data } = await request("graphql", { query: `query SourceIssues($team: String!, $after: String) { ${body} }`, variables: { team: c.project, after: cursor ?? null } });
-    const page = uuid ? data?.data?.team?.issues : data?.data?.issues;
-    if (!Array.isArray(page?.nodes)) throw new Error("Linear returned an invalid source list");
-    return { items: page.nodes.slice(0, PAGE_SIZE).map((v: any) => linearItem(c, kind, v)), nextCursor: page.pageInfo?.hasNextPage ? text(page.pageInfo.endCursor, 1_000) || undefined : undefined, truncated: false };
-  },
-  async get(c, kind, key, request) {
-    if (!/^[A-Za-z][A-Za-z0-9_]*-\d+$/.test(key) && !/^[0-9a-f-]{36}$/i.test(key)) throw new Error("Use a Linear issue identifier or UUID");
-    const { data } = await request("graphql", { query: `query SourceIssue($id: String!) { issue(id: $id) { ${LINEAR_FIELDS} } }`, variables: { id: key } });
-    return linearItem(c, kind, data?.data?.issue);
-  },
-};
-function linearItem(c: IntegrationConfig, kind: ExternalSourceKind, v: any) {
-  if (!v || typeof v.identifier !== "string" || ![v.team?.id, v.team?.key].includes(c.project)) throw new Error("Linear issue is absent from the configured team");
-  return item(c, kind, { key: text(v.identifier, 100), title: text(v.title, 500), body: text(v.description), url: urlOf(v.url), state: text(v.state?.name, 80) });
-}
-
-const jira: ReadOnlySourceProvider = {
-  kinds: ["issue"],
-  async list(c, kind, request, cursor) {
-    const query = new URLSearchParams({ jql: `project = "${c.project}" ORDER BY updated DESC`, maxResults: String(PAGE_SIZE), fields: "summary,description,status" });
-    if (cursor) query.set("nextPageToken", cursor);
-    const { data } = await request(`rest/api/3/search/jql?${query}`);
-    if (!Array.isArray(data?.issues)) throw new Error("Jira returned an invalid source list");
-    return { items: data.issues.slice(0, PAGE_SIZE).map((v: any) => jiraItem(c, kind, v)), nextCursor: text(data.nextPageToken, 1_000) || undefined, truncated: false };
-  },
-  async get(c, kind, key, request) {
-    if (!new RegExp(`^${c.project}-[1-9]\\d*$`, "i").test(key)) throw new Error("Use an issue key from the configured Jira project");
-    const { data } = await request(`rest/api/3/issue/${encodeURIComponent(key)}?fields=summary,description,status`);
-    return jiraItem(c, kind, data);
-  },
-};
-function jiraItem(c: IntegrationConfig, kind: ExternalSourceKind, v: any) {
-  if (!v || typeof v.key !== "string" || !v.key.toUpperCase().startsWith(`${c.project.toUpperCase()}-`)) throw new Error("Jira issue is absent from the configured project");
-  return item(c, kind, { key: text(v.key, 100), title: text(v.fields?.summary, 500), body: documentText(v.fields?.description), url: new URL(`browse/${encodeURIComponent(v.key)}`, c.baseUrl).href, state: text(v.fields?.status?.name, 80) });
-}
 
 export class Integrations {
   private configs: IntegrationConfig[] = [];
-  private administratorConfigs: IntegrationConfig[] = [];
-  private managedEnvironment: NodeJS.ProcessEnv = {};
   private readonly imported = new Map<string, ExternalSource>();
   private readonly adapters: Record<string, ReadOnlySourceProvider>;
   private readonly environment: NodeJS.ProcessEnv;
   private readonly fetcher: typeof fetch;
   constructor(options: { adapters?: Record<string, ReadOnlySourceProvider>; environment?: NodeJS.ProcessEnv; fetch?: typeof fetch } = {}) {
-    this.adapters = { gitlab, bitbucket, linear, jira, ...options.adapters };
+    this.adapters = { ...options.adapters };
     this.environment = options.environment ?? process.env;
     this.fetcher = options.fetch ?? fetch;
   }
@@ -195,70 +78,27 @@ export class Integrations {
       ids.add(raw.id);
       if (!Object.hasOwn(this.adapters, raw.provider)) throw new Error("Unknown integration provider");
       if (typeof raw.project !== "string" || !raw.project.trim() || raw.project.length > 200 || /[\x00-\x1f]/.test(raw.project)) throw new Error("Integration needs a project, repository or team");
-      if (raw.provider === "bitbucket" && !/^[\w.-]+\/[\w.-]+$/.test(raw.project)) throw new Error("Bitbucket project must be workspace/repository");
-      if (raw.provider === "jira" && !/^[A-Za-z][A-Za-z0-9_]*$/.test(raw.project)) throw new Error("Jira project must be a project key");
       if (typeof raw.credentialEnv !== "string" || !ENV_NAME.test(raw.credentialEnv) || raw.usernameEnv !== undefined && (typeof raw.usernameEnv !== "string" || !ENV_NAME.test(raw.usernameEnv))) throw new Error("Credentials must name server environment variables");
-      const auth = raw.auth ?? DEFAULTS[raw.provider]?.auth ?? "bearer";
-      if (!["bearer", "basic", "api-key", "private-token"].includes(auth) || auth === "basic" && !raw.usernameEnv) throw new Error("Basic authentication also needs usernameEnv");
+      const auth = raw.auth ?? "bearer";
+      if (!["bearer", "basic", "api-key"].includes(auth) || auth === "basic" && !raw.usernameEnv) throw new Error("Basic authentication also needs usernameEnv");
       let base: URL;
-      try { base = new URL(raw.baseUrl ?? DEFAULTS[raw.provider]?.base); } catch { throw new Error("Integration needs a valid HTTPS API base URL"); }
+      try { base = new URL(raw.baseUrl); } catch { throw new Error("Integration needs a valid HTTPS API base URL"); }
       if (base.protocol !== "https:" || base.username || base.password || base.search || base.hash) throw new Error("Integration API base URL must use HTTPS without credentials, query or fragment");
       if (!base.pathname.endsWith("/")) base.pathname += "/";
-      let gitBaseUrl: string | undefined;
-      if (raw.gitBaseUrl !== undefined) { let gitBase: URL; try { gitBase = new URL(raw.gitBaseUrl); } catch { throw new Error("Code host Git root needs a valid HTTPS URL"); } if (!["gitlab", "bitbucket"].includes(raw.provider) || gitBase.protocol !== "https:" || gitBase.username || gitBase.password || gitBase.search || gitBase.hash) throw new Error("Code host Git root must use HTTPS without credentials, query or fragment"); if (!gitBase.pathname.endsWith("/")) gitBase.pathname += "/"; gitBaseUrl = gitBase.href; }
-      return { id: raw.id, name: text(raw.name, 80) || raw.id, provider: raw.provider, baseUrl: base.href, ...(gitBaseUrl ? { gitBaseUrl } : {}), project: raw.project.trim(), credentialEnv: raw.credentialEnv, usernameEnv: raw.usernameEnv, auth };
+      return { id: raw.id, name: text(raw.name, 80) || raw.id, provider: raw.provider, baseUrl: base.href, project: raw.project.trim(), credentialEnv: raw.credentialEnv, usernameEnv: raw.usernameEnv, auth };
     });
     this.configs = configs;
-    this.administratorConfigs = configs;
     registerPrivateEnvNames(configs.flatMap((config) => [config.credentialEnv, ...(config.usernameEnv ? [config.usernameEnv] : [])]));
     this.imported.clear();
   }
   list() {
-    return this.configs.map((c) => ({ id: c.id, name: c.name, provider: c.provider, project: c.project, kinds: this.adapters[c.provider]!.kinds, codeHost: ["gitlab", "bitbucket"].includes(c.provider), administratorManaged: this.administratorConfigs.some(value => value.id === c.id), configured: !!this.credential(c.credentialEnv) && (c.auth !== "basic" || !!this.credential(c.usernameEnv!)) }));
+    return this.configs.map((c) => ({ id: c.id, name: c.name, provider: c.provider, project: c.project, kinds: this.adapters[c.provider]!.kinds, administratorManaged: true, configured: !!this.credential(c.credentialEnv) && (c.auth !== "basic" || !!this.credential(c.usernameEnv!)) }));
   }
-  /** Server-only secrets stay out of process.env and therefore out of agent environments. */
-  async applyManaged(configs: IntegrationConfig[], credentials: NodeJS.ProcessEnv) {
-    const next = new Integrations({ adapters: this.adapters, environment: this.environment, fetch: this.fetcher });
-    await next.load([...this.administratorConfigs, ...configs]);
-    if (JSON.stringify(next.configs) === JSON.stringify(this.configs) && JSON.stringify(credentials) === JSON.stringify(this.managedEnvironment)) return;
-    const unchanged = (config: IntegrationConfig, previous?: IntegrationConfig) => previous && JSON.stringify(config) === JSON.stringify(previous) && [config.credentialEnv, config.usernameEnv].filter((name): name is string => !!name).every(name => this.credential(name) === (credentials[name] ?? this.environment[name]));
-    const changed = new Set(this.configs.filter(config => !unchanged(config, next.configs.find(c => c.id === config.id))).map(c => c.id));
-    this.configs = next.configs.map(config => { const previous = this.configs.find(c => c.id === config.id); return unchanged(config, previous) ? previous! : config; });
-    this.managedEnvironment = { ...credentials };
-    for (const [id, source] of this.imported) if (changed.has(source.integration)) this.imported.delete(id);
-  }
-  private credential(name: string) { return this.managedEnvironment[name] ?? this.environment[name]; }
+  private credential(name: string) { return this.environment[name]; }
   private redact<T>(value: T): T {
     const secrets = this.configs.flatMap(c => [this.credential(c.credentialEnv), c.usernameEnv ? this.credential(c.usernameEnv) : undefined]).filter((secret): secret is string => !!secret);
     const visit = (item: unknown): unknown => typeof item === "string" ? redactText(item, secrets) : Array.isArray(item) ? item.map(visit) : item && typeof item === "object" ? Object.fromEntries(Object.entries(item).map(([key, entry]) => [key, visit(entry)])) : item;
     return visit(value) as T;
-  }
-  /** Built-in owner code-host operations are separate from the read-only extension client. */
-  codeHost(id: string): CodeHostSession {
-    const stored = this.config(id, "pr"); if (stored.provider !== "gitlab" && stored.provider !== "bitbucket") throw new Error("Choose a GitLab or Bitbucket Cloud code host");
-    let gitBaseUrl = stored.gitBaseUrl;
-    if (!gitBaseUrl) { const base = new URL(stored.baseUrl); if (stored.provider === "gitlab" && base.pathname.endsWith("/api/v4/")) gitBaseUrl = new URL(base.pathname.slice(0, -"api/v4/".length), base.origin).href; else if (stored.provider === "bitbucket" && base.origin === "https://api.bitbucket.org") gitBaseUrl = "https://bitbucket.org/"; else throw new Error("Configure an explicit gitBaseUrl for this code host"); }
-    const config: CodeHostSession["config"] = { ...stored, provider: stored.provider, gitBaseUrl };
-    const headers = () => { const token = this.credential(stored.credentialEnv); if (!token) throw new Error(`Credentials are unavailable for ${stored.name}`); const result: Record<string, string> = { accept: "application/json" }; if (stored.auth === "private-token") result["PRIVATE-TOKEN"] = token; else if (stored.auth === "basic") { const username = this.credential(stored.usernameEnv!); if (!username) throw new Error(`Credentials are unavailable for ${stored.name}`); result.authorization = `Basic ${Buffer.from(`${username}:${token}`).toString("base64")}`; } else result.authorization = stored.auth === "api-key" ? token : `Bearer ${token}`; return result; };
-    return {
-      config: structuredClone(config),
-      request: async (path, input = {}) => {
-        if (this.configs.find((entry) => entry.id === id) !== stored) throw new Error("Code host configuration changed; review it again"); const base = new URL(stored.baseUrl), url = new URL(path, base);
-        if (url.origin !== base.origin || !url.pathname.startsWith(base.pathname) || url.username || url.password || url.hash) throw new Error("Code host requests must stay within the configured API base");
-        const requestHeaders = headers(); if (input.body !== undefined) requestHeaders["content-type"] = "application/json";
-        let response: Response; try { response = await this.fetcher(url, { method: input.method ?? "GET", headers: requestHeaders, body: input.body === undefined ? undefined : JSON.stringify(input.body), redirect: "error", signal: input.signal ? AbortSignal.any([input.signal, AbortSignal.timeout(15_000)]) : AbortSignal.timeout(15_000) }); } catch { throw new Error("Code host connection, TLS or timeout failure; inspect any attempted mutation before retrying"); }
-        if (!response.ok) { await response.body?.cancel(); throw Object.assign(new Error(`Code host request failed (HTTP ${response.status}); check credentials, policy and permissions`), { status: response.status }); }
-        if (response.status === 204) { await response.body?.cancel(); return { data: null, headers: response.headers }; }
-        const reader = response.body?.getReader(), chunks: Uint8Array[] = []; let bytes = 0;
-        if (reader) try { for (;;) { const { value, done } = await reader.read(); if (done) break; bytes += value.byteLength; if (bytes > RESPONSE_LIMIT) { await reader.cancel(); throw new Error("Code host response exceeded 2 MiB"); } chunks.push(value); } } finally { reader.releaseLock(); }
-        let data: any; try { data = JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch { throw new Error("Code host returned invalid JSON"); } return { data: this.redact(data), headers: response.headers };
-      },
-      gitEnvironment: (remote) => {
-        if (this.configs.find((entry) => entry.id === id) !== stored) throw new Error("Code host configuration changed"); const allowed = new URL(gitBaseUrl!), url = new URL(remote); if (url.protocol !== "https:" || url.origin !== allowed.origin || !url.pathname.startsWith(allowed.pathname) || url.username || url.password || url.search || url.hash) throw new Error("Git credentials cannot leave the explicitly configured HTTPS Git root");
-        const token = this.credential(stored.credentialEnv); if (!token) throw new Error("Code host Git credentials are unavailable"); const username = stored.auth === "basic" ? this.credential(stored.usernameEnv!) : stored.provider === "gitlab" ? "oauth2" : "x-token-auth"; if (!username) throw new Error("Code host Git username is unavailable");
-        return { GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: `http.${url.href}.extraHeader`, GIT_CONFIG_VALUE_0: `Authorization: Basic ${Buffer.from(`${username}:${token}`).toString("base64")}`, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0", GIT_TRACE: undefined, GIT_TRACE_CURL: undefined, GIT_CURL_VERBOSE: undefined };
-      },
-    };
   }
   private config(id: string, kind: ExternalSourceKind): IntegrationConfig {
     const config = this.configs.find((c) => c.id === id);
@@ -303,8 +143,7 @@ export class Integrations {
       const token = this.credential(c.credentialEnv);
       if (!token) throw new Error(`Credentials are unavailable for ${c.name}`);
       const headers: Record<string, string> = { accept: "application/json" };
-      if (c.auth === "private-token") headers["PRIVATE-TOKEN"] = token;
-      else if (c.auth === "api-key") headers.authorization = token;
+      if (c.auth === "api-key") headers.authorization = token;
       else if (c.auth === "basic") {
         const username = this.credential(c.usernameEnv!);
         if (!username) throw new Error(`Credentials are unavailable for ${c.name}`);

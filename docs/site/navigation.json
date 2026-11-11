@@ -39,7 +39,6 @@
     "shared-projects",
     "ssh-projects",
     "remote-workers",
-    "code-hosts",
     "external-sources",
     "automations",
     "notifications"

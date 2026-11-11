@@ -40,7 +40,6 @@ import { SshProjects } from "./ssh-projects/manager.js";
 import { readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { ProjectFilePolicies, FilePolicyError, assertPolicyExecution, configureFilePolicyResolver, filterPolicyDiff, policyIsRestrictive } from "./filesystem-policy.js";
 import { FilesystemAccess } from "./filesystem-access.js";
-import { createCodeHostsApi } from "./code-hosts-api.js";
 import { createServer as createSecureServer } from "node:https";
 import { PhoneSessions } from "./phone-sessions.js";
 import { deviceLabel } from "./phone-device-label.js";
@@ -234,7 +233,6 @@ const deferredRuns = createDeferredRuns(manager, { build: buildStartInput, resol
 let deferredFault: string | undefined = "Deferred runs are still loading";
 const coordinatedApi = createCoordinatedApi({ manager, projects, build: buildStartInput, resolveProviders: resolveQueuedProviders });
 const integrations = new Integrations();
-const codeHostsApi = createCodeHostsApi({ integrations, manager, projects, build: buildStartInput });
 const integrationWarnings: string[] = [];
 await integrations.load().catch(error => { logError("Administrator external sources disabled: invalid integration configuration", error); integrationWarnings.push("Administrator integration configuration (CODEFLOW_INTEGRATIONS_JSON/FILE) is invalid or unreadable. Those sources are unavailable; app-managed connections remain available."); });
 const notifications = new Notifications();
@@ -1900,7 +1898,6 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     })));
     return send(res, 200, await attempt(() => sharedAccounts.revokeSessions(parts[2]!, body)));
   }
-  if (await codeHostsApi.handle(req, res, parts.slice(1))) return;
   if (parts[1] === "remote-workers") {
     if (parts.length === 2 && req.method === "GET") return send(res, 200, remoteWorkers.list());
     if (parts.length === 4 && parts[3] === "probe" && req.method === "POST") {
@@ -2966,7 +2963,6 @@ await teamConnections.load();
 await fileAccess.all().catch((error) => logError("Filesystem policy is unavailable; protected operations and extension loading remain disabled until the private policy file is repaired", error));
 if (!fileAccess.hasRestrictions()) await extensions.load().catch((error) => logError("Extension configuration could not be loaded; built-in workflows remain available", error));
 else { extensions.defer("A custom filesystem policy is active. Clear it and restart to load extensions."); logWarn("Extensions deferred: custom filesystem policy cannot isolate trusted plugin initialization; clear the policy and restart to load extensions"); }
-await codeHostsApi.service.load();
 await automations.load();
 await projectTeams.load().catch((error) => { projectTeams.store.faults.set("storage", (error as Error).message); logError("Project teams disabled: their private storage cannot be read", error); });
 deferredFault = await deferredRuns.load().then(() => undefined, (error) => { logError(`Deferred runs disabled: repair ${deferredRuns.file} and restart`, error); return (error as Error).message; });

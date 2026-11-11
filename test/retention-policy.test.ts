@@ -133,10 +133,6 @@ test("retained coordination launch and dependency receipts preserve exact source
   const plan = await previewRetention({ home: f.home, now }); assert.equal(plan.targets.length, 0); assert.ok(plan.protected.some((item) => item.id === "coordinated-source" && /retained coordinated change/.test(item.reason)));
 });
 
-test("retained code-host push and creation receipts preserve their exact archived run evidence", async () => {
-  const f = await fixture(); await writeRun(f, "code-host-source"); await writeFile(join(f.home, "code-host-operations.json"), JSON.stringify({ version: 1, operations: [{ id: "a".repeat(40), previewId: "b".repeat(40), integration: "fixture", key: "new", kind: "create", status: "unknown", at: 1, runId: "code-host-source", commit: "c".repeat(40), target: "d".repeat(40), sourceBranch: `codeflow/pr/${"e".repeat(20)}`, detail: "Inspect native outcome" }] })); const plan = await previewRetention({ home: f.home, now }); assert.equal(plan.targets.length, 0); assert.ok(plan.protected.some((item) => item.id === "code-host-source" && /code host action receipt/.test(item.reason)));
-});
-
 test("any changed policy, file, reference or forged manifest aborts before deleting any target", async () => {
   for (const change of ["policy", "log", "attachment", "child", "forged"] as const) {
     const f = await fixture(); const run = await writeRun(f, "old", {}, true); const plan = await previewRetention({ home: f.home, now });

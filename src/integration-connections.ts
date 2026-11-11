@@ -5,31 +5,35 @@ import { join } from "node:path";
 import { CODEFLOW_HOME } from "./config.js";
 import { git } from "./git.js";
 import { ghAuthStatus, listIssues } from "./github.js";
-import { Integrations, type IntegrationConfig } from "./integrations.js";
+import type { Integrations } from "./integrations.js";
 import type { Notifications, TargetConfig } from "./notifications.js";
 
-export const CONNECTION_PROVIDERS = ["github", "gitlab", "bitbucket", "linear", "jira", "slack", "webhook"] as const;
+export const CONNECTION_PROVIDERS = ["github", "slack", "webhook"] as const;
 export type ConnectionProvider = typeof CONNECTION_PROVIDERS[number];
 export interface ConnectionBinding { projectId: string; repository: string; connectionId: string }
 interface ConnectionRecord {
-  id: string; name: string; provider: ConnectionProvider; scope: string; baseUrl?: string; gitBaseUrl?: string;
-  auth?: IntegrationConfig["auth"]; repository?: string; credentialRef?: string; usernameRef?: string; urlRef?: string;
+  id: string; name: string; provider: ConnectionProvider; scope: string;
+  repository?: string; credentialRef?: string; urlRef?: string;
+  /** Only records from removed services carry this; keeping it keeps their saved secret. */
+  usernameRef?: string;
   updatedAt: number;
 }
 interface ConnectionState { version: 1; connections: ConnectionRecord[]; bindings: ConnectionBinding[]; secrets: Record<string, string> }
 export interface ConnectionSummary {
   id: string; name: string; provider: string; scope: string; configured: boolean; administratorManaged: boolean;
-  capabilities: string[]; baseUrl?: string; gitBaseUrl?: string; auth?: string; repository?: string;
+  capabilities: string[]; repository?: string;
   projectIds?: string[]; unavailable?: string;
 }
 export interface ConnectionDraft {
-  id?: string; name?: string; provider: ConnectionProvider; scope?: string; baseUrl?: string; gitBaseUrl?: string;
-  auth?: IntegrationConfig["auth"]; repository?: string; credential?: string; username?: string; url?: string;
+  id?: string; name?: string; provider: ConnectionProvider; scope?: string;
+  repository?: string; credential?: string; url?: string;
 }
 const empty = (): ConnectionState => ({ version: 1, connections: [], bindings: [], secrets: {} });
 const identifier = (prefix: string) => `${prefix}-${randomBytes(12).toString("hex")}`;
 const notify = (provider: string) => provider === "slack" || provider === "webhook";
-const capabilities = (provider: string) => provider === "github" ? ["Issues", "Pull requests", "CI logs", "Publish verified results"] : ["gitlab", "bitbucket"].includes(provider) ? ["Issues", "Pull requests", "Publish verified results"] : notify(provider) ? ["Project notifications", "Test notification"] : ["Issues"];
+/** Saved connections for services this build no longer supports stay on disk, unused and hidden. */
+const supported = (provider: string): provider is ConnectionProvider => (CONNECTION_PROVIDERS as readonly string[]).includes(provider);
+const capabilities = (provider: string) => provider === "github" ? ["Issues", "Pull requests", "CI logs", "Publish verified results"] : notify(provider) ? ["Project notifications", "Test notification"] : ["Issues"];
 function bounded(value: unknown, name: string, max = 200, required = true): string {
   if (value === undefined && !required) return "";
   if (typeof value !== "string" || value.length > max || /[\x00-\x1f\x7f]/.test(value) || required && !value.trim()) throw new Error(`Enter a valid ${name}`);
@@ -48,7 +52,7 @@ export function describeGitRemote(value: string): { provider?: ConnectionProvide
   let host: string, path: string;
   try { const url = scp && !value.includes("://") ? new URL(`ssh://${scp[1]}/${scp[2]}`) : new URL(value); if (!["https:", "http:", "ssh:", "git:"].includes(url.protocol)) return; host = url.hostname; path = url.pathname.replace(/^\/+|\/+$/g, "").replace(/\.git$/, ""); } catch { return; }
   if (!path || /[?#\x00-\x1f]/.test(path)) return;
-  return { host, scope: path, provider: host === "github.com" ? "github" : host === "gitlab.com" || /^gitlab\./.test(host) ? "gitlab" : host === "bitbucket.org" ? "bitbucket" : undefined };
+  return { host, scope: path, provider: host === "github.com" ? "github" : undefined };
 }
 export async function repositoryConnectionHint(repository: string) {
   const result = await git(["remote", "get-url", "origin"], repository, { timeoutMs: 5_000 });
@@ -63,7 +67,7 @@ export class IntegrationConnections {
   private queue: Promise<unknown> = Promise.resolve();
   private tests = new Map<string, { record: ConnectionRecord; secrets: Record<string, string>; previous?: number; expiresAt: number }>();
   private readonly directory: string;
-  constructor(private readonly options: { integrations: Integrations; notifications: Notifications; directory?: string; fetch?: typeof fetch; githubTest?: (repository: string) => Promise<void>; notificationsAvailable?: boolean; warnings?: string[] }) {
+  constructor(private readonly options: { integrations: Integrations; notifications: Notifications; directory?: string; githubTest?: (repository: string) => Promise<void>; notificationsAvailable?: boolean; warnings?: string[] }) {
     this.directory = options.directory ?? join(CODEFLOW_HOME, "integration-secrets");
   }
   async load() {
@@ -109,21 +113,18 @@ export class IntegrationConnections {
     } finally { await rm(temporary, { force: true }); }
   }
   private configuration(record: ConnectionRecord, secrets: Record<string, string>) {
-    const token = `CODEFLOW_CONNECTION_${record.id.replaceAll("-", "_").toUpperCase()}_TOKEN`, username = `${token}_USER`, url = `${token}_URL`;
-    const environment = { [token]: secrets[record.credentialRef ?? ""], [username]: secrets[record.usernameRef ?? ""], [url]: secrets[record.urlRef ?? ""] };
-    const integration: IntegrationConfig = { id: record.id, name: record.name, provider: record.provider, project: record.scope, baseUrl: record.baseUrl!, gitBaseUrl: record.gitBaseUrl, auth: record.auth!, credentialEnv: token, ...(record.usernameRef ? { usernameEnv: username } : {}) };
+    const token = `CODEFLOW_CONNECTION_${record.id.replaceAll("-", "_").toUpperCase()}_TOKEN`, url = `${token}_URL`;
+    const environment = { [token]: secrets[record.credentialRef ?? ""], [url]: secrets[record.urlRef ?? ""] };
     const notification: TargetConfig = { id: record.id, name: record.name, protocol: record.provider as "slack" | "webhook", urlEnv: url, ...(record.credentialRef ? { secretEnv: token } : {}) };
-    return { environment, integration, notification };
+    return { environment, notification };
   }
   private async apply(state: ConnectionState) {
-    const integrations: IntegrationConfig[] = [], notifications: TargetConfig[] = [], sourceEnvironment: NodeJS.ProcessEnv = {}, notificationEnvironment: NodeJS.ProcessEnv = {};
+    const notifications: TargetConfig[] = [], notificationEnvironment: NodeJS.ProcessEnv = {};
     for (const record of state.connections) {
-      if (record.provider === "github") continue;
+      if (!notify(record.provider)) continue;
       const config = this.configuration(record, state.secrets);
-      if (notify(record.provider)) { notifications.push(config.notification); Object.assign(notificationEnvironment, config.environment); }
-      else { integrations.push(config.integration); Object.assign(sourceEnvironment, config.environment); }
+      notifications.push(config.notification); Object.assign(notificationEnvironment, config.environment);
     }
-    await this.options.integrations.applyManaged(integrations, sourceEnvironment);
     if (this.options.notificationsAvailable !== false) await this.options.notifications.applyManaged(notifications, notificationEnvironment);
   }
   private change<T>(update: (next: ConnectionState) => T): Promise<T> {
@@ -138,7 +139,7 @@ export class IntegrationConnections {
   }
   list(): ConnectionSummary[] {
     this.assertReady();
-    const managed = this.state.connections.map(c => ({ id: c.id, name: c.name, provider: c.provider, scope: c.scope, baseUrl: c.baseUrl, gitBaseUrl: c.gitBaseUrl, auth: c.auth, repository: c.repository, configured: true, administratorManaged: false, capabilities: capabilities(c.provider) }));
+    const managed = this.state.connections.filter(c => supported(c.provider)).map(c => ({ id: c.id, name: c.name, provider: c.provider, scope: c.scope, repository: c.repository, configured: true, administratorManaged: false, capabilities: capabilities(c.provider) }));
     const admin = this.options.integrations.list().filter(c => c.administratorManaged).map(c => ({ id: c.id, name: c.name, provider: c.provider, scope: c.project, configured: c.configured, administratorManaged: true, capabilities: capabilities(c.provider) }));
     const destinations = this.options.notifications.list().filter(c => c.administratorManaged).map(c => ({ id: `notification:${c.id}`, name: c.name, provider: c.protocol, scope: c.host ?? "", configured: c.configured, administratorManaged: true, capabilities: capabilities(c.protocol) }));
     return [...managed, ...admin, ...destinations].map(connection => ({ ...connection,
@@ -158,7 +159,7 @@ export class IntegrationConnections {
     if (previous && previous.provider !== input.provider) throw new Error("Reconnect the same service");
     const record: ConnectionRecord = { id: previous?.id ?? identifier("connection"), provider: input.provider, name: bounded(input.name || input.provider, "connection name", 80), scope: bounded(input.scope, "repository or workspace", 200, !notify(input.provider)), updatedAt: Math.max(Date.now(), (previous?.updatedAt ?? 0) + 1) };
     const secrets: Record<string, string> = {};
-    const credential = (field: "credentialRef" | "usernameRef" | "urlRef", value: unknown, required: boolean, max = 8192) => {
+    const credential = (field: "credentialRef" | "urlRef", value: unknown, required: boolean, max = 8192) => {
       const secret = value ? bounded(value, "credential", max) : previous?.[field] ? this.state.secrets[previous[field]!] : "";
       if (!secret) { if (required) throw new Error("Enter the credentials for this service"); return; }
       const ref = identifier("secret"); record[field] = ref; secrets[ref] = secret;
@@ -169,20 +170,11 @@ export class IntegrationConnections {
       const hint = await repositoryConnectionHint(record.repository);
       if (hint && hint.provider && hint.provider !== "github") throw new Error("Choose a GitHub repository for this connection");
       if (hint) record.scope = hint.scope;
-    } else if (notify(input.provider)) {
+    } else {
       credential("urlRef", input.url, true, 4096); credential("credentialRef", input.credential, false);
       const destination = https(secrets[record.urlRef!]!, "webhook URL", true);
       if (input.provider === "slack" && !["hooks.slack.com", "hooks.slack-gov.com"].includes(destination.hostname)) throw new Error("Use a Slack incoming webhook URL");
       record.scope = destination.hostname;
-    } else {
-      credential("credentialRef", input.credential, true);
-      record.auth = input.auth ?? ({ gitlab: "private-token", bitbucket: "bearer", linear: "api-key", jira: "basic" } as const)[input.provider];
-      if (record.auth === "basic") credential("usernameRef", input.username, true, 320);
-      record.baseUrl = input.baseUrl || ({ gitlab: "https://gitlab.com/api/v4/", bitbucket: "https://api.bitbucket.org/2.0/", linear: "https://api.linear.app/", jira: "" } as const)[input.provider];
-      record.baseUrl = https(record.baseUrl, input.provider === "jira" ? "Jira site URL" : "API base URL").href;
-      if (input.gitBaseUrl) record.gitBaseUrl = https(input.gitBaseUrl, "Git address").href;
-      const config = this.configuration(record, secrets), client = new Integrations({ environment: config.environment, fetch: this.options.fetch });
-      await client.load([config.integration]); await client.items(record.id, "issue");
     }
     for (const [id, test] of this.tests) if (test.expiresAt <= Date.now()) this.tests.delete(id);
     if (this.tests.size >= 20) this.tests.delete(this.tests.keys().next().value!);
