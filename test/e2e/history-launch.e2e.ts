@@ -352,5 +352,5 @@ test("filesystem policy enforces scoped app reads/writes and globally blocks exe
 async function selectAgentConversation(page: import("playwright-core").Page) {
   const advanced = page.locator(".advanced-controls");
   if (await advanced.getAttribute("open") === null) await advanced.locator(":scope > summary").click();
-  await page.getByLabel("Workflow", {exact:true}).selectOption("solo");
+  await page.getByRole("combobox", { name: "Workflow", exact: true }).selectOption("solo");
 }

@@ -203,7 +203,8 @@ export function Rail() {
   const pending = projectCounts.value?.[ALL]?.inboxRuns ?? inbox().length;
   const unread = inboxUnread.value;
   const onBoard = r.view === "team" || r.view === "team-task" || r.view === "team-people";
-  const badge = (count: number) => count ? <span class="count" aria-hidden="true">{collapsed && count > 99 ? "99+" : count}</span> : null;
+  // The number is drawn from the attribute: the link's name already says it, in words.
+  const badge = (count: number) => count ? <span class="count" aria-hidden="true" data-count={collapsed && count > 99 ? "99+" : count} /> : null;
   // Paused by a filesystem restriction isn't something to set up: the CLIs are there, just not probed.
   const agentsPaused = agents.value.some((agent) => agent.unavailableReason === "filesystem-policy");
   const agentProblems = agentsPaused ? 0 : agents.value.filter((agent) => !agent.available || health.value?.find((entry) => entry.id === agent.id)?.signedIn === false).length;

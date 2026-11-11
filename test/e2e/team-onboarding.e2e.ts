@@ -130,7 +130,7 @@ test("joined teammate connects a separate CodeFlow computer, maps a repository a
   await runner.getByRole("button", { name: "Take this task", exact: true }).click();
   await runner.getByRole("button", { name: "Build with agents", exact: true }).click();
   const build = runner.getByRole("dialog", { name: "Build with agents", exact: true });
-  await build.getByLabel("Workflow", { exact: true }).selectOption("solo"); await build.getByLabel("Agent", { exact: true }).selectOption("claude");
+  await build.getByRole("combobox", { name: "Workflow", exact: true }).selectOption("solo"); await build.getByLabel("Agent", { exact: true }).selectOption("claude");
   await build.getByLabel("Check command").fill("true");
   await build.getByRole("button", { name: "Build with agents", exact: true }).click(); await build.waitFor({ state: "hidden" });
   await runner.getByRole("link", { name: "Open run", exact: true }).waitFor();

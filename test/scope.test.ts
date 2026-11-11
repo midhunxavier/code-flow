@@ -223,7 +223,7 @@ test("with no main window to hand to, a popped-out panel opens one and hands ove
 
   m.navigate({ view: "composer" }, [draft("composer", "first")]);
   m.navigate({ view: "run", id: "r1" }, [draft("main:r1", "second")]);
-  assert.deepEqual(opens, [{ url: `${ORIGIN}/#/workflows`, target: "_blank" }], "one new window, at the first page asked for");
+  assert.deepEqual(opens, [{ url: `${ORIGIN}/#/`, target: "_blank" }], "one new window, at the first page asked for");
   assert.equal(fresh.sent.length, 0, "it can't take a message before it has loaded");
   assert.equal(closed.sent.length, 0);
 
@@ -360,5 +360,5 @@ test("notifications: a run's review page counts as looking at the run", () => {
   m.notifyFinished(finished);
   m.route.value = { view: "composer" };
   m.notifyFinished(finished);
-  assert.deepEqual(notified, ["code-flow: run finished, with passing checks", "code-flow: run finished, with passing checks"]);
+  assert.deepEqual(notified, ["Code Flow: run finished, with passing checks", "Code Flow: run finished, with passing checks"]);
 });

@@ -280,7 +280,7 @@ test("project Automation ignores global filters and preserves saved schedules an
   } finally { await page.unroute("**/api/github/sweep?*"); }
   await page.goto(base + `/#/project/${projectA}`);
   await page.getByRole("navigation", { name: "Project navigation" }).getByRole("link", { name: "Board", exact: true }).waitFor();
-  await page.getByRole("navigation", { name: "Project navigation" }).getByRole("link", { name: "Automation", exact: true }).waitFor();
+  await page.getByRole("navigation", { name: "Project navigation" }).getByRole("link", { name: "Automations", exact: true }).waitFor();
   await page.getByRole("button", { name: /^Open command palette/ }).click();
   await page.getByRole("combobox", { name: "Find a command, project or run" }).fill("alpha people");
   await page.getByRole("option", { name: /alpha · People/ }).waitFor();
@@ -324,5 +324,5 @@ test("new project destinations support narrow screens, themes and keyboard navig
 async function selectAgentConversation(page: import("playwright-core").Page) {
   const advanced = page.locator(".advanced-controls");
   if (await advanced.getAttribute("open") === null) await advanced.locator(":scope > summary").click();
-  await page.getByLabel("Workflow", {exact:true}).selectOption("solo");
+  await page.getByRole("combobox", { name: "Workflow", exact: true }).selectOption("solo");
 }

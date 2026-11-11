@@ -549,7 +549,7 @@ test("Draft with agent prepares editable fields without creating a task; Build w
   assert.equal(saved.title, "Reviewed agent draft"); assert.equal(saved.owner?.userId, "owner"); assert.equal(saved.attempts.length, 0);
   await page.getByRole("button", { name: "Build with agents", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Build with agents", exact: true });
-  await dialog.getByLabel("Workflow", { exact: true }).selectOption("auto-team");
+  await dialog.getByRole("combobox", { name: "Workflow", exact: true }).selectOption("auto-team");
   const pool = dialog.getByRole("group", { name: "Available providers", exact: true });
   assert.ok(await pool.getByRole("checkbox").count() >= 2);
   assert.ok(await pool.locator("input:checked").count() >= 2, "Auto team preserves multiple selected providers");
@@ -557,7 +557,7 @@ test("Draft with agent prepares editable fields without creating a task; Build w
   await page.setViewportSize({ width: 390, height: 844 });
   assert.equal(await fits(page), true); await audit(page, "build with agents phone");
   await page.setViewportSize({ width: 1440, height: 1000 });
-  await dialog.getByLabel("Workflow", { exact: true }).selectOption("solo");
+  await dialog.getByRole("combobox", { name: "Workflow", exact: true }).selectOption("solo");
   await dialog.getByLabel("Agent", { exact: true }).selectOption("claude");
   await dialog.getByLabel("Agent permissions").selectOption("safe");
   await dialog.getByLabel("Check command").fill("true");

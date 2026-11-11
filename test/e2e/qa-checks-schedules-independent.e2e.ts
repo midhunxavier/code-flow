@@ -132,13 +132,13 @@ test("startup catch-up fires the retained occurrence past one hour and skipped r
 
 test("readiness validates a real command lasting longer than the old 120-second cap", { timeout: 180000 }, async () => {
   await open(`#/project/${long.id}/workflow`); await page.locator(".advanced-controls").evaluate(el => { (el as HTMLDetailsElement).open = true; });
-  await page.getByText("Repository readiness", { exact: true }).click();
+  await page.getByRole("group", { name: "Repository readiness", exact: true }).waitFor();
   const response = page.waitForResponse(r => r.url().endsWith("/api/readiness") && r.request().method() === "POST", { timeout: 160000 });
   const started = Date.now(); await page.getByRole("button", { name: "Validate commands", exact: true }).click();
   const result = await response; assert.equal(result.status(), 200); const body = await result.json();
   assert.ok(Date.now() - started >= 125000); assert.equal(body.executed, true); assert.equal(body.checkTimeoutMin, 3);
   assert.equal(body.items.find((item: any) => item.id === "check-run").status, "passed");
-  await page.getByText("Commands validated · ready", { exact: true }).waitFor();
+  await page.getByRole("group", { name: "Repository readiness", exact: true }).getByText("Repository readiness · Commands validated · ready", { exact: true }).waitFor();
   await page.screenshot({ path: join(evidence, "long-readiness.png"), fullPage: true });
   assert.deepEqual(pageErrors, []); assert.deepEqual(consoleErrors, []);
 });

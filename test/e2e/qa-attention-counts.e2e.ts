@@ -73,7 +73,7 @@ test("collapsed badges remain visible, search peek preserves storage and mobile 
 });
 
 test("the sidebar and the old Settings address open automation management", async () => {
-  await page.goto(`${base}/#/settings`); assert.equal(await page.getByRole("navigation", { name: "Settings categories" }).getByRole("link").count(), 9);
+  await page.goto(`${base}/#/settings`); await page.getByRole("navigation", { name: "Settings categories" }).getByRole("link", { name: "General", exact: true }).waitFor(); assert.equal(await page.getByRole("navigation", { name: "Settings categories" }).getByRole("link").count(), 9);
   await page.getByRole("link", { name: "Automations", exact: true }).click(); await page.waitForURL(/#\/automations\/manage$/); await page.getByRole("heading", { name: "Automations", exact: true }).waitFor();
   await page.goto(`${base}/#/settings/automations`); await page.waitForURL(/#\/automations\/manage$/); assert.equal(await page.locator(".settings-tools").count(), 0);
 });

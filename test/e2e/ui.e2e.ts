@@ -149,7 +149,7 @@ test("pick a repo, run a team, review, send a comment, and merge — all in the 
 
   // Describe the task, pick the pipeline, start with the keyboard.
   await openAdvanced(page);
-  await page.getByLabel("Workflow", { exact: true }).selectOption("pipeline");
+  await page.getByRole("combobox", { name: "Workflow", exact: true }).selectOption("pipeline");
   await page.getByLabel("Task", { exact: true }).fill("E2E: make the check pass");
   await page.getByLabel("Task", { exact: true }).press("Meta+Enter");
 
@@ -236,7 +236,7 @@ test("archived runs still offer worktrees explicitly retained without cleanup", 
 test("approve the plan from the UI: ask for changes, then approve", async () => {
   await page.goto(`${BASE}/#/workflows`);
   await openAdvanced(page);
-  await page.getByLabel("Workflow", { exact: true }).selectOption("pipeline");
+  await page.getByRole("combobox", { name: "Workflow", exact: true }).selectOption("pipeline");
   await page.getByText("Let me approve the plan").click();
   await page.getByLabel("Task", { exact: true }).fill("E2E: checkpoint");
   await page.getByRole("button", { name: /^Start run/ }).click();
@@ -254,7 +254,7 @@ test("approve the plan from the UI: ask for changes, then approve", async () => 
 test("a message sent while Codex is working reaches its running turn", async () => {
   await page.goto(`${BASE}/#/workflows`);
   await openAdvanced(page);
-  await page.getByLabel("Workflow", { exact: true }).selectOption("pipeline");
+  await page.getByRole("combobox", { name: "Workflow", exact: true }).selectOption("pipeline");
   await page.locator(".advanced-controls").evaluate(el => { (el as HTMLDetailsElement).open = true; });
   await page.getByRole("checkbox", { name: /Let me approve the plan/ }).uncheck(); // remembered from the last test
   // The fake Codex keeps this turn open until a message is steered into it.
@@ -494,21 +494,26 @@ test("insights and run search", async () => {
 });
 
 test("fix & review: the reviewer defaults to a different vendor than the builder", async () => {
-  await page.goto(`${BASE}/#/workflows`);
-  await openAdvanced(page);
-  await page.getByLabel("Workflow", { exact: true }).selectOption("fix-review");
-  await page.locator(".advanced-controls").evaluate(el => { (el as HTMLDetailsElement).open = true; });
-  if (await page.locator(".advanced-controls").getAttribute("open") === null) await page.locator(".advanced-controls").evaluate(el => { (el as HTMLDetailsElement).open = true; });
-  const role = (label: string) => page.locator(".role").filter({ has: page.locator(".rl", { hasText: new RegExp(`^${label}`) }) });
-  const pressed = async (label: string) =>
-    (await role(label).locator(".pill[aria-pressed=true]").allInnerTexts()).map((t) => t.replace(/^✓\s*/, "").trim());
-  assert.deepEqual(await pressed("Reviewer"), ["Claude Code"], "the pattern's default when it isn't the builder");
-  await role("Builder").getByRole("button", { name: "Claude Code", exact: true }).click();
-  assert.deepEqual(await pressed("Builder"), ["Claude Code"]);
-  assert.deepEqual(await pressed("Reviewer"), ["Codex"], "moves off the builder's vendor");
-  // Your own choice stands, even to let the builder review itself.
-  await role("Reviewer").getByRole("button", { name: "Claude Code", exact: true }).click();
-  assert.deepEqual(await pressed("Reviewer"), ["Claude Code"]);
+  // A browser with no saved draft: the backlog test above chose this workflow's builder and reviewer for the shared page's draft.
+  const fresh = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+  try {
+    await fresh.addInitScript((repository) => { localStorage.setItem("repo", repository); localStorage.setItem("sideOpen", "0"); }, repo);
+    await fresh.goto(`${BASE}/?token=${TOKEN}#/workflows`);
+    await fresh.getByLabel("Task", { exact: true }).waitFor();
+    await openAdvanced(fresh);
+    await fresh.getByRole("combobox", { name: "Workflow", exact: true }).selectOption("fix-review");
+    const role = (label: string) => fresh.locator(".role").filter({ has: fresh.locator(".rl", { hasText: new RegExp(`^${label}`) }) });
+    const pressed = async (label: string) =>
+      (await role(label).locator(".pill[aria-pressed=true]").allInnerTexts()).map((t) => t.replace(/^✓\s*/, "").trim());
+    assert.deepEqual(await pressed("Builder"), ["Codex"]);
+    assert.deepEqual(await pressed("Reviewer"), ["Claude Code"], "the pattern's default when it isn't the builder");
+    await role("Builder").getByRole("button", { name: "Claude Code", exact: true }).click();
+    assert.deepEqual(await pressed("Builder"), ["Claude Code"]);
+    assert.deepEqual(await pressed("Reviewer"), ["Codex"], "moves off the builder's vendor");
+    // Your own choice stands, even to let the builder review itself.
+    await role("Reviewer").getByRole("button", { name: "Claude Code", exact: true }).click();
+    assert.deepEqual(await pressed("Reviewer"), ["Claude Code"]);
+  } finally { await fresh.close(); }
 });
 
 test("projects: onboarding made one; the sidebar lists runs under their projects; a run moves back", async () => {
@@ -543,7 +548,7 @@ test("projects: onboarding made one; the sidebar lists runs under their projects
   assert.deepEqual((await projects()).find((project) => project.name === "E2E side")!.repos, [root], "repository membership changes only after adding it explicitly");
 
   await openAdvanced(page);
-  await page.getByLabel("Workflow", { exact: true }).selectOption("pipeline");
+  await page.getByRole("combobox", { name: "Workflow", exact: true }).selectOption("pipeline");
   await page.locator(".advanced-controls").evaluate(el => { (el as HTMLDetailsElement).open = true; });
   await page.getByRole("checkbox", { name: /Let me approve the plan/ }).uncheck(); // remembered from earlier tests: the run mustn't wait for approval
   await page.getByLabel("Task", { exact: true }).fill("E2E: in the side project");
@@ -974,7 +979,7 @@ test("simple composer supports reusable teams, parameterized tasks, readiness an
     await fresh.locator(".repo-btn:not(.project-btn) .name", { hasText: repo.split("/").pop()! }).waitFor();
     await fresh.waitForFunction(() => (document.querySelector("#checkCmd") as HTMLInputElement | null)?.value === "npm test");
     await openAdvanced(fresh);
-  await fresh.getByLabel("Workflow", { exact: true }).selectOption("pipeline");
+  await fresh.getByRole("combobox", { name: "Workflow", exact: true }).selectOption("pipeline");
     await fresh.getByLabel("Task", { exact: true }).fill("E2E: improve {{component}} in {{package}}");
     // A slower earlier preset must not overwrite the user's newer choice. Starting while a
     // profile is being resolved would silently omit its gates, so execution stays disabled.
@@ -1014,7 +1019,7 @@ test("simple composer supports reusable teams, parameterized tasks, readiness an
     await fresh.getByRole("button", { name: "Save current workflow", exact: true }).click();
     await fresh.getByLabel("Revision to apply").waitFor();
     await fresh.evaluate(() => { location.hash = "/workflows"; });
-    await openAdvanced(fresh); await fresh.getByLabel("Workflow", { exact: true }).selectOption("solo");
+    await openAdvanced(fresh); await fresh.getByRole("combobox", { name: "Workflow", exact: true }).selectOption("solo");
     await openLibrary();
     await fresh.getByLabel("Saved workflow", { exact: true }).selectOption({ label: "E2E saved team · r1" });
     await fresh.getByRole("button", { name: "Save new revision", exact: true }).click();
@@ -1023,7 +1028,7 @@ test("simple composer supports reusable teams, parameterized tasks, readiness an
     await fresh.getByLabel("Template name", { exact: true }).fill("E2E parameterized task");
     await fresh.getByRole("button", { name: "Save current task as template", exact: true }).click();
     await fresh.evaluate(() => { location.hash = "/workflows"; });
-    assert.equal(await fresh.getByLabel("Workflow", { exact: true }).inputValue(), "pipeline", "a previous team revision restores the original workflow");
+    assert.equal(await fresh.getByRole("combobox", { name: "Workflow", exact: true }).inputValue(), "pipeline", "a previous team revision restores the original workflow");
     await fresh.getByLabel("Task", { exact: true }).fill("temporary draft");
     await openLibrary();
     await fresh.getByLabel("Task template", { exact: true }).selectOption({ label: "E2E parameterized task" });
@@ -1178,24 +1183,24 @@ test("Agent setup is inline and completed replies keep automatic workflow contro
     await box.getByRole("button", { name: /^Effort:/ }).click();
     await box.getByRole("menuitem", { name: "high", exact: true }).click();
     assert.equal(await fresh.evaluate(() => JSON.parse(localStorage.getItem("agentSettings") || "{}").claude?.model), undefined, "run model choices do not change the provider default in Settings");
-    assert.equal(await fresh.getByLabel("Workflow", { exact: true }).isVisible(), false);
+    assert.equal(await fresh.getByRole("combobox", { name: "Workflow", exact: true }).isVisible(), false);
     await openAdvanced(fresh);
-    await fresh.getByLabel("Workflow", { exact: true }).selectOption("pipeline");
+    await fresh.getByRole("combobox", { name: "Workflow", exact: true }).selectOption("pipeline");
     assert.equal(await box.locator(".chat-controls").count(), 0);
-    await fresh.getByLabel("Workflow", { exact: true }).selectOption("solo");
+    await fresh.getByRole("combobox", { name: "Workflow", exact: true }).selectOption("solo");
     assert.match(await box.getByRole("button", { name: /^Model:/ }).innerText(), /Haiku/);
     await box.getByRole("switch", { name: "AI team", exact: true }).click();
     await box.getByRole("button", { name: "Advanced", exact: true }).click();
     const setup = fresh.getByRole("dialog", {name:"AI team setup"});
     await setup.getByRole("switch", {name:"Enable AI team"}).check();
     await setup.getByRole("button", {name:"Apply team settings"}).click();
-    assert.equal(await fresh.getByLabel("Workflow", { exact: true }).inputValue(), "solo", "Team configuration retains the Agent conversation");
+    assert.equal(await fresh.getByRole("combobox", { name: "Workflow", exact: true }).inputValue(), "solo", "Team configuration retains the Agent conversation");
     await fresh.reload();
     await box.getByRole("switch", { name: "AI team", exact: true }).waitFor();
     assert.equal(await box.getByRole("switch", { name: "AI team", exact: true }).getAttribute("aria-checked"), "true", "unsent Team configuration survives reload with the project draft");
     await box.getByRole("switch", { name: "AI team", exact: true }).click();
     await openAdvanced(fresh);
-    await fresh.getByLabel("Workflow", { exact: true }).selectOption("solo");
+    await fresh.getByRole("combobox", { name: "Workflow", exact: true }).selectOption("solo");
     await fresh.getByLabel("Check command for merge validation", { exact: true }).fill('node -e "setTimeout(() => {}, 4000)"');
     await fresh.locator(".advanced-controls").evaluate(el => { (el as HTMLDetailsElement).open = true; });
     await fresh.getByRole("textbox", { name: "Task", exact: true }).fill("Inline single-agent fixture");
@@ -1245,6 +1250,8 @@ test("project defaults stay repository-scoped and a run creates its worktree fro
     await fresh.getByLabel("Verification gates", { exact: true }).selectOption("");
     assert.equal(await fresh.getByRole("checkbox", { name: "Run agents in a prebuilt Docker image" }).isChecked(), true);
     await fresh.getByRole("checkbox", { name: "Run agents in a prebuilt Docker image" }).uncheck();
+    // The start branch was just changed: its configuration is read again before the default shows.
+    await fresh.waitForFunction(() => (document.querySelector("#setupCmd") as HTMLInputElement | null)?.value === 'node -e "process.exit(0)"');
     assert.equal(await fresh.getByLabel("Worktree setup command", { exact: true }).inputValue(), "node -e \"process.exit(0)\"");
     await fresh.getByLabel("Worktree setup command", { exact: true }).fill("node -e \"process.exit(0); /* setup override */\"");
     assert.equal(JSON.parse(readFileSync(join(repo, ".codeflow", "config.json"), "utf8")).setup, "node -e \"process.exit(0)\"", "setup overrides do not overwrite the project default");

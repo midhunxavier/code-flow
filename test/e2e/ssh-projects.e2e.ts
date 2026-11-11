@@ -50,7 +50,7 @@ test("connect from the app, browse a remote folder, run there, reconnect and ret
     await page.locator(".page-head-actions").getByRole("button", { name: "New chat", exact: true }).click();
     await page.locator(".repo-btn:not(.project-btn) .name", { hasText: "project" }).waitFor();
     await openAdvanced(page);
-  await page.getByLabel("Workflow", { exact: true }).selectOption("pipeline");
+  await page.getByRole("combobox", { name: "Workflow", exact: true }).selectOption("pipeline");
     await page.getByLabel("Task", { exact: true }).fill("SSH E2E: work on the server");
     await page.getByRole("button", { name: /^Start run/ }).click();
     await page.locator(".runview .run-head h2", { hasText: "SSH E2E: work on the server" }).waitFor();

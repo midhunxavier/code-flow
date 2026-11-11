@@ -53,9 +53,9 @@ test("workflow selection preserves an intentional draft and exposes the effectiv
   const draft = page.locator(".taskbox textarea");
   await draft.fill("Keep this task while changing the workflow");
   await openAdvanced(page);
-  await page.getByLabel("Workflow", { exact: true }).selectOption("council");
+  await page.getByRole("combobox", { name: "Workflow", exact: true }).selectOption("council");
   assert.equal(await draft.inputValue(), "Keep this task while changing the workflow");
-  await page.getByLabel("Workflow", { exact: true }).selectOption("fix-review");
+  await page.getByRole("combobox", { name: "Workflow", exact: true }).selectOption("fix-review");
   assert.equal(await draft.inputValue(), "Keep this task while changing the workflow");
   await page.locator(".composer-summary").getByText("Limit", { exact: true }).waitFor();
   await page.getByRole("heading", { name: "Run details", exact: true }).waitFor();

@@ -66,7 +66,7 @@ test("Agent is the fresh default and Advanced team workflows survive reload and 
     const team = fresh.getByRole("switch", { name: "AI team", exact: true });
     await team.waitFor();
     assert.equal(await team.getAttribute("aria-checked"), "false");
-    assert.equal(await fresh.getByLabel("Workflow", { exact: true }).isVisible(), false);
+    assert.equal(await fresh.getByRole("combobox", { name: "Workflow", exact: true }).isVisible(), false);
     await fresh.reload();
     assert.equal(await team.getAttribute("aria-checked"), "false", "Agent remains the default");
     await selectLegacyTeam(fresh);
@@ -100,7 +100,7 @@ test("Agent is the fresh default and Advanced team workflows survive reload and 
     assert.equal(pinned.template.id, definition.id);
     assert.equal(pinned.template.version, 1);
     assert.equal(pinned.inputs.task, "Implement sample behavior");
-    assert.equal(await fresh.getByLabel("Workflow", { exact: true }).inputValue(), "auto-team");
+    assert.equal(await fresh.getByRole("combobox", { name: "Workflow", exact: true }).inputValue(), "auto-team");
     await fresh.locator(".advanced-controls").evaluate(el => { (el as HTMLDetailsElement).open = true; });
     await library.getByLabel("Saved templates").selectOption(definition.id);
     await library.getByRole("button", { name: "Edit new version" }).click();
@@ -313,5 +313,5 @@ test("changing a running goal stops its team and creates an approved child plan 
 async function selectLegacyTeam(page: Page) {
   const advanced = page.locator(".advanced-controls");
   if (await advanced.getAttribute("open") === null) await advanced.locator(":scope > summary").click();
-  await page.getByLabel("Workflow", {exact:true}).selectOption("auto-team");
+  await page.getByRole("combobox", { name: "Workflow", exact: true }).selectOption("auto-team");
 }

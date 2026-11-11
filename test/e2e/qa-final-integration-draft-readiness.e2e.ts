@@ -61,8 +61,7 @@ for (const mode of ["Issue", "PR", "CI"] as const) test(`${mode} handoff waits f
   await page.goto(`${base}/?token=${token}#/project/${project}/workflow`);
   await page.getByLabel("Task", { exact: true }).fill(marker);
   await page.locator(".advanced-controls").evaluate(el => { (el as HTMLDetailsElement).open = true; });
-  const acceptance = page.locator(".acceptance-editor");
-  if (!await acceptance.evaluate(el => (el as HTMLDetailsElement).open)) await acceptance.locator(":scope > summary").click();
+  await page.locator(".acceptance-editor").waitFor();
   await page.getByLabel("One requirement per line", { exact: true }).fill("Previous draft criterion");
   const before = await until(savedDraft, value => value?.task === marker && value.acceptance?.[0] === "Previous draft criterion");
 

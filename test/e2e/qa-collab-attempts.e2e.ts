@@ -166,7 +166,7 @@ test("a linked recipient accepts a hand-over into their clone before continuing 
     execFileSync("git", ["cat-file", "-e", `${checkpoint.commit}^{commit}`], { cwd: clone });
     await execution.getByRole("button", { name: "Build with agents", exact: true }).click();
     const build = page.getByRole("dialog", { name: "Build with agents", exact: true });
-    await build.getByLabel("Workflow", { exact: true }).selectOption("solo"); await build.getByRole("combobox", { name: "Agent", exact: true }).selectOption("claude");
+    await build.getByRole("combobox", { name: "Workflow", exact: true }).selectOption("solo"); await build.getByRole("combobox", { name: "Agent", exact: true }).selectOption("claude");
     await build.getByLabel("Check command", { exact: true }).fill("true");
     await build.getByRole("button", { name: "Build with agents", exact: true }).click();
     const continued = await until(created.id, value => value.attempts[1]?.state === "finished", "Bob's continuation to finish");
@@ -215,7 +215,7 @@ test("a newer finished attempt replaces paused work in the task and board, and r
   await execution.getByRole("button", { name: "Resume", exact: true }).waitFor();
   await execution.getByRole("button", { name: "Build with agents", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Build with agents", exact: true });
-  await dialog.getByLabel("Workflow", { exact: true }).selectOption("solo");
+  await dialog.getByRole("combobox", { name: "Workflow", exact: true }).selectOption("solo");
   await dialog.getByRole("combobox", { name: "Agent", exact: true }).selectOption("claude");
   await dialog.getByLabel("Check command", { exact: true }).fill("true");
   await dialog.getByRole("button", { name: "Build with agents", exact: true }).click();

@@ -3537,6 +3537,7 @@ dialog.picker.team-build-dialog { max-height: min(780px, calc(100dvh - 32px)); }
 .rail-destinations { display: grid; gap: 3px; margin: 4px 0 12px; }
 .rail-destinations .nav-item { text-decoration: none; min-height: 40px; }
 .rail-destinations .count { margin-left: auto; }
+.rail-destinations .count::after { content: attr(data-count); }
 @media (min-width: 761px) {
   .rail-destinations { gap: 1px; }
   .rail-destinations .nav-item { min-height: 34px; }
