@@ -35,7 +35,7 @@ import { requestTailscaleCertificate } from "./tailscale.js";
 import { ProjectTeams } from "./project-teams.js";
 import { handleProjectTeams } from "./project-teams-api.js";
 import { SshProjects } from "./ssh-projects/manager.js";
-import { readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { ProjectFilePolicies, FilePolicyError, assertPolicyExecution, configureFilePolicyResolver, filterPolicyDiff, policyIsRestrictive } from "./filesystem-policy.js";
 import { FilesystemAccess } from "./filesystem-access.js";
 import { createCodeHostsApi } from "./code-hosts-api.js";
@@ -111,6 +111,7 @@ import { detectCheck } from "./checks.js";
 import { findPattern, patterns } from "./patterns/index.js";
 import { listDirectories } from "./fs.js";
 import { git, listBranches, repoRoot, worktreeRoot, type GitCwd } from "./git.js";
+import { ensureFolderMirror, findFolderMirror, openFolder as openFolderCopy } from "./folders.js";
 import { stat } from "node:fs/promises";
 import { folderSizes, remoteBranches } from "./ship.js";
 import { computeStats, rankAgents } from "./stats.js";
@@ -619,9 +620,19 @@ async function requestedRepo(url: URL): Promise<string> {
   return validRepo(url.searchParams.get("repo") ?? "");
 }
 
-async function validRepo(requested: string): Promise<string> {
+/**
+ * The repository a request names. A folder that isn't a repository stands for its mirror
+ * (src/folders.ts): one it already has, or with `openFolder` (starting a run) a new one.
+ */
+async function validRepo(requested: string, opts: { openFolder?: boolean } = {}): Promise<string> {
   if (!requested.startsWith("/")) throw new HttpError(400, "Repository must be an absolute path");
-  return attempt(() => repoRoot(requested));
+  return attempt(() => repoRoot(requested).catch(async (err) => {
+    // A path that isn't there keeps git's answer ("… no longer exists"), not a folder's.
+    if (!existsSync(requested)) throw err;
+    const mirror = opts.openFolder ? await ensureFolderMirror(requested) : await findFolderMirror(requested);
+    if (!mirror) throw err;
+    return mirror;
+  }));
 }
 
 /**
@@ -941,7 +952,7 @@ async function validatedStartInput(body: Record<string, any>): Promise<StartRunI
   if (!repo.startsWith("/")) throw new HttpError(400, "Repository must be an absolute path");
   if (body.parentRunId !== undefined && (typeof body.parentRunId !== "string" || !manager.get(body.parentRunId))) throw new HttpError(409, "The original run is no longer available. Reload before starting a continuation so its source restrictions can be retained.");
   await attempt(async () => assertPolicyExecution(await fileAccess.execution(repo), "Run preparation"));
-  repo = await validRepo(repo);
+  repo = await validRepo(repo, { openFolder: true });
   if (body.trust !== undefined && !["safe", "standard", "trusted", "full"].includes(body.trust)) throw new HttpError(400, "Choose Safe, Standard, Trusted or Full access");
   for (const field of ["loop", "options", "agentSettings", "roleSettings"]) if (body[field] !== undefined && (!body[field] || typeof body[field] !== "object" || Array.isArray(body[field]))) throw new HttpError(400, `${field} must be an object`);
   if (body.projectSelection === "explicit" && !projects.get(body.project)?.repos.includes(await repoRoot(repo))) throw new HttpError(409, "This repository is no longer an explicit member of the selected project");
@@ -2057,6 +2068,16 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
       });
     return send(res, 200, listing);
   }
+  // A folder that isn't a Git repository: make (or refresh) the private copy Code Flow works on
+  // (src/folders.ts). The folder picker uses it; the copy's path then stands for the folder.
+  if (req.method === "POST" && parts[1] === "folders" && parts.length === 2) {
+    const body = await readJson(req, 8192);
+    const path = String(body.path ?? "").trim();
+    if (!path.startsWith("/")) throw new HttpError(400, "Choose a folder by its absolute path");
+    await attempt(async () => assertPolicyExecution(await fileAccess.execution(path), "Opening a folder"));
+    const opened = await attempt(() => openFolderCopy(path));
+    return send(res, 200, { mirror: opened.mirror, path: opened.folder, files: opened.files, bytes: opened.bytes, skipped: opened.skipped });
+  }
   if (req.method === "GET" && parts[1] === "branches") {
     const repo = await requestedRepo(url);
     // A run's result branch is a run's whatever prefix it was started with: no merge target.
@@ -2869,6 +2890,11 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
         catch (error) { if (error instanceof ConflictMarkersError) throw Object.assign(new HttpError(409, error.message), { confirm: "allowConflictMarkers" }); throw error; }
       });
       return send(res, 200, outcome);
+    }
+    // A run on a folder: undo one apply of its result (src/folders.ts).
+    if (req.method === "POST" && parts[3] === "folder-undo") {
+      const body = await readJson(req);
+      return send(res, 200, await attempt(() => manager.undoFolderApply(run.id, String(body.apply ?? ""))));
     }
     if (req.method === "POST" && parts[3] === "validate-merge") {
       const body = await readJson(req);

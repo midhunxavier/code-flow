@@ -38,8 +38,8 @@ test("connect from the app, browse a remote folder, run there, reconnect and ret
     await projectDialog.waitFor();
     assert.equal(await projectDialog.getByLabel("Name", { exact: true }).inputValue(), "Remote web app");
     assert.equal(await projectDialog.locator(".project-repos .dir").count(), 0);
-    await projectDialog.getByRole("button", { name: "Add repository…", exact: true }).click();
-    const picker = page.getByRole("dialog", { name: "Add a repository to Remote web app", exact: true });
+    await projectDialog.getByRole("button", { name: "Add repository or folder…", exact: true }).click();
+    const picker = page.getByRole("dialog", { name: "Add a repository or folder to Remote web app", exact: true });
     await picker.getByRole("button", { name: "Open folder project", exact: true }).waitFor();
     assert.equal(await picker.getByLabel("Folder path").inputValue(), f.remoteHome);
     await picker.locator(".dir", { has: page.getByRole("button", { name: "Open folder project", exact: true }) }).getByRole("button", { name: "Use", exact: true }).click();

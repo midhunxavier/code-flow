@@ -109,9 +109,10 @@ import {
   type Snapshot,
   type Worktree,
 } from "./git.js";
+import { applyToFolder, findFolderMirror, folderOfMirror, importFolder, isFolderMirror, undoFolderApply } from "./folders.js";
 import { appendLine, deleteRunHistory, flushWrites, journalEntry, listDeletedRunIds, listRunIds, loadJournal, readJsonLines, rewriteLines, waitForRunWrites, RUNS_DIR } from "./store.js";
 import { compactRunLog, decodeRunLog, RunLogWriter } from "./run-log.js";
-import { branchDiff, workspaceDiff, mergeInto, openPullRequest, pullRequestTarget, removeWorktrees, unsavedWork, type DiffFile } from "./ship.js";
+import { branchDiff, workspaceDiff, mergeInto, openPullRequest, pullRequestTarget, removeWorktrees, unsavedWork, type DiffFile, type MergeOutcome } from "./ship.js";
 import { copyIntoWorktree, readRepoConfig, readRepoConfigAt, type Trust } from "./repo-config.js";
 import { DevServers } from "./serve.js";
 import { projectOf, ProjectsStorageError, type Project, type Projects } from "./projects.js";
@@ -407,6 +408,8 @@ export interface Run {
   pattern: string;
   task: string;
   repo: string;
+  /** A run on a folder that isn't a repository: the folder; `repo` is its mirror (src/folders.ts). */
+  folder?: string;
   /** The project the run belongs to (see projects.ts); runs from before projects have none recorded. */
   project?: string;
   /** Commit every worktree starts from. */
@@ -500,7 +503,7 @@ export interface Run {
   /** Work you sent back to an agent after the run (review comments, conflict fixes). */
   followUps: FollowUp[];
   /** Result branches merged from the UI; `pr` when it was the branch's pull request, on GitHub. */
-  merges: { branch: string; into: string; commit: string; at: number; pr?: string }[];
+  merges: { branch: string; into: string; commit: string; at: number; pr?: string; /** A run on a folder: the apply (src/folders.ts), and when it was undone. */ folderApply?: string; undoneAt?: number }[];
   mergeValidation?: MergeValidation;
   humanReview?: Record<string, { head: string; files: string[]; at: number; audit?: { at: number; actor: string; path: string; reviewed: boolean }[] }>;
   humanRework?: { id: string; branch: string; head: string; minutes: number; note: string; at: number }[];
@@ -3373,10 +3376,19 @@ export interface StartRunInput {
 
 const QUOTA_FILE = join(CODEFLOW_HOME, "quota.json");
 
+/** The repository a run starts in: a repository, or the mirror of a folder Code Flow already has (src/folders.ts). */
+async function startRepository(path: string): Promise<string> {
+  return repoRoot(path).catch(async (err) => {
+    const mirror = await findFolderMirror(path);
+    if (!mirror) throw err;
+    return mirror;
+  });
+}
+
 export class RunManager {
   private projectTeamShippingGuard?: (run: Run, branch: string) => Promise<void>;
   setProjectTeamShippingGuard(guard: (run: Run, branch: string) => Promise<void>) { this.projectTeamShippingGuard = guard; }
-  private async managedShipping(run: Run, branch: string) { if (run.testRun) throw new Error("This is a test run. Archive it instead of publishing or merging its changes."); if (run.projectTeam) { if (!this.projectTeamShippingGuard) throw new Error("Project team service unavailable"); await this.projectTeamShippingGuard(run, branch); } }
+  private async managedShipping(run: Run, branch: string, kind: "merge" | "publish" = "publish") { if (kind === "publish" && isFolderMirror(run.repo)) throw new Error("This run worked on a copy of a folder, which has no branches or pull requests to publish to. Apply the result to the folder instead."); if (run.testRun) throw new Error("This is a test run. Archive it instead of publishing or merging its changes."); if (run.projectTeam) { if (!this.projectTeamShippingGuard) throw new Error("Project team service unavailable"); await this.projectTeamShippingGuard(run, branch); } }
   private projectTeamGuard?: (run: Run) => Promise<void>;
   setProjectTeamGuard(guard: (run: Run) => Promise<void>) { this.projectTeamGuard = guard; }
   private projectTeamDeletionGuard?: (run: Run, deletingProject?: string) => void;
@@ -4930,11 +4942,14 @@ export class RunManager {
 
   async merge(id: string, input: { branch: string; into: string; archiveAfter?: boolean; requireValidation?: boolean; allowConflictMarkers?: boolean }) {
     const run = this.require(id);
-    await this.managedShipping(run, input.branch);
+    await this.managedShipping(run, input.branch, "merge");
     if (this.busyRun(run)) throw new RunConflictError("Wait for the run to finish before merging");
     assertResultBranch(run, input.branch);
-    // git would say "Already up to date" and code-flow would call that a merge.
-    if (await isAncestor(run.repo, input.branch, `refs/heads/${input.into}`)) throw new Error(`Nothing to merge: ${input.into} already has everything on ${input.branch}`);
+    const folder = folderOfMirror(run.repo);
+    if (folder && input.into !== "main") throw new Error(`This run worked on a copy of the folder ${folder}: its result is applied to the folder (target "main"), not to another branch`);
+    // git would say "Already up to date" and code-flow would call that a merge. A folder's main
+    // keeps an undone apply in its history, so the folder's own code decides what is left to apply.
+    if (!folder && await isAncestor(run.repo, input.branch, `refs/heads/${input.into}`)) throw new Error(`Nothing to merge: ${input.into} already has everything on ${input.branch}`);
     // A run's result changes only through that run, where its review and checks follow it.
     const owner = this.resultBranchOwner(run.repo, input.into);
     if (owner) throw new Error(owner.id === run.id ? `"${input.into}" is one of this run's own result branches. Merge into one of your branches instead.` : `"${input.into}" is the result of another run (${owner.id}), and merging into it would change that result behind its review. Merge into one of your branches instead.`);
@@ -4944,6 +4959,7 @@ export class RunManager {
     if (marked.length && !input.allowConflictMarkers) throw new ConflictMarkersError(input.branch, marked);
     const verified = run.mergeValidation;
     if (input.requireValidation && (!verified?.tree || verified.branch !== input.branch || verified.into !== input.into || verified.report?.state !== "verified" || verified.conflicts.length)) throw new Error("Validate this merge target successfully before merging");
+    if (folder) return this.applyToFolder(run, input.branch, folder, marked, input.archiveAfter);
     const outcome = await mergeInto(run.repo, input.branch, input.into, `Merge ${input.branch} into ${input.into} (code-flow run ${run.id})`, input.requireValidation ? verified : run.projectTeam ? { source: run.verification!.head!, target: await resolveCommit(run.repo, `refs/heads/${input.into}`) } : undefined);
     if (outcome.ok) {
       run.merges.push({ branch: input.branch, into: input.into, commit: outcome.commit, at: Date.now() });
@@ -4955,6 +4971,40 @@ export class RunManager {
       if (archiveWarning) return { ...outcome, warning: [outcome.warning, archiveWarning].filter(Boolean).join(" ") };
     }
     return outcome;
+  }
+
+  /**
+   * Merge, for a run on a folder's mirror: write the result into the folder (src/folders.ts). A
+   * conflict comes back like a merge conflict, so resolving it merges the folder's latest snapshot
+   * (the mirror's main) into the result.
+   */
+  private async applyToFolder(run: Run, branch: string, folder: string, marked: string[], archiveAfter?: boolean): Promise<MergeOutcome> {
+    const applied = await applyToFolder(run.repo, branch, { runId: run.id });
+    if (!applied.ok) return applied;
+    run.merges.push({ branch, into: "main", commit: applied.commit, at: Date.now(), folderApply: applied.id });
+    const removed = applied.removed.length ? `; ${applied.removed.length} removed (moved aside, kept until you clean up)` : "";
+    this.emit(run, { type: "log", level: "info", text: `Applied ${branch} to the folder ${folder}: ${applied.written.length} file(s) written${removed}` });
+    if (marked.length) this.emit(run, { type: "log", level: "warn", text: `Applied with lines that look like conflict markers in ${marked.join(", ")}, as you confirmed` });
+    this.emitRun(run);
+    const outcome: MergeOutcome = { ok: true, commit: applied.commit, method: "folder" };
+    const archiveWarning = archiveAfter ? await this.archiveAfterMerge(run.id) : undefined;
+    return archiveWarning ? { ...outcome, warning: archiveWarning } : outcome;
+  }
+
+  /** Undo one apply of this run's result to its folder (see undoFolderApply). */
+  async undoFolderApply(id: string, applyId: string): Promise<MergeOutcome> {
+    const run = this.require(id);
+    if (!isFolderMirror(run.repo)) throw new Error("This run didn't work on a folder");
+    if (this.busyRun(run)) throw new RunConflictError("Wait for the run to finish before undoing an apply");
+    const entry = run.merges.find((m) => m.folderApply === applyId);
+    if (!entry) throw new Error("That apply isn't one of this run's");
+    if (entry.undoneAt) throw new Error("That apply was already undone");
+    const undone = await undoFolderApply(run.repo, applyId);
+    if (!undone.ok) return undone;
+    entry.undoneAt = Date.now();
+    this.emit(run, { type: "log", level: "info", text: `Undid applying ${entry.branch} to the folder ${folderOfMirror(run.repo)}: ${undone.written.length} file(s) put back${undone.removed.length ? `, ${undone.removed.length} removed (moved aside)` : ""}` });
+    this.emitRun(run);
+    return { ok: true, commit: undone.commit, method: "folder" };
   }
 
   /** Archive a run after its result was merged; says what couldn't be removed, if anything. */
@@ -5672,7 +5722,7 @@ export class RunManager {
 
   async start(input: StartRunInput): Promise<Run> {
     if (this.shuttingDown) throw new Error("code-flow is shutting down; new runs cannot start");
-    const repo = await realpath(await repoRoot(input.repo));
+    const repo = await realpath(await startRepository(input.repo));
     this.assertNoWorkspaceLease(repo);
     if (this.shuttingDown) throw new Error("code-flow is shutting down; new runs cannot start");
     this.startingRepositories.set(repo, (this.startingRepositories.get(repo) ?? 0) + 1);
@@ -5716,7 +5766,7 @@ export class RunManager {
 
   /** Admission without creating a run: comparisons use the single-run checks before dispatch. */
   async validateStart(input: StartRunInput): Promise<void> {
-    const repo = await realpath(await repoRoot(input.repo));
+    const repo = await realpath(await startRepository(input.repo));
     this.assertNoWorkspaceLease(repo);
     await this.prepareStart({ ...input, repo });
     if (input.branchPrefix?.trim()) await validateBranchPrefix(repo, input.branchPrefix.trim().replace(/^\/+|\/+$/g, ""));
@@ -5807,6 +5857,8 @@ export class RunManager {
       if (state === "unreachable") throw new Error(`Isolation runs checks in a Docker container, but Docker isn't running (${detail}). Start Docker and try again.`);
     }
     const repo = await repoRoot(input.repo);
+    // A folder project's run works on its mirror, brought up to date with the folder first.
+    if (isFolderMirror(repo)) await importFolder(repo);
     if (input.requireProjectRepo && (!this.projects?.available || !input.project || !this.projects.get(input.project)?.repos.includes(repo))) {
       throw new Error("The repository is no longer an explicit member of the requested project");
     }
@@ -5931,6 +5983,7 @@ export class RunManager {
       deferred: input.deferred ? structuredClone(input.deferred) : undefined,
       coordination: input.coordination ? { jobId: input.coordination.jobId, nodeId: input.coordination.nodeId, claimId: input.coordination.claimId, attempt: input.coordination.attempt } : undefined,
       repo,
+      ...(isFolderMirror(repo) && folderOfMirror(repo) ? { folder: folderOfMirror(repo) } : {}),
       project: placed?.project.id,
       baseRef,
       baseLabel,

@@ -14,7 +14,7 @@ import { legacyDraftProject, projectDestination, ProjectDraftStore } from "./pro
 import { supportsRunPermissions } from "../src/run-permissions.js";
 import { selectedTeamTemplate } from "./team-template-state.js";
 import { readProjectDefaults } from "./project-defaults.js";
-import { api, sharedGet, ApiError, post, showToast, showError, store, workspaceId, workspaceKey, SHORT } from "./lib.js";
+import { api, sharedGet, ApiError, post, rememberFolders, showToast, showError, store, workspaceId, workspaceKey, SHORT } from "./lib.js";
 import { independentRoles, type RoleValue } from "./roles.js";
 import { onStreamState, subscribe } from "./stream.js";
 import { defaultPlanApproval, teamAwaitingAnswer } from "./team-state.js";
@@ -305,6 +305,7 @@ export async function loadProjects(fresh = false) {
     // before restoring drafts or treating project storage as fully loaded.
     const inventory = await (fresh ? api<Project[]>("/api/projects") : sharedGet<Project[]>("/api/projects"));
     if (request !== projectLoadRequest) return;
+    rememberFolders(inventory);
     projects.value = inventory;
     const status = await diagnosis;
     if (request !== projectLoadRequest) return;
@@ -1156,6 +1157,7 @@ export function forgetRun(id: string, local = false, elsewhere = true, projectHi
 export function upsertRun(run: RunSummary) {
   if (run.deleted) { forgetRun(run.id, false, true, run.project); return; }
   if (deletedRunIds.value.has(run.id)) return;
+  rememberFolders([run]);
   const next = new Map(runs.value);
   next.set(run.id, run);
   runs.value = next;
@@ -1247,6 +1249,7 @@ function noticeChange(before: RunSummary | undefined, run: RunSummary) {
 /** A whole list of runs: `fresher` says which runs this list may not replace. */
 function applyRunList(list: RunSummary[], fresher: (id: string) => boolean, preserve = false) {
   const before = runs.value;
+  rememberFolders(list);
   const next = preserve ? new Map(before) : new Map<string, RunSummary>();
   for (const run of list) if (!deletedRunIds.value.has(run.id)) next.set(run.id, fresher(run.id) && before.has(run.id) ? before.get(run.id)! : run);
   for (const [id, run] of before) if (!next.has(id) && fresher(id)) next.set(id, run);

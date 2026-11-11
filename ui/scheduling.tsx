@@ -1,6 +1,6 @@
 import { lazyView } from "./lazy-view.js";
 const ChatPage = lazyView(() => import("./chat.js").then(module => module.ChatPage));
-import { api, post, enc, store, baseName } from "./lib.js";
+import { api, post, enc, store, baseName, shownPath } from "./lib.js";
 import { agents, route, providerDefaults, executionPaused } from "./state.js";
 import { AutomationHostStatus } from "./automation-setup.js";
 import { useRef } from "preact/hooks";
@@ -37,7 +37,7 @@ function LegacySchedulingView({ kind = "repeat", projectId }: { kind?: string; p
     <p>{selected.description}</p>
     <p class="help">{project ? `${project.name} · ` : "Across projects · "}Computer: {computerLabel()}. The host must be running. Results return to the Inbox for review.</p>
     {!projectId ? <ProjectButton /> : null}
-    {project && selected.id !== "missions" ? <label>Automation repository<select class="field" value={chosen} onChange={event => setRepository(event.currentTarget.value)}><option value="" disabled>Choose a repository</option>{project.repos.map(folder => <option value={folder} key={folder}>{folder}</option>)}</select></label> : null}
+    {project && selected.id !== "missions" ? <label>Automation repository<select class="field" value={chosen} onChange={event => setRepository(event.currentTarget.value)}><option value="" disabled>Choose a repository</option>{project.repos.map(folder => <option value={folder} key={folder}>{shownPath(folder)}</option>)}</select></label> : null}
     {selected.id === "once" ? <><p class="help">Configure a task in Saved workflows, then choose Schedule → Run once later.</p><button class="btn" disabled={!draftsReady.value || composerLoading.value || !!project && !chosen} onClick={() => void configure()}>Configure a task</button><DeferredRunsPanel project={scope} unassigned={!projectId && currentProject.value === NONE} /></> : null}
     {selected.id === "repeat" ? <><button class="btn" disabled={!draftsReady.value || composerLoading.value || !!project && !chosen} onClick={() => void configure()}>Configure a repeating task</button><AutomationsView mode="automations" category="repeat" projectId={projectId} showScope={false} /></> : null}
     {selected.id === "backlog" ? <>{project && chosen ? <><p class="help">Next backlog: {project.name} · <code>{chosen}</code>. Choose a single agent, team pattern or saved template before starting.</p><Templates only="backlog" disabled={!draftsReady.value || composerLoading.value} prepare={() => openComposer(project.id, { repository: chosen, stay: true })} /></> : <p class="help">Choose a project and repository here to select backlog items.</p>}<AutomationsView mode="automations" category="backlog" projectId={projectId} showScope={false} /></> : null}

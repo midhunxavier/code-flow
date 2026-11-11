@@ -35,7 +35,7 @@ const TeamTaskView = lazyView(() => import("./collab-task.js").then((module) => 
 import { board as teamBoard, openTask, watchTeam } from "./collab-state.js";
 import { Rail } from "./rail.js";
 import { Icon } from "./icons.js";
-import { api, onPhone, ownerOnLocalListener, dismissToast, showToast, store, toast } from "./lib.js";
+import { api, baseName, onPhone, ownerOnLocalListener, dismissToast, post, rememberFolders, showToast, store, toast } from "./lib.js";
 import { theme, toggleTheme } from "./theme.js";
 import {
   composerProject,
@@ -83,6 +83,8 @@ import {
   type SideTab,
 } from "./state.js";
 import type { DirListing, RepoInfo, RunSummary } from "./types.js";
+/** POST /api/folders: the private copy of a folder that isn't a Git repository (src/folders.ts). */
+type FolderOpened = { mirror: string; path: string; files: number; bytes: number; skipped: { path: string; reason: string }[] };
 import { teamNeedsResume, teamAwaitingAnswer } from "./team-state.js";
 import { PolicyPauseNotice } from "./policy-pause.js";
 
@@ -632,7 +634,7 @@ function FolderPicker() {
       // Focus can precede the first input event (select-all/paste). Do not
       // replace the field during that window, or pasted paths can be appended.
       if (!typed.current && (explicit || document.activeElement !== pathInput.current)) setPath(d.path);
-      setStatus(typed.current ? "Press Enter or Go to check this path" : d.isRepo ? "✓ This folder is a git repository" : "Open a folder marked Git, or type a path");
+      setStatus(typed.current ? "Press Enter or Go to check this path" : d.isRepo ? "✓ This folder is a git repository" : "Not a Git repository: Code Flow works on a private copy and changes the folder only when you apply a result");
     } catch (err) {
       if (request !== latest.current || !pickerOpen.value) return;
       setStatus((err as Error).message);
@@ -653,8 +655,15 @@ function FolderPicker() {
     setStatus("Checking repository…");
     try {
       // Keep a failed selection in the picker so the path can be corrected.
-      // Resolve through Git: a subfolder inside a checkout is also a valid selection.
-      const info = await api<RepoInfo>(`/api/branches?repo=${encodeURIComponent(p)}`);
+      // Resolve through Git: a subfolder inside a checkout is also a valid selection. A folder
+      // that isn't in a repository gets a private copy to work on (docs/design/folder-projects.md).
+      const info = await api<RepoInfo>(`/api/branches?repo=${encodeURIComponent(p)}`).catch(async () => {
+        if (request === latest.current) setStatus("Not a Git repository: making a private copy to work on…");
+        const opened = await post<FolderOpened>("/api/folders", { path: p });
+        rememberFolders([{ folders: [{ mirror: opened.mirror, path: opened.path }] }]);
+        if (opened.skipped.length) showToast(`Copied ${opened.files} file${opened.files === 1 ? "" : "s"} from ${baseName(opened.path)}. Skipped ${opened.skipped.length}: ${opened.skipped.slice(0, 3).map((s) => s.path).join(", ")}${opened.skipped.length > 3 ? "…" : ""}`, 8000);
+        return api<RepoInfo>(`/api/branches?repo=${encodeURIComponent(opened.mirror)}`);
+      });
       if (request !== latest.current || !pickerOpen.value) return;
       // Keep the modal over the composer until its destination is ready, so typing
       // cannot race a delayed repository lookup and be replaced by draft restoration.

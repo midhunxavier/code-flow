@@ -67,12 +67,14 @@ test("repository picker clears stale feedback, keeps invalid selections open and
   assert.equal(await picker.getByText("✓ This folder is a git repository", { exact: true }).count(), 0);
   assert.equal(await open.isEnabled(), false);
   await field.press("Enter");
-  await picker.getByText("Open a folder marked Git, or type a path", { exact: true }).waitFor();
+  const plain = /^Not a Git repository: Code Flow works on a private copy/;
+  await picker.getByText(plain).waitFor();
   await open.click();
-  await picker.getByText(/not a git repository/i).waitFor();
+  // A plain folder is worked on through a private copy, but not this one: it holds the server's own data.
+  await picker.getByText(/holds Code Flow's own data/).waitFor();
   assert.equal(await picker.isVisible(), true, "invalid folders can be corrected in place");
   await field.fill(join(repoA, ".codeflow")); await field.press("Enter");
-  await picker.getByText("Open a folder marked Git, or type a path", { exact: true }).waitFor();
+  await picker.getByText(plain).waitFor();
   await open.click();
   const choice = page.getByRole("dialog", { name: "Open repository in a project", exact: true });
   await choice.getByLabel("New project name", { exact: true }).waitFor();
