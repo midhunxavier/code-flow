@@ -162,7 +162,7 @@ test("live archive and delete reconcile project rows and totals without discardi
 });
 
 test("project selection chooses its repository, remembers the draft, and shows every sidebar project", async () => {
-  await fresh("project/p-big/new");
+  await fresh("project/p-big/workflow");
   await until(() => page.locator(".composer-summary").innerText(), text => text.includes("Big history") && text.includes("Repository repo"));
   const rail = page.getByRole("navigation", { name: "Workspace navigation", exact: true });
   await rail.getByRole("button", { name: "Empty history", exact: true }).waitFor();
@@ -193,18 +193,18 @@ test("an older deleted project draft is removed on startup, including unreadable
     localStorage.setItem("projectDraftVersion", "1"); localStorage.setItem("composerProject", "p-deleted");
     localStorage.setItem("project-draft-v1:p-deleted", "unreadable old draft"); localStorage.setItem("draftTask", "old deleted text");
   });
-  await page.goto(`${base}/#/project/p-deleted/new`); await page.reload();
+  await page.goto(`${base}/#/project/p-deleted/workflow`); await page.reload();
   await page.getByRole("heading", { name: "Projects", exact: true }).waitFor();
   assert.equal(await page.getByText(/project is unavailable/).count(), 0);
   await until(() => page.evaluate(() => localStorage.getItem("project-draft-v1:p-deleted")), value => value === null);
 });
 
 test("deleting a project removes its history and draft across tabs, but failed deletion retains the draft", async () => {
-  await fresh("project/p-big/new");
+  await fresh("project/p-big/workflow");
   await page.getByRole("textbox", { name: "Task", exact: true }).fill("Delete this project draft too");
   await page.locator('input[type="file"]').setInputFiles({ name: "draft-spec.txt", mimeType: "text/plain", buffer: Buffer.from("Delete the draft attachment too") });
   const mirror = await page.context().newPage();
-  await mirror.goto(`${base}/#/project/p-big/new`);
+  await mirror.goto(`${base}/#/project/p-big/workflow`);
   await until(() => mirror.getByRole("textbox", { name: "Task", exact: true }).inputValue(), value => value === "Delete this project draft too");
   const runTab = await page.context().newPage(); await runTab.goto(`${base}/#/run/big-050`);
   await runTab.getByRole("heading", { name: "Big history task 50", exact: true }).waitFor();
@@ -233,7 +233,7 @@ test("deleting a project removes its history and draft across tabs, but failed d
   await editor.waitFor({ state: "detached" });
   for (const tab of [page, mirror, runTab]) {
     await tab.getByRole("heading", { name: "Projects", exact: true }).waitFor();
-    await tab.goto(`${base}/#/new/unassigned`);
+    await tab.goto(`${base}/#/workflows/unassigned`);
     await until(() => tab.getByRole("textbox", { name: "Task", exact: true }).inputValue(), value => value === "");
     assert.equal(await tab.getByText(/project is unavailable/).count(), 0);
     assert.equal(await tab.getByText("draft-spec.txt", { exact: true }).count(), 0);

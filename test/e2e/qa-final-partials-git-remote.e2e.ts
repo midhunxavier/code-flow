@@ -59,7 +59,7 @@ test("backlog loading is visible and a changed destination cannot dispatch stale
   try { await page.getByLabel(/^Automation repository/).selectOption(repo); await page.getByRole("button", { name: /Fix open issues/ }).click(); const dialog = page.locator("dialog.sweep-dialog"); await dialog.getByText("Loading from GitHub…", { exact: true }).waitFor(); await shot(page, "backlog-loading"); await rm(join(gate, "hold-gh")); await dialog.locator(".sweep-item").waitFor();
     const before = (await api("/api/runs")).length; let starts = 0; page.on("request", r => { if (r.url().endsWith("/api/sweeps") && r.method() === "POST") starts++; });
     // A new-task deep link deliberately switches the draft; a project history filter alone does not.
-    await page.evaluate(id => { location.hash = `#/project/${id}/new`; }, other);
+    await page.evaluate(id => { location.hash = `#/project/${id}/workflow`; }, other);
     await page.waitForFunction(id => Object.entries(localStorage).some(([key, value]) => key.endsWith("composerProject") && value === id), other);
     await dialog.getByRole("button", { name: "Start 1 run", exact: true }).click(); await dialog.getByText(/The draft destination changed/).waitFor(); assert.equal(starts, 0); assert.equal((await api("/api/runs")).length, before); await shot(page, "backlog-destination-refused"); observations.push({ feature: "SCH-30", loading: true, changedDestinationDispatches: starts });
   } finally { await rm(join(gate, "hold-gh"), { force: true }); await page.close(); }

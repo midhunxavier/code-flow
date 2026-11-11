@@ -10,7 +10,7 @@ Team is always available. Existing saved workflow and project choices are preser
 
 ## Reusable templates in Advanced
 
-Open **Advanced** to choose a built-in workflow, design a task graph, import/export definitions, or publish a new immutable template version. Templates can be personal or scoped to a project. Use **Import browser library** to migrate existing presets without deleting the browser originals; role/model preferences and workflow options survive, while permission grants, credentials, host bindings, and budgets do not. Import results list each preset's omitted checks, setup, starting branch, context budget, verification profile and isolation settings when present. These notes also remain in the migrated template's description.
+Open **Advanced** to choose a built-in workflow, design a task graph, import/export definitions, or publish a new immutable template version. Templates can be personal or scoped to a project. Workflows and task templates saved in the browser stay in **Project settings → Advanced → Browser template library**, where they can be applied, exported or deleted.
 
 Auto generates plans without needing a template. It may also reuse enabled task graphs, assign their roles, combine instances, and append task-specific instructions. The runtime preserves dependencies, acceptance criteria, and shared contracts, then applies normal plan validation and independent verification. Up to six enabled definitions of 16,000 characters each are offered per run, in ID order. Fixed workflows such as Fix & review, Plan → Build → Review and councils keep their existing executors in Advanced; they are not advertised as composable Auto task graphs.
 

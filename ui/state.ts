@@ -147,7 +147,7 @@ export const sideDraft = signal("");
 /**
  * Something to send that came from elsewhere, for a message box to pick up: the Browser's pins (text
  * and snapshots). `to`: "main:<run>" (the run's own conversation), "side:<chat>", "side:new", or
- * "composer" (a new run's task).
+ * "composer" (new work: a new chat's message, or the run form's task).
  */
 export interface ChatDraft {
   to: string;
@@ -319,7 +319,7 @@ export async function loadProjects(fresh = false) {
   }
   if (completeProjectInventory) {
     const r = route.value;
-    const destination = r.view === "project" ? r.id : r.view === "composer" || r.view === "workspace" ? r.project : undefined;
+    const destination = r.view === "project" ? r.id : r.view === "composer" || r.view === "workspace" || r.view === "chat" && r.id === "new" ? r.project : undefined;
     if (destination && !projects.value.some(project => project.id === destination)) route.value = { view: "projects" };
   }
 }
@@ -389,13 +389,13 @@ export async function pickRepo(path: string, project = composerProject.value) {
     if (request !== repositoryPick) return;
     if (!projectsStatus.value.available) {
       if (!await openComposer("", { repository: info.repo })) return;
-      route.value = { view: "composer", project: "" }; return;
+      route.value = { view: "composer", project: "", legacy: true }; return;
     }
     const p = projects.value.find(item => item.id === project);
     if (p?.repos.includes(info.repo)) {
       if (composerProject.value !== p.id && !await openComposer(p.id)) return;
       await chooseComposerRepository(info.repo);
-      route.value = { view: "composer", project: p.id };
+      route.value = { view: "composer", project: p.id, legacy: true };
       return;
     }
     const matches = projects.value.filter(item => item.repos.includes(info.repo));
@@ -670,10 +670,9 @@ const forOpened: HandOff[] = [];
  * in the main window, the one that opened it (or a new one if that's gone), and the drafts go along.
  */
 export function navigate(to: Route, drafts: ChatDraft[] = []) {
-  // Existing draft handoffs target the workflow composer. New chat navigation
-  // uses its own route and must not consume or hide those saved workflow drafts.
-  if (to.view === "composer" && to.project === undefined) to = { ...to, legacy: true };
   if (route.value.view === "side") return handOff({ type: HANDOFF, route: to, drafts });
+  // A draft for new work joins the run form when that is the page open; otherwise it goes to the start screen.
+  if (to.view === "composer" && to.project === undefined && drafts.length && route.value.view === "composer") to = route.value;
   for (const d of drafts) draftTo(d.to, d.text, d.images);
   route.value = to;
 }
@@ -740,7 +739,7 @@ export function setAcceptanceCriteria(criteria: string[]) {
 const browserOrigins = (): Record<string, string> => ({ pattern: store.get("pattern") ? "Browser preference" : "Application default", roles: store.get("roleSel") ? "Browser preferences" : "Workflow defaults", models: store.get("agentSettings") ? "Browser preferences" : "CLI defaults" });
 export const composerOrigins = signal<Record<string, string>>(browserOrigins());
 /**
- * Values a draft keeps only when they were chosen for it: typed in Run options, picked in a
+ * Values a draft keeps only when they were chosen for it: typed in Advanced, picked in a
  * permissions menu, or brought back by Edit & run again. composerOrigins says where each chosen one
  * came from and is saved with the draft. A field without an origin is derived again from Settings,
  * .codeflow/config.json and the repository whenever the draft opens, so a saved draft never replays
@@ -1561,6 +1560,20 @@ export async function savedDraftTask(id: string): Promise<string> {
   if (id === composerProject.value) return draftUnavailable.value ? "" : task.value;
   return (await readComposerDraft(id))?.task ?? "";
 }
+/**
+ * Take a project's unsent task out of its workflow run draft so a chat can continue it. Only a draft
+ * that is nothing but its text moves: files, context, criteria, a GitHub source, a fixed workflow,
+ * a template or a retry stay with the form (null).
+ */
+export async function takeDraftTask(id: string): Promise<string | null> {
+  const active = id === composerProject.value;
+  if (!draftsReady.value || composerLoading.value || active && draftUnavailable.value) return null;
+  const snapshot = active ? composerSnapshot() : await readComposerDraft(id);
+  if (!snapshot?.task.trim() || snapshot.attachments.length || snapshot.paths.length || snapshot.acceptance.some(line => line.trim()) || snapshot.source || snapshot.rerun || snapshot.selectedTemplate || !["solo", "auto-team"].includes(snapshot.pattern)) return null;
+  if (active) setTask("");
+  else await draftStore.write(id, { ...snapshot, task: "" });
+  return snapshot.task;
+}
 let composerSwitch = 0;
 let composerWork: Promise<boolean> = Promise.resolve(true);
 let draftWatching = false;
@@ -1690,7 +1703,7 @@ async function switchComposer(next: string, options: { repository?: string; carr
   if (!draftsReady.value) return false;
   const project = projects.value.find(item => item.id === next);
   if (next === composerProject.value && !options.repository) {
-    if (!options.stay) route.value = { view: "composer", project: next };
+    if (!options.stay) route.value = { view: "composer", project: next, legacy: true };
     return true;
   }
   const before = composerSnapshot();
@@ -1725,11 +1738,11 @@ async function switchComposer(next: string, options: { repository?: string; carr
       if (project) store.set("lastComposerProject", next);
     });
     if (project && project.repos.includes(repository)) store.set(`projectRepo:${next}`, repository);
-    if (!options.stay && request === composerSwitch) route.value = { view: "composer", project: next };
+    if (!options.stay && request === composerSwitch) route.value = { view: "composer", project: next, legacy: true };
     return true;
   } catch (error) {
     draftError.value = `Could not open the draft: ${(error as Error).message}`;
-    if (request === composerSwitch) route.value = { view: "composer", project: composerProject.value };
+    if (request === composerSwitch) route.value = { view: "composer", project: composerProject.value, legacy: true };
     return false;
   } finally { composerLoading.value = false; }
 }

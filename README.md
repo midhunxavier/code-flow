@@ -61,13 +61,13 @@ Open [localhost:4317](http://localhost:4317), or use the owner link printed in t
 
 Each chat can contain multiple independently approved tasks. Agent/Team and model changes apply to future messages; accepted executions retain their reviewed settings. **Task details** shows participation receipts, allowances, preserved worktrees and history. No preset or saved agent team is needed.
 
-Changes live in separate Git worktrees. The [chat guide](docs/conversational-tasks.md) explains guidance, queued messages, chat context import and recovery. **Existing workflows** retains the workflow composer and its saved drafts, including remote, template and automation workflows.
+Changes live in separate Git worktrees. The [chat guide](docs/conversational-tasks.md) explains guidance, queued messages, chat context import and recovery. **Open workflow run** in a new chat opens the run form and its saved drafts: fixed workflows, team templates, start later and schedules. On a phone, another device or an SSH host, that form is the start screen.
 
 Prefer working in your Claude Code or Codex CLI conversation? The experimental [conversational teams integration](docs/cli-conversational-teams.md) creates a task-specific team and process through a project MCP connection. Run `codeflow init` in your target repository using an installed launcher; no preset or saved-team setup is required. Existing web workflows remain available.
 
 Use the same bridge from **Claude Desktop or the Codex app** with `codeflow desktop setup` in your target repository. [Desktop setup, checks, and removal](docs/desktop-mcp.md) covers app-wide connections bound to a specific project.
 
-**Inbox** and **Scheduling** are in the sidebar. **Existing workflows → Template library** groups task starters and saved configurations. Open **Repository tools** from a project; use **Settings → Connections** for remote work and sharing.
+**Inbox** and **Scheduling** are in the sidebar. **Workflow run → Advanced** holds the team template library and every run option. Open **Repository tools** from a project; use **Settings → Connections** for remote work and sharing.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/run-dark.png">

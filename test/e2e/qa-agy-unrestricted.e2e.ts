@@ -36,8 +36,8 @@ const permission = async (scope: Locator) => {
 const optIn = () => page.getByRole("checkbox", { name: "Use unrestricted Antigravity with my existing login" });
 async function showOptIn() {
   if (await optIn().isVisible()) return;
-  if (!await page.locator(".composer-options").evaluate(details => (details as HTMLDetailsElement).open)) await page.getByRole("button", { name: "Edit run options", exact: true }).click();
-  if (!await optIn().isVisible()) await page.locator(".advanced-controls > summary").click();
+  await page.locator(".advanced-controls").evaluate(el => { (el as HTMLDetailsElement).open = true; });
+  if (!await optIn().isVisible()) await page.locator(".advanced-controls").evaluate(el => { (el as HTMLDetailsElement).open = true; });
 }
 
 before(async () => {
@@ -60,7 +60,7 @@ after(async () => { await browser?.close(); server?.kill("SIGTERM"); rmSync(home
 test("unrestricted Antigravity applies only to the run it was ticked for and is visible while it's on", { timeout: 90000 }, async () => {
   const bodies: any[] = [];
   page.on("request", request => { if (request.method() === "POST" && new URL(request.url()).pathname === "/api/runs") bodies.push(request.postDataJSON()); });
-  await page.goto(`${base}/#/project/${project}/new`);
+  await page.goto(`${base}/#/project/${project}/workflow`);
   const task = page.getByRole("textbox", { name: "Task", exact: true });
   await task.waitFor();
   const composer = page.locator(".composer"), summary = page.locator(".composer-summary");
@@ -77,7 +77,7 @@ test("unrestricted Antigravity applies only to the run it was ticked for and is 
   await showOptIn();
   assert.equal(await optIn().isChecked(), false);
   await optIn().check();
-  await page.getByRole("button", { name: "Edit run options", exact: true }).click();
+  await page.locator(".advanced-controls").evaluate(el => { (el as HTMLDetailsElement).open = true; });
   assert.match(await summary.innerText(), /Unrestricted Antigravity · no Code Flow sandbox/);
   assert.equal(await permission(composer), "Unrestricted", "the permission control never reads Approve for me while Antigravity runs unrestricted");
   assert.equal(await send.isDisabled(), false);
@@ -90,7 +90,7 @@ test("unrestricted Antigravity applies only to the run it was ticked for and is 
   assert.equal(await permission(page.locator(".convo")), "Unrestricted");
 
   await page.getByRole("button", { name: "New chat", exact: true }).click();
-  await page.evaluate(id => { location.hash = `#/project/${id}/new`; }, project);
+  await page.evaluate(id => { location.hash = `#/project/${id}/workflow`; }, project);
   await task.waitFor();
   assert.doesNotMatch(await summary.innerText(), /Unrestricted/);
   assert.equal(await permission(composer), "Approve for me");
@@ -108,7 +108,7 @@ test("unrestricted Antigravity applies only to the run it was ticked for and is 
 
   await page.reload();
   await page.getByRole("button", { name: "New chat", exact: true }).click();
-  await page.evaluate(id => { location.hash = `#/project/${id}/new`; }, project);
+  await page.evaluate(id => { location.hash = `#/project/${id}/workflow`; }, project);
   await task.waitFor();
   await showOptIn();
   assert.equal(await optIn().isChecked(), false, "the saved project draft isn't unrestricted either");
@@ -196,7 +196,7 @@ test("isolated Antigravity waits for compatibility discovery before enabling Sen
   await pending.route("**/api/doctor", async route => { await gate; await route.continue(); });
   await pending.addInitScript(() => localStorage.setItem("sideOpen", "0"));
   try {
-    await pending.goto(`${base}/?token=${token}#/project/${project}/new`);
+    await pending.goto(`${base}/?token=${token}#/project/${project}/workflow`);
     const composer = pending.locator(".composer");
     await composer.getByRole("button", { name: /^Provider:/ }).click();
     await pending.getByRole("menuitem", { name: "Antigravity CLI", exact: true }).click();
@@ -211,7 +211,7 @@ test("isolated Antigravity waits for compatibility discovery before enabling Sen
 });
 
 test("a composer opt-in stays visible for templates and never permits an isolated sweep", { timeout: 60000 }, async () => {
-  await page.goto(`${base}/#/project/${project}/new`);
+  await page.goto(`${base}/#/project/${project}/workflow`);
   await page.getByRole("textbox", { name: "Task", exact: true }).fill("Configure Antigravity permissions");
   await showOptIn();
   await optIn().check();

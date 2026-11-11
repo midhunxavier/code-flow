@@ -213,7 +213,7 @@ export function AutomationsView({ mode = "all", category, projectId, showScope =
           list.map((a) => <AutomationRow key={a.id} a={a} scoped={scoped} />)
         ) : (
           <p class="help empty">
-            {automationStorage.value?.state === "unavailable" || automationLoadError.value ? "Saved automations are hidden until storage can be read." : category ? <>None{here} yet. Set up a task in Saved workflows, then choose <b>Schedule → Repeat</b>.</> : <>No automations{here} yet. Choose <a href="#/automations">Create automation</a>, or select <b>Automate this</b> on a reviewed approach in chat.</>}
+            {automationStorage.value?.state === "unavailable" || automationLoadError.value ? "Saved automations are hidden until storage can be read." : category ? <>None{here} yet. Set up a task in a workflow run, then choose <b>Schedule → Repeat</b>.</> : <>No automations{here} yet. Choose <a href="#/automations">Create automation</a>, or select <b>Automate this</b> on a reviewed approach in chat.</>}
           </p>
         )}
       </section> : null}

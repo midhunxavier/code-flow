@@ -141,7 +141,7 @@ export function GitHubPicker() {
 }
 
 /** Template chips: pick one, then (if it needs one) an issue or PR. Sweeps open their own list. */
-export function Templates({ only, onChoose, prepare, disabled = false }: { only?: "backlog" | "sources"; onChoose?: () => void; prepare?: () => Promise<unknown>; disabled?: boolean } = {}) {
+export function Templates({ only, onChoose, prepare, disabled = false, flat = false }: { only?: "backlog" | "sources"; onChoose?: () => void; prepare?: () => Promise<unknown>; disabled?: boolean; flat?: boolean } = {}) {
   const [preparing, setPreparing] = useState(false), [prepareError, setPrepareError] = useState("");
   if (!templates.value.length) return null;
   const choose = async (t: Template) => {
@@ -156,9 +156,7 @@ export function Templates({ only, onChoose, prepare, disabled = false }: { only?
   };
   const single = templates.value.filter((t) => !t.sweep && only !== "backlog");
   const sweeps = templates.value.filter((t) => t.sweep && only !== "sources");
-  return (
-    <details class="settings task-starters" open>
-      <summary><span class="st">{only === "backlog" ? "Choose backlog items" : "From GitHub"}</span><span class="ss">Issues and pull requests</span></summary>
+  const body = (
       <div class="settings-body">
       {prepareError ? <p role="alert">{prepareError}</p> : null}
       <div class="templates">
@@ -180,6 +178,13 @@ export function Templates({ only, onChoose, prepare, disabled = false }: { only?
         </div>
       ) : null}
       </div>
+  );
+  // Inside the composer's Advanced section the starters are a plain titled group.
+  if (flat) return <section class="advanced-group task-starters" aria-labelledby="advanced-github"><h2 class="section-title" id="advanced-github">From GitHub</h2>{body}</section>;
+  return (
+    <details class="settings task-starters" open>
+      <summary><span class="st">{only === "backlog" ? "Choose backlog items" : "From GitHub"}</span><span class="ss">Issues and pull requests</span></summary>
+      {body}
     </details>
   );
 }

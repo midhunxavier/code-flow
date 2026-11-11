@@ -178,7 +178,7 @@ export function destinations(s: SideScope): { key: string; label: string; sub: s
     const chat = runs.value.get(id);
     if (chat && open(chat)) out.push({ key: `main:${chat.id}`, label: `Chat: ${chat.task.split("\n")[0]!.slice(0, 40)}`, sub: "A chat on its own branch" });
   }
-  out.push({ key: "composer", label: "New run", sub: "The task of a new run, in the composer" });
+  out.push({ key: "composer", label: "New task", sub: "The message of a new chat or run" });
   return out;
 }
 
@@ -234,7 +234,7 @@ function PinsTray({ scope, pageKey, state, onSent }: { scope: SideScope; pageKey
     for (const p of state.pins) if (!p.gone) overlays.get(pageKey)?.({ type: "reset", id: p.id });
     setPage(pageKey, (p) => ({ ...p, pins: [] }));
     onSent();
-    // The run's page and the composer are the main window's: a popped-out panel hands the draft over with them.
+    // The run's page and new work are the main window's: a popped-out panel hands the draft over with them.
     const there = poppedScope.value ? " in the main window" : "";
     if (to.startsWith("main:")) {
       const id = to.slice(5);
@@ -251,7 +251,7 @@ function PinsTray({ scope, pageKey, state, onSent }: { scope: SideScope; pageKey
       openSide("chat");
     } else {
       navigate({ view: "composer" }, [draft]);
-      showToast(`Added to the task in the composer${there}`);
+      showToast(`Added to the new task${there}`);
     }
   };
   return (
@@ -335,7 +335,7 @@ function PinsTray({ scope, pageKey, state, onSent }: { scope: SideScope; pageKey
           )}
         </Menu>
         <button type="button" class="btn primary small" disabled={!state.pins.length} onClick={() => void sendTo(primary.key)}>
-          Add to {primary.key.startsWith("main:") && primary.label === "Main chat" ? "chat" : primary.key === "composer" ? "a new run" : primary.label.toLowerCase().startsWith("side chat") ? "side chat" : primary.label}
+          Add to {primary.key.startsWith("main:") && primary.label === "Main chat" ? "chat" : primary.key === "composer" ? "a new task" : primary.label.toLowerCase().startsWith("side chat") ? "side chat" : primary.label}
         </button>
       </div>
     </div>

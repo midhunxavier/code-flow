@@ -35,7 +35,7 @@ async function fresh(seed: Record<string, string> = {}, fallback = false) { cons
     errors.push(m.text()); }); await page.goto(`${base}/?token=${token}#/workflows`); return { context, page }; }
 async function shot(page: Page, name: string) { if (evidence)
     await page.screenshot({ path: join(evidence, name + '.png'), fullPage: true }); }
-async function composer(page: Page, id: string) { await page.goto(`${base}/#/project/${id}/new`); await page.getByLabel('Task', { exact: true }).waitFor(); }
+async function composer(page: Page, id: string) { await page.goto(`${base}/#/project/${id}/workflow`); await page.getByLabel('Task', { exact: true }).waitFor(); }
 async function edit(page: Page, id: string) { await page.goto(`${base}/#/project/${id}/settings`); await page.getByRole('button', { name: 'Edit project', exact: true }).click(); await page.getByLabel('Name', { exact: true }).waitFor(); return page.getByRole('dialog').filter({ has: page.getByLabel('Name', { exact: true }) }); }
 async function chooseFolder(page: Page, path: string, label: string) { const dialog = page.getByRole('dialog', { name: label, exact: true }); await dialog.getByLabel('Folder path', { exact: true }).fill(path); await dialog.getByLabel('Folder path', { exact: true }).press('Enter'); await dialog.getByRole('button', { name: label === 'Add repository' ? 'Add this repository' : 'Open this repository', exact: true }).click(); }
 before(async () => { home = await mkdtemp(join(realpathSync(tmpdir()), 'projects-ui-')); data = join(home, 'state'); repo = join(home, 'repo'); extra = join(home, 'extra'); await mkdir(data); for (const folder of [repo, extra]) {
@@ -112,7 +112,11 @@ test('overview reads another project saved draft and restores it after reload', 
     await page.getByText('Continue your draft', { exact: true }).waitFor();
     await shot(page, '04-overview-draft-after-reload');
     await page.getByRole('button', { name: 'Continue draft', exact: true }).click();
-    assert.equal(await page.getByLabel('Task', { exact: true }).inputValue(), 'Draft Alpha preview');
+    // A text-only draft continues in the chat.
+    await page.waitForFunction(() => (document.querySelector('#chat-message') as HTMLTextAreaElement | null)?.value === 'Draft Alpha preview');
+    await page.goto(`${base}/#/project/${a.id}`);
+    await page.getByRole('button', { name: 'Describe a task', exact: true }).waitFor();
+    assert.equal(await page.locator('.draft-preview').count(), 0, 'the task moved out of the workflow run draft');
     await composer(page, b.id);
     assert.equal(await page.getByLabel('Task', { exact: true }).inputValue(), 'Draft Beta retained');
 }
@@ -167,7 +171,7 @@ test('corrupt local draft and unsupported IndexedDB draft remain retained while 
         await page.reload();
         assert.equal(await page.getByLabel('Task', { exact: true }).inputValue(), 'Healthy draft still works');
         assert.equal(await page.evaluate(id => localStorage.getItem(`project-draft-v1:${id}`), a.id), '{corrupt');
-        await page.goto(`${base}/#/project/${a.id}/new`);
+        await page.goto(`${base}/#/project/${a.id}/workflow`);
         await page.getByRole('alert').filter({ hasText: 'stored data has been retained' }).waitFor();
         await page.waitForTimeout(250);
         assert.equal(await page.getByLabel('Task', { exact: true }).inputValue(), 'Healthy draft still works');
@@ -181,7 +185,7 @@ test('corrupt local draft and unsupported IndexedDB draft remain retained while 
         await composer(second.page, b.id);
         await second.page.getByLabel('Task', { exact: true }).fill('IDB healthy draft');
         await second.page.evaluate(async (id) => { await new Promise<void>((resolve, reject) => { const open = indexedDB.open('codeflow-project-drafts', 1); open.onsuccess = () => { const db = open.result, tx = db.transaction('drafts', 'readwrite'); tx.objectStore('drafts').put({ version: 2, task: 'Future draft' }, `project-draft-v1:${id}`); tx.oncomplete = () => { db.close(); resolve(); }; tx.onerror = () => reject(tx.error); }; }); }, a.id);
-        await second.page.goto(`${base}/#/project/${a.id}/new`);
+        await second.page.goto(`${base}/#/project/${a.id}/workflow`);
         await second.page.getByRole('alert').filter({ hasText: 'unsupported format' }).waitFor();
         assert.equal(await second.page.getByLabel('Task', { exact: true }).inputValue(), 'IDB healthy draft');
         await shot(second.page, '08-unsupported-draft');
@@ -263,7 +267,7 @@ test('corrupt file recovery is visible; projects-off UI can launch an unassigned
     try {
         await warm.page.getByRole('alert').filter({ hasText: "couldn't be read" }).waitFor();
         await warm.page.getByRole('button', { name: 'Open unassigned draft', exact: true }).click();
-        await warm.page.waitForURL(u => u.hash === '#/new/unassigned');
+        await warm.page.waitForURL(u => u.hash === '#/workflows/unassigned');
         await warm.page.getByLabel('Task', { exact: true }).fill('Warm profile recovers');
         await warm.page.locator('.task-start').click();
         await warm.page.waitForURL(u => u.hash.startsWith('#/run/'));

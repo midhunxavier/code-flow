@@ -98,9 +98,9 @@ Started tasks appear as compact progress rows in chat. Open a progress row or **
 
 **Inspect execution and changes** opens the existing run workspace. Applying changes, opening a PR, merging, pushing and deploying remain explicit actions.
 
-## Existing workflows and CLI integration
+## Workflow run and CLI integration
 
-**Project settings → Advanced → Saved workflows** opens the workflow composer and its saved drafts. The main chat header contains only Task details after the chat starts. Templates, saved agent configurations, automations, human collaboration and container workflows retain their existing routes and behavior. They are outside the new-chat setup path.
+**Open workflow run** in a new chat (or `#/workflows`) opens the run form and its saved drafts. Project pages, the sidebar, the command palette and `#/project/<id>/new` links open a chat for that project. A project's unsent run draft that is only text continues in the chat from **Continue draft**; a draft with files, context, criteria, a GitHub source or a fixed workflow opens in the run form. The main chat header contains only Task details after the chat starts. Templates, saved agent configurations, automations, human collaboration and container workflows retain their existing routes and behavior. They are outside the new-chat setup path.
 
 The initial Team chat supports local Claude/Codex managed participants. Agent mode retains the existing provider choices. Read-only assignments use provider-enforced capabilities; a worktree is not filesystem read isolation. Accepted setup/check commands execute as the user.
 

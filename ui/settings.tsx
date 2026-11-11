@@ -144,7 +144,7 @@ function RunSettings() {
       <NumberSetting label="Token limit" hint="Reported token ceiling; checked between operations. Empty means unlimited." value={savedLimits.maxTokens} optional save={(value) => setLimits({ maxTokens: value })} />
       <NumberSetting label="Cost limit ($)" hint="API-equivalent cost ceiling, based on provider reports. This is not your subscription bill. Empty means unlimited." value={savedLimits.maxCostUsd} optional min={0.01} step={0.01} save={(value) => setLimits({ maxCostUsd: value })} />
     </div></section>
-    <p class="help">Repository setup, checks, branch names, team roles and per-run isolation are available in <a href="#/workflows">Saved workflows → Advanced agent settings</a>.</p>
+    <p class="help">Repository setup, checks, branch names, team roles and per-run isolation are available in <a href="#/workflows">Workflow run → Advanced</a>.</p>
   </>;
 }
 function ProjectSettings() {

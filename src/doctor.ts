@@ -126,7 +126,7 @@ export async function doctor(quota: Partial<Record<AgentId, HealthEntry["quota"]
       // Runs use isolated Antigravity unless one explicitly opts out, so say up front when it can't start.
       const problem = await getAdapter(id).managedAvailability?.();
       entry.managedCompatible = !problem;
-      if (problem) entry.warnings = [...entry.warnings ?? [], `Runs use isolated Antigravity by default, which isn't available here. ${problem} To run it anyway, turn on Run options → Advanced → Use unrestricted Antigravity (no Code Flow sandbox).`];
+      if (problem) entry.warnings = [...entry.warnings ?? [], `Runs use isolated Antigravity by default, which isn't available here. ${problem} To run it anyway, turn on Advanced → Use unrestricted Antigravity (no Code Flow sandbox).`];
     }
     return entry;
   }));

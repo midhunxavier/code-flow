@@ -74,8 +74,8 @@ test("an invalid package.json leaves project defaults saveable and says why noth
 });
 
 test("the composer explains an empty Done when for an invalid package.json", { timeout: 60_000 }, async () => {
-  const { page, errors } = await open(`project/${encodeURIComponent(brokenProject)}/new`, { project: brokenProject, repo: broken });
-  await page.locator(".composer-options > summary").click();
+  const { page, errors } = await open(`project/${encodeURIComponent(brokenProject)}/workflow`, { project: brokenProject, repo: broken });
+  await page.locator(".advanced-controls").evaluate(el => { (el as HTMLDetailsElement).open = true; });
   const warning = page.locator("#checkCmd-warning");
   await warning.waitFor();
   assert.equal(await warning.textContent(), "Detection: package.json is not valid JSON, so its test script was skipped.");

@@ -101,7 +101,7 @@ test("Agent is the fresh default and Advanced team workflows survive reload and 
     assert.equal(pinned.template.version, 1);
     assert.equal(pinned.inputs.task, "Implement sample behavior");
     assert.equal(await fresh.getByLabel("Workflow", { exact: true }).inputValue(), "auto-team");
-    await fresh.getByRole("button", { name: "Advanced", exact: true }).click();
+    await fresh.locator(".advanced-controls").evaluate(el => { (el as HTMLDetailsElement).open = true; });
     await library.getByLabel("Saved templates").selectOption(definition.id);
     await library.getByRole("button", { name: "Edit new version" }).click();
     await library.getByLabel("Name", { exact: true }).fill("Revised strategy");
@@ -278,7 +278,7 @@ test("Auto team approval, addressed question, distinct members, and verified cov
   await selectLegacyTeam(page);
   await page.getByRole("checkbox", { name: /Let me approve the team and plan/ }).uncheck();
   await page.reload();
-  await page.locator(".composer-options > summary").click();
+  await page.locator(".advanced-controls").evaluate(el => { (el as HTMLDetailsElement).open = true; });
   assert.equal(await page.getByRole("checkbox", { name: /Let me approve the team and plan/ }).isChecked(), false, "explicit approval preference persists");
 });
 
@@ -311,8 +311,6 @@ test("changing a running goal stops its team and creates an approved child plan 
 });
 
 async function selectLegacyTeam(page: Page) {
-  const options = page.locator(".composer-options");
-  if (await options.getAttribute("open") === null) await options.locator(":scope > summary").click();
   const advanced = page.locator(".advanced-controls");
   if (await advanced.getAttribute("open") === null) await advanced.locator(":scope > summary").click();
   await page.getByLabel("Workflow", {exact:true}).selectOption("auto-team");

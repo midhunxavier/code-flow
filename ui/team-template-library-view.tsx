@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import { fillTeamTemplate, validateTeamTemplate, templatePreferences, type TeamTemplate } from "../src/team-templates.js";
-import { api, post, showToast, store } from "./lib.js";
+import { api, post, showToast } from "./lib.js";
 import { composerProject, patternName, patterns, setAcceptanceCriteria, setPattern, setTask, task, setRoles, setOption, setAgentSetting, setRoleModel, pattern, rolesFor, optionsFor, agentSettings, roleModels } from "./state.js";
 import type { AgentId } from "./types.js";
 import { selectedTeamTemplate } from "./team-template-state.js";
@@ -24,7 +24,6 @@ export function TeamTemplateLibrary({ initial, focused = false, onPublished }: {
   const [inputs, setInputs] = useState<Record<string, string>>({ task: task.value });
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const [migrationNotes, setMigrationNotes] = useState<string[]>([]);
   const [history, setHistory] = useState<TeamTemplate[]>([]);
   const file = useRef<HTMLInputElement>(null);
   const reload = async () => setTemplates((await api<{ templates: TeamTemplate[] }>(`/api/team-templates${query}`)).templates);
@@ -67,8 +66,8 @@ export function TeamTemplateLibrary({ initial, focused = false, onPublished }: {
       showToast(`Using ${selected.name} v${selected.version}; run permissions retained`);
     } catch (e) { setError((e as Error).message); }
   };
-  return <section class={`${focused ? "" : "section "}team-template-library`} aria-label="Reusable team templates">
-    {!focused ? <><h3>Reusable team templates</h3>
+  return <section class={`${focused ? "" : "advanced-group "}team-template-library`} aria-label="Reusable team templates">
+    {!focused ? <><h2 class="section-title">Reusable team templates</h2>
     <p class="help">Auto can build its own plan or reuse enabled task graphs (up to six definitions of 16,000 characters per run, ordered by ID). Fixed workflows keep their original checks and execution behavior. All templates use the run's permissions.</p>
     <label class="lbl" for="team-template-select">Saved templates</label>
     <select class="field" id="team-template-select" value={selected?.id ?? ""} onChange={e => { const t = templates.find(t => t.id === e.currentTarget.value) ?? null; setSelected(t); setEditing(false); setHistory([]); setError(""); setInputs({ task: task.value }); }}>
@@ -86,22 +85,9 @@ export function TeamTemplateLibrary({ initial, focused = false, onPublished }: {
       {pattern.value && pattern.value.id !== "auto-team" ? <><button class="btn" onClick={() => {
         const p = pattern.value!;
         edit({ ...fresh(project), name: `${p.name} template`, workflow: p.id, roles: [], tasks: [], task: task.value || "{{task}}", preferences: templatePreferences({ roles: rolesFor(p), options: optionsFor(p), agentSettings: agentSettings.value, roleSettings: roleModels.value[p.id] ?? {} }) }, true);
-      }}>Save current workflow as template</button>{" "}</> : null}<button class="btn" onClick={() => file.current?.click()}>Import template</button>{" "}
-      <button class="btn" disabled={busy} onClick={async () => {
-        setBusy(true); setError(""); setMigrationNotes([]);
-        try {
-          let imported = 0; const notes: string[] = [];
-          for (const scope of [undefined, ...(project ? [project] : [])]) {
-            const key = scope ? `composerLibrary:${scope}` : "composerLibrary";
-            const raw = store.get(key); if (!raw) continue;
-            const result = await post<{ imported: number; notes: string[] }>(`/api/team-templates/migrate${scope ? `?project=${encodeURIComponent(scope)}` : ""}`, JSON.parse(raw)); imported += result.imported; notes.push(...result.notes); setMigrationNotes([...new Set(notes)]);
-          }
-          await reload(); showToast(`Imported ${imported} templates. Browser originals retained; permissions were not imported.`);
-        } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
-      }}>Import browser library</button>
+      }}>Save current workflow as template</button>{" "}</> : null}<button class="btn" onClick={() => file.current?.click()}>Import template</button>
       <input hidden ref={file} type="file" accept="application/json,.json" onChange={async e => { const f = e.currentTarget.files?.[0]; if (!f) return; try { if (f.size > 150000) throw new Error("Template is too large"); const t = validateTeamTemplate(JSON.parse(await f.text())); edit({ ...t, id: `import-${Date.now().toString(36)}`, version: 1, scope: project ? "project" : "personal", project, autoEnabled: false }, true); } catch (e) { setError((e as Error).message); } }} />
     </div> : null}
-    {migrationNotes.length ? <div class="help" role="status"><b>Browser library import</b><ul>{migrationNotes.map(note => <li key={note}>{note}</li>)}</ul></div> : null}
     {editing ? <div class={focused ? undefined : "section"}>
       <p>Design parameters, roles, instructions, dependencies, owned paths, and acceptance criteria below. Publishing creates version {expected + 1}. The previous version stays unchanged.</p>
       {parsed ? <><label class="lbl">Name<input class="field" value={parsed.name} onInput={e => setDraft(JSON.stringify({ ...parsed, name: e.currentTarget.value }, null, 2))} /></label><label class="checkpoint"><input type="checkbox" checked={parsed.autoEnabled} disabled={!!parsed.workflow} onChange={e => setDraft(JSON.stringify({ ...parsed, autoEnabled: e.currentTarget.checked }, null, 2))} /><span>Allow Auto to reuse this strategy</span></label></> : null}

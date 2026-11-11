@@ -31,7 +31,7 @@ test('opening an unsupported key leaves a stable recovery message and the health
     assert.match(s.unreadableDrafts.value.future!, /unsupported/);
     assert.equal(values.get('project-draft-v1:future'), '{"version":2,"task":"Future data"}');
     assert.equal(s.composerLoading.value, false);
-    assert.deepEqual(s.route.value, { view: 'composer', project: 'a' });
+    assert.deepEqual(s.route.value, { view: 'composer', project: 'a', legacy: true });
     assert.equal(s.task.value, 'Draft A');
     assert.equal(await s.openComposer('b'), true);
     assert.equal(s.task.value, 'Draft B');

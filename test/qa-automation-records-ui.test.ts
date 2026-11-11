@@ -25,7 +25,7 @@ async function stop() { if (page && !page.isClosed()) await page.goto("about:bla
 async function open(hash = "#/automations/repeat") { await page.goto(`${base}/?token=${token}${hash}`); }
 async function shot(name: string) { if (evidence) await page.screenshot({ path: join(evidence, `${name}.png`), fullPage: true, animations: "disabled" }); }
 async function saveDialog(task: string) {
-  await open(`#/project/${project}/new`); await page.getByRole("textbox", { name: "Task", exact: true }).fill(task);
+  await open(`#/project/${project}/workflow`); await page.getByRole("textbox", { name: "Task", exact: true }).fill(task);
   await page.locator("#main-content").getByRole("button", { name: "Run actions", exact: true }).click(); await page.getByRole("menuitem", { name: "Schedule…" }).click();
   await page.getByRole("dialog", { name: "Schedule work" }).getByRole("button", { name: /^Repeat/ }).click();
   const dialog = page.getByRole("dialog", { name: "Save as automation" }); await dialog.getByRole("radio", { name: "Only from a webhook", exact: true }).click(); return dialog;

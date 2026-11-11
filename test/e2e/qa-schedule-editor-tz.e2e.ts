@@ -208,7 +208,7 @@ test("the row editor refuses fields it can't save with one reason, and shows wha
 
 test("the save-automation dialog keeps an emptied interval empty and blocks what it can't save", { timeout: 60_000 }, async () => {
   const context = await browserIn("Europe/Stockholm");
-  const { page, errors } = await open(context, `#/project/${encodeURIComponent(project)}/new`);
+  const { page, errors } = await open(context, `#/project/${encodeURIComponent(project)}/workflow`);
   await page.getByRole("textbox", { name: "Task", exact: true }).fill("Repeat dialog QA");
   await page.getByRole("button", { name: "Run actions", exact: true }).click();
   await page.getByRole("menuitem", { name: "Schedule…" }).click();

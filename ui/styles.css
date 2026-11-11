@@ -2440,18 +2440,14 @@
   .acceptance-editor .settings-body { gap: 0; }
   .acceptance-editor textarea { min-height: 96px; resize: vertical; font-size: 13px; line-height: 1.55; padding: 8px 11px; }
   .acceptance-editor .help { margin: 6px 0 0; }
-  /* The optional controls (Advanced team controls … tool permissions) as one accordion card, rows split by hairlines */
-  .composer-more { margin-top: 24px; background: var(--raised); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); }
-  .composer-more > details.settings { margin: 0; border: 0; border-radius: 0; background: none; box-shadow: none; }
-  .composer-more > details.settings + details.settings { border-top: 1px solid var(--border); }
-  .composer-more > details.settings > summary { border-radius: 0; }
-  .composer-more > details.settings:first-child > summary { border-radius: var(--radius) var(--radius) 0 0; }
-  .composer-more > details.settings:last-child:not([open]) > summary { border-radius: 0 0 var(--radius) var(--radius); }
-  .composer-more > .checkpoint { margin: 0; padding: 13px 18px 13px 16px; border: 0; border-top: 1px solid var(--border); border-radius: 0 0 var(--radius) var(--radius); background: none; box-shadow: none; color: var(--text-2); }
-  .composer-more > .checkpoint:hover { border-color: var(--border); background: var(--hover); }
-  .composer-more > .checkpoint input { flex: none; }
-  /* Advanced team controls: pattern cards, execution, team, gates and settings on one 16px rhythm */
+  /* Advanced (composer.tsx): the one disclosure under the task; its options are titled groups under hairlines */
   .advanced-controls > .settings-body { gap: 16px; }
+  .advanced-group { min-width: 0; margin: 0; padding: 16px 0 0; border: 0; border-top: 1px solid var(--border); display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .advanced-controls > .settings-body > .advanced-group:first-child { padding-top: 0; border-top: 0; }
+  .advanced-group > .section-title, .advanced-group > .help, .advanced-group > .pattern-why { margin: 0; }
+  .advanced-group > .settings-body { padding: 0; }
+  .advanced-group .readiness { display: grid; gap: 12px; }
+  .advanced-group .readiness > .settings-body { padding: 0; }
   .advanced-controls .team { margin-top: 0; }
   .advanced-controls .settings-body > .pattern-why { margin: -4px 2px 0; }
   .advanced-controls .section, .advanced-controls details.settings { margin-top: 0; }
@@ -2513,7 +2509,6 @@
   .context-budget .lbl { margin-top: 14px; }
   .context-budget .field { max-width: 420px; }
   /* Agent isolation: the checkbox is a row of the card, the image fields labelled above */
-  .agent-isolation .settings-body { gap: 12px; }
   .agent-isolation .checkpoint { margin: 0; padding: 0; border: 0; border-radius: 0; background: none; box-shadow: none; color: var(--text); }
   .agent-isolation .help { margin: 0; }
   .iso-field { display: grid; gap: 6px; font-size: 12px; font-weight: 500; color: var(--text-2); }
@@ -2538,7 +2533,6 @@
     .composer .start-row .why { flex-basis: 100%; margin: 0; font-size: 12px; }
     .composer .start-row .why:empty { display: none; }
     .composer .lede { margin-bottom: 16px; }
-    .composer-more { margin-top: 20px; }
     /* the permissions switch fills its row and its segments shrink, as the automation dialog's When switch does */
     .composer .settings-body .segmented { display: flex; }
     .composer .settings-body .segmented button { flex: 1 1 auto; padding: 0 8px; font-size: 12px; }
@@ -3399,11 +3393,6 @@ dialog.picker.team-build-dialog { max-height: min(780px, calc(100dvh - 32px)); }
 .composer-single .taskbox .bar .hint:not(.status) { display: none; }
 .single-run-summary { display: flex; flex-wrap: wrap; gap: 6px 16px; margin: 8px 2px 16px; font-size: 12px; color: var(--muted); }
 .single-run-summary > span { min-width: 0; overflow-wrap: anywhere; }
-.composer-options.compact > summary { display: flex; align-items: center; gap: 10px; cursor: pointer; padding: 12px 0; font-size: 13px; font-weight: 500; }
-.composer-options.compact > summary::before { content: "›"; font-size: 18px; }
-.composer-options.compact[open] > summary::before { transform: rotate(90deg); }
-.composer-options.compact > summary > span { font-size: 12px; font-weight: 400; color: var(--muted); }
-@media (max-width: 500px) { .composer-options.compact > summary > span { display: none; } }
 
 .chat-check { margin: 16px 0; border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel); }
 .chat-check > summary { display: flex; align-items: flex-start; gap: 12px; padding: 14px; cursor: pointer; }

@@ -207,7 +207,7 @@ test("a popped-out panel stays a panel: the pages it opens, and the drafts for t
   Object.assign(globalThis, { opener: null });
   m.route.value = { view: "run", id: "r2" };
   m.navigate({ view: "composer" }, [draft("composer", "from notes")]);
-  assert.deepEqual(m.route.value, { view: "composer", legacy: true });
+  assert.deepEqual(m.route.value, { view: "composer" });
   assert.deepEqual(
     m.takeDrafts("composer").map((d: any) => d.text),
     ["from notes"],

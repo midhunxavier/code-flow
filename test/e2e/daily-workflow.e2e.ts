@@ -109,10 +109,9 @@ after(async () => {
 
 let result: Run;
 test("repository readiness is reachable before launch and validates the selected setup and check", { timeout: 45_000 }, async () => {
-  await page.getByRole("button", { name: "Edit run options", exact: true }).waitFor();
-  await page.getByRole("button", { name: "Edit run options", exact: true }).click();
+  await page.getByRole("button", { name: "Advanced options", exact: true }).waitFor();
+  await page.locator(".advanced-controls").evaluate(el => { (el as HTMLDetailsElement).open = true; });
   await page.getByLabel("Worktree setup command", { exact: true }).fill('node -e "process.exit(0)"');
-  await page.locator(".readiness > summary").click();
   const readiness = page.locator(".readiness");
   await readiness.getByRole("button", { name: "Inspect readiness", exact: true }).click();
   await readiness.getByText("Repository and base", { exact: true }).waitFor();
@@ -123,7 +122,7 @@ test("repository readiness is reachable before launch and validates the selected
   assert.match(await readiness.locator("li", { hasText: "Setup execution" }).innerText(), /Passed/);
   await mkdir(join(root, "output/playwright"), { recursive: true });
   await readiness.screenshot({ path: join(root, "output/playwright/daily-readiness.png") });
-  await page.getByRole("button", { name: "Edit run options", exact: true }).click();
+  await page.locator(".advanced-controls").evaluate(el => { (el as HTMLDetailsElement).open = true; });
 });
 
 test("a successful launch opens its run while the history refresh is stalled", { timeout: 45_000 }, async () => {
@@ -219,10 +218,10 @@ test("edit and run again preserves pinned inputs, provider settings, permissions
   await page.goto(base + `/#/run/${original.id}`);
   await page.getByRole("button", { name: "More run actions", exact: true }).click();
   await page.getByRole("menuitem", { name: "Edit & run again", exact: true }).click();
-  await page.waitForURL(url => /^#\/project\/[^/]+\/new$/.test(url.hash));
+  await page.waitForURL(url => /^#\/project\/[^/]+\/workflow$/.test(url.hash));
   await page.locator(".composer-summary").getByText(saved.baseRef, { exact: false }).waitFor();
-  await page.getByRole("button", { name: "Edit run options", exact: true }).click();
-  await page.locator(".advanced-controls > summary").click();
+  await page.locator(".advanced-controls").evaluate(el => { (el as HTMLDetailsElement).open = true; });
+  await page.locator(".advanced-controls").evaluate(el => { (el as HTMLDetailsElement).open = true; });
   assert.equal(await page.getByLabel("Verification gates", { exact: true }).inputValue(), "restored");
   const started = page.waitForResponse(response => new URL(response.url()).pathname === "/api/runs" && response.request().method() === "POST");
   await page.getByRole("button", { name: /^(Start run|Send)$/ }).click();
@@ -245,8 +244,8 @@ test("retry retains container isolation and never falls back from an unavailable
     await page.goto(base + `/#/run/${id}`);
     await page.getByRole("button", { name: "More run actions", exact: true }).click();
     await page.getByRole("menuitem", { name: "Edit & run again", exact: true }).click();
-    await page.waitForURL(url => /^#\/project\/[^/]+\/new$/.test(url.hash));
-    await page.getByRole("button", { name: "Edit run options", exact: true }).click();
+    await page.waitForURL(url => /^#\/project\/[^/]+\/workflow$/.test(url.hash));
+    await page.locator(".advanced-controls").evaluate(el => { (el as HTMLDetailsElement).open = true; });
   };
   await edit("retry-container");
   await page.getByRole("button", { name: "Open another repository", exact: true }).click();
@@ -255,7 +254,6 @@ test("retry retains container isolation and never falls back from an unavailable
   await picker.getByRole("button", { name: "Go", exact: true }).click();
   await picker.getByRole("button", { name: "Open this repository", exact: true }).click();
   await picker.waitFor({ state: "hidden" });
-  await page.locator(".agent-isolation > summary").click();
   assert.equal(await page.getByLabel("Run agents in a prebuilt Docker image").isChecked(), true);
   assert.equal(await page.getByLabel("Image", { exact: true }).inputValue(), "prepared-agent:v1");
   assert.equal(await page.getByLabel("Authentication volume", { exact: true }).inputValue(), "original-login");
@@ -284,7 +282,7 @@ test("retry source option edits refresh CI context while retaining the pinned PR
     await page.goto(base + `/#/run/${sourceRun.id}`);
     await page.getByRole("button", { name: "More run actions", exact: true }).click();
     await page.getByRole("menuitem", { name: "Edit & run again", exact: true }).click();
-    await page.waitForURL(url => /^#\/project\/[^/]+\/new$/.test(url.hash));
+    await page.waitForURL(url => /^#\/project\/[^/]+\/workflow$/.test(url.hash));
     await page.getByRole("checkbox", { name: "CI logs", exact: true }).setChecked(ciLogs);
     const response = page.waitForResponse(response => new URL(response.url()).pathname === "/api/runs" && response.request().method() === "POST");
     await page.getByRole("button", { name: /^(Start run|Send)$/ }).click();
@@ -306,7 +304,7 @@ test("retry preserves imported context and its source restrictions through the o
   await page.goto(base + "/#/run/retry-untrusted");
   await page.getByRole("button", { name: "More run actions", exact: true }).click();
   await page.getByRole("menuitem", { name: "Edit & run again", exact: true }).click();
-  await page.waitForURL(url => /^#\/project\/[^/]+\/new$/.test(url.hash));
+  await page.waitForURL(url => /^#\/project\/[^/]+\/workflow$/.test(url.hash));
   const started = page.waitForResponse(response => new URL(response.url()).pathname === "/api/runs" && response.request().method() === "POST");
   await page.getByRole("button", { name: /^(Start run|Send)$/ }).click();
   const response = await started;
@@ -352,7 +350,7 @@ test("deleting the original run while editing a retry cannot discard imported-so
   await page.goto(base + "/#/run/retry-untrusted");
   await page.getByRole("button", { name: "More run actions", exact: true }).click();
   await page.getByRole("menuitem", { name: "Edit & run again", exact: true }).click();
-  await page.waitForURL(url => /^#\/project\/[^/]+\/new$/.test(url.hash));
+  await page.waitForURL(url => /^#\/project\/[^/]+\/workflow$/.test(url.hash));
   const draftHash = new URL(page.url()).hash;
   const removed = await fetch(base + "/api/runs/retry-untrusted", { method: "DELETE", headers });
   assert.equal(removed.status, 200);
@@ -376,8 +374,7 @@ test("readiness follows provider assignments and discards an older in-flight rep
   let release!: () => void;
   try {
     await draft.goto(base + "/?token=daily-workflow-e2e#/workflows");
-    await draft.getByRole("button", { name: "Edit run options", exact: true }).click();
-    await draft.locator(".readiness > summary").click();
+    await draft.locator(".advanced-controls").evaluate(el => { (el as HTMLDetailsElement).open = true; });
     const readiness = draft.locator(".readiness");
     const inspect = readiness.getByRole("button", { name: "Inspect readiness", exact: true });
     const response = draft.waitForResponse(response => new URL(response.url()).pathname === "/api/readiness");
@@ -386,7 +383,7 @@ test("readiness follows provider assignments and discards an older in-flight rep
     assert.equal(checked.request().postDataJSON().pattern, "pipeline");
     assert.deepEqual(checked.request().postDataJSON().roles.planner, ["claude"]);
     await readiness.getByText("Repository and base", { exact: true }).waitFor();
-    await draft.locator(".advanced-controls > summary").click();
+    await draft.locator(".advanced-controls").evaluate(el => { (el as HTMLDetailsElement).open = true; });
     const planner = draft.getByRole("group", { name: "Planner providers", exact: true });
     await planner.getByRole("button", { name: "Codex", exact: true }).click();
     await until(() => readiness.locator(".readiness-results").count(), count => count === 0);
@@ -420,7 +417,7 @@ test("editing a retry waits for project drafts to initialize", { timeout: 45_000
     assert.equal(await edit.isDisabled(), true, "repository and project drafts must be ready before restoring a retry");
     release();
     await edit.click();
-    await probe.waitForURL(url => /^#\/project\/[^/]+\/new$/.test(url.hash));
+    await probe.waitForURL(url => /^#\/project\/[^/]+\/workflow$/.test(url.hash));
     assert.equal(await probe.getByRole("textbox", { name: "Task", exact: true }).inputValue(), "Restore retry-container");
   } finally { release(); await probe.close(); }
 });
@@ -433,8 +430,8 @@ test("editable retries restore the recorded Antigravity exception and mandatory 
     await page.getByRole("button", { name: "More run actions" }).click();
     await page.getByRole("menuitem", { name: "Edit & run again" }).click();
     await page.getByLabel("Task", { exact: true }).waitFor();
-    await page.getByRole("button", { name: "Edit run options", exact: true }).click();
-    if (!await page.getByRole("checkbox", { name: "Use unrestricted Antigravity with my existing login" }).isVisible()) await page.locator(".advanced-controls > summary").click();
+    await page.locator(".advanced-controls").evaluate(el => { (el as HTMLDetailsElement).open = true; });
+    if (!await page.getByRole("checkbox", { name: "Use unrestricted Antigravity with my existing login" }).isVisible()) await page.locator(".advanced-controls").evaluate(el => { (el as HTMLDetailsElement).open = true; });
     assert.equal(await page.getByRole("checkbox", { name: "Use unrestricted Antigravity with my existing login" }).isChecked(), id === "retry-native");
     assert.equal(await page.getByRole("checkbox", { name: "Disable external browser and MCP tools" }).isChecked(), id === "retry-required");
   }

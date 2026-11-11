@@ -2,7 +2,7 @@ import { onPhone, ownerOnLocalListener } from "./lib.js";
 import type { ChatSummary } from "../src/conversational/chats.js";
 import { ProjectContextEditor } from "./chat-context-editor.js";
 import { ProjectRunSettings } from "./project-run-settings.js";
-import { openChat } from "./chat-state.js";
+import { chatAllowed, openChat } from "./chat-state.js";
 import { executionLabel } from "./run-experience.js";
 import { lazyView } from "./lazy-view.js";
 import type { ProjectReport, HistoryPage } from "../src/project-report.js";
@@ -18,7 +18,7 @@ import type { ComponentChildren } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { Icon } from "./icons.js";
 import { api, enc, usePoll, fmtCost, ago, baseName, isFolderMirror, shownPath, STATUS_TEXT, collaborationHref, selectedTeamConnection } from "./lib.js";
-import { editProject, patternName, projectFor, projects, projectsLoaded, route, runs, isRunDeleted, runState, openComposer, composerProject, composerLoading, draftsReady, task, savedDraftTask } from "./state.js";
+import { editProject, patternName, projectFor, projects, projectsLoaded, route, runs, isRunDeleted, runState, openComposer, composerProject, composerLoading, draftsReady, task, savedDraftTask, takeDraftTask, draftTo } from "./state.js";
 import { hashFor, type ProjectSection, type RepositoryTool } from "./navigation.js";
 import { computerLabel, executionHost } from "./ssh-projects.js";
 import { addRepositoryToProject } from "./projects.js";
@@ -38,6 +38,12 @@ export function ProjectView({ id, section, repository, tool, kind }: { id: strin
   const [savedTask, setSavedTask] = useState("");
   useEffect(() => { let live = true; setSavedTask(""); if (draftsReady.value) void savedDraftTask(id).then(value => { if (live) setSavedTask(value); }, () => {}); return () => { live = false; }; }, [id, draftsReady.value, composerProject.value]);
   const draftTask = composerProject.value === id ? task.value : savedTask;
+  // A draft that is only its text continues in the chat; one with files, context or a workflow keeps its form.
+  const continueDraft = async () => {
+    const text = chatAllowed() ? await takeDraftTask(id).catch(() => null) : null;
+    if (text === null) { void openComposer(id); return; }
+    draftTo("composer", text); openChat(id);
+  };
   const p = projects.value.find(item => item.id === id);
   if (!p) return <div class="project-page"><p role="status">{projectsLoaded.value ? "This project is unavailable. Its existing runs and saved draft are retained." : "Loading project…"}</p><a class="btn" href="#/">New chat</a></div>;
   const destination = (section?: ProjectSection) => {
@@ -65,7 +71,7 @@ export function ProjectView({ id, section, repository, tool, kind }: { id: strin
     {!section ? <>
       <section class="project-start pp-card" aria-label="Start work"><h2>{draftTask.trim() ? "Continue your draft" : "What would you like to work on?"}</h2><p>{p.repos.length ? "Describe the outcome, choose your agents, and review the result here." : "Add a repository to work with code in this project."}</p>
         {draftTask.trim() ? <p class="draft-preview">{draftTask.slice(0, 240)}</p> : null}
-        <button class="btn primary" disabled={!draftsReady.value || composerLoading.value} onClick={() => p.repos.length ? draftTask.trim() ? void openComposer(id) : openChat(id) : addRepositoryToProject(id)}>{p.repos.length ? draftTask.trim() ? "Continue draft" : "Describe a task" : "Add repository"}</button>
+        <button class="btn primary" disabled={!draftsReady.value || composerLoading.value} onClick={() => p.repos.length ? draftTask.trim() ? void continueDraft() : openChat(id) : addRepositoryToProject(id)}>{p.repos.length ? draftTask.trim() ? "Continue draft" : "Describe a task" : "Add repository"}</button>
       </section>
       <ProjectOverview key={id} id={id} />
       <a class="btn" href={destination("runs")}>View history</a>
@@ -77,7 +83,7 @@ export function ProjectView({ id, section, repository, tool, kind }: { id: strin
       <section class="pp-card project-start"><h2>Project settings</h2><p>Manage the project's name and repository membership.</p><button class="btn" onClick={() => editProject(id)}>Edit project</button></section>
       <section class="pp-card project-settings-card"><h2>Defaults</h2><p>Optional instructions, files, check commands, permissions and limits for future work. Each approach shows the settings it will use.</p><button class="btn" disabled={!p.repos.length} onClick={() => setContextOpen(true)}>Edit project defaults</button><p class="help">Provider connections and authentication live in <a href="#/settings/providers">App settings → Providers</a>.</p></section>
       <ProjectContextEditor project={id} repo={p.repos[0] ?? ""} open={contextOpen} onClose={() => setContextOpen(false)}/>
-      <details class="pp-card project-advanced"><summary>Advanced · saved workflows and repository configuration</summary><button class="btn" disabled={!draftsReady.value || composerLoading.value} onClick={() => void openComposer(id)}>Saved workflows</button><ProjectRunSettings projectId={id} repositories={p.repos}/><OutcomeMetrics project={id}/></details>
+      <details class="pp-card project-advanced"><summary>Advanced · run defaults and repository configuration</summary><ProjectRunSettings projectId={id} repositories={p.repos}/><OutcomeMetrics project={id}/></details>
     </>}
   </div>;
 }

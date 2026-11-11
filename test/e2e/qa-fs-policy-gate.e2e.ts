@@ -51,8 +51,8 @@ async function closeTerminal(close: import("playwright-core").Locator) {
 }
 async function newRun(id: string, reload = true) {
   await waitForApplicationReads();
-  if (reload) await page.goto(`${base}/#/project/${id}/new`);
-  else await page.evaluate(hash => { location.hash = hash; }, `/project/${id}/new`);
+  if (reload) await page.goto(`${base}/#/project/${id}/workflow`);
+  else await page.evaluate(hash => { location.hash = hash; }, `/project/${id}/workflow`);
   await page.getByLabel("Task", { exact: true }).waitFor({ timeout: 15_000 }); await waitForApplicationReads();
 }
 async function policyPanel(id: string) {

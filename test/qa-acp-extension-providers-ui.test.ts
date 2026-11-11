@@ -199,7 +199,7 @@ async function disabledProviders(container: ReturnType<Page['locator']>, shotNam
   await page.keyboard.press('Escape');
 }
 test('ACP and extension entries are disabled in composer, reply and fork while supported providers remain usable', { timeout: 60000 }, async () => {
-  await page.goto(`${base}/?token=${token}#/project/${project}/new`);
+  await page.goto(`${base}/?token=${token}#/project/${project}/workflow`);
   await page.getByLabel('Task', { exact: true }).fill('Reply ready');
   await disabledProviders(page.locator('.composer'), '05-composer-disabled-providers');
   const listing = await api('/api/agents');

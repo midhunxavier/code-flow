@@ -63,7 +63,7 @@ test("template prefill keeps pool model and coordinator effort and explains same
   const template = { schemaVersion: 1, id: "qa-prefill", version: 1, name: "Pool and coordinator", description: "QA", scope: "personal", autoEnabled: false, parameters: ["task"], roles: [], tasks: [], contracts: [], workflow: "auto-team", task: "{{task}}", criteria: [], preferences: { roles: { coordinator: ["codex"], pool: ["codex", "claude"] }, options: { maxMembers: 9 }, agentSettings: {}, roleSettings: { pool: { codex: { model: "gpt-b" } }, coordinator: { codex: { effort: "low" } } } } };
   await api("/api/team-templates", { template, expectedVersion: 0 });
   await api("/api/team-templates", { template: { ...template, id: "qa-overlap", name: "Overlapping models", preferences: { ...template.preferences, roleSettings: { ...template.preferences.roleSettings, coordinator: { codex: { model: "gpt-a", effort: "low" } } } } }, expectedVersion: 0 });
-  const p = await open(`project/${project}/new`); await p.getByRole("switch", { name: "AI team", exact: true }).click(); await p.getByRole("button", { name: "Advanced", exact: true }).click();
+  const p = await open(`project/${project}/workflow`); await p.getByRole("switch", { name: "AI team", exact: true }).click(); await p.getByRole("button", { name: "Advanced", exact: true }).click();
   const dialog = p.getByRole("dialog", { name: "AI team setup" }); await dialog.getByLabel("Team template", { exact: true }).selectOption("saved:qa-prefill");
   const codex = dialog.locator(".task-team-member").filter({ hasText: "Codex" }); await codex.getByRole("button", { name: /^Model: GPT-B/ }).waitFor(); await codex.getByRole("button", { name: /^Effort: low/ }).waitFor();
   await dialog.getByRole("button", { name: "Apply team settings" }).click(); await dialog.waitFor({ state: "hidden" });
@@ -73,7 +73,7 @@ test("template prefill keeps pool model and coordinator effort and explains same
 });
 
 test("lead quick picker excludes Antigravity with approvals and permits it after an explicit permission change", async () => {
-  const p = await open(`project/${project}/new`, {}, true); const toggle = p.getByRole("switch", { name: "AI team", exact: true }); await toggle.click();
+  const p = await open(`project/${project}/workflow`, {}, true); const toggle = p.getByRole("switch", { name: "AI team", exact: true }); await toggle.click();
   await p.getByRole("button", { name: /^Lead model:/ }).click(); assert.equal(await p.getByRole("option", { name: /Antigravity/ }).count(), 0); await p.keyboard.press("Escape");
   await toggle.click(); await p.getByRole("button", { name: /^Permissions:/ }).click(); await p.getByRole("menuitem", { name: /^Approve for me/ }).click(); await toggle.click();
   await p.getByRole("button", { name: /^Lead model:/ }).click(); await p.getByRole("option", { name: /Antigravity.*Default model/ }).click();
@@ -108,22 +108,12 @@ test("turning AI team off disables preserved-work resume and turning it on resto
   const response = p.waitForResponse(response => response.url().endsWith("/team-resume") && response.request().method() === "POST"); await resume.click(); assert.ok((await response).ok()); await done(started.id);
 });
 
-test("browser library import displays server notes for both scopes and retains originals", async () => {
-  const library = (name: string) => ({ schemaVersion: 1, templates: [], presets: [{ id: name, name, config: { pattern: "pipeline", roles: { planner: ["claude"], builder: ["codex"] }, check: "npm test", setup: "npm ci" }, runOptions: { verification: "thorough", container: { enabled: true, image: "qa/image" } } }] });
-  const personal = JSON.stringify(library("Personal checks")), scoped = JSON.stringify(library("Project checks"));
-  const p = await open(`project/${project}/new`, { composerLibrary: personal, [`composerLibrary:${project}`]: scoped, composerAdvanced: "0" });
-  await p.locator(".composer-options > summary").click(); await p.locator(".advanced-controls > summary").click();
-  const region = p.getByRole("region", { name: "Reusable team templates" }); await region.getByRole("button", { name: "Import browser library" }).click();
-  const notice = region.getByRole("status"); await notice.getByText(/Personal checks:.*verification command.*thorough verification profile.*Docker isolation/).waitFor(); await notice.getByText(/Project checks:.*verification command.*thorough verification profile.*Docker isolation/).waitFor();
-  assert.equal(await p.evaluate(() => localStorage.getItem("composerLibrary")), personal); assert.equal(await p.evaluate(key => localStorage.getItem(key), `composerLibrary:${project}`), scoped);
-});
-
 test("save-from-run is a focused editor and publishes the run strategy without composer actions", async () => {
   const started = await start({ pattern: "auto-team", task: "AUTO-SAME-PROVIDER implement the sample", roles: { coordinator: ["claude"], pool: ["claude", "codex"] } }); const finished = await done(started.id); assert.equal(finished.status, "done", finished.error);
   const p = await open(`run/${started.id}`); await p.getByRole("button", { name: "More run actions", exact: true }).click(); await p.getByRole("menuitem", { name: "Save as team template…" }).click();
   const dialog = p.getByRole("dialog", { name: "Save reusable team strategy" }); await dialog.getByLabel("Template definition").waitFor();
   assert.equal(await dialog.getByLabel("Saved templates").count(), 0);
-  for (const name of ["Design a template", "Save current workflow as template", "Import template", "Import browser library", "Close editor"]) assert.equal(await dialog.getByRole("button", { name, exact: true }).count(), 0, name);
+  for (const name of ["Design a template", "Save current workflow as template", "Import template", "Close editor"]) assert.equal(await dialog.getByRole("button", { name, exact: true }).count(), 0, name);
   const definition = JSON.parse(await dialog.getByLabel("Template definition").inputValue()); assert.ok(definition.tasks.length > 0); await dialog.getByLabel("Name", { exact: true }).fill("Captured QA strategy"); await shot("focused-save-from-run"); await audit("dialog[open]", "save-from-run");
   await dialog.getByRole("button", { name: "Publish template version" }).click(); await dialog.waitFor({ state: "hidden" });
   const saved = (await api(`/api/team-templates?project=${project}`)).templates.find((entry: any) => entry.id === definition.id); assert.equal(saved.name, "Captured QA strategy"); assert.deepEqual(saved.tasks, definition.tasks);

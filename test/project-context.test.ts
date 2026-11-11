@@ -29,6 +29,8 @@ test("project routes retain encoded repository and tool targets and reject unsup
   for (const hash of ["#/project/a/automation/unknown", "#/project/a/automation/backlog/extra", "#/project/a/people/extra", "#/project/a/unknown", "#/project/a/runs/extra", "#/project/a/repositories/%2Fa/unknown", "#/project/a/repositories/%"]) assert.equal(parseRouteHash(hash).view, "invalid");
   assert.deepEqual(parseRouteHash(hashFor({ view: "composer", project: "a" })), { view: "composer", project: "a" });
   assert.deepEqual(parseRouteHash(hashFor({ view: "composer", project: "" })), { view: "composer", project: "" });
+  assert.equal(hashFor({ view: "composer", project: "a/b", legacy: true }), "#/project/a%2Fb/workflow");
+  for (const route of [{ view: "composer", legacy: true }, { view: "composer", project: "", legacy: true }, { view: "composer", project: "a/b", legacy: true }] as const) assert.deepEqual(parseRouteHash(hashFor(route)), route);
   assert.deepEqual(parseRouteHash("#/project/a/workspace"), { view: "workspace", project: "a" });
 });
 test("draft writes retain attachments, order and computer isolation across store instances", async () => {

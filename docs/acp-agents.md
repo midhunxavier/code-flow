@@ -4,7 +4,7 @@ ACP connections can be saved and checked in Settings → Agents & models. They s
 
 ## Unrestricted ACP runs
 
-In a chat, open Agent settings → Provider and turn on **Allow unrestricted ACP agents**, choose the connected CLI, then pick **Ask for approval** or **Full access** in Permissions. The workflow composer has the same switch under Advanced. A chat needs a project repository and Agent mode; a reply to work that started without the opt-in is refused, so start a new chat. The opt-in applies to that run and the chats started from it; the next new run starts without it.
+In a chat, open Agent settings → Provider and turn on **Allow unrestricted ACP agents**, choose the connected CLI, then pick **Ask for approval** or **Full access** in Permissions. A workflow run has the same switch under Advanced → Permissions. A chat needs a project repository and Agent mode; a reply to work that started without the opt-in is refused, so start a new chat. The opt-in applies to that run and the chats started from it; the next new run starts without it.
 
 - The CLI uses its own login, tools and settings. Code Flow cannot stop it from starting its own subagents, using the network or running external tools, and that usage is outside the worker budget. Read-only turns are a request in the prompt.
 - With Ask for approval, the permission requests the CLI sends appear in the approval inbox. Without it those requests are declined; anything the CLI approves by its own settings runs unasked.

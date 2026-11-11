@@ -30,7 +30,7 @@ async function open(path: string): Promise<{ page: Page; errors: string[] }> {
   await page.goto(`${base}/${path}`); return { page, errors };
 }
 async function composer(task: string) {
-  const { page, errors } = await open(`#/project/${encodeURIComponent(project)}/new`);
+  const { page, errors } = await open(`#/project/${encodeURIComponent(project)}/workflow`);
   await page.getByRole("textbox", { name: "Task", exact: true }).fill(task);
   return { page, errors };
 }

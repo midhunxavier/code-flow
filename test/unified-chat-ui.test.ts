@@ -383,7 +383,7 @@ test("task-first automation reviews, tests and enables the exact team without ap
     } finally { await context.close(); }
 });
 
-test("project settings owns shared defaults and advanced saved workflows", { timeout: 60000 }, async () => {
+test("project settings owns shared defaults and advanced run defaults", { timeout: 60000 }, async () => {
     const { context, page: p } = await page();
     try {
         await p.goto(`${base}/#/project/${project.id}/settings`);
@@ -394,9 +394,8 @@ test("project settings owns shared defaults and advanced saved workflows", { tim
         await dialog.getByLabel("Managed calls",{exact:true}).fill("8");
         await dialog.getByRole("button",{name:"Save project context",exact:true}).click();
         await until(() => api(`/api/chats/context?project=${project.id}&repo=${encodeURIComponent(repo)}`),c=>c.defaults?.maxCalls===8,"shared defaults saved");
-        assert.equal(await p.getByRole("button",{name:"Saved workflows",exact:true}).isVisible(),false);
-        await p.getByText("Advanced · saved workflows and repository configuration",{exact:true}).click();
-        assert.equal(await p.getByRole("button",{name:"Saved workflows",exact:true}).isVisible(),true);
+        await p.getByText("Advanced · run defaults and repository configuration",{exact:true}).click();
+        assert.equal(await p.getByRole("button",{name:/workflow/i}).count(),0,"the workflow run opens from chat, not from project settings");
         await p.setViewportSize({ width: 320, height: 568 });
         const defaults = p.getByRole("region", { name: "Project run defaults" });
         const check = defaults.getByRole("textbox", { name: "Default check command" });
@@ -498,6 +497,34 @@ test("chat composer previews and undoes prompt rewrites without submitting work;
 });
 
 
+test("new-work links open the project's chat and one link opens the workflow run", {timeout:60000}, async () => {
+    const {context, page:p} = await page();
+    try {
+        const contextRow=p.getByLabel("Chat project and repository",{exact:true});
+        for (const hash of [`#/project/${project.id}/new`, "#/new/unassigned"]) {
+            await p.evaluate(value => { location.hash = value; }, hash);
+            await p.waitForURL(url => url.hash === (hash.startsWith("#/project") ? `#/project/${project.id}/chat` : "#/chat/new"));
+            await p.getByRole("textbox",{name:"Message",exact:true}).waitFor();
+            assert.equal(await contextRow.getByLabel("Project",{exact:true}).inputValue(), hash.startsWith("#/project") ? project.id : "");
+            assert.equal(await p.getByRole("textbox",{name:"Task",exact:true}).count(),0,"the run form is not the start screen here");
+        }
+        await p.evaluate(id => { location.hash = `#/project/${id}/chat`; }, project.id);
+        await contextRow.getByRole("button",{name:"Open workflow run",exact:true}).click();
+        await p.waitForURL(url => url.hash === `#/project/${project.id}/workflow`);
+        await p.getByRole("textbox",{name:"Task",exact:true}).waitFor();
+        assert.equal(await p.locator(".composer .eyebrow").innerText(),"Workflow run");
+        assert.equal(await p.getByRole("navigation",{name:"Where you are"}).locator('[aria-current="page"]').innerText(),"Workflow run");
+        assert.equal(await p.locator("details.advanced-controls details.settings").count(),0,"Advanced is the only options disclosure");
+        assert.equal(await p.getByRole("button",{name:"Advanced options",exact:true}).getAttribute("aria-expanded"),"false");
+        await p.getByRole("button",{name:"Advanced options",exact:true}).click();
+        for (const name of ["Workflow","Acceptance criteria","Checks","Permissions","Branches and limits","Agent isolation","Context inspector","Run details"]) await p.locator(".advanced-controls").getByRole("heading",{name,exact:true}).waitFor();
+        await p.keyboard.press("Meta+k");
+        const commands=p.getByRole("combobox",{name:"Find a command, project or run"});
+        await commands.fill("open workflow run");
+        await p.getByRole("option",{name:/Open workflow run/}).waitFor();
+        await p.keyboard.press("Escape");
+    } finally { await context.close(); }
+});
 test("project selection inherits a single repository and preserves explicit multi-repository choices across reloads", {timeout:90000}, async () => {
     const first = join(await realpath(home), "service"), second = join(await realpath(home), "website");
     for (const folder of [first,second]) execFileSync("git", ["clone", "--quiet", repo, folder]);

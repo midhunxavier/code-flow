@@ -2504,7 +2504,7 @@ export async function editAndRerun(run: RunSummary) {
         }
       : null;
   // Back in the run's project, so the new run goes there too.
-  navigate({ view: "composer", project: destination?.id ?? "" });
+  navigate({ view: "composer", project: destination?.id ?? "", legacy: true });
 }
 
 function RunResultSummary({ run }: { run: RunSummary }) {

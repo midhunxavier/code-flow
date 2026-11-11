@@ -13,6 +13,7 @@ import type { SharedPrincipal } from "../src/shared-accounts.js";
 import { configureStreamSharing, type StreamSharing } from "./stream.js";
 import logo from "./brand/code-flow-mark.svg";
 import { api, localApi, ownerOnLocalListener, workspaceId, initializeTeamConnection, ensureCollaborationSource, showToast, showError, store, SHORT } from "./lib.js";
+import { chatAllowed } from "./chat-state.js";
 import { agents, composerProject, composerLoading, draftsReady, openBrowserPage, openComposer, hashFor, initializeProjectDrafts, listenForHandOffs, loadHealth, loadModels, loadProjects, patterns, refreshRuns, replaceRouteHistory, route, routeFromHash, setRepo, templates, watchAllRuns } from "./state.js";
 
 // Reuse the sidebar's stacked-layers mark for the browser tab.
@@ -101,7 +102,10 @@ async function boot() {
   window.addEventListener("hashchange", readRoute);
   effect(() => {
     const destination = route.value;
-    if (!draftsReady.value || destination.view !== "composer" || destination.project === undefined) return;
+    if (destination.view !== "composer" || destination.project === undefined) return;
+    // A new-work link is the chat for the owner on this computer; elsewhere it is the run form.
+    if (!destination.legacy && chatAllowed()) { replaceRouteHistory.value = true; route.value = { view: "chat", id: "new", ...(destination.project ? { project: destination.project } : {}) }; return; }
+    if (!draftsReady.value) return;
     untracked(() => {
       if (destination.project !== composerProject.value || composerLoading.value) void openComposer(destination.project, { stay: true });
     });

@@ -35,7 +35,10 @@ export function parseRouteHash(hash: string): Route {
   try { parts = hash.replace(/^#\/?/, "").split("/").map(decodeURIComponent); }
   catch { return { view: "invalid", hash }; }
   const [view, id, ...rest] = parts;
+  // The workflow run form, for the open draft, the unassigned draft or one project's draft.
   if (view === "workflows" && !id) return { view: "composer", legacy: true };
+  if (view === "workflows" && id === "unassigned" && !rest.length) return { view: "composer", project: "", legacy: true };
+  if (view === "project" && id && rest[0] === "workflow" && rest.length === 1) return { view: "composer", project: id, legacy: true };
   if (view === "chat" && id && !rest.length) return { view: "chat", id };
   if (view === "project" && id && rest[0] === "chat" && rest.length === 1) return { view: "chat", id: "new", project: id };
   if (view === "task" && id && !rest.length) return { view: "task", id };
@@ -67,7 +70,7 @@ export function parseRouteHash(hash: string): Route {
 }
 
 export function hashFor(r: Route): string {
-  if (r.view === "composer" && r.legacy) return "#/workflows";
+  if (r.view === "composer" && r.legacy) return r.project === undefined ? "#/workflows" : r.project ? `#/project/${encodeURIComponent(r.project)}/workflow` : "#/workflows/unassigned";
   if (r.view === "chat") return r.id === "new" && r.project ? `#/project/${encodeURIComponent(r.project)}/chat` : `#/chat/${encodeURIComponent(r.id)}`;
   if (r.view === "composer" && r.project !== undefined) return r.project ? `#/project/${encodeURIComponent(r.project)}/new` : "#/new/unassigned";
   if (r.view === "invalid") return r.hash;

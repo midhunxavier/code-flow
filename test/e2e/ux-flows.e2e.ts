@@ -47,27 +47,18 @@ after(async () => {
 const errors: string[] = [];
 let result: any;
 
-test("template library and workflow selection preserve intentional drafts and expose the effective configuration", { timeout: 45_000 }, async () => {
+test("workflow selection preserves an intentional draft and exposes the effective configuration", { timeout: 45_000 }, async () => {
   page.on("pageerror", error => errors.push(error.message));
   await page.goto(base + "/#/workflows");
-  const choose = async (id: string) => {
-    await openAdvanced(page); await page.getByRole("button", { name: "Browser task library", exact: true }).click();
-    const dialog = page.getByRole("dialog", { name: "Template library", exact: true });
-    await dialog.getByLabel("Template", { exact: true }).selectOption(id);
-    await dialog.getByRole("button", { name: "Use template", exact: true }).click();
-  };
-  await choose("starter-feature");
   const draft = page.locator(".taskbox textarea");
   await draft.fill("Keep this task while changing the workflow");
   await openAdvanced(page);
   await page.getByLabel("Workflow", { exact: true }).selectOption("council");
   assert.equal(await draft.inputValue(), "Keep this task while changing the workflow");
-  await choose("starter-explore");
-  assert.equal(await page.getByLabel("Workflow", { exact: true }).inputValue(), "auto-team");
-  await choose("starter-bug");
-  await openAdvanced(page);
   await page.getByLabel("Workflow", { exact: true }).selectOption("fix-review");
+  assert.equal(await draft.inputValue(), "Keep this task while changing the workflow");
   await page.locator(".composer-summary").getByText("Limit", { exact: true }).waitFor();
+  await page.getByRole("heading", { name: "Run details", exact: true }).waitFor();
   await mkdir(join(root, "output/playwright"), { recursive: true });
   await page.screenshot({ path: join(root, "output/playwright/ux-composer.png"), fullPage: true });
 });
@@ -164,8 +155,6 @@ test("project tools retain repository context and new screens fit mobile and pas
 });
 
 async function openAdvanced(page: Page) {
-  const options = page.locator(".composer-options");
-  if (await options.getAttribute("open") === null) await options.locator(":scope > summary").click();
   const advanced = page.locator(".advanced-controls");
   if (await advanced.getAttribute("open") === null) await advanced.locator(":scope > summary").click();
 }

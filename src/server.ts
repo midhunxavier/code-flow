@@ -1967,7 +1967,6 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     const project = url.searchParams.get("project") || undefined;
     if (project && !projects.list().some(p => p.id === project)) throw new HttpError(404, "Project not found");
     if (req.method === "GET" && !parts[2]) return send(res, 200, await attempt(() => teamTemplateStore.list(project, url.searchParams.get("history") === "1")));
-    if (req.method === "POST" && parts[2] === "migrate") return send(res, 200, await attempt(async () => teamTemplateStore.migrate(await readJson(req), project)));
     if (req.method === "POST" && !parts[2]) {
       const body = await readJson(req);
       const template = await attempt(async () => validateTeamTemplate(body.template));

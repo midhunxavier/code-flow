@@ -42,17 +42,6 @@ test("template store publishes immutable versions, rejects stale writes, and sco
     assert.equal((await new TeamTemplateStore(home).resolve("private", 1, "alpha")).project, "alpha");
   } finally { await rm(home, { recursive: true, force: true }); }
 });
-test("legacy migration is idempotent and drops grants and host authentication bindings", async () => {
-  const home = await mkdtemp(join(tmpdir(), "template-migrate-"));
-  try {
-    const store = new TeamTemplateStore(home);
-    const library = { schemaVersion: 1, presets: [], templates: [{ id: "feature", name: "Feature", pattern: "pipeline", task: "Build {{task}}", criteria: [], config: { trust: "full", toolApprovals: true }, runOptions: { container: { enabled: false, authVolume: "private-auth" } } }] };
-    assert.equal((await store.migrate(library)).imported, 1);
-    assert.equal((await store.migrate(library)).imported, 0);
-    const text = JSON.stringify(await store.list());
-    assert.ok(!text.includes("private-auth") && !text.includes('"trust"') && !text.includes("toolApprovals"));
-  } finally { await rm(home, { recursive: true, force: true }); }
-});
 test("saving a run retains its reusable graph without session or result state", () => {
   const expanded = expandTemplateUses(plan, [template]);
   Object.assign(expanded.tasks[0]!, { checkpoint: "private", worktree: "/tmp/work", head: "sha", artifacts: ["result"] });
@@ -60,21 +49,6 @@ test("saving a run retains its reusable graph without session or result state", 
   const text = JSON.stringify(saved);
   assert.ok(!text.includes("private") && !text.includes("/tmp/work") && !text.includes('"head"') && !text.includes('"artifacts"'));
   assert.equal(saved.autoEnabled, false);
-});
-
-test("legacy templates and presets with matching IDs both migrate and retain preferences", async () => {
-  const home = await mkdtemp(join(tmpdir(), "template-collision-"));
-  try {
-    const store = new TeamTemplateStore(home);
-    const config = { pattern: "pipeline", roles: { builder: ["codex"] }, options: { reviews: 2 }, agentSettings: { codex: { model: "test", variants: [{ model: "variant" }] } }, trust: "full" };
-    const library = { schemaVersion: 1, templates: [{ id: "same", name: "Prompt", pattern: "pipeline", task: "Build {{TASK_NAME}}", criteria: [], config }], presets: [{ id: "same", name: "Settings", config }] };
-    assert.equal((await store.migrate(library)).imported, 2);
-    assert.equal((await store.migrate(library)).imported, 0);
-    const templates = (await store.list()).templates;
-    assert.equal(templates[0]!.task, "Build {{task-name}}");
-    assert.deepEqual(templates[0]!.preferences?.agentSettings.codex?.variants, [{ model: "variant" }]);
-    assert.deepEqual(templates[1]!.preferences?.roles.builder, ["codex"]);
-  } finally { await rm(home, { recursive: true, force: true }); }
 });
 
 test("template capture and expansion preserve artifact dependencies and global acceptance criteria", () => {

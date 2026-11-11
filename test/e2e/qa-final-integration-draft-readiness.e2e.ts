@@ -58,9 +58,9 @@ async function savedDraft() {
 
 for (const mode of ["Issue", "PR", "CI"] as const) test(`${mode} handoff waits for draft initialization and applies its selection once without stale restoration`, { timeout: 45000 }, async () => {
   const marker = `Saved draft before ${mode}`;
-  await page.goto(`${base}/?token=${token}#/project/${project}/new`);
+  await page.goto(`${base}/?token=${token}#/project/${project}/workflow`);
   await page.getByLabel("Task", { exact: true }).fill(marker);
-  await page.getByRole("button", { name: "Edit run options", exact: true }).click();
+  await page.locator(".advanced-controls").evaluate(el => { (el as HTMLDetailsElement).open = true; });
   const acceptance = page.locator(".acceptance-editor");
   if (!await acceptance.evaluate(el => (el as HTMLDetailsElement).open)) await acceptance.locator(":scope > summary").click();
   await page.getByLabel("One requirement per line", { exact: true }).fill("Previous draft criterion");

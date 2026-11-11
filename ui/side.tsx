@@ -365,10 +365,10 @@ function NotesTab() {
         <button
           type="button"
           class="btn ghost small"
-          title="Add the selection (or the whole note) to the task in the composer"
+          title="Add the selection (or the whole note) to the task you are writing"
           disabled={!text.trim()}
           onClick={() => {
-            // The composer takes it as a draft, so from a popped-out panel it goes to the main window's.
+            // New work takes it as a draft, so from a popped-out panel it goes to the main window's.
             if (activeChatContext.value) activeChatContext.value.appendText(selection());
             else navigate({ view: "composer" }, [{ to: "composer", text: selection(), images: [] }]);
             showToast("Added to the task");

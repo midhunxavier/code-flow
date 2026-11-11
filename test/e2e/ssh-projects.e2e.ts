@@ -153,8 +153,6 @@ test("connect from the app, browse a remote folder, run there, reconnect and ret
 });
 
 async function openAdvanced(page: Page) {
-  const options = page.locator(".composer-options");
-  if (await options.getAttribute("open") === null) await options.locator(":scope > summary").click();
   const advanced = page.locator(".advanced-controls");
   if (await advanced.getAttribute("open") === null) await advanced.locator(":scope > summary").click();
 }

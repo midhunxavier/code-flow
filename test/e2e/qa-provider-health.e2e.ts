@@ -67,14 +67,14 @@ test("never-discovered catalogs remain unknown after repeated failed refreshes",
   // Both live catalog API entry points expose the same unknown state on a first failed discovery.
   const first = await api("/api/model-catalog?antigravityExecution=native"), second = await api("/api/model-catalog", { antigravityExecution: "native" });
   for (const result of [first, second]) { const catalog = result.providers.find((v: any) => v.provider === "agy").catalog; assert.equal(catalog.state, "unknown"); assert.equal(catalog.discoveredAt, 0); }
-  await p.locator("details.composer-options > summary").click(); const models = p.getByRole("region", { name: "Automatic worker models" }); await models.getByText("agy · unknown · 0 models", { exact: true }).waitFor(); await models.getByRole("button", { name: "Refresh model catalog", exact: true }).click(); await models.getByRole("button", { name: "Refresh model catalog", exact: true }).waitFor(); assert.equal(await models.getByText("agy · unknown · 0 models", { exact: true }).count(), 1); await shot("catalog-unknown");
+  await p.locator(".advanced-controls").evaluate(el => { (el as HTMLDetailsElement).open = true; }); const models = p.getByRole("region", { name: "Automatic worker models" }); await models.getByText("agy · unknown · 0 models", { exact: true }).waitFor(); await models.getByRole("button", { name: "Refresh model catalog", exact: true }).click(); await models.getByRole("button", { name: "Refresh model catalog", exact: true }).waitFor(); assert.equal(await models.getByText("agy · unknown · 0 models", { exact: true }).count(), 1); await shot("catalog-unknown");
 });
 
 test("missing Docker image explains local recovery and never pulls or falls back", async () => {
-  const p = await open(`project/${project}/new`, { repo, pattern: "solo", roleSel: JSON.stringify({ solo: { agent: ["claude"] } }) });
+  const p = await open(`project/${project}/workflow`, { repo, pattern: "solo", roleSel: JSON.stringify({ solo: { agent: ["claude"] } }) });
   await p.getByRole("textbox", { name: "Task", exact: true }).fill("Health QA container failure");
-  if (!await p.locator("details.composer-options").evaluate(e => (e as HTMLDetailsElement).open)) await p.getByRole("button", { name: "Edit run options", exact: true }).click();
-  await p.locator("details.agent-isolation > summary").click(); await p.getByLabel("Run agents in a prebuilt Docker image", { exact: true }).check(); await p.getByLabel("Image", { exact: true }).fill("qa-missing-image:none");
+  await p.locator(".advanced-controls").evaluate(el => { (el as HTMLDetailsElement).open = true; });
+  await p.getByLabel("Run agents in a prebuilt Docker image", { exact: true }).check(); await p.getByLabel("Image", { exact: true }).fill("qa-missing-image:none");
   await p.locator(".taskbox").getByRole("button", { name: /^Permissions:/ }).click(); await p.getByRole("menuitem", { name: /^Approve for me/ }).click();
   const posted = p.waitForResponse(r => r.url().endsWith("/api/runs") && r.request().method() === "POST"); await p.locator(".task-start").click(); const response = await posted; assert.equal(response.status(), 201); const run = await done((await response.json()).id); assert.match(run.error, /not available locally.*never pulls.*build or load/);
   await p.getByText(/Docker image qa-missing-image:none is not available locally/).first().waitFor(); assert.equal(await p.getByText(/Docker image qa-missing-image:none is not available locally/).count(), 1); await shot("missing-image");

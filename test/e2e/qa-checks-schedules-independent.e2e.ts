@@ -131,7 +131,7 @@ test("startup catch-up fires the retained occurrence past one hour and skipped r
 });
 
 test("readiness validates a real command lasting longer than the old 120-second cap", { timeout: 180000 }, async () => {
-  await open(`#/project/${long.id}/new`); await page.locator(".composer-options > summary").click();
+  await open(`#/project/${long.id}/workflow`); await page.locator(".advanced-controls").evaluate(el => { (el as HTMLDetailsElement).open = true; });
   await page.getByText("Repository readiness", { exact: true }).click();
   const response = page.waitForResponse(r => r.url().endsWith("/api/readiness") && r.request().method() === "POST", { timeout: 160000 });
   const started = Date.now(); await page.getByRole("button", { name: "Validate commands", exact: true }).click();

@@ -98,7 +98,7 @@ test("a GitHub issue retains project and repository through a real agent task", 
   await connectionsPage(); await card("GitHub").getByRole("button", { name: "Choose issue or PR", exact: true }).click(); await page.getByRole("button", { name: "Choose issue", exact: true }).click();
   const preview = page.getByRole("article", { name: "Source preview", exact: true }); await preview.getByRole("button", { name: "Start task from issue", exact: true }).click();
   await page.getByTitle(repo, { exact: true }).waitFor();
-  const options = page.locator(".composer-options"); if (await options.getAttribute("open") === null) await options.locator(":scope > summary").click();
+  await page.locator(".advanced-controls").evaluate(el => { (el as HTMLDetailsElement).open = true; });
   const advanced = page.locator(".advanced-controls"); if (await advanced.getAttribute("open") === null) await advanced.locator(":scope > summary").click(); await page.getByLabel("Workflow", { exact: true }).selectOption("solo");
   const started = page.waitForResponse(r => r.url().endsWith("/api/runs") && r.request().method() === "POST"); await page.getByRole("button", { name: /^(Start run|Send)$/, exact: true }).click();
   const response = await started, result = await response.json(); assert.equal(response.status(), 201, JSON.stringify(result));

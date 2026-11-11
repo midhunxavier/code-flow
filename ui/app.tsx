@@ -16,7 +16,7 @@ import { useLayoutEffect, useEffect, useRef, useState } from "preact/hooks";
 import { ApprovalInbox } from "./approval-inbox.js";
 import { Composer } from "./composer.js";
 import { TaskConversationPage } from "./task-conversation.js";
-import { openChat } from "./chat-state.js";
+import { chatAllowed, openChat } from "./chat-state.js";
 const ChatPage = lazyView(() => import("./chat.js").then(module => module.ChatPage));
 import { CommandPalette } from "./command-palette.js";
 import { SidePanel } from "./side.js";
@@ -35,7 +35,7 @@ const TeamTaskView = lazyView(() => import("./collab-task.js").then((module) => 
 import { board as teamBoard, openTask, watchTeam } from "./collab-state.js";
 import { Rail } from "./rail.js";
 import { Icon } from "./icons.js";
-import { api, baseName, onPhone, ownerOnLocalListener, dismissToast, post, rememberFolders, showToast, store, toast } from "./lib.js";
+import { api, baseName, dismissToast, post, rememberFolders, showToast, store, toast } from "./lib.js";
 import { theme, toggleTheme } from "./theme.js";
 import {
   composerProject,
@@ -194,7 +194,7 @@ function MainApp() {
                 <button class="btn primary" onClick={() => (route.value = { view: "composer" })}>New chat</button>
               </div>
             ) : (
-              !draftsReady.value || composerLoading.value || route.value.view === "composer" && route.value.project !== undefined && route.value.project !== composerProject.value ? <div class="composer" role="status">{draftError.value || "Restoring your project draft…"}</div> : route.value.view === "composer" && !route.value.legacy && route.value.project === undefined && !onPhone && ownerOnLocalListener.value && executionHost.value.kind === "local" ? <ChatPage id="new" /> : <Composer key={composerProject.value} />
+              !draftsReady.value || composerLoading.value || route.value.view === "composer" && route.value.project !== undefined && route.value.project !== composerProject.value ? <div class="composer" role="status">{draftError.value || "Restoring your project draft…"}</div> : route.value.view === "composer" && !route.value.legacy && route.value.project === undefined && chatAllowed() ? <ChatPage id="new" /> : <Composer key={composerProject.value} />
             )}
           </main>
         </div>
@@ -224,7 +224,7 @@ const MOD_KEY = typeof navigator !== "undefined" && /Mac|iPhone|iPad|iPod/.test(
 function TopBar() {
   const dark = theme.value === "dark";
   const current = route.value;
-  const hostInComposer = !onPhone && ownerOnLocalListener.value && executionHost.value.kind === "local" &&
+  const hostInComposer = chatAllowed() &&
     (current.view === "chat" && current.id === "new" || current.view === "composer" && !current.legacy && current.project === undefined);
   return (
     <header class="topbar">
@@ -348,7 +348,7 @@ function Crumbs() {
       </span>
     );
   } else {
-    const page = r.view === "chat" ? r.id === "new" ? "New chat" : "Chat" : r.view === "composer" ? !r.legacy && r.project === undefined && !onPhone && ownerOnLocalListener.value && executionHost.value.kind === "local" ? "New chat" : "Saved workflows" : r.view === "projects" ? "Projects" : "";
+    const page = r.view === "chat" ? r.id === "new" ? "New chat" : "Chat" : r.view === "composer" ? !chatAllowed() ? "New run" : !r.legacy && r.project === undefined ? "New chat" : "Workflow run" : r.view === "projects" ? "Projects" : "";
     if (page === "New chat" || page === "Chat") return <span class="spacer" aria-hidden="true" />;
     trail = page ? (
       <span class="crumb here" aria-current="page">

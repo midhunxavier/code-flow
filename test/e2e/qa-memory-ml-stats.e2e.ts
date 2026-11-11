@@ -52,7 +52,7 @@ test("run memory manifest displays one titled entry after planning omission then
 });
 test("workflow advice orders 0 of 4 before 0 of 3 using real fake-provider runs", { timeout: 60000 }, async () => {
   for (const pattern of ["solo", "solo", "solo", "fix-review", "fix-review", "fix-review", "fix-review"]) { const run = await api("/api/runs", { repo, project, pattern, task: "Check the README", roles: { agent: ["claude"], builder: ["codex"], reviewer: ["claude"] }, loop: { maxSteps: 4, maxMinutes: 2 }, trust: "standard" }); await until(() => api(`/api/runs/${run.id}`), r => r.status !== "running"); }
-  const p = await open(`#/project/${project}/new`); await p.getByText("Workflow advice from this repository", { exact: true }).click(); const text = await p.locator("details").filter({ has: p.locator("summary", { hasText: /^Workflow advice from this repository$/ }) }).innerText(); assert.ok(text.indexOf("Fix & review") < text.indexOf("Agent"), text);
+  const p = await open(`#/project/${project}/workflow`); await p.getByText("Workflow advice from this repository", { exact: true }).click(); const text = await p.locator("details").filter({ has: p.locator("summary", { hasText: /^Workflow advice from this repository$/ }) }).innerText(); assert.ok(text.indexOf("Fix & review") < text.indexOf("Agent"), text);
 });
 test("policy errors are complete sentences and stale restore describes restore without draft warning", async () => {
   const p = await open("#/settings/projects"); await p.getByLabel("Project", { exact: true }).selectOption(project);

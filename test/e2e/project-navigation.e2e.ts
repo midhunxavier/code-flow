@@ -49,9 +49,8 @@ async function chooseFolder(repository: string) {
 }
 async function projectNewRun(id: string) {
   await page.goto(base + `/#/project/${id}`);
-  await page.locator(".project-page").getByRole("link", { name: "Project settings", exact: true }).click();
-  await page.getByText("Advanced · saved workflows and repository configuration", { exact: true }).click();
-  await page.getByRole("button", { name: "Saved workflows", exact: true }).click();
+  await page.locator(".project-page").getByRole("button", { name: "New chat", exact: true }).click();
+  await page.getByRole("button", { name: "Open workflow run", exact: true }).click();
   await page.getByLabel("Task", { exact: true }).waitFor({ timeout: 15000 }).catch(async error => { console.error(await page.locator("body").innerText(), errors); throw error; });
 }
 
@@ -109,10 +108,10 @@ test("project drafts and attachments survive project views, switches and reloads
 });
 
 test("composer links and browser history restore the destination without changing global filters", { timeout: 45_000 }, async () => {
-  await page.goto(base + `/?team=local#/project/${projectA}/new`);
+  await page.goto(base + `/?team=local#/project/${projectA}/workflow`);
   await page.getByLabel("Task", { exact: true }).waitFor();
   assert.equal(await page.getByLabel("Task", { exact: true }).inputValue(), "Alpha draft");
-  await page.evaluate(id => { location.hash = `#/project/${id}/new`; }, projectB);
+  await page.evaluate(id => { location.hash = `#/project/${id}/workflow`; }, projectB);
   await page.locator(".where .project-btn", { hasText: "Beta" }).waitFor();
   assert.equal(await page.getByLabel("Task", { exact: true }).inputValue(), "Beta draft");
   await page.goBack();
@@ -195,7 +194,7 @@ test("a browser that denies IndexedDB can still open, save and reload a project 
   try {
     await context.addInitScript(() => { Object.defineProperty(window, "indexedDB", { value: { open() { throw new DOMException("Storage denied", "SecurityError"); } } }); });
     const tab = await context.newPage();
-    await tab.goto(base + `/?token=project-navigation-test#/project/${projectB}/new`);
+    await tab.goto(base + `/?token=project-navigation-test#/project/${projectB}/workflow`);
     await tab.getByLabel("Task", { exact: true }).fill("Draft saved through fallback storage");
     await tab.reload();
     await tab.getByLabel("Task", { exact: true }).waitFor();
@@ -323,8 +322,6 @@ test("new project destinations support narrow screens, themes and keyboard navig
 });
 
 async function selectAgentConversation(page: import("playwright-core").Page) {
-  const options = page.locator(".composer-options");
-  if (await options.getAttribute("open") === null) await options.locator(":scope > summary").click();
   const advanced = page.locator(".advanced-controls");
   if (await advanced.getAttribute("open") === null) await advanced.locator(":scope > summary").click();
   await page.getByLabel("Workflow", {exact:true}).selectOption("solo");

@@ -201,9 +201,7 @@ test("settings navigation, search, appearance, and run defaults persist and driv
   assert.equal(await page.getByLabel("Time (min)", { exact: true }).inputValue(), "37");
   await page.getByRole("button", { name: "New chat", exact: true }).click();
   await page.evaluate(() => { location.hash = "#/workflows"; });
-  await page.locator(".composer-options > summary").click();
-  await page.locator("details.advanced-controls > summary").click();
-  await page.locator("details.settings > summary").filter({ has: page.locator(".st", { hasText: /^Branches and limits$/ }) }).click();
+  await page.locator(".advanced-controls").evaluate(el => { (el as HTMLDetailsElement).open = true; });
   assert.equal(await page.locator("#maxMinutes").inputValue(), "37");
   assert.equal(await page.locator("#maxSteps").inputValue(), "18");
   assert.match(await page.locator(".taskbox").getByRole("button", { name: /^Permissions:/ }).innerText(), /Safe/);

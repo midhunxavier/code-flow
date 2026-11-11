@@ -18,16 +18,16 @@ import { activeChatContext, chatDetailsTarget } from "./chat-context.js";
 import { chatDraftFiles } from "./chat-files.js";
 import { PolicyPauseNotice } from "./policy-pause.js";
 import { useEffect, useRef, useState } from "preact/hooks";
-import { api, post, enc, baseName, store, workspaceKey, onPhone, ownerOnLocalListener, sendOnEnter } from "./lib.js";
-import { projects, composerProject, repo, route, openComposer, agents, catalogs, projectsOpen, projectEdit, projectPickerPurpose, defaultPattern, providerDefaults, draftsReady, composerLoading, executionPaused, ghPicker, sideTab, sideExpanded, openSide, closeSide } from "./state.js";
+import { api, post, enc, baseName, store, workspaceKey, ownerOnLocalListener, sendOnEnter } from "./lib.js";
+import { projects, composerProject, repo, route, openComposer, chatDrafts, takeDrafts, agents, catalogs, projectsOpen, projectEdit, projectPickerPurpose, defaultPattern, providerDefaults, draftsReady, composerLoading, executionPaused, ghPicker, sideTab, sideExpanded, openSide, closeSide } from "./state.js";
 import { addRepositoryToProject } from "./projects.js";
-import { executionHost, HostControl } from "./ssh-projects.js";
+import { HostControl } from "./ssh-projects.js";
 import { Markdown } from "./bits.js";
 import { Icon } from "./icons.js";
 import { ChatControls, PermissionMenu } from "./chat-controls.js";
 import { Menu, MenuItem } from "./panel-bits.js";
 import { ApproachEditor, SourcePicker, TaskResult } from "./task-conversation.js";
-import { chatSearchTarget, refreshChats } from "./chat-state.js";
+import { chatAllowed, chatSearchTarget, refreshChats } from "./chat-state.js";
 import { CHAT_OUTCOMES, type ChatDefaults, type ChatAttachment, type ChatEvent } from "../src/conversational/chat-model.js";
 import type { ChatSnapshot } from "../src/conversational/chats.js";
 import type { TaskSnapshot } from "../src/conversational/service.js";
@@ -237,7 +237,17 @@ export function ChatPage({ id, project: initialProject, automation = false }: { 
       update({ attachments, messageId: uuid() });
     });
   }
-  if (executionHost.value.kind !== "local" || onPhone || !ownerOnLocalListener.value) return <div class="composer"><h1>Chat on this computer</h1><p>Remote and container workflows remain available in the workflow composer.</p><button class="btn" onClick={() => void openComposer(project)}>Open workflows</button></div>;
+  // Browser pins, notes and a continued draft sent to new work: the text joins the message, snapshots its files.
+  useEffect(() => {
+    if (id !== "new" || automation || !chatAllowed()) return;
+    const drafts = takeDrafts("composer");
+    if (!drafts.length) return;
+    update({ message: [draft.message.trim(), ...drafts.map(item => item.text)].filter(Boolean).join("\n\n"), messageId: uuid() });
+    const images = drafts.flatMap(item => item.images);
+    if (images.length) void attach(images.map(image => new File([Uint8Array.from(atob(image.data), char => char.charCodeAt(0))], image.name, { type: "image/png" })));
+    input.current?.focus();
+  }, [chatDrafts.value]);
+  if (!chatAllowed()) return <div class="composer"><h1>Chat on this computer</h1><p>Chats run for the owner on this computer. From this device or an SSH host, start a run instead.</p><button class="btn" onClick={() => void openComposer(project)}>New run</button></div>;
   const pending = snapshot?.turn;
   const providerName = agents.value.find(a => a.id === draft.defaults.provider)?.displayName ?? draft.defaults.provider;
   const catalog = catalogs.value[draft.defaults.provider];
@@ -270,6 +280,7 @@ export function ChatPage({ id, project: initialProject, automation = false }: { 
         <label title="Repository"><Icon name="terminal"/><span class="sr-only">Repository</span><select aria-label="Repository" value={draft.discussion ? "__discussion" : draft.repo} onChange={e => { const value = e.currentTarget.value; setSourceInfo(undefined); setError(""); update({ repo: value === "__discussion" ? "" : value, discussion: value === "__discussion", untracked: [] }); }}><option value="" disabled>Choose repository</option><option value="__discussion">Discussion only</option>{draftProject.repos.map(path => <option key={path} value={path}>{baseName(path)}</option>)}</select></label>
       </> : null}
       {!projects.value.length ? <button type="button" class="btn ghost small" onClick={newProject}>Create project</button> : draft.project && !projects.value.find(p => p.id === draft.project)?.repos.length ? <button type="button" class="btn ghost small" onClick={() => addRepositoryToProject(draft.project)}>Add repository</button> : null}
+      {!automation ? <button type="button" class="btn ghost small" title="Fixed workflows, team templates, start later and schedules" disabled={!draftsReady.value || composerLoading.value} onClick={() => void openComposer(draft.project)}>Open workflow run</button> : null}
     </div> : null}
       {scheduling ? <p class="chat-schedule-note" role="status">{draft.defaults.mode === "agent" ? "One agent" : "Team"} · Prepare an approach and confirm when it runs.</p> : null}
       <div class="task-composer-box">

@@ -249,7 +249,7 @@ test("context directories preview committed sources and explicit budgets block a
   await selectAgentConversation(page); await page.getByLabel("Task", { exact: true }).fill("Exercise the explicit context budget before a provider launch.");
   await page.locator(".taskbox").getByRole("button", { name: "Files", exact: true }).click(); await page.getByRole("button", { name: "Add api to the task", exact: true }).click();
   await page.getByRole("button", { name: "Side panel", exact: true }).click();
-  if (await page.locator(".composer-options").getAttribute("open") === null) await page.locator(".composer-options > summary").click(); await page.locator(".context-inspector > summary").click(); await page.getByRole("button", { name: "Preview selected context", exact: true }).click();
+  await page.locator(".advanced-controls").evaluate(el => { (el as HTMLDetailsElement).open = true; }); await page.getByRole("button", { name: "Preview selected context", exact: true }).click();
   await page.locator(".context-inspection-results").getByText("api/service.mjs · committed base", { exact: true }).waitFor();
   await page.getByRole("checkbox", { name: "Set an explicit input budget for each provider launch", exact: true }).check();
   await page.getByLabel("Maximum explicit input bytes", { exact: true }).fill("1"); await page.getByLabel("When the explicit input exceeds this budget", { exact: true }).selectOption("block");
@@ -264,14 +264,14 @@ test("context directories preview committed sources and explicit budgets block a
   await page.getByRole("button", { name: "Save current workflow", exact: true }).click();
   await page.getByRole("button", { name: "Save new revision", exact: true }).waitFor();
   await page.evaluate(() => { location.hash = "/workflows"; });
-  if (await page.locator(".composer-options").getAttribute("open") === null) await page.locator(".composer-options > summary").click(); await page.locator(".context-inspector > summary").click();
+  await page.locator(".advanced-controls").evaluate(el => { (el as HTMLDetailsElement).open = true; });
   await page.getByLabel("Maximum explicit input bytes", { exact: true }).fill("40000"); await page.getByLabel("When the explicit input exceeds this budget", { exact: true }).selectOption("warn");
   await openLibrary();
   await page.getByLabel("Saved workflow", { exact: true }).selectOption({ label: "Budgeted team · r1" });
   await page.getByRole("button", { name: "Save new revision", exact: true }).click();
   await page.getByLabel("Revision to apply", { exact: true }).selectOption("1"); await page.getByRole("button", { name: "Apply workflow", exact: true }).click();
   await page.evaluate(() => { location.hash = "/workflows"; });
-  if (await page.locator(".composer-options").getAttribute("open") === null) await page.locator(".composer-options > summary").click(); await page.locator(".context-inspector > summary").click();
+  await page.locator(".advanced-controls").evaluate(el => { (el as HTMLDetailsElement).open = true; });
   assert.equal(await page.getByLabel("Maximum explicit input bytes", { exact: true }).inputValue(), "1", "applying history restores the captured input ceiling");
   assert.equal(await page.getByLabel("When the explicit input exceeds this budget", { exact: true }).inputValue(), "block");
   await page.getByText("Run details", { exact: true }).click();
@@ -350,8 +350,6 @@ test("filesystem policy enforces scoped app reads/writes and globally blocks exe
 });
 
 async function selectAgentConversation(page: import("playwright-core").Page) {
-  const options = page.locator(".composer-options");
-  if (await options.getAttribute("open") === null) await options.locator(":scope > summary").click();
   const advanced = page.locator(".advanced-controls");
   if (await advanced.getAttribute("open") === null) await advanced.locator(":scope > summary").click();
   await page.getByLabel("Workflow", {exact:true}).selectOption("solo");
