@@ -1,7 +1,6 @@
 import type { PatternInfo } from "./types.js";
 import type { VerificationProfile } from "../src/verification.js";
 import { intentDraft } from "./experience.js";
-import { journeyDraft } from "./journeys.js";
 import { selectedTeamTemplate } from "./team-template-state.js";
 import { rerunDraft, sourceForRerun } from "./rerun-draft.js";
 import { contextBudget } from "./context-budget.js";
@@ -24,8 +23,7 @@ export function composerRunBody(p: PatternInfo, profile?: VerificationProfile | 
   const savedApprovals = store.get("interactiveApprovals");
   const approvals = toolApprovalState({ choice: options.toolApprovals ?? (savedApprovals === null ? undefined : savedApprovals === "1"), trust: externalSource.value ? "safe" : trust.value, p, roles, remote: !!remoteWorker, container: containerEnabled, external: !!externalSource.value });
   return ({
-    intent: journeyDraft.value?.repo === repo.value ? "bug" : intentDraft.value,
-    journeyId: journeyDraft.value?.repo === repo.value ? journeyDraft.value.id : undefined,
+    intent: intentDraft.value,
     repo: repo.value,
     project: projectsStatus.value.available ? composerProject.value || undefined : undefined,
     projectSelection: projectsStatus.value.available ? "explicit" : undefined,

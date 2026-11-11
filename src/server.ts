@@ -26,8 +26,6 @@ import { transcriptPage, transcriptPreview, TranscriptCursorError } from "./tran
 import { createSseWriter, streamHealth } from "./sse-writer.js";
 import { PerformanceMetrics } from "./performance.js";
 import { StreamSharingIdentity } from "./stream-sharing.js";
-import { JourneyStore } from "./journey-store.js";
-import { journeyApi } from "./journey-api.js";
 import { taskIntent, outcomeMetrics, workflowRecommendations } from "./experience.js";
 import { join, resolve as resolvePath, sep } from "node:path";
 import type { Socket } from "node:net";
@@ -104,7 +102,6 @@ import { Notes, NotesConflictError } from "./notes.js";
 import { HttpError, readJson, readLoginJson, send } from "./http.js";
 import { handleWorkspaceApi } from "./workspace-api.js";
 import { TeamPlanEditError } from "./workflow-control.js";
-import { analyzeProjectMemory } from "./memory-analysis.js";
 import { redactExport } from "./privacy.js";
 import { validateVerificationProfile, renderVerificationReport } from "./verification.js";
 import { CODEFLOW_HOME, autoTeamEnabled, envNumber, PORT } from "./config.js";
@@ -323,8 +320,6 @@ function remoteTlsIssue(settings: RemoteSettings = remote): string | undefined {
 
 const allowedHosts = new Set([`${HOST}:${PORT}`, `127.0.0.1:${PORT}`, `localhost:${PORT}`]);
 /** Local apps in the side panel's Browser, each on a port of its own (src/preview.ts). */
-const journeys = new JourneyStore(join(CODEFLOW_HOME, "journeys"));
-const handleJourneys = journeyApi(journeys, manager, [PORT, REMOTE_PORT]);
 const previews = new Previews(
   () => [`http://localhost:${PORT}`, `http://127.0.0.1:${PORT}`],
   () => [PORT, REMOTE_PORT],
@@ -952,7 +947,6 @@ async function validatedStartInput(body: Record<string, any>): Promise<StartRunI
   if (body.externalSourceId !== undefined && body.externalSourceRef !== undefined) throw new HttpError(400, "Choose one external source reference");
   if (body.checkpointOnFinish !== undefined && typeof body.checkpointOnFinish !== "boolean") throw new HttpError(400, "checkpointOnFinish must be a boolean");
   if (body.intent !== undefined && !taskIntent(body.intent)) throw new HttpError(400, "Choose a supported task type");
-  if (body.journeyId !== undefined) { const journey = await attempt(() => journeys.get(String(body.journeyId))); if (journey.repo !== await repoRoot(repo)) throw new HttpError(400, "The scenario belongs to another repository"); }
   const parent = typeof body.parentRunId === "string" ? manager.get(body.parentRunId) : undefined;
   if (body.parentRunId !== undefined && !parent) throw new HttpError(400, "Parent run not found; cannot inherit its permissions");
   const inheritedLoop = inheritRunEnvironment(body.loop ?? {}, parent);
@@ -997,7 +991,6 @@ async function validatedStartInput(body: Record<string, any>): Promise<StartRunI
     task,
     intent: taskIntent(body.intent),
     testRun: body.testRun === undefined ? parent?.testRun : body.testRun,
-    journeyId: typeof body.journeyId === "string" ? body.journeyId : undefined,
     repo,
     project: typeof body.project === "string" && body.project ? body.project : undefined,
     requireProjectRepo: body.projectSelection === "explicit",
@@ -2209,25 +2202,6 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
       const requested = url.searchParams.get("repo");
       if (requested && !project.repos.includes(requested)) throw new HttpError(400, "That repository is not in this project");
       const repos = requested ? [requested] : project.repos;
-      if (parts[4] === "graph" && !parts[5] && req.method === "GET") {
-        const repo = requested ?? (project.repos.length === 1 ? project.repos[0] : undefined);
-        if (!repo) throw new HttpError(400, "Choose a repository in this project");
-        return send(res, 200, await attempt(() => memoryStore.graph({ repo, projectId: id, scope: "project" }, { kind: "user", repo, projectId: id })));
-      }
-      if (parts[4] === "analysis") {
-        const body = req.method === "POST" ? await readJson(req) : {};
-        const repo = typeof body.repo === "string" ? body.repo : requested ?? (project.repos.length === 1 ? project.repos[0] : undefined);
-        if (!repo || !project.repos.includes(repo)) throw new HttpError(400, "Choose a repository in this project");
-        const entries = await memoryStore.list({ repo, projectId: id, scope: "project" }, { kind: "user", repo, projectId: id });
-        const analysis = await attempt(() => analyzeProjectMemory({ repo, projectId: id, entries }));
-        if (req.method === "GET" && !parts[5]) return send(res, 200, analysis);
-        if (req.method === "POST" && parts[5] === "publish") {
-          if (!Array.isArray(body.expectedSources) || JSON.stringify(body.expectedSources) !== JSON.stringify(analysis.onboarding.sourceRefs)) throw new HttpError(409, "The onboarding sources changed. Review the current summary before publishing");
-          if (!analysis.onboarding.sourceRefs.length) throw new HttpError(400, "There is no current trusted user guidance to publish");
-          return send(res, 201, await attempt(() => memoryStore.propose({ scope: "project", repo, projectId: id, title: analysis.onboarding.title, body: analysis.onboarding.body, tags: ["onboarding-summary"], derivedFrom: analysis.onboarding.sourceRefs, sourceRefs: analysis.onboarding.sourceRefs.map((ref) => `${ref.id}@${ref.revision}`) }, { kind: "user", repo, projectId: id }, { expectedSources: analysis.onboarding.sourceRefs })));
-        }
-        throw new HttpError(404, "Unknown memory analysis operation");
-      }
       if (req.method === "GET" && !parts[4]) {
         const entries = (await Promise.all(repos.map((repo) => memoryStore.list({ repo, projectId: id, scope: "project" }, { kind: "user", repo, projectId: id })))).flat();
         return send(res, 200, entries.sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id)));
@@ -2528,7 +2502,6 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
   // Every app started with "Run app", for the side panel's Browser.
   if (req.method === "GET" && parts[1] === "serve") return send(res, 200, manager.devServers.list());
   // The side panel's Terminal: shells that stay open, fed over POST, streamed over SSE.
-  if (await handleJourneys(req, res, url, parts)) return;
   if (parts[1] === "preview" && req.method === "POST") {
     const body = await readJson(req);
     if (parts[2] === "status") {

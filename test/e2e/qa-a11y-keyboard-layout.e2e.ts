@@ -153,25 +153,11 @@ test('long tasks, plan text, fenced code and phone shortcut lists are named keyb
   await until(() => shortcuts.evaluate(e => e.scrollTop), value => value > 0);
   await audit(p, 'shortcuts-phone');
 });
-test('memory provenance nodes receive Tab, Enter and Space', { timeout: 45000 }, async () => {
+test('long memory code blocks are keyboard scrollers', { timeout: 45000 }, async () => {
   for (const title of ['Alpha guidance', 'Beta guidance', 'Gamma guidance'])
     await api(`/api/projects/${project}/memory/commands`, { op: 'create', repo, title, body: 'Review the project requirements carefully.\n\n```txt\n' + Array.from({ length: 35 }, (_, n) => 'Example ' + n).join('\n') + '\n```' });
   const p = await open('settings/projects');
   await p.locator('.project-memory > summary').click();
-  await p.getByText('Advanced memory tools', { exact: true }).click();
-  await p.getByText('Source and derived-entry graph', { exact: true }).click();
-  const graph = p.locator('.memory-graph'), nodes = graph.locator('g.mem-node');
-  await nodes.first().waitFor();
-  assert.equal(await nodes.first().evaluate(e => (e as unknown as HTMLElement).tabIndex), 0);
-  await graph.focus();
-  await p.keyboard.press('Tab');
-  assert.equal(await nodes.first().evaluate(e => e === document.activeElement), true);
-  await p.keyboard.press('Enter');
-  await p.locator('.memory-analysis [role=status]').getByText(/guidance · revision/).waitFor();
-  await nodes.nth(1).focus();
-  await p.keyboard.press('Space');
-  assert.equal(await nodes.nth(1).evaluate(e => e.classList.contains('on')), true);
-  await audit(p, 'memory-graph', '.memory-analysis');
   const code = p.locator('.memory-card pre').first();
   assert.equal(await code.getAttribute('tabindex'), '0');
   await code.focus();

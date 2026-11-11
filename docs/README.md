@@ -57,7 +57,7 @@ Read the story: [Describe the team. Code Flow builds the workflow.](https://midh
 - [Configuration](configuration.md) · [ACP agents](acp-agents.md) · [Context inspection](context-inspection.md)
 - [Project conventions](project-conventions.md) · [Checkpoints and reversions](checkpoint-review.md)
 - [Code intelligence](code-intelligence.md) · [Architecture explorer](architecture-explorer.md)
-- [Project memory and knowledge graph](memory-storage.md) · [Semantic claim review](memory-claims.md)
+- [Project memory](memory-storage.md)
 - [Coordinated repository changes](coordinated-changes.md)
 
 ## Connect and collaborate
