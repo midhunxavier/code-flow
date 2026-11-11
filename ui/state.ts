@@ -8,7 +8,7 @@ import { DEFAULT_EXECUTION_BUDGET } from "../src/execution-budget.js";
 export { needsYou, runState, isFlagged } from "../src/run-status.js";
 import { rerunDraft } from "./rerun-draft.js";
 import { contextBudget, contextBudgetOrigin } from "./context-budget.js";
-import { intentDraft, journeyDraft } from "./composer-draft-fields.js";
+import { intentDraft } from "./composer-draft-fields.js";
 import { batch, computed, effect, signal, untracked } from "@preact/signals";
 import { legacyDraftProject, projectDestination, ProjectDraftStore } from "./project-context.js";
 import { supportsRunPermissions } from "../src/run-permissions.js";
@@ -1550,7 +1550,7 @@ export function rememberBase() {
 // ---------------------------------------------------------------- project drafts
 function composerSnapshot() {
   return {
-    contextBudget: contextBudget.value, contextBudgetOrigin: contextBudgetOrigin.value, intent: intentDraft.value, journey: journeyDraft.value,
+    contextBudget: contextBudget.value, contextBudgetOrigin: contextBudgetOrigin.value, intent: intentDraft.value,
     version: 1 as const, repository: requestedRepository.value, task: task.value, acceptance: acceptanceCriteria.value,
     paths: [...contextPaths.value.entries()], attachments: attachments.value, pattern: patternId.value,
     roles: roleSel.value, models: roleModels.value, settings: agentSettings.value, options: optionValues.value,
@@ -1656,7 +1656,7 @@ function restoreComposer(snapshot: ComposerSnapshot) {
   if (snapshot.rerun && !DRAFT_CHOICES.some((field) => field in origins)) for (const field of DRAFT_CHOICES) origins[field] = RERUN_ORIGIN;
   batch(() => {
     contextBudget.value = snapshot.contextBudget; contextBudgetOrigin.value = snapshot.contextBudgetOrigin ?? "Application default";
-    intentDraft.value = snapshot.intent; journeyDraft.value = snapshot.journey;
+    intentDraft.value = snapshot.intent;
     task.value = snapshot.task; acceptanceCriteria.value = snapshot.acceptance;
     contextPaths.value = new Map(snapshot.paths); attachments.value = snapshot.attachments;
     patternId.value = snapshot.pattern; roleSel.value = snapshot.roles; roleModels.value = snapshot.models;
@@ -1676,7 +1676,7 @@ function restoreComposer(snapshot: ComposerSnapshot) {
 }
 
 function resetComposer(project?: Project) {
-  intentDraft.value = undefined; journeyDraft.value = undefined; contextBudget.value = undefined; contextBudgetOrigin.value = "Application default";
+  intentDraft.value = undefined; contextBudget.value = undefined; contextBudgetOrigin.value = "Application default";
   task.value = ""; acceptanceCriteria.value = []; attachments.value = []; contextPaths.value = new Map();
   source.value = null; externalSource.value = null; branchPrefix.value = ""; baseRef.value = "";
   roleSel.value = store.json("roleSel", {}); roleModels.value = store.json("roleModels", {});
@@ -1731,7 +1731,7 @@ async function switchComposer(next: string, options: { repository?: string; carr
         resetComposer(project);
       }
       if (saved && repository !== saved.repository) {
-        contextPaths.value = new Map(); source.value = null; externalSource.value = null; baseRef.value = ""; journeyDraft.value = undefined;
+        contextPaths.value = new Map(); source.value = null; externalSource.value = null; baseRef.value = "";
         checkCmd.value = detectedCheck; setupCmd.value = detectedSetup; trust.value = detectedTrust; selectedTeamTemplate.value = null; composerRunOptions.value = {}; rerunDraft.value = null;
         forgetChoices(["check", "setup", "trust"]);
       }

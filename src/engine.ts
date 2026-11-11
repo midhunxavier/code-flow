@@ -397,7 +397,6 @@ export interface Run {
   modelRouting?: { version: 1 };
   taskPriorities?: Record<string, number>;
   intent?: import("./experience.js").TaskIntent;
-  journeyId?: string;
   outcome?: { decision: "accepted" | "needs-work"; branch: string; head: string; at: number };
   projectTeam?: ProjectTeamRun;
   projectDiscovery?: DiscoveryReceipt;
@@ -3321,7 +3320,6 @@ export interface StartRunInput {
   /** Explicit opt-in for ACP agents, which run outside the managed permission policy. */
   acpExecution?: AcpExecution;
   intent?: import("./experience.js").TaskIntent;
-  journeyId?: string;
   projectTeam?: ProjectTeamRun;
   /** Internal durable admission barrier; never accepted from HTTP bodies. */
   beforeDispatch?: (run: Run) => Promise<void>;
@@ -5930,7 +5928,6 @@ export class RunManager {
       taskTeam: input.taskTeam ? validateTaskTeam(input.taskTeam) : undefined,
       taskExecution: input.taskExecution ? { ...input.taskExecution } : undefined,
       intent: input.intent,
-      journeyId: input.journeyId,
       deferred: input.deferred ? structuredClone(input.deferred) : undefined,
       coordination: input.coordination ? { jobId: input.coordination.jobId, nodeId: input.coordination.nodeId, claimId: input.coordination.claimId, attempt: input.coordination.attempt } : undefined,
       repo,
