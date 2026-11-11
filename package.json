@@ -38,7 +38,7 @@
     "benchmark:compare": "tsx scripts/benchmark-compare.ts",
     "build:docs": "node scripts/build-docs.mjs",
     "docs:preview": "node scripts/preview-docs.mjs",
-    "test:docs": "tsx --test test/docs.test.ts test/docs-help.test.ts",
+    "test:docs": "tsx --test test/docs.test.ts test/docs-help.test.ts test/qa-solo-check-docs.test.ts",
     "screenshots:docs": "node scripts/screenshot-docs.mjs",
     "desktop:dev": "node scripts/desktop-dev.mjs",
     "desktop:docker": "node scripts/desktop-docker-dev.mjs"

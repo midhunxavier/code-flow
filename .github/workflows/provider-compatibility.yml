@@ -4,6 +4,8 @@ on:
     paths: ["src/adapters/**", "src/doctor.ts", "scripts/check-provider-compatibility.ts", ".github/workflows/provider-compatibility.yml", "package-lock.json"]
   push:
     branches: [main]
+    paths: ["src/adapters/**", "src/doctor.ts", "scripts/check-provider-compatibility.ts", ".github/workflows/provider-compatibility.yml", "package-lock.json"]
+  # Catches new provider CLI releases even when nothing here changed.
   schedule:
     - cron: "19 5 * * 1"
   workflow_dispatch:
