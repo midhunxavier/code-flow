@@ -125,7 +125,7 @@ export class AgentBrowser {
       if (!this.viewers.delete(listener)) return;
       if (!this.viewers.size) {
         // No visible annotator should intercept a provider's next action.
-        if(this.target) for(const message of [{type:"mode",mode:"off"},{type:"recording",active:false}]) void this.call("browser_ui",{action:"overlay",tab:this.target,message},new AbortController().signal).catch(()=>{});
+        if(this.target) void this.call("browser_ui",{action:"overlay",tab:this.target,message:{type:"mode",mode:"off"}},new AbortController().signal).catch(()=>{});
         void this.cdp?.send("Page.stopScreencast", {}, this.session).catch(() => {});
         this.idle = setTimeout(() => void this.close(), 30 * 60_000); this.idle.unref();
       }
@@ -185,7 +185,7 @@ export class AgentBrowser {
     if (event.method === "Runtime.bindingCalled" && event.params.name === "__codeflowEmit") {
       if (event.params.payload.length > 2 * 1024 * 1024) return;
       let message; try { message = JSON.parse(event.params.payload); } catch { return; }
-      if (["ready","location","record-action","recording-warning","pin-start","pin","mode"].includes(message.type)) this.emit({type:"overlay",tab:this.target,message});
+      if (["ready","location","pin-start","pin","mode"].includes(message.type)) this.emit({type:"overlay",tab:this.target,message});
     } else if (event.method === "Runtime.consoleAPICalled" && ["error","warning","warn"].includes(event.params.type)) {
       const text = event.params.args.map((arg:any)=>arg.value ?? arg.description ?? "").join(" ").slice(0,2000);
       this.consoleLine({level:event.params.type === "error" ? "error" : "warn",text,at:Date.now()},`${event.params.timestamp}:${event.params.type}:${text}`);
@@ -283,7 +283,7 @@ export class AgentBrowser {
       await (async () => {
         const {frameTree} = await cdp.send("Page.getFrameTree",{},oldSession);
         const {executionContextId} = await cdp.send("Page.createIsolatedWorld",{frameId:frameTree.frame.id,worldName:annotationWorld},oldSession);
-        await cdp.send("Runtime.evaluate",{contextId:executionContextId,expression:'window.__codeflowCommand?.({type:"mode",mode:"off"});window.__codeflowCommand?.({type:"recording",active:false})'},oldSession);
+        await cdp.send("Runtime.evaluate",{contextId:executionContextId,expression:'window.__codeflowCommand?.({type:"mode",mode:"off"})'},oldSession);
       })().catch(()=>{});
       this.emit({type:"overlay",tab:this.target,message:{type:"mode",mode:"off"}});
       await cdp.send("Page.stopScreencast", {}, this.session).catch(() => {});
@@ -495,10 +495,10 @@ export class AgentBrowser {
     }
     if (args.action === "overlay") {
       const message = args.message;
-      if (!message || !["hello","mode","recording","pins","adjust","reset"].includes(message.type) || JSON.stringify(message).length > 100000) throw new Error("Invalid annotation command");
+      if (!message || !["hello","mode","pins","adjust","reset"].includes(message.type) || JSON.stringify(message).length > 100000) throw new Error("Invalid annotation command");
       if (args.tab !== this.target) {
         // A departing viewer can finish its cleanup after a newer tab was selected.
-        if (message.type === "mode" && message.mode === "off" || message.type === "recording" && message.active === false) return {ok:true};
+        if (message.type === "mode" && message.mode === "off") return {ok:true};
         throw new Error("The browser tab changed");
       }
       const {frameTree} = await command("Page.getFrameTree");

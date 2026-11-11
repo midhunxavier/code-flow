@@ -17,7 +17,6 @@ import { MAX_EXECUTION_BUDGET, DEFAULT_EXECUTION_BUDGET, coordinatorInvocationLi
 import { localAppUrls } from "../src/local-app-url.js";
 import { intentDraft, LiveProgress, ResultStudio } from "./experience.js";
 import { PREVIEW_REQUEST } from "./result-preview.js";
-import { journeyDraft } from "./journeys.js";
 import { rerunDraft } from "./rerun-draft.js";
 import { setContextBudget } from "./context-budget.js";
 import { nextRunAction, executionLabel, resultSummary, agentReviewLabel, declinedUnasked, chatProvider, branchesGone, runStateBadges, integrityFor, replyTargets } from "./run-experience.js";
@@ -2398,7 +2397,6 @@ export async function editAndRerun(run: RunSummary) {
     permissionRequirements: [...(run.permissions?.required ?? [])],
   };
   intentDraft.value = run.intent;
-  journeyDraft.value = undefined;
   externalSource.value = null;
   setAcceptanceCriteria([]);
   branchPrefix.value = "";

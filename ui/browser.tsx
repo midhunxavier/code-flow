@@ -1,5 +1,4 @@
 import { browserContextMessage } from "./browser-context.js";
-import { JourneyRecorder, recording, recordAction } from "./journeys.js";
 import { signal } from "@preact/signals";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { Icon } from "./icons.js";
@@ -92,13 +91,11 @@ export function receiveBrowserOverlay(pageKey: string, m: any) {
   if (m.type === "ready") setPage(pageKey, p => ({...p,ready:true,document:m.document,capturing:0,pins:p.document===m.document?p.pins:p.pins.map(pin=>({...pin,gone:true}))}));
   else if (m.type === "mode" && ["off","pick","box"].includes(m.mode)) setPage(pageKey,p=>({...p,mode:m.mode}));
   else if (m.type === "console-history") setPage(pageKey,p=>({...p,console:m.lines,consoleDropped:m.dropped}));
-  else if (m.type === "record-action") recordAction(pageKey,m.action);
-  else if (m.type === "recording-warning" && recording.value?.page === pageKey) recording.value={...recording.value,warning:String(m.text).slice(0,200)};
   else if (m.type === "console") setPage(pageKey,p=>({...p,consoleDropped:(p.consoleDropped??0)+(p.console.length>=300?1:0),console:[...p.console.slice(-299),{level:m.level,text:String(m.text).slice(0,2000),at:m.at}]}));
   else if (m.type === "pin-start") setPage(pageKey,p=>({...p,capturing:p.capturing+1}));
   else if (m.type === "pin") setPage(pageKey,p=>({...p,capturing:Math.max(0,p.capturing-1),pins:[...p.pins,{...m.pin,n:(p.pins.at(-1)?.n ?? 0)+1,comment:""}]}));
 }
-export function LiveBrowserTools({pageKey,url,width,send,clearConsole,visible}: {pageKey:string;url:string;width:number;visible:boolean;clearConsole:()=>Promise<unknown>;send:(message:Record<string,unknown>)=>Promise<unknown>}) {
+export function LiveBrowserTools({pageKey,send,clearConsole,visible}: {pageKey:string;visible:boolean;clearConsole:()=>Promise<unknown>;send:(message:Record<string,unknown>)=>Promise<unknown>}) {
   const state=pageState(pageKey), mode=state.mode??"off";
   const setMode=(mode:"off"|"pick"|"box")=>setPage(pageKey,p=>({...p,mode}));
   const [showConsole,setShowConsole]=useState(false);
@@ -112,12 +109,10 @@ export function LiveBrowserTools({pageKey,url,width,send,clearConsole,visible}: 
     return()=>{if(overlays.get(pageKey)===command)overlays.delete(pageKey);};
   },[pageKey]);
   useEffect(()=>{if(!visible) setMode("off");},[visible]);
-  useEffect(()=>{if(state.ready){void send({type:"mode",mode:visible?mode:"off"}).catch(()=>{});void send({type:"recording",active:visible && recording.value?.page===pageKey && recording.value.active}).catch(()=>{});}},[mode,state.ready,state.document,recording.value?.page,recording.value?.active,visible]);
+  useEffect(()=>{if(state.ready){void send({type:"mode",mode:visible?mode:"off"}).catch(()=>{});}},[mode,state.ready,state.document,visible]);
   useEffect(()=>{void send({type:"pins",pins:livePins(state.pins)}).catch(()=>{});},[state.pins]);
-  const s=sideScope.value;
   return <>
     <div class="browse-tools live-annotation-tools"><button class="btn ghost small" aria-pressed={mode==="pick"} disabled={!state.ready} onClick={()=>changeMode(mode==="pick"?"off":"pick")}>Pick</button><button class="btn ghost small" aria-pressed={mode==="box"} disabled={!state.ready} onClick={()=>changeMode(mode==="box"?"off":"box")}>Box</button><button class="btn ghost small" aria-pressed={showConsole} onClick={()=>setShowConsole(!showConsole)}>Console{errors?` · ${errors}${state.consoleDropped?"+":""}`:""}</button></div>
-    <JourneyRecorder key={pageKey} pageKey={pageKey} url={url} repository={s.repo} width={width} ready={state.ready===true} toggle={active=>{setMode("off");return send({type:"recording",active});}} />
     {showConsole ? <ConsoleDrawer lines={state.console} dropped={state.consoleDropped??0} clear={clearConsole} />:null}
   </>;
 }

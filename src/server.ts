@@ -26,8 +26,6 @@ import { transcriptPage, transcriptPreview, TranscriptCursorError } from "./tran
 import { createSseWriter, streamHealth } from "./sse-writer.js";
 import { PerformanceMetrics } from "./performance.js";
 import { StreamSharingIdentity } from "./stream-sharing.js";
-import { JourneyStore } from "./journey-store.js";
-import { journeyApi } from "./journey-api.js";
 import { taskIntent, outcomeMetrics, workflowRecommendations } from "./experience.js";
 import { join, resolve as resolvePath, sep } from "node:path";
 import type { Socket } from "node:net";
@@ -325,8 +323,6 @@ function remoteTlsIssue(settings: RemoteSettings = remote): string | undefined {
 
 const allowedHosts = new Set([`${HOST}:${PORT}`, `127.0.0.1:${PORT}`, `localhost:${PORT}`]);
 /** Local apps in the side panel's Browser, each on a port of its own (src/preview.ts). */
-const journeys = new JourneyStore(join(CODEFLOW_HOME, "journeys"));
-const handleJourneys = journeyApi(journeys, manager, [PORT, REMOTE_PORT]);
 const previews = new Previews(
   () => [`http://localhost:${PORT}`, `http://127.0.0.1:${PORT}`],
   () => [PORT, REMOTE_PORT],
@@ -954,7 +950,6 @@ async function validatedStartInput(body: Record<string, any>): Promise<StartRunI
   if (body.externalSourceId !== undefined && body.externalSourceRef !== undefined) throw new HttpError(400, "Choose one external source reference");
   if (body.checkpointOnFinish !== undefined && typeof body.checkpointOnFinish !== "boolean") throw new HttpError(400, "checkpointOnFinish must be a boolean");
   if (body.intent !== undefined && !taskIntent(body.intent)) throw new HttpError(400, "Choose a supported task type");
-  if (body.journeyId !== undefined) { const journey = await attempt(() => journeys.get(String(body.journeyId))); if (journey.repo !== await repoRoot(repo)) throw new HttpError(400, "The scenario belongs to another repository"); }
   const parent = typeof body.parentRunId === "string" ? manager.get(body.parentRunId) : undefined;
   if (body.parentRunId !== undefined && !parent) throw new HttpError(400, "Parent run not found; cannot inherit its permissions");
   const inheritedLoop = inheritRunEnvironment(body.loop ?? {}, parent);
@@ -999,7 +994,6 @@ async function validatedStartInput(body: Record<string, any>): Promise<StartRunI
     task,
     intent: taskIntent(body.intent),
     testRun: body.testRun === undefined ? parent?.testRun : body.testRun,
-    journeyId: typeof body.journeyId === "string" ? body.journeyId : undefined,
     repo,
     project: typeof body.project === "string" && body.project ? body.project : undefined,
     requireProjectRepo: body.projectSelection === "explicit",
@@ -2531,7 +2525,6 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
   // Every app started with "Run app", for the side panel's Browser.
   if (req.method === "GET" && parts[1] === "serve") return send(res, 200, manager.devServers.list());
   // The side panel's Terminal: shells that stay open, fed over POST, streamed over SSE.
-  if (await handleJourneys(req, res, url, parts)) return;
   if (parts[1] === "preview" && req.method === "POST") {
     const body = await readJson(req);
     if (parts[2] === "status") {

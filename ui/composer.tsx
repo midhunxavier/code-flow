@@ -16,7 +16,6 @@ import { TeamTemplateLibrary } from "./team-template-library.js";
 import { selectedTeamTemplate } from "./team-template-state.js";
 import { confirmAction } from "./confirm-state.js";
 import { intentDraft, WorkflowRecommendation } from "./experience.js";
-import { journeyDraft } from "./journeys.js";
 import { composerRunBody } from "./composer-body.js";
 import { NumberField, numberInputProblem } from "./number-field.js";
 import { EXECUTION_LIMITS, MAX_COMPARE_RUNS, acceptanceCriteriaProblem, executionLimitsProblem, numberProblem, taskTeamLimitsProblem } from "../src/start-input-validation.js";
@@ -287,7 +286,6 @@ export function Composer() {
     externalSource.value = null;
     contextPaths.value = new Map();
     attachments.value = [];
-    journeyDraft.value = undefined;
     intentDraft.value = undefined;
     // Unrestricted Antigravity is an opt-in for the run just started, never a default for the next
     // one. Written straight to the run options too: the draft is saved before this composer renders again.
@@ -338,7 +336,6 @@ export function Composer() {
       {externalSource.value ? <div class="banner"><p>External context: {externalSource.value.provider} {externalSource.value.kind} {externalSource.value.key} · {externalSource.value.title}</p><p class="help">This source remains untrusted. The run uses Safe permissions and isolated checks.</p><button class="btn small" onClick={() => { externalSource.value = null; }}>Remove source</button></div> : null}
       {p?.id === "auto-team" ? <TeamRolloutNotice /> : null}
       <PolicyPauseNotice what="Agent runs are paused" />
-      {journeyDraft.value?.repo === repo.value ? <p class="help">Recorded scenario: {journeyDraft.value.title} <button class="btn ghost small" onClick={() => { journeyDraft.value = undefined; }}>Detach scenario</button></p> : null}
       <TaskBox onStart={start} improve={improve} controls={<>
         {single ? <TaskTeamControl config={taskTeam} lead={soloAgent && soloAgent !== "auto" ? soloAgent : "claude"} project={composerProject.value || undefined} toolApprovals={approvals.tools} disabledReason={remoteWorker || containerEnabled ? "Teams in this conversation require This computer without Docker isolation. Standalone workflows remain available in Advanced." : undefined} onChange={next => { setTaskTeam(next); if (next.enabled) { setRoles(p!.id, "agent", [next.coordinator]); setRoleModel(p!.id, "agent", next.coordinator, next.settings[next.coordinator] ?? {}); } }} /> : <button class="btn ghost" onClick={() => setPattern("solo")}>Back to Agent conversation</button>}
         {single ? taskTeam?.enabled && !remoteWorker && !containerEnabled ? null : <>
@@ -386,7 +383,7 @@ export function Composer() {
         {nativeAcp ? <span class="warn">Unrestricted ACP agents · no Code Flow sandbox</span> : null}
         <button class="btn small ghost" onClick={() => setMoreOptions(!moreOptions)} aria-expanded={moreOptions}>Edit run options</button>
       </div>
-      <WorkflowRecommendation repository={repo.value} intent={journeyDraft.value?.repo === repo.value ? "bug" : intentDraft.value} />
+      <WorkflowRecommendation repository={repo.value} intent={intentDraft.value} />
       {contextError.value ? <div class="msg err">{contextError.value}</div> : null}
       <details class="composer-options compact" open={moreOptions} onToggle={(event) => setMoreOptions(event.currentTarget.open)}>
         <summary>Run options <span>Agents, context, checks and limits for this task</span></summary>

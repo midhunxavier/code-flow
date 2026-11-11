@@ -3755,19 +3755,11 @@ dialog.picker.team-build-dialog { max-height: min(780px, calc(100dvh - 32px)); }
 .experience-metrics dd { font-size: 1.15rem; margin: 8px 0 0; }
 .workflow-recommendation article { padding: 12px 0; border-top: 1px solid var(--border-strong); }
 .evidence-run-link { display: block; overflow-wrap: anywhere; margin: 6px 0; }
-.alternatives, .scenario-evidence { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--border-strong); }
+.alternatives { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--border-strong); }
 .alternative-preview iframe { display: block; width: 100%; height: 360px; border: 1px solid var(--border-strong); border-radius: 8px; margin: 12px 0; background: white; }
 .alternative-preview h4 { margin-top: 0; }
-.journey-recorder { flex: 0 1 auto; padding: 0 12px; border-bottom: 1px solid var(--border-strong); max-height: 55%; overflow: auto; }
-.journey-editor { padding-bottom: 12px; }
-.journey-editor label, .result-studio label, .alternative-preview label { display: block; font-size: .85rem; margin: 10px 0; }
-.journey-editor .field, .result-studio .field, .alternative-preview .field { width: 100%; margin-top: 5px; }
-.journey-actions { padding-left: 22px; max-height: 180px; overflow: auto; }
-.journey-actions li { overflow-wrap: anywhere; padding: 4px 0; }
-.walkthrough img { display: block; width: 100%; border: 1px solid var(--border-strong); border-radius: 8px; }
-.walkthrough input[type=range] { width: 100%; }
-.scenario-library { padding: 16px; margin: 16px 0; }
-.scenario-library article { padding: 12px 0; border-top: 1px solid var(--border-strong); }
+.result-studio label, .alternative-preview label { display: block; font-size: .85rem; margin: 10px 0; }
+.result-studio .field, .alternative-preview .field { width: 100%; margin-top: 5px; }
 .team-map-grid, .briefing-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
 .team-map-node { display: flex; flex-direction: column; gap: 8px; text-align: left; padding: 14px; border: 1px solid var(--border-strong); border-radius: 10px; background: transparent; color: inherit; min-width: 0; overflow-wrap: anywhere; cursor: pointer; }
 .team-map-node[aria-pressed=true] { border: 2px solid currentColor; padding: 13px; }
