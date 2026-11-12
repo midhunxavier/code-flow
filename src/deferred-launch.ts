@@ -1,7 +1,7 @@
 import { constants } from "node:fs";
 import { open } from "node:fs/promises";
 import { join } from "node:path";
-import { DeferredRunRejectedError, DeferredRuns, deferredProviderReadiness, type DeferredRunRequest } from "./deferred-runs.js";
+import { DeferredRunRejectedError, DeferredRuns, assertNoExternalSource, deferredProviderReadiness, type DeferredRunRequest } from "./deferred-runs.js";
 import { RUNS_DIR, flushWrites } from "./store.js";
 import type { AgentId } from "./adapters/types.js";
 import type { Run, RunSummary, StartRunInput } from "./engine.js";
@@ -59,7 +59,7 @@ export function createDeferredRuns(host: DeferredLaunchHost, options: {
       let input: StartRunInput;
       try {
         signal.throwIfAborted();
-        assertNoRemoteWorker(request.loop);
+        assertNoRemoteWorker(request.loop); assertNoExternalSource(request);
         if (request.parentRunId && !host.get(request.parentRunId)) throw new Error("The parent run no longer exists; review and create another deferred request");
         input = await options.build(request);
         signal.throwIfAborted();

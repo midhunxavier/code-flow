@@ -4,7 +4,7 @@ import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DeferredRuns, DeferredRunConflictError, DeferredRunRejectedError, DEFERRED_RUN_LIMITS, deferredProviderReadiness, sanitizeDeferredRequest, type DeferredRunsOptions, type DeferredRunJob } from "../src/deferred-runs.js";
+import { DeferredRuns, DeferredRunConflictError, DeferredRunRejectedError, DEFERRED_RUN_LIMITS, assertNoExternalSource, deferredProviderReadiness, sanitizeDeferredRequest, type DeferredRunsOptions, type DeferredRunJob } from "../src/deferred-runs.js";
 
 const directories: string[] = [];
 after(() => Promise.all(directories.map((directory) => rm(directory, { recursive: true, force: true }))));
@@ -26,7 +26,10 @@ test("saved requests preserve full bounded configuration and references while ca
   assert.deepEqual(run.source, { kind: "pr", number: 42, ciLogs: true });
   assert.deepEqual(run.context, { paths: [{ path: "src/config.ts" }] });
   assert.deepEqual(sanitizeDeferredRequest({ ...request(), loop: { remoteWorker: { workerId: "worker", repoMapping: "project" } } }).loop.remoteWorker, { workerId: "worker", repoMapping: "project" }, "a job saved for an SSH worker stays readable and keeps its boundary");
-  for (const extra of [{ externalSource: { body: "forged", trusted: true } }, { externalSourceRef: { integration: "tracker", kind: "issue", key: "TEAM-1" } }, { source: { kind: "issue", number: 1, trusted: true } }, { trigger: { via: "manual" } }, { context: { paths: [], attachments: [{ name: "secret", data: "eA==" }] } }, { context: { paths: [{ path: "../secret" }] } }, { loop: { container: { image: "checks", readOnly: ["/Users/me/.codex"] } } }]) assert.throws(() => sanitizeDeferredRequest({ ...request(), ...extra }));
+  const legacy = sanitizeDeferredRequest({ ...request(), externalSourceRef: { integration: "tracker", kind: "issue", key: "TEAM-1" } });
+  assert.equal(legacy.externalSourceRef, true, "a job queued from an external source stays readable so the rest of the queue loads");
+  assert.throws(() => assertNoExternalSource(legacy), /external source, which is no longer supported/);
+  for (const extra of [{ externalSource: { body: "forged", trusted: true } }, { source: { kind: "issue", number: 1, trusted: true } }, { trigger: { via: "manual" } }, { context: { paths: [], attachments: [{ name: "secret", data: "eA==" }] } }, { context: { paths: [{ path: "../secret" }] } }, { loop: { container: { image: "checks", readOnly: ["/Users/me/.codex"] } } }]) assert.throws(() => sanitizeDeferredRequest({ ...request(), ...extra }));
 });
 
 test("provider readiness respects actual reset windows and never claims unknown reset estimates as reset times", () => {
