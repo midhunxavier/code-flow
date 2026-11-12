@@ -36,14 +36,14 @@ Run the same install command to update. Remove the launcher with `npm uninstall 
 
 ### Download the macOS app
 
-Choose **0.1.0-preview.14** for your Mac (**macOS 13+**):
+Choose **0.1.0-preview.15** for your Mac (**macOS 13+**):
 
-- [Download Apple Silicon DMG (M1 or later)](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.14/code-flow-0.1.0-preview.14-macos-arm64-unnotarized.dmg)
-- [Download Intel DMG](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.14/code-flow-0.1.0-preview.14-macos-x64-unnotarized.dmg)
+- [Download Apple Silicon DMG (M1 or later)](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.15/code-flow-0.1.0-preview.15-macos-arm64-unnotarized.dmg)
+- [Download Intel DMG](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.15/code-flow-0.1.0-preview.15-macos-x64-unnotarized.dmg)
 
 Open the DMG, drag **Code Flow** to **Applications**, then open Code Flow. The Electron app opens its own desktop window. Closing or reloading that window keeps agents running. Click the Dock icon or **Code Flow → Show Code Flow** to return. Use **Code Flow → Quit** to stop the app; it asks before interrupting active agents. Node is bundled; install Git and sign in to a supported agent CLI before your first run. Install Chrome or Edge for the shared browser.
 
-These are **unnotarized preview builds**. macOS may block them; use npm if blocked. Quit Code Flow before replacing it with a newer download. Run one launcher at a time. [Release notes and checksums](https://github.com/midhunxavier/code-flow/releases/tag/v0.1.0-preview.14).
+These are **unnotarized preview builds**. macOS may block them; use npm if blocked. Quit Code Flow before replacing it with a newer download. Run one launcher at a time. [Release notes and checksums](https://github.com/midhunxavier/code-flow/releases/tag/v0.1.0-preview.15).
 
 New builds include in-app updates for macOS previews. After installing a build with this updater, background checks download compatible updates automatically. **Settings → General → App updates** shows download progress and **Restart to update** when ready. Restarting saves active work after confirmation, replaces the app, and reopens it. The updater verifies the release checksum, bundle identity, version, architecture and code signature, and restores the previous bundle if replacement or launch fails. Signed installations continue to use the native signed-update mechanism.
 
@@ -53,10 +53,10 @@ The preview stores settings and history in `~/.codeflow`, outside the installati
 
 ### Download the Linux app
 
-Choose **0.1.0-preview.14** for your PC (x64 or ARM64):
+Choose **0.1.0-preview.15** for your PC (x64 or ARM64):
 
-- [Download x64 AppImage](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.14/code-flow-0.1.0-preview.14-linux-x64-unsigned.AppImage) · [x64 .deb](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.14/code-flow-0.1.0-preview.14-linux-x64-unsigned.deb)
-- [Download ARM64 AppImage](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.14/code-flow-0.1.0-preview.14-linux-arm64-unsigned.AppImage) · [ARM64 .deb](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.14/code-flow-0.1.0-preview.14-linux-arm64-unsigned.deb)
+- [Download x64 AppImage](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.15/code-flow-0.1.0-preview.15-linux-x64-unsigned.AppImage) · [x64 .deb](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.15/code-flow-0.1.0-preview.15-linux-x64-unsigned.deb)
+- [Download ARM64 AppImage](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.15/code-flow-0.1.0-preview.15-linux-arm64-unsigned.AppImage) · [ARM64 .deb](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.15/code-flow-0.1.0-preview.15-linux-arm64-unsigned.deb)
 
 Run `chmod +x` on the AppImage and open it, or install the `.deb` on Debian or Ubuntu with `sudo apt install ./<file>.deb` and open **Code Flow** from your applications. Closing the window keeps agents running; open Code Flow again to show it, and use **Code Flow → Quit** to stop. Node is bundled; install Git and sign in to a supported agent CLI before your first run. Settings and history live in `~/.codeflow`, shared with the npm launcher. These builds are **unsigned**. Where the system blocks unprivileged user namespaces, as Ubuntu 24.04 does by default, the AppImage starts without Chromium's sandbox; the `.deb` keeps it. Linux apps update manually: **Settings → General → App updates** links to the matching new download.
 

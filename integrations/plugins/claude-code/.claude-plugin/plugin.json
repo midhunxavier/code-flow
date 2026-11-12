@@ -1,6 +1,6 @@
 {
   "name": "codeflow",
-  "version": "0.1.0-preview.14",
+  "version": "0.1.0-preview.15",
   "description": "Second opinions and small agent teams from Claude Code, Codex and Antigravity on your repository, with your approval before anything runs.",
   "homepage": "https://midhunxavier.github.io/code-flow/",
   "repository": "https://github.com/midhunxavier/code-flow",
