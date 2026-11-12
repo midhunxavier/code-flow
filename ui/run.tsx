@@ -197,7 +197,7 @@ export function RunView({ id }: { id: string }) {
     return (
       <div class="runview">
         {/* Most runs open with the agent tab strip: hold its place so the thread doesn't drop when it arrives. */}
-        {problem ? null : <div class="sess-strip" aria-hidden="true" />}
+        {problem || !expectsAgentTabs(id) ? null : <div class="sess-strip" aria-hidden="true" />}
         <div class="run-scroll">
           {problem ? (
             <div class="thread">
@@ -240,6 +240,7 @@ export function RunView({ id }: { id: string }) {
   /** A conversation with one agent (Single agent): the turns are the thread, not a list of steps. */
   const chat = !!p?.chat && !run.checkpointOnFinish;
   chatNavigation.current = chat;
+  rememberAgentTabs(id, chat);
 
   const next = nextRunAction(run);
   const failedSetup = run.status === "failed" && steps.at(-1)?.kind === "setup" && steps.at(-1)?.status === "failed" ? steps.at(-1) : undefined;
@@ -464,6 +465,16 @@ export function RunView({ id }: { id: string }) {
 }
 
 /** Main conversations on a task; closing a tab preserves its history, drafts and execution. */
+/** Whether a run still loading will open with the agent tab strip: from the run list, else what its last visit showed. */
+function expectsAgentTabs(id: string) {
+  const known = runs.value.get(id), pattern = known && patterns.value.find((x) => x.id === known.pattern);
+  if (known && pattern) return !!pattern.chat && !known.checkpointOnFinish;
+  try { return sessionStorage.getItem(`run-tabs:${id}`) !== "0"; } catch { return true; }
+}
+function rememberAgentTabs(id: string, chat: boolean) {
+  try { if (chat) sessionStorage.removeItem(`run-tabs:${id}`); else sessionStorage.setItem(`run-tabs:${id}`, "0"); } catch { /* the placeholder is a nicety */ }
+}
+
 function AgentTabs({ run }: { run: RunSummary }) {
   const workspace = run.chatLink?.workspaceId ?? run.id;
   const tabs = [...runs.value.values()].filter(other => other.pattern === "solo" && !other.archived && other.chatLink?.kind !== "side" && (other.chatLink?.workspaceId ?? other.id) === workspace);
