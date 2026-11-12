@@ -100,19 +100,17 @@ try {
     if (n === 149 || server.exitCode !== null) throw Error(output);
     await new Promise((r) => setTimeout(r, 100));
   }
-  const task = "Add an empty search state with a clear-filters action.";
+  const task =
+    "Add an empty search state with a clear-filters action. Claude builds it, Codex reviews it, and the tests must pass.";
+  // A Team run: the lead proposes the members and task graph from the goal.
   const started = await api("/api/runs", {
     repo,
     task,
-    pattern: "pipeline",
-    roles: { planner: ["claude"], builder: ["codex"], reviewer: ["agy"] },
-    loop: {
-      check: "npm test",
-      prove: false,
-      planApproval: false,
-      maxSteps: 12,
-      maxMinutes: 2,
-    },
+    pattern: "auto-team",
+    roles: { coordinator: ["claude"], pool: ["claude", "codex"] },
+    options: {},
+    approvals: { plan: false },
+    loop: { check: "npm test", maxSteps: 40, maxMinutes: 5 },
   });
   let run;
   for (let n = 0; n < 200; n++) {
@@ -128,13 +126,7 @@ try {
     deviceScaleFactor: 1,
   });
   await page.addInitScript(
-    ({ repo, task }) => {
-      localStorage.setItem("repo", repo);
-      localStorage.setItem("sideOpen", "0");
-      localStorage.setItem("pattern", "pipeline");
-      localStorage.setItem("task", task);
-    },
-    { repo, task },
+    () => localStorage.setItem("sideOpen", "0"),
   );
   await page.goto(`${base}/?token=${token}`);
   await mkdir(join(root, "docs/images"), { recursive: true });
@@ -149,36 +141,44 @@ try {
     await page.evaluate((theme) => localStorage.setItem("theme", theme), theme);
     await page.goto(base + "/#/");
     await page.reload();
-    await page.locator(".taskbox textarea").fill(task);
-    await page.locator(".composer-summary").waitFor();
+    // The chat composer on the home page, in Team mode for the demo project.
+    const message = page.getByPlaceholder(
+      "Ask a question or describe what you want to do…",
+    );
+    await message.waitFor();
     await page
-      .getByText(/Loading repository configuration/)
-      .waitFor({ state: "hidden" });
-    await page.locator(".task-start:not([disabled])").waitFor();
+      .getByRole("combobox", { name: "Project", exact: true })
+      .selectOption({ label: "example-app" });
+    await page.getByRole("button", { name: "Team", exact: true }).click();
+    await message.fill(task);
+    await page
+      .getByRole("button", { name: "Send", exact: true })
+      .and(page.locator(":not([disabled])"))
+      .waitFor();
     await capture(`composer-${theme}`);
     await page.goto(base + `/#/project/${run.project}`);
     await page.getByRole("navigation", { name: "Project navigation" }).waitFor();
     await page.getByRole("heading", { name: "Recent results", exact: true }).waitFor();
-    await page.locator(".connection-status.connected").waitFor();
     await page.locator(".page-head-actions .primary:not([disabled])").waitFor();
     await capture(`project-${theme}`);
     await page.goto(base + `/#/project/${run.project}/automation/repeat`);
     await page.getByLabel("Automation repository").waitFor();
-    await page.locator(".connection-status.connected").waitFor();
     await page.getByRole("button", { name: "Configure a repeating task", exact: true }).waitFor();
     await page.waitForFunction(() => ![...document.querySelectorAll("button")].find(button => button.textContent === "Configure a repeating task")?.disabled);
     await capture(`project-automation-${theme}`);
     await page.goto(base + `/#/run/${run.id}`);
-    await page.getByRole("region", { name: "Next action" }).waitFor();
+    await page.locator(".team-details > summary").waitFor();
     await page.getByText(/Loading commit/).waitFor({ state: "hidden" });
     await page.getByText("Saving run…", { exact: true }).waitFor({ state: "hidden" });
+    await page.getByText(/^Connecting/).waitFor({ state: "hidden" });
+    await page.waitForTimeout(500); // let the rail's selection transition settle
     await capture(`run-${theme}`);
     // The work disclosure is a real UI control; capture its expanded evidence.
     const work = page.locator("details.work");
     if ((await work.getAttribute("open")) === null)
       await work.locator(":scope > summary").click();
     await work
-      .getByRole("button", { name: /^Implement plan:/ })
+      .getByRole("button", { name: /Auto team independent review/ })
       .first()
       .click();
     await page.locator(".transcript").waitFor();
