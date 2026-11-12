@@ -45,7 +45,6 @@ import {
   roleModels,
   baseRef,
   branchPrefix,
-  externalSource,
   route,
   setAcceptanceCriteria,
   setApprovePlan,
@@ -62,7 +61,7 @@ import {
   setRunLimits,
   contextPaths,
   markSeen,
-  patterns,
+  patternName, patterns,
   repo,
   repoInfo,
   runState,
@@ -84,11 +83,11 @@ import {
   rememberSide,
   sideMemo,
 } from "./state.js";
+import { retiredPatternMessage } from "../src/patterns/retired.js";
 import { ProjectChip } from "./projects.js";
 import { AutoTeam, TeamQuestionCard } from "./team.js";
 import { ProjectMemory } from "./memory.js";
 import { GithubReviewThreadsPanel } from "./github-review-threads.js";
-import { RemoteStepReceipt } from "./remote-workers.js";
 import type { MergeValidation } from "../src/merge-validation.js";
 import { loadStepTranscript, transcriptVersion, useRunStream, type RunData } from "./run-feed.js";
 import { defaultFollowupCalls, followupMinimumCalls, teamAwaitingAnswer, teamNeedsResume, teamStatusLabel, wholeMinutes } from "./team-state.js";
@@ -293,7 +292,7 @@ export function RunView({ id }: { id: string }) {
                 </span>
                 {runStateBadges(run).map((label) => <span key={label} class="status-pill run-state" title={label}>{label}</span>)}
                 {run.chatLink?.kind !== "side" ? <ProjectChip run={run} /> : null}
-                <span class="run-pattern">{leadTurn ? "Conversation lead" : p?.name ?? run.pattern}</span>
+                <span class="run-pattern">{leadTurn ? "Conversation lead" : patternName(run.pattern)}</span>
                 {run.permissions?.antigravityExecution === "native" ? <span class="badge warn run-unrestricted" title="Antigravity turns in this run use your normal profile and settings without Code Flow's sandbox">Unrestricted Antigravity</span> : null}
                 {run.permissions?.acpExecution === "native" ? <span class="badge warn run-unrestricted" title="ACP agents in this run use their own tools and settings without Code Flow's sandbox or delegation limits">Unrestricted ACP</span> : null}
                 {teamTask ? <a class="run-team-task" href={`#/team/task/${enc(teamTask)}`} title="This run executes a task of the team board">Team task</a> : null}
@@ -591,7 +590,7 @@ function RunMeta({ run }: { run: RunSummary }) {
         From {run.baseLabel} @ <code>{run.baseRef.slice(0, 7)}</code>
       </span>
       {run.loop?.check ? (
-        <span title="code-flow runs this after every change">
+        <span title="Code Flow runs this after every change">
           Done when <code>{run.loop.check}</code> passes{run.checkCantRun ? " · can't run here" : run.lastCheck ? (run.lastCheck.ok ? " · last check ✓" : " · last check ✕") : ""}
         </span>
       ) : null}
@@ -777,7 +776,7 @@ export function FollowUpBadges({ f, run }: { f: FollowUp; run?: RunSummary }) {
     <>
       {halted ? (
         run!.status === "interrupted" ? (
-          <span class="note" title="code-flow stopped before this turn finished. Resume the run to continue it.">
+          <span class="note" title="Code Flow stopped before this turn finished. Resume the run to continue it.">
             Interrupted
           </span>
         ) : (
@@ -1498,7 +1497,7 @@ function MergePanel({ run, branch, worktree, steps, onMerged }: { run: RunSummar
       {mergedInto.has(target) ? <div class="help">Already merged into {target}: merging again brings only what's new on {branch} since.</div> : null}
       {resolving ? <div class="msg warn">Resolving the conflicts with {resolving.mergeFrom} failed{resolving.result ? `: ${resolving.result}` : "."}</div> : null}
       {warning ? <div class="msg warn" role="status">{warning}</div> : null}
-      <div class="help">If {target || "the branch"} is checked out, code-flow merges there only when it has no uncommitted changes, and aborts cleanly on conflicts.</div>
+      <div class="help">If {target || "the branch"} is checked out, Code Flow merges there only when it has no uncommitted changes, and aborts cleanly on conflicts.</div>
       {conflicts ? (
         <div class="conflicts">
           <div class="msg warn">
@@ -1675,7 +1674,7 @@ function PrMergePanel({ run, branch, worktree, steps }: { run: RunSummary; branc
         {open && info!.mergeable === "CONFLICTING" ? <div class="msg warn">GitHub says {name} conflicts with {info!.baseRefName}: merge {info!.baseRefName} into the branch and resolve them first.</div> : null}
         {open ? (
           <div class="help">
-            {CI_TEXT[info!.ci]}. code-flow merges it on GitHub only while it's exactly the branch you reviewed here, and deletes no branches.{" "}
+            {CI_TEXT[info!.ci]}. Code Flow merges it on GitHub only while it's exactly the branch you reviewed here, and deletes no branches.{" "}
             <button class="linkish" onClick={() => setLocal(!local)}>
               {local ? "Hide local merge" : "Merge into a local branch instead…"}
             </button>
@@ -1711,7 +1710,7 @@ function PrPanel({ run, branch, focusOnOpen = false }: { run: RunSummary; branch
               {b}
             </option>
           ))}
-          {targets?.runBranches?.length ? <optgroup label="Other code-flow run branches">{targets.runBranches.filter(b => b !== branch).map(b => <option key={b} value={b}>{b}</option>)}</optgroup> : null}
+          {targets?.runBranches?.length ? <optgroup label="Other Code Flow run branches">{targets.runBranches.filter(b => b !== branch).map(b => <option key={b} value={b}>{b}</option>)}</optgroup> : null}
         </select>
         <button
           class="btn primary small"
@@ -1992,7 +1991,7 @@ export function ConversationBar({ run, steps, chat, onOpenChat }: { run: RunSumm
   const signedOut = !running ? replySignInIssue(run, replyAgent, health.value) : undefined;
   const latestReply = !running ? run.followUps.filter(turn => !turn.side).at(-1) : undefined;
   const latestReplyFailed = latestReply?.status === "failed";
-  const authFailed = !run.loop.remoteWorker && !run.loop.agentContainer && latestReplyFailed && steps.find(step => step.id === latestReply?.stepId)?.errorKind === "auth";
+  const authFailed = !run.loop.agentContainer && latestReplyFailed && steps.find(step => step.id === latestReply?.stepId)?.errorKind === "auth";
   if (!takes) return undelivered.length ? <div class="convo"><UndeliveredNotes notes={undelivered} /></div> : null;
 
   const send = async () => {
@@ -2121,7 +2120,7 @@ export function ConversationBar({ run, steps, chat, onOpenChat }: { run: RunSumm
         {running && pendingNotes.length ? <div class="notes">{pendingNotes.map(noteChip)}</div> : null}
         {!draftReady ? <p class="sr-only" role="status">Restoring reply draft…</p> : draftWarning ? <p class="msg warn" role="status">{draftWarning}</p> : null}
         {undelivered.length ? <UndeliveredNotes notes={undelivered} onRestore={note => { setText(value => appendDraftText(value, [note.text])); area.current?.focus(); }} /> : null}
-        {signedOut || authFailed ? <p class="msg warn reply-provider-warning" role="alert">{latestReplyFailed ? "The latest reply didn't finish. " : ""}{signedOut ? `${signedOut.name} isn't signed in` : `The latest reply couldn't sign in to ${agentName(replyAgent)}`} — <a href="#/settings/providers">open Settings → Providers</a>. After signing in, send your reply again. <button type="button" class="btn small" disabled={providersRefreshing.value} onClick={() => void refreshProviders()}>{providersRefreshing.value ? "Checking…" : "Recheck sign-in"}</button></p> : latestReplyFailed ? <p class="help" role="status">The latest reply didn't finish. Work is saved; send another reply to continue.</p> : null}
+        {signedOut || authFailed ? <p class="msg warn reply-provider-warning" role="alert">{latestReplyFailed ? "The latest reply didn't finish. " : ""}{signedOut ? `${signedOut.name} isn't signed in` : `The latest reply couldn't sign in to ${agentName(replyAgent)}`} — <a href="#/settings/providers">open Settings → Agents</a>. After signing in, send your reply again. <button type="button" class="btn small" disabled={providersRefreshing.value} onClick={() => void refreshProviders()}>{providersRefreshing.value ? "Checking…" : "Recheck sign-in"}</button></p> : latestReplyFailed ? <p class="help" role="status">The latest reply didn't finish. Work is saved; send another reply to continue.</p> : null}
         <BrowserDraftCards text={text} onText={setText} images={images} onImages={setImages} />
         <DraftImages message={text} images={images} onRemove={(i) => setImages(images.filter((_, j) => j !== i))} />
         <div class="chatbox">
@@ -2191,7 +2190,7 @@ export function ConversationBar({ run, steps, chat, onOpenChat }: { run: RunSumm
                 </select>
               </label>
             )}
-            {!running && chosen !== "team" && replyAgent && !(chat && (runs.value.get(chatTaskId(run)) ?? run).taskTeam?.enabled) ? <ChatControls acpAllowed={run.permissions?.acpExecution === "native"} showPermissions={run.chatLink?.kind !== "side"} providers={run.chatLink?.kind === "side" ? agents.value.filter(item => item.id === "claude" || item.id === "codex" || item.id === "agy") : undefined} agent={replyAgent} onAgent={chat && draftReady ? agent => setHandoff({ agent, settings: agent === replyAgent ? selectedSettings : replySettings[agent] ?? {} }) : undefined} resetPermissionsOnAgentChange={!chat} settings={selectedSettings} onSettings={(value) => setReplySettings({ ...replySettings, [replyAgent]: value })} permissions={selectedPermissions} onPermissions={setReplyPermissions} restricted={!!run.lockdown || !!run.trigger} approvalsAvailable={!run.loop.remoteWorker && !run.loop.agentContainer} unrestricted={replyAgent === "agy" && run.permissions?.antigravityExecution === "native"} /> : null}
+            {!running && chosen !== "team" && replyAgent && !(chat && (runs.value.get(chatTaskId(run)) ?? run).taskTeam?.enabled) ? <ChatControls acpAllowed={run.permissions?.acpExecution === "native"} showPermissions={run.chatLink?.kind !== "side"} providers={run.chatLink?.kind === "side" ? agents.value.filter(item => item.id === "claude" || item.id === "codex" || item.id === "agy") : undefined} agent={replyAgent} onAgent={chat && draftReady ? agent => setHandoff({ agent, settings: agent === replyAgent ? selectedSettings : replySettings[agent] ?? {} }) : undefined} resetPermissionsOnAgentChange={!chat} settings={selectedSettings} onSettings={(value) => setReplySettings({ ...replySettings, [replyAgent]: value })} permissions={selectedPermissions} onPermissions={setReplyPermissions} restricted={!!run.lockdown || !!run.trigger} approvalsAvailable={!run.loop.agentContainer} unrestricted={replyAgent === "agy" && run.permissions?.antigravityExecution === "native"} /> : null}
             {chat && soloAgent ? <TaskTeamControl run={run} lead={soloAgent} /> : null}
             {run.chatLink?.kind === "side" ? <span class="help">Read only</span> : null}
             <span class="chatbox-hint" title={hint}>
@@ -2229,11 +2228,10 @@ function Transcript({ run, step, data }: { run: RunSummary; step?: Step; data: R
   const model = modelNote(run, step.agent, step.settings);
   return (
     <div class="transcript" role="group" aria-label={`Transcript of ${step.title}`}>
-      {step.remote ? <RemoteStepReceipt key={`${run.id}/${step.id}`} runId={run.id} step={step} /> : null}
       <div class="tr-head">
         {page ? <span class="row"><button class="btn small" disabled={page.loading || !page.before} onClick={() => { setShown(PAGE); void loadStepTranscript(run.id, step!.id, page.before); }}>Earlier events</button><button class="btn small" disabled={page.loading} onClick={() => { setShown(PAGE); void loadStepTranscript(run.id, step!.id); }}>Latest events</button>{page.loading ? <span role="status">Loading transcript…</span> : null}{page.historical ? <span>Viewing earlier events</span> : null}{page.error ? <span role="alert">{page.error}</span> : null}</span> : null}
         {model ? <span>{model}</span> : null}
-        <span>{(step.kind ?? "agent") === "agent" ? (step.mode === "write" ? "can edit files" : "read-only") : "run by code-flow"}</span>
+        <span>{(step.kind ?? "agent") === "agent" ? (step.mode === "write" ? "can edit files" : "read-only") : "run by Code Flow"}</span>
         <span>worktree {step.worktree}</span>
         {step.usage ? <span title={usageTitle(step.usage)}>{fmtTokens(step.usage.inputTokens + step.usage.outputTokens)} tokens{step.usage.costUsd ? ` · ≈${fmtCost(step.usage.costUsd)}` : ""}</span> : null}
         {step.contextInput ? <span title={`Measured assembled invocation input. Excludes: ${step.contextInput.excluded.join(", ")}. Input hash ${step.contextInput.hash}`}>{step.contextInput.bytes.toLocaleString()} input bytes · ≈{step.contextInput.approximateTokens.toLocaleString()} input tokens{step.contextInput.exceeded ? ` · ${step.contextInput.policy === "block" ? "blocked" : "budget warning"}` : ""}{step.contextInput.resumed ? " · earlier history excluded" : ""}</span> : null}
@@ -2460,6 +2458,8 @@ function ActivityLog({ logs }: { logs: RunData["logs"]; count: number }) {
 // ---------------------------------------------------------------- edit & run again
 let rerunRequest = 0;
 export async function editAndRerun(run: RunSummary) {
+  const retired = retiredPatternMessage(run.pattern);
+  if (retired) return showError(retired);
   const request = ++rerunRequest;
   const origin = route.value;
   const destination = projectFor(run);
@@ -2472,7 +2472,6 @@ export async function editAndRerun(run: RunSummary) {
   if (request !== rerunRequest || route.value !== origin || repo.value !== run.repo) return;
   rerunDraft.value = structuredClone({ id: run.id, repo: run.repo, loop: run.loop, approvals: run.approvals ?? {}, source: run.source, checkpointOnFinish: run.checkpointOnFinish, baseRef: run.baseRef, task: run.task, contextPaths: (run.context?.paths ?? []).map(c => ({ path: c.path, type: c.type })) });
   composerRunOptions.value = {
-    remoteWorker: run.loop.remoteWorker,
     container: { enabled: !!run.loop.agentContainer, image: run.loop.agentContainer?.image ?? "", authVolume: run.loop.agentContainer?.authVolume ?? "" },
     verification: run.loop.verification ? "restored" : "",
     verificationProfile: run.loop.verification ?? null,
@@ -2482,7 +2481,6 @@ export async function editAndRerun(run: RunSummary) {
     permissionRequirements: [...(run.permissions?.required ?? [])],
   };
   intentDraft.value = run.intent;
-  externalSource.value = null;
   setAcceptanceCriteria([]);
   branchPrefix.value = "";
   // The original commit, permissions, commands and limits are this retry's own: they aren't
@@ -2519,7 +2517,7 @@ export async function editAndRerun(run: RunSummary) {
         }
       : null;
   // Back in the run's project, so the new run goes there too.
-  navigate({ view: "composer", project: destination?.id ?? "" });
+  navigate({ view: "composer", project: destination?.id ?? "", legacy: true });
 }
 
 function RunResultSummary({ run }: { run: RunSummary }) {
@@ -2583,7 +2581,7 @@ function ProviderChatDialog({ run, initialAgent, initialSettings, initialPermiss
   const [settings, setSettings] = useState(initialSettings);
   // The new chat starts with the reply box's choice, within this chat's current level: a child
   // never gets more access than its source, and only a source that asks for approval passes it on.
-  const approvalsAvailable = !!run.approvals.tools && !run.loop.remoteWorker && !run.loop.agentContainer;
+  const approvalsAvailable = !!run.approvals.tools && !run.loop.agentContainer;
   const [permissions, setPermissions] = useState<ChatPermissions>(() => ({ trust: narrowerTrust(run.trust, initialPermissions.trust), tools: initialPermissions.tools && approvalsAvailable && asksForApproval(initialAgent) }));
   const [message, setMessage] = useState(initialMessage);
   const [images, setImages] = useState(attachments);

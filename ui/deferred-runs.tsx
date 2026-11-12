@@ -62,7 +62,7 @@ export function DeferredRunsPanel({ runRequest, project, repo, unassigned = fals
     const key = JSON.stringify(body);
     if (operation.current?.key !== key) operation.current = { key, id: crypto.randomUUID() };
     setSaving(true); setSaveError("");
-    try { await post("/api/deferred-runs", { ...body, operationId: operation.current.id }); operation.current = undefined; showToast("Deferred run saved. It starts when this application is open and its conditions are ready."); }
+    try { await post("/api/deferred-runs", { ...body, operationId: operation.current.id }); operation.current = undefined; showToast("Saved to run once later. It starts when this application is open and its conditions are ready."); }
     catch (problem) { setSaveError((problem as Error).message); return; }
     finally { setSaving(false); }
     await load().catch((problem) => setError((problem as Error).message));
@@ -71,32 +71,32 @@ export function DeferredRunsPanel({ runRequest, project, repo, unassigned = fals
   const clearable = scoped.filter(finished);
   const clear = async () => {
     if (!clearable.length || clearing) return;
-    const count = `${clearable.length} finished deferred ${clearable.length === 1 ? "record" : "records"}`;
-    if (!await confirmAction(`Remove ${count} from this list? Started runs stay in your runs.`, { title: "Clear finished deferred runs?", confirmLabel: "Remove records", danger: true })) return;
+    const count = `${clearable.length} finished ${clearable.length === 1 ? "record" : "records"}`;
+    if (!await confirmAction(`Remove ${count} from this list? Started runs stay in your runs.`, { title: "Clear finished runs?", confirmLabel: "Remove records", danger: true })) return;
     setClearing(true);
     try { await post("/api/deferred-runs/remove", { jobs: clearable.map((job) => ({ id: job.id, expectedRevision: job.revision })) }); showToast(`Removed ${count}`); }
-    catch (problem) { showError(problem instanceof ApiError && problem.status === 409 ? "A deferred job changed. Review the refreshed queue, then clear again." : (problem as Error).message, 5000); }
+    catch (problem) { showError(problem instanceof ApiError && problem.status === 409 ? "A queued run changed. Review the refreshed queue, then clear again." : (problem as Error).message, 5000); }
     finally { setClearing(false); }
     await load().catch((problem) => setError((problem as Error).message));
   };
-  return <section class="section deferred-runs" aria-label="Deferred runs">
-    <div class="section-title">Deferred runs <span class="count">{scoped.filter((job) => ACTIVE.has(job.status) || retryable(job)).length}</span></div>
+  return <section class="section deferred-runs" aria-label="Run once later queue">
+    <div class="section-title">Run once later queue <span class="count">{scoped.filter((job) => ACTIVE.has(job.status) || retryable(job)).length}</span></div>
     <p class="help">Save a run for later, or wait for provider capacity. The queue survives restarts and runs while this application is open. Provider reset times come from reported usage; unknown reset times are rechecked.</p>
-    {runRequest ? <details><summary>Queue this run configuration</summary>
+    {runRequest ? <details><summary>Run once later with this configuration</summary>
       {teamProblem ? <p class="msg warn" role="status">{teamProblem}</p> : null}
-      <p class="help">Deferred runs use Safe mode, suppress copied ignored files and disable approval waits. Files and source references are revalidated when launching; attachments cannot be deferred.</p>
+      <p class="help">Runs started later use Safe mode, suppress copied ignored files and disable approval waits. Files and source references are revalidated when launching; attachments cannot be saved for later.</p>
       <p class="help">Task and command text is saved locally with this request. Reference environment variable names for credentials instead of putting their values in commands.</p>
-      <div class="wb-fields"><label>Queue label (optional)<input class="field" maxLength={120} aria-label="Deferred run label" value={name} onInput={(event) => setName(event.currentTarget.value)} /></label>
-      <label>Start condition<select class="field" aria-label="Deferred start condition" value={timing} onChange={(event) => chooseTiming(event.currentTarget.value)}><option value="ready">As soon as conditions are ready</option><option value="at">At or after a chosen time</option></select></label>
-      {timing === "at" ? <label>Earliest start · local time<input class="field" type="datetime-local" aria-label="Deferred earliest start" min={localTime(Date.now())} value={notBefore} onInput={(event) => { chosenStart.current = true; setNotBefore(event.currentTarget.value); }} /></label> : null}</div>
+      <div class="wb-fields"><label>Queue label (optional)<input class="field" maxLength={120} aria-label="Run once later label" value={name} onInput={(event) => setName(event.currentTarget.value)} /></label>
+      <label>Start condition<select class="field" aria-label="Run once later start condition" value={timing} onChange={(event) => chooseTiming(event.currentTarget.value)}><option value="ready">As soon as conditions are ready</option><option value="at">At or after a chosen time</option></select></label>
+      {timing === "at" ? <label>Earliest start · local time<input class="field" type="datetime-local" aria-label="Run once later earliest start" min={localTime(Date.now())} value={notBefore} onInput={(event) => { chosenStart.current = true; setNotBefore(event.currentTarget.value); }} /></label> : null}</div>
       <fieldset class="deferred-providers"><legend>Wait for selected providers to have capacity</legend>{(["claude", "codex", "agy"] as AgentId[]).map((provider) => <label key={provider}><input type="checkbox" checked={providers.includes(provider)} onChange={(event) => setProviders((previous) => event.currentTarget.checked ? [...previous, provider] : previous.filter((value) => value !== provider))} /> {provider === "agy" ? "Antigravity" : provider === "claude" ? "Claude" : "Codex"}</label>)}</fieldset>
       <details><summary>Review saved run request</summary><pre>{JSON.stringify(runRequest, null, 2)}</pre></details>
-      <div class="wb-actions"><button class="btn primary" disabled={saving || !!teamProblem} title={teamProblem || undefined} onClick={enqueue}>{saving ? "Saving…" : "Save deferred run"}</button></div>
+      <div class="wb-actions"><button class="btn primary" disabled={saving || !!teamProblem} title={teamProblem || undefined} onClick={enqueue}>{saving ? "Saving…" : "Save to run once later"}</button></div>
       {saveError && saveError !== error ? <p class="msg err" role="alert">{saveError}</p> : null}
     </details> : null}
     <div class="wb-actions"><button class="btn small" onClick={() => setRefresh((value) => value + 1)}>Refresh queue</button>{clearable.length ? <button class="btn small" disabled={clearing} onClick={() => void clear()}>{clearing ? "Clearing…" : `Clear finished (${clearable.length})`}</button> : null}</div>
     {error ? <p class="msg err" role="alert">{error}</p> : null}
-    {scoped.length ? <div class="wb-list">{scoped.map((job) => <DeferredRunCard key={job.id} job={job} refresh={load} />)}</div> : <p class="help">No deferred runs in this scope.</p>}
+    {scoped.length ? <div class="wb-list">{scoped.map((job) => <DeferredRunCard key={job.id} job={job} refresh={load} />)}</div> : <p class="help">Nothing is queued to run once later in this scope.</p>}
   </section>;
 }
 
@@ -114,24 +114,24 @@ function DeferredRunCard({ job, refresh }: { job: DeferredRunJob; refresh: () =>
       if (problem instanceof ApiError && problem.status === 409) {
         // Show where the job is now instead of waiting for the next poll.
         const latest = (await refresh().catch(() => [])).find((item) => item.id === job.id);
-        if (latest && latest.revision !== job.revision) showToast(`This deferred job changed elsewhere and is now: ${LABELS[latest.status]}.`, 5000);
+        if (latest && latest.revision !== job.revision) showToast(`This queued run changed elsewhere and is now: ${LABELS[latest.status]}.`, 5000);
       }
     }
     finally { setBusy(false); }
   };
   const command = (action: "cancel" | "retry" | "attach", fields = {}) => act(`/api/deferred-runs/${encodeURIComponent(job.id)}/${action}`, { expectedRevision: job.revision, ...fields });
-  return <article class="wb-item deferred-run" aria-label={`Deferred run ${job.name}`}>
+  return <article class="wb-item deferred-run" aria-label={`Run once later: ${job.name}`}>
     <div class="wb-item-head"><b>{job.name}</b><span class={`badge ${job.status === "started" ? "ok" : job.status === "failed" ? "err" : job.status === "unknown" || job.status === "waiting-provider" ? "warn" : job.status === "claimed" ? "run" : ""}`}>{LABELS[job.status]}</span></div>
     <p class="help">{job.run.pattern} · {job.run.repo} · earliest {when(job.notBefore)} · launch attempts {job.attempts}/{job.maxAttempts}</p>
     {job.waitForProviders.length ? <p class="help">Provider conditions: {job.waitForProviders.join(", ")}{job.nextCheckAt ? ` · check again at ${when(job.nextCheckAt)}` : ""}</p> : null}
     {job.reason ? <p class="help">{job.reason}</p> : null}
     <div class="wb-actions">
     {job.runId ? <a class="btn small" href={`#/run/${encodeURIComponent(job.runId)}`}>Open run {job.runId}</a> : null}
-    {ACTIVE.has(job.status) || retryable(job) ? <button class="btn small" disabled={busy} onClick={() => command("cancel")}>{job.status === "unknown" ? "Cancel queue recovery" : job.status === "claimed" ? "Request launch cancellation" : "Cancel deferred run"}</button> : null}
+    {ACTIVE.has(job.status) || retryable(job) ? <button class="btn small" disabled={busy} onClick={() => command("cancel")}>{job.status === "unknown" ? "Cancel queue recovery" : job.status === "claimed" ? "Request launch cancellation" : "Cancel queued run"}</button> : null}
     {retryable(job) ? <button class="btn small" disabled={busy} onClick={() => command("retry")}>Retry after reviewing the failure</button> : null}
     {finished(job) ? <button class="btn small" disabled={busy} onClick={() => act("/api/deferred-runs/remove", { jobs: [{ id: job.id, expectedRevision: job.revision }] })}>Remove record</button> : null}
     </div>
-    {job.status === "unknown" ? <div class="deferred-recovery" aria-label="Recover unknown deferred launch">
+    {job.status === "unknown" ? <div class="deferred-recovery" aria-label="Recover unknown launch">
       <p class="help">A run may have started before its receipt was saved. Inspect existing runs and the claim below before linking one or retrying. Cancelling queue recovery does not stop an unknown existing run.</p>
       <p class="help">Job <code>{job.id}</code> · launch claim <code>{job.claimId}</code></p>
       <div class="wb-row"><label>Existing run ID<input class="field" aria-label={`Existing run for ${job.id}`} maxLength={240} value={runId} onInput={(event) => setRunId(event.currentTarget.value)} /></label><button class="btn small" disabled={busy || !runId.trim()} onClick={() => command("attach", { runId: runId.trim() })}>Link matching existing run</button></div>

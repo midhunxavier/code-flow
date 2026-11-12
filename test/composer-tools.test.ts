@@ -2,13 +2,14 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { fillTemplate, parseComposerLibrary, taskWithCriteria, templateParameters, validatePresetConfig, type ComposerLibrary, type PresetConfig, type TaskTemplate } from "../ui/composer-tools.js";
 import { hashFor, parseRouteHash, type Route } from "../ui/navigation.js";
+import { SETTINGS_SECTIONS } from "../ui/settings-sections.js";
 import { patterns } from "../src/patterns/index.js";
 
 const config: PresetConfig = { pattern: "pipeline", roles: { planner: ["claude"], builder: ["codex"], reviewer: ["agy"] }, options: { maxRounds: 3 }, roleSettings: { planner: { claude: { model: "example", effort: "high" } } }, agentSettings: { codex: { model: "other" } }, trust: "standard", limits: { maxMinutes: 60, maxSteps: 40 }, approvePlan: true };
 const library = (): ComposerLibrary => ({ schemaVersion: 1, presets: [{ id: "team-1", name: "Backend team", revision: 2, updatedAt: 2000, config: structuredClone(config), history: [{ revision: 1, updatedAt: 1000, config: { ...structuredClone(config), trust: "safe" } }] }], templates: [{ id: "task-1", name: "Component task", pattern: "pipeline", task: "Add tests for {{component}} in {{package}}.", criteria: ["{{component}} rejects invalid input."] }] });
 
 test("deep links round-trip encoded paths and malformed escapes remain recoverable", () => {
-  const routes: Route[] = [{ view: "inbox" }, { view: "automations" }, { view: "workspace", project: "a/b" }, { view: "workspace" }, { view: "insights", group: "a/b" }, { view: "composer" }, { view: "settings" }, { view: "settings", section: "connections", group: "workspace" }, { view: "run", id: "run / # 1" }, { view: "review", id: "run", branch: "feature/emoji-✓" }, { view: "side", tab: "files", scope: "repo:/tmp/a b" }, { view: "project", id: "project/1" }];
+  const routes: Route[] = [{ view: "inbox" }, { view: "automations" }, { view: "automations", kind: "manage" }, { view: "workspace" }, { view: "insights", group: "a/b" }, { view: "composer" }, { view: "settings" }, { view: "settings", section: "connections", group: "workspace" }, { view: "run", id: "run / # 1" }, { view: "review", id: "run", branch: "feature/emoji-✓" }, { view: "side", tab: "files", scope: "repo:/tmp/a b" }, { view: "project", id: "project/1" }];
   for (const route of routes) assert.deepEqual(parseRouteHash(hashFor(route)), route);
   for (const hash of ["#/run/%", "#/project/%E0%A4%A", "#/review/a/b%GG"]) { assert.deepEqual(parseRouteHash(hash), { view: "invalid", hash }); assert.equal(hashFor(parseRouteHash(hash)), hash); }
   assert.deepEqual(parseRouteHash("#/settings/unknown"), { view: "settings", section: "general" });
@@ -18,8 +19,24 @@ test("deep links round-trip encoded paths and malformed escapes remain recoverab
   assert.deepEqual(parseRouteHash("#/insights"), { view: "insights" });
   assert.deepEqual(parseRouteHash("#/insights/a%2Fb"), { view: "insights", group: "a/b" });
   assert.deepEqual(parseRouteHash("#/settings/workspace"), { view: "workspace" });
-  assert.deepEqual(parseRouteHash("#/settings/automations"), { view: "settings", section: "automations" });
-  assert.deepEqual(parseRouteHash("#/settings/insights/a%2Fb"), { view: "settings", section: "insights", group: "a/b" });
+});
+test("views that left Settings redirect from their old Settings addresses", () => {
+  const moved: [string, Route, string][] = [
+    ["#/settings/board", { view: "team" }, "#/team"],
+    ["#/settings/inbox", { view: "inbox" }, "#/inbox"],
+    ["#/settings/insights", { view: "insights" }, "#/insights"],
+    ["#/settings/insights/a%2Fb", { view: "insights", group: "a/b" }, "#/insights/a%2Fb"],
+    ["#/settings/automations", { view: "automations", kind: "manage" }, "#/automations/manage"],
+    ["#/settings/automations/repeat", { view: "automations", kind: "repeat" }, "#/automations/repeat"],
+    ["#/settings/automations/bogus", { view: "automations", kind: "manage" }, "#/automations/manage"],
+    ["#/project/a%2Fb/workspace", { view: "project", id: "a/b", section: "repositories" }, "#/project/a%2Fb/repositories"],
+  ];
+  for (const [hash, route, destination] of moved) { assert.deepEqual(parseRouteHash(hash), route); assert.equal(hashFor(route), destination); }
+  assert.deepEqual(parseRouteHash("#/automations/manage"), { view: "automations", kind: "manage" });
+  assert.equal(parseRouteHash("#/automations/manage/extra").view, "invalid");
+  assert.equal(parseRouteHash("#/project/p/automation/manage").view, "invalid");
+  for (const id of ["board", "inbox", "insights", "automations"]) assert.equal(SETTINGS_SECTIONS.some(section => section.id === id), false);
+  assert.equal(SETTINGS_SECTIONS.length, 9);
   assert.deepEqual(parseRouteHash("#/run/"), { view: "composer" });
 });
 

@@ -71,7 +71,7 @@ after(async () => { await browser?.close(); if (child && child.exitCode === null
 test("a schedule saved without a zone stays in server local time when edited from another zone", { timeout: 60_000 }, async () => {
   const saved = await api("/api/automations", { name: "Server local QA", enabled: true, run: run(), schedule: { at: "08:00" } });
   const context = await browserIn("America/New_York");
-  const { page, errors } = await open(context, "#/settings/automations");
+  const { page, errors } = await open(context, "#/automations/manage");
   const row = await editor(page, "Server local QA");
   await row.getByText("every day at 08:00 (server local time)").waitFor();
   assert.match(await row.locator(".ar-meta").nth(1).innerText(), /Next: \w{3}, \w{3} \d{1,2}, .*(EST|EDT)/, "Next has a date and names the browser's zone");
@@ -100,7 +100,7 @@ test("a schedule saved without a zone stays in server local time when edited fro
 test("two windows: an untouched editor follows the saved schedule; a stale edit is refused and kept", { timeout: 90_000 }, async () => {
   const saved = await api("/api/automations", { name: "Two windows QA", enabled: false, run: run(), schedule: { at: "03:00", timezone: "Europe/Stockholm" } });
   const context = await browserIn("Europe/Stockholm");
-  const a = await open(context, "#/settings/automations"), b = await open(context, "#/settings/automations");
+  const a = await open(context, "#/automations/manage"), b = await open(context, "#/automations/manage");
   const rowA = await editor(a.page, "Two windows QA"), rowB = await editor(b.page, "Two windows QA");
   await rowA.getByLabel("Time", { exact: true }).fill("04:00");
   await rowA.getByRole("button", { name: "Save schedule", exact: true }).click();
@@ -147,7 +147,7 @@ test("two windows: an untouched editor follows the saved schedule; a stale edit 
 test("an edit made while the last save is still reloading is not a conflict with that save", { timeout: 60_000 }, async () => {
   const saved = await api("/api/automations", { name: "Slow reload QA", enabled: false, run: run(), schedule: { at: "03:00", timezone: "Europe/Stockholm" } });
   const context = await browserIn("Europe/Stockholm");
-  const { page, errors } = await open(context, "#/settings/automations");
+  const { page, errors } = await open(context, "#/automations/manage");
   const row = await editor(page, "Slow reload QA");
   // A busy server: the list reload that follows a save takes a while to come back.
   let slow = true;
@@ -167,7 +167,7 @@ test("an edit made while the last save is still reloading is not a conflict with
 test("the row editor refuses fields it can't save with one reason, and shows what was saved", { timeout: 60_000 }, async () => {
   const saved = await api("/api/automations", { name: "Fields QA", enabled: true, run: run(), schedule: { at: "03:00", timezone: "Europe/Stockholm" } });
   const context = await browserIn("Europe/Stockholm");
-  const { page, errors } = await open(context, "#/settings/automations");
+  const { page, errors } = await open(context, "#/automations/manage");
   const row = await editor(page, "Fields QA");
   const preview = row.getByLabel("Next scheduled times", { exact: true }), save = row.getByRole("button", { name: "Save schedule", exact: true });
   const zone = row.getByLabel("Time zone", { exact: true });
@@ -208,11 +208,11 @@ test("the row editor refuses fields it can't save with one reason, and shows wha
 
 test("the save-automation dialog keeps an emptied interval empty and blocks what it can't save", { timeout: 60_000 }, async () => {
   const context = await browserIn("Europe/Stockholm");
-  const { page, errors } = await open(context, `#/project/${encodeURIComponent(project)}/new`);
+  const { page, errors } = await open(context, `#/project/${encodeURIComponent(project)}/workflow`);
   await page.getByRole("textbox", { name: "Task", exact: true }).fill("Repeat dialog QA");
   await page.getByRole("button", { name: "Run actions", exact: true }).click();
   await page.getByRole("menuitem", { name: "Schedule…" }).click();
-  await page.getByRole("dialog", { name: "Schedule work" }).getByRole("button", { name: /^Repeat/ }).click();
+  await page.getByRole("button", { name: "Repeat on a schedule or event", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Save as automation" });
   const saveButton = dialog.getByRole("button", { name: "Save automation", exact: true });
   await dialog.getByLabel("Automation time zone", { exact: true }).fill("Mars/Olympus");

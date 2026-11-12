@@ -32,7 +32,7 @@ src/team-memory.ts       run/project scope and Git applicability for memory retr
 src/team-mailbox.ts      validated atomic collaboration commands, requests and waits
 src/team-scheduler.ts    recorded completion batches with concurrent worker lifetimes
 src/team-tools.ts        expiring member capability service; stdio MCP client in team-tool-client.mjs
-src/team-evaluation.ts   immutable evaluations and evidence-gated rollout decisions
+src/team-evaluation.ts   per-run coordination, verification and recovery measurements
 src/projects.ts          projects: named groups of repos, and which project a new run goes in
 src/log.ts               code-flow's own log, ~/.codeflow/server.log (rotated at 5 MB)
 src/env.ts               the environment of everything code-flow starts: yours, minus its token, npm_* and its own node_modules/.bin
@@ -65,7 +65,7 @@ src/context.ts           validates and stages task context for agents
 ```
 
 - **AgentAdapter** (`src/adapters/types.ts`): `run({prompt, cwd, mode, resumeSessionId}, onEvent) → {ok, finalText, sessionId, errorKind, resetsAt}`. `sessionId` is only ever one the CLI confirmed in that turn, never a session that failed to resume. A failed turn says why in `errorKind` (`usage_limit`, `auth`, `session_not_found`, `cli_incompatible`, `stalled`, `transient`…), read from the CLI's own signals (`src/adapters/errors.ts`), and the engine retries, stops or starts a fresh session on that. Adapters convert each CLI's JSONL into `text | thinking | tool_call | tool_result | usage | status | error` events. An adapter whose turns take input while they run calls `onSteerable(steer)` once its turn can be steered. The engine then hands queued notes to `steer`. `src/adapters/codex-app-server.ts` turns app-server notifications into the events `codex exec --json` prints, so both Codex transports share one handler.
-- **TeamContext** gives patterns a few primitives. `ask()` runs one agent turn as a visible step, and `resume` continues that agent's own conversation. `worktree()`, `commit()`, `diff()` and `artifact()` handle git. `parallel()` runs branches side by side (race contestants, workers, debaters); when one throws, the others are stopped and waited for, so nothing keeps running after the run ends. Structured hand-offs (review verdicts, judge picks, subtask lists) use a fenced ```` ```json ```` block that `extractJson` parses. A pattern reads what changed through `changedFiles()` and `testChanges()`, not git directly: on a resume the worktree on disk already has the later commits, and these read at the commit the replay has reached.
+- **TeamContext** gives patterns a few primitives. `ask()` runs one agent turn as a visible step, and `resume` continues that agent's own conversation. `worktree()`, `commit()`, `diff()` and `artifact()` handle git. `parallel()` runs branches side by side (a council's reviewers, a team's workers); when one throws, the others are stopped and waited for, so nothing keeps running after the run ends. Structured hand-offs (review verdicts, team plans) use a fenced ```` ```json ```` block that `extractJson` parses. A pattern reads what changed through `changedFiles()` and `testChanges()`, not git directly: on a resume the worktree on disk already has the later commits, and these read at the commit the replay has reached.
 - Every event is appended to `~/.codeflow/runs/<run>.jsonl`. A run snapshot that follows another is written as what changed (`run-patch`: fields set or removed, and the new end of a string or list that kept its start), with a full snapshot first, each time the run stops running, and now and then; reading a log turns patches back into snapshots (`src/run-log.ts`). Logs from before this are compacted the same way once loaded, in the background, and only when they read back exactly as they were. Worktrees live in `<repo>/.worktrees/<run-id>/` (see [Worktrees and branches](getting-started.md#worktrees-and-branches)).
 - **Live updates**: a browser allows 6 connections per host over HTTP/1.1, shared by all its tabs, and an event stream holds one while it's open. So there's one stream (`GET /api/stream`), with topics subscribed on it (`POST /api/stream/<client>`), and the browser's windows share it (`ui/stream.ts`): the first to take a Web Lock holds it for all, the others send it what they watch and get their events over a BroadcastChannel, and when it closes the next one takes over (on the phone, over plain HTTP, there are no Web Locks: each window has its own). The topics are `runs` (the run list), `run:<id>` (the run as it is now, then its latest snapshots, every agent event and log line, then live events; its cursor is the run's own, so it holds across a restart) and `shell:<id>` (a terminal). A run shown in two places (the run view and a side chat) is one subscription (`ui/run-feed.ts`), panes that are hidden or closed unsubscribe, and a subscription that comes back (or a stream that reconnects) passes a cursor, so it gets only what it missed. The older per-feature streams (`/api/events`, `/api/runs/<id>/events`, `/api/shell/<id>/events`) still answer, for a page left open across an update.
 
@@ -75,19 +75,19 @@ src/context.ts           validates and stages task context for agents
 
 Write a `Pattern` (roles, options, `run(ctx)`) in `src/patterns/`, then add it to `src/patterns/index.ts`. The UI builds its form from the pattern definition.
 
-`ctx.artifact()` proves a result whose check passed (fail-to-pass, see `TeamContext.prove`), so a new pattern gets proofs without doing anything. To act on one before publishing, as Pipeline does before review, use `proveOrAsk()` from `src/patterns/prompts.ts`, and `proofEvidence()` to show it to a reviewer or judge.
+`ctx.artifact()` proves a result whose check passed (fail-to-pass, see `TeamContext.prove`), so a new pattern gets proofs without doing anything. To act on one before publishing, as Pipeline does before review, use `proveOrAsk()` from `src/patterns/prompts.ts`, and `proofEvidence()` to show it to a reviewer.
 
 A pattern with a reviewer asks for `REVIEW_SCHEMA` with `reproRule()` and `REVIEW_SHAPE`, then passes the verdict to `checkReview()` (all in `src/patterns/findings.ts`): it runs each finding's repro on the result (`TeamContext.reproduce`), records the review on the run, and marks what blocks approval (`blocks` in the engine). `approves()` is the gate, and `findingsForBuilder()` is what the builder gets back.
 
 ### Adding an agent
 
-For a CLI that speaks ACP v1 over stdio, use [Settings → Agents & models](acp-agents.md). The shared adapter in `src/adapters/acp.ts` handles transport and normalized events; `src/acp-connections.ts` persists owner-configured invocations and pins them to runs.
+For a CLI that speaks ACP v1 over stdio, use [Settings → Agents](acp-agents.md). The shared adapter in `src/adapters/acp.ts` handles transport and normalized events; `src/acp-connections.ts` persists owner-configured invocations and pins them to runs.
 
 Implement `AgentAdapter` in `src/adapters/`, then register it in `src/adapters/index.ts`. Add a fake for it in `test/fake-agent.mjs`.
 
 Owner-configured providers and workflows can also use [versioned extensions](extensions.md) without modifying the built-in registry. They use namespaced IDs, explicit capability/API negotiation, reviewed bundle hashes and per-run version pins. Additional provider capabilities remain unknown until separately verified.
 
-The HTTP boundaries for shared access, the team board and its linked runners, filesystem policy, coordinated changes and workspace operations live in separate modules. SSH framing/artifacts/receipts, durable queues, memory claim analysis and Git shipping each have independent contracts and focused tests. [Run storage](run-storage.md) separates recovery/projection from execution and bounds archived detail hydration. These boundaries retain server-owned authority and replay identities rather than moving them into client request bodies.
+The HTTP boundaries for shared access, the team board and its linked runners, filesystem policy and workspace operations live in separate modules. SSH framing/artifacts/receipts, durable queues, memory claim analysis and Git shipping each have independent contracts and focused tests. [Run storage](run-storage.md) separates recovery/projection from execution and bounds archived detail hydration. These boundaries retain server-owned authority and replay identities rather than moving them into client request bodies.
 
 ## Development
 
@@ -112,7 +112,7 @@ The suite runs every pattern end to end against fake `claude` / `codex` / `agy` 
 - The fake `codex` also serves the app-server protocol (`test/fake-codex-app-server.mjs`). Its threads persist across processes, so resume and per-turn token counts are tested. A prompt containing `WAIT-FOR-STEER` keeps a turn open until a note is steered in. `test/codex-app-server.test.ts` covers mid-turn notes, declined approvals, cancellation, and the `exec` fallback.
 - A fake `gh` keeps issues, PRs, checks, comments and security alerts in a JSON file and pushes to a local bare repository, so the GitHub flows (fix CI → push → watch → fix again, and sweeps of issues, Dependabot PRs and alerts) are tested without touching GitHub.
 - A fake `docker` records arguments for deterministic orchestration tests. Opt-in native Docker cases separately test actual filesystem mounts, credentials and cancellation; fixtures alone do not establish container isolation.
-- The suite covers review loops, races with a failing contestant, critique rounds, merge-conflict resolution, and the guarantee that your checkout is untouched.
+- The suite covers review loops, parallel branches with a failing step, merge-conflict resolution, and the guarantee that your checkout is untouched.
 - `test/ship.test.ts` covers side chats too: sessions and messages kept apart from the run's thread, a budget of their own behind the team, an Ask that keeps the verdict and your edits, and files sent to a run whose worktrees were removed.
 
 `test/hardening.test.ts` covers the guarantees about processes, runs and tests:
@@ -120,9 +120,7 @@ The suite runs every pattern end to end against fake `claude` / `codex` / `agy` 
 - a background process an agent leaves behind neither hangs a step nor survives it;
 - a run can't be resumed twice at once;
 - a commit made in a read-only step is undone;
-- a loop doesn't accept a pass made by deleting the failing test;
-- race commits name no vendor;
-- the builder's test edits are undone;
+- a pass made by deleting the failing test is flagged and shown to the reviewer;
 - retries, usage-limit stops and token accounting work.
 
 Reliability has tests of its own:
@@ -136,7 +134,7 @@ Reliability has tests of its own:
 - `test/snapshot.test.ts`: Snapshot's checks on the address and size, the viewport and the whole page checked pixel by pixel (a desktop page at phone width zoomed out, not cut off), one Chrome at a time, a page that can't be opened, an `alert()`, a Chrome that dies (and the next snapshot still working), and no profiles left behind (skipped without Chrome);
 - `test/browser.test.ts` and `test/chat-views.test.ts`: the side panel's UI logic, bundled with esbuild: which addresses the Browser believes from the page, where pins can be sent and how they're named, comment drafts shared by the review and the Changes tab, and side chats kept out of the run's thread;
 - `test/engine-reliability.test.ts`: parallel branches that stop together, steps that always end, read-only that fails closed, worktrees set up again after an interrupted setup, retries that continue instead of redoing, dead sessions, usage limits with reset times, lockdown without network, and unique run ids;
-- `test/engine-review.test.ts`: a Test-first run stopped in its second round and resumed ends with the same tree as one that wasn't, Stop reaching a resume that's starting, a second conflict resolution committed on its own, signed-out contestants not journaled and usage limits stopping a race, notes no turn took, the council restoring confirmed findings, reviewers' commands that never ran their test, slot waits outside the time budget, and archiving (refused while busy; the run's folder and fetched PR head cleaned up);
+- `test/engine-review.test.ts`: a run stopped in its second review round and resumed ends with the same tree as one that wasn't, Stop reaching a resume that's starting, a second conflict resolution committed on its own, signed-out parallel writers not journaled and usage limits stopping the run, notes no turn took, the council restoring confirmed findings, reviewers' commands that never ran their test, slot waits outside the time budget, and archiving (refused while busy; the run's folder and fetched PR head cleaned up);
 - `test/security-review.test.ts`: a webhook caller's text fenced and its run marked, signed deliveries sent again with a new id, the app page's framing and caching headers, the first-browser claim ending at any sign-in, and Snapshot keeping away from loopback and metadata addresses;
 - `test/adapters-review.test.ts` and `test/github-review.test.ts`: Claude's read-only git that can't write files, error kinds read from the CLI's own error line, events a CLI prints that code-flow doesn't know, Codex falling back when resume rejects a parameter, `gh` output decoded whole, code scanning messages fenced, copied secrets kept out of commits, copies that never go through a symbolic link, merges refused mid-rebase, slow post-merge hooks, and quiet PR watches polled less often;
 - `test/ui-review.test.ts`: the run's own check winning over the repo's on Edit & run again, stale Files answers dropped, `safeHref`, and the Markdown renderer keeping raw HTML and `javascript:` links as text;
@@ -154,7 +152,7 @@ The GitHub tests cover untrusted issues (lockdown, fenced text, Docker or your c
 
 A live tool command and its receipt are fsynced together before acknowledgement. The scheduler records which command batch it consumes at each boundary, so replay cannot inject a future reply into an earlier task. Completion batches likewise record observed order before serial integration. One server owns the journal; no dispatch lease or outbox is needed.
 
-The scoped loopback bridge is separate from the user API and its bearer token. Official adapters receive a temporary stdio MCP configuration for supported turns. Memory tools inherit the active member, project, task and source provenance from the engine. Native spawning controls, sandbox support and nested usage limitations are exposed through the capability inventory. Supervisor shares decomposition/integration primitives while retaining its public ID and historical replay identities.
+The scoped loopback bridge is separate from the user API and its bearer token. Official adapters receive a temporary stdio MCP configuration for supported turns. Memory tools inherit the active member, project, task and source provenance from the engine. Native spawning controls, sandbox support and nested usage limitations are exposed through the capability inventory.
 
 See [Performance and resource boundaries](performance.md) for the paged UI stream, lazy assets, worker reuse, storage ordering, diagnostics and load benchmark.
 

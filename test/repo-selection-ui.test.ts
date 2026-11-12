@@ -31,7 +31,7 @@ beforeEach(() => { values.clear(); requests.length = 0; rerunDraft.value = null;
 
 test("reselecting a retry repository through an alias preserves its pinned draft throughout discovery", async () => {
   state.repoInfo.value = info("/a");
-  const retry = { id: "original", repo: "/a", approvals: {}, loop: { remoteWorker: { workerId: "worker", repoMapping: "mapped" } } } as NonNullable<typeof rerunDraft.value>;
+  const retry = { id: "original", repo: "/a", approvals: {}, loop: { agentContainer: { image: "fixture:prepared" } } } as NonNullable<typeof rerunDraft.value>;
   rerunDraft.value = retry;
   state.baseRef.value = "a".repeat(40);
   state.checkCmd.value = "run-only-check";

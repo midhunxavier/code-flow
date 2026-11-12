@@ -12,7 +12,7 @@ Get help with setup, workflows and troubleshooting from the documentation, using
 
 The companion sits beside the guide on desktop and expands to a full-width panel on a phone. Public readers and shared/phone sessions receive an owner-only sign-in hint without invoking the CLI; **Check again** rechecks access after signing in. Close and reopen it to switch between reading and chatting. **New chat** clears the conversation and draft.
 
-The assistant supports **Claude Code, Codex and Antigravity**. It uses the provider's existing CLI authentication. Model and effort preferences saved in the local app's **Settings → Agents & models** are forwarded; when unset, the CLI's defaults apply. ACP and extension providers are not offered in this help flow. ACP and extension providers cannot start managed runs yet; Full access does not enable them. Their connection checks and model discovery remain available.
+The assistant supports **Claude Code, Codex and Antigravity**. It uses the provider's existing CLI authentication. Model and effort preferences saved in the local app's **Settings → Agents** are forwarded; when unset, the CLI's defaults apply. ACP and extension providers are not offered in this help flow. ACP and extension providers cannot start managed runs yet; Full access does not enable them. Their connection checks and model discovery remain available.
 
 ## What it receives
 

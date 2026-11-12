@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { CODEFLOW_HOME } from "./config.js";
 
 /**
- * The Codex profile runs use, chosen in Settings → Agents & models (or CODEFLOW_CODEX_PROFILE,
+ * The Codex profile runs use, chosen in Settings → Agents (or CODEFLOW_CODEX_PROFILE,
  * which wins). Codex layers `$CODEX_HOME/<name>.config.toml` over its base config for it: another
  * model provider (Ollama, an OpenAI-compatible endpoint), model or sandbox defaults.
  *

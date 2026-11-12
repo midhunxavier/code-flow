@@ -66,7 +66,7 @@ test("Agent is the fresh default and Advanced team workflows survive reload and 
     const team = fresh.getByRole("switch", { name: "AI team", exact: true });
     await team.waitFor();
     assert.equal(await team.getAttribute("aria-checked"), "false");
-    assert.equal(await fresh.getByLabel("Workflow", { exact: true }).isVisible(), false);
+    assert.equal(await fresh.getByRole("combobox", { name: "Workflow", exact: true }).isVisible(), false);
     await fresh.reload();
     assert.equal(await team.getAttribute("aria-checked"), "false", "Agent remains the default");
     await selectLegacyTeam(fresh);
@@ -100,8 +100,8 @@ test("Agent is the fresh default and Advanced team workflows survive reload and 
     assert.equal(pinned.template.id, definition.id);
     assert.equal(pinned.template.version, 1);
     assert.equal(pinned.inputs.task, "Implement sample behavior");
-    assert.equal(await fresh.getByLabel("Workflow", { exact: true }).inputValue(), "auto-team");
-    await fresh.getByRole("button", { name: "Advanced", exact: true }).click();
+    assert.equal(await fresh.getByRole("combobox", { name: "Workflow", exact: true }).inputValue(), "auto-team");
+    await fresh.locator(".advanced-controls").evaluate(el => { (el as HTMLDetailsElement).open = true; });
     await library.getByLabel("Saved templates").selectOption(definition.id);
     await library.getByRole("button", { name: "Edit new version" }).click();
     await library.getByLabel("Name", { exact: true }).fill("Revised strategy");
@@ -278,24 +278,8 @@ test("Auto team approval, addressed question, distinct members, and verified cov
   await selectLegacyTeam(page);
   await page.getByRole("checkbox", { name: /Let me approve the team and plan/ }).uncheck();
   await page.reload();
-  await page.locator(".composer-options > summary").click();
+  await page.locator(".advanced-controls").evaluate(el => { (el as HTMLDetailsElement).open = true; });
   assert.equal(await page.getByRole("checkbox", { name: /Let me approve the team and plan/ }).isChecked(), false, "explicit approval preference persists");
-});
-
-test("evaluation UI records an explicit experimental decision and cannot promote missing evidence", { timeout: 30_000 }, async () => {
-  await page.goto(`${base}/#/settings/insights`);
-  await page.getByText("Team evaluation", { exact: true }).click();
-  const evaluations = page.getByLabel("Team evaluations", { exact: true });
-  await evaluations.getByText("Rollout decision and requirements", { exact: true }).click();
-  await evaluations.getByLabel("Auto team rollout stage", { exact: true }).selectOption("default");
-  await evaluations.getByLabel("Rollout rationale", { exact: true }).fill("Checking the evidence guard.");
-  await evaluations.getByRole("button", { name: "Record rollout decision", exact: true }).click();
-  await evaluations.getByRole("alert").filter({ hasText: /not supported|20 real/ }).waitFor();
-  await evaluations.getByLabel("Auto team rollout stage", { exact: true }).selectOption("experimental");
-  await evaluations.getByRole("button", { name: "Record rollout decision", exact: true }).click();
-  await evaluations.getByText(/Last decision:.*Checking the evidence guard/).waitFor();
-  const rollout = await fetch(`${base}/api/team-rollout`, { headers }).then((response) => response.json());
-  assert.equal(rollout.stage, "experimental");
 });
 
 test("changing a running goal stops its team and creates an approved child plan with an explicit budget", { timeout: 60_000 }, async () => {
@@ -327,9 +311,7 @@ test("changing a running goal stops its team and creates an approved child plan 
 });
 
 async function selectLegacyTeam(page: Page) {
-  const options = page.locator(".composer-options");
-  if (await options.getAttribute("open") === null) await options.locator(":scope > summary").click();
   const advanced = page.locator(".advanced-controls");
   if (await advanced.getAttribute("open") === null) await advanced.locator(":scope > summary").click();
-  await page.getByLabel("Workflow", {exact:true}).selectOption("auto-team");
+  await page.getByRole("combobox", { name: "Workflow", exact: true }).selectOption("auto-team");
 }

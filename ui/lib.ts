@@ -81,7 +81,7 @@ async function fetchJson<T = any>(path: string, opts: RequestInit = {}): Promise
     res = await fetch(path, { ...opts, headers: { "content-type": "application/json", ...(opts.headers || {}) } });
   } catch {
     // The browser only says "Failed to fetch": the server is down or restarting.
-    throw new ApiError("Can't reach code-flow. Is the server still running?", 0);
+    throw new ApiError("Can't reach Code Flow. Is the server still running?", 0);
   }
   const body = (await res.json().catch(() => ({}))) as { error?: string; confirm?: string; code?: string; signIn?: boolean };
   if (res.status === 401 && body.signIn) signInAgain();
@@ -233,11 +233,6 @@ export const pct = (part: number, whole: number) => (whole ? `${Math.round((part
 export const SHORT: Record<AgentId | "auto", string> = { claude: "Claude", codex: "Codex", agy: "Antigravity", auto: "Auto" };
 export const FLOWS: Record<string, string> = {
   pipeline: "One plans, one builds, another reviews",
-  loop: "Fix → run check → repeat until green",
-  race: "Everyone solves it → Judge picks",
-  debate: "Propose → Debate → Synthesize",
-  supervisor: "Split → Build in parallel → Integrate",
-  tdd: "Tests first → Implement → Verify",
   council: "Review independently → Chair merges",
   solo: "One agent, and you keep talking to it",
 };

@@ -8,15 +8,15 @@ export function providerProblem(entry: AgentInfo, diagnostics: readonly Health[]
   const unsupported = runProviderProblem(entry.id, entry.displayName, policy);
   if (unsupported) return unsupported;
   const health = diagnostics?.find(item => item.id === entry.id);
-  if (health?.signedIn === false) return "Signed out — sign in from Settings → Agents & models";
-  if (health?.compatible === false) return "Update CLI — open Settings → Agents & models";
+  if (health?.signedIn === false) return "Signed out — sign in from Settings → Agents";
+  if (health?.compatible === false) return "Update CLI — open Settings → Agents";
   return "";
 }
 
 export function providerSetupProblem(entries: readonly AgentInfo[], diagnostics: readonly Health[] | null, policy?: { acpExecution?: "native" }): string {
   if (entries.some(entry => !providerProblem(entry, diagnostics, policy))) return "";
   const signedOut = diagnostics?.find(item => item.installed && item.signedIn === false);
-  if (signedOut) return `${signedOut.name} isn't signed in — open Settings → Agents & models`;
+  if (signedOut) return `${signedOut.name} isn't signed in — open Settings → Agents`;
   const installed = entries.find(entry => entry.available);
-  return installed ? `${installed.displayName}: ${providerProblem(installed, diagnostics)}` : "Connect a provider first — open Settings → Agents & models";
+  return installed ? `${installed.displayName}: ${providerProblem(installed, diagnostics)}` : "Connect a provider first — open Settings → Agents";
 }

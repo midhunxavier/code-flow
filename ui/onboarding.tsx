@@ -4,17 +4,16 @@ import { providerSetupProblem } from "./provider-readiness.js";
 import { FillTemplateDialog } from "./template-parameters.js";
 import { acceptanceCriteriaProblem } from "../src/start-input-validation.js";
 import { intentDraft } from "./experience.js";
-import { Templates } from "./github.js";
 import { useEffect, useRef, useState } from "preact/hooks";
-import { useDialog } from "./app.js";
 import { post, showToast, store } from "./lib.js";
 import { acceptanceCriteria, agents, agentSettings, source, repoInfo, baseRef, catalogs, checkCmd, checkHint, composerOrigins, configChecking, contextPaths, attachments, health, limits, limitPreference, optionsFor, patterns, planApprovalFor, providerDefaults, repo, repoChecking, repoConfig, roleModels, rolesFor, setAcceptanceCriteria, setApprovePlan, setLimits, setOption, setPattern, setRoles, setRunCheck, setRunSetup, setTask, setTrust, setupCmd, target, task, trust } from "./state.js";
-import { fillTemplate, parseComposerLibrary, taskWithCriteria, templateParameters, type ComposerLibrary, type PresetConfig, type TaskTemplate, type TemplateRunOptions } from "./composer-tools.js";
+import { fillTemplate, parseComposerLibrary, templateParameters, type ComposerLibrary, type PresetConfig, type TaskTemplate } from "./composer-tools.js";
 import type { AgentSettings, PatternInfo } from "./types.js";
 import type { VerificationProfile } from "../src/verification.js";
 import { ContextBudgetControls } from "./context-budget-controls.js";
 import { contextBudget, contextBudgetOrigin, setContextBudget } from "./context-budget.js";
 import type { ContextInspection } from "../src/context-inspection.js";
+import { retiredPatternMessage } from "../src/patterns/retired.js";
 
 const EMPTY_LIBRARY: ComposerLibrary = { schemaVersion: 1, presets: [], templates: [] };
 
@@ -29,18 +28,18 @@ export function ProviderSetupPrompt() {
 
 export function AcceptanceEditor() {
   const problem = acceptanceCriteriaProblem(acceptanceCriteria.value);
-  return <details class="settings acceptance-editor">
-    <summary><span class="st">Acceptance criteria</span><span class="ss">{acceptanceCriteria.value.filter((c) => c.trim()).length || "Optional"} · explicit requirements for the team</span></summary>
+  return <section class="advanced-group acceptance-editor" aria-labelledby="advanced-acceptance">
+    <h2 class="section-title" id="advanced-acceptance">Acceptance criteria</h2>
     <div class="settings-body"><label class="lbl" for="acceptance-criteria">One requirement per line</label>
       <textarea aria-invalid={!!problem} id="acceptance-criteria" class="field" rows={4} placeholder="The new behavior has automated tests.&#10;Existing API clients continue to work." value={acceptanceCriteria.value.join("\n")} onInput={(e) => setAcceptanceCriteria(e.currentTarget.value.split("\n"))} />
       {problem ? <p class="msg err" role="alert">{problem}</p> : null}
-      <p class="help">These requirements are included in the run's task and in saved automations. Review them before starting.</p>
+      <p class="help">Optional. These requirements are included in the run's task and in saved automations. Review them before starting.</p>
     </div>
-  </details>;
+  </section>;
 }
 
 export interface ReadinessReport { ok: boolean; checkedAt?: number; items: Array<{ id: string; label: string; status: "passed" | "failed" | "warning" | "skipped"; detail?: string }> }
-export function RepositoryReadiness({ repository = repo.value, setup = setupCmd.value, check = checkCmd.value, base = baseRef.value, loading = configChecking.value, pattern, roles, providers }: { pattern?: string; roles?: Record<string, string | string[]>; providers?: string[]; repository?: string; setup?: string; check?: string; base?: string; loading?: boolean } = {}) {
+export function RepositoryReadiness({ repository = repo.value, setup = setupCmd.value, check = checkCmd.value, base = baseRef.value, loading = configChecking.value, pattern, roles, providers, flat = false }: { pattern?: string; roles?: Record<string, string | string[]>; providers?: string[]; repository?: string; setup?: string; check?: string; base?: string; loading?: boolean; flat?: boolean } = {}) {
   const [report, setReport] = useState<ReadinessReport | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -62,14 +61,18 @@ export function RepositoryReadiness({ repository = repo.value, setup = setupCmd.
       if (request === requests.current && selected.current === selection) setError((err as Error).message);
     } finally { if (request === requests.current && selected.current === selection) setBusy(false); }
   };
-  return <details class="settings readiness">
-    <summary><span class="st">Repository readiness</span><span class="ss">{busy ? "Checking…" : report ? `${validated ? "Commands validated" : "Inspection complete"} · ${report.ok ? "ready" : "needs attention"}` : "Check the repository and provider setup"}</span></summary>
-    <div class="settings-body"><p class="help">Inspect readiness checks configuration and installed tools. Validate commands runs setup and checks in a temporary worktree; this executes repository code.</p>
+  const status = busy ? "Checking…" : report ? `${validated ? "Commands validated" : "Inspection complete"} · ${report.ok ? "ready" : "needs attention"}` : "Check the repository and provider setup";
+  const body = <div class="settings-body"><p class="help">Inspect readiness checks configuration and installed tools. Validate commands runs setup and checks in a temporary worktree; this executes repository code.</p>
       <div class="onboarding-actions"><button class="btn" disabled={!repository || busy || loading} onClick={() => inspect(false)}>Inspect readiness</button><button class="btn" disabled={!repository || busy || loading || (!setup.trim() && !check.trim())} onClick={() => inspect(true)}>Validate commands</button></div>
       {busy ? <p role="status">Checking repository readiness…</p> : null}
       {error ? <p class="msg err" role="alert">{error}</p> : null}
       {report ? <ul class="readiness-results">{report.items.map((item) => <li key={item.id}><span class={`badge ${({ passed: "ok", failed: "err", warning: "warn", skipped: "" } as const)[item.status] ?? ""}`}>{item.status.charAt(0).toUpperCase() + item.status.slice(1)}</span><span><b>{item.label}</b>{item.detail ? <span class="help">{item.detail}</span> : null}</span></li>)}</ul> : null}
-    </div>
+    </div>;
+  // Inside the composer's Advanced section the report is a plain block; on its own page it folds away.
+  if (flat) return <div class="readiness" role="group" aria-label="Repository readiness"><span class="lbl">Repository readiness · {status}</span>{body}</div>;
+  return <details class="settings readiness">
+    <summary><span class="st">Repository readiness</span><span class="ss">{status}</span></summary>
+    {body}
   </details>;
 }
 
@@ -79,7 +82,7 @@ function currentConfig(p: PatternInfo, toolApprovals = store.get("interactiveApp
 }
 export function applyPreset(config: PresetConfig, label: string) {
   const p = patterns.value.find((p) => p.id === config.pattern);
-  if (!p) throw new Error("This workflow is no longer available.");
+  if (!p) throw new Error(retiredPatternMessage(config.pattern) ?? "This workflow is no longer available.");
   setPattern(config.pattern);
   for (const role of p.roles) setRoles(p.id, role.id, config.roles[role.id] ?? []);
   for (const option of p.options) setOption(p, option.id, config.options[option.id] ?? option.default);
@@ -154,134 +157,6 @@ export function ComposerLibraryEditor({ p, onToolApprovalsChange, libraryKey = "
   </details>;
 }
 
-export const STARTER_TEMPLATES: TaskTemplate[] = [
-  { id: "starter-bug", intent: "bug", name: "Fix a bug", pattern: "pipeline", task: "Fix the following bug:\n\nExpected behavior:\nActual behavior:\nSteps to reproduce:", criteria: [] },
-  { id: "starter-feature", intent: "feature", name: "Build a feature", pattern: "pipeline", task: "Build the following feature:\n\nWho it helps:\nExpected behavior:\nAcceptance criteria:", criteria: [] },
-  { id: "starter-review", intent: "review", name: "Review code", pattern: "council", task: "Review the code for correctness and regressions.\n\nScope or branch to review:\nAreas of concern:", criteria: [] },
-  { id: "starter-explore", intent: "explore", name: "Explore an idea", pattern: "debate", task: "Explore approaches to the following idea without implementing changes:\n\nGoal:\nConstraints:\nTrade-offs to consider:", criteria: [] },
-];
-
-export function UseTaskTemplateDialog({ initialScope, onClose, onUsed, onConfigured }: { initialScope: string; onClose: () => void; onUsed: (scope: string) => void; onConfigured?: (template: TaskTemplate) => void }) {
-  const ref = useDialog(true, onClose);
-  const [project] = useState(() => target.value.project);
-  const [scope, setScope] = useState(project && initialScope === "project" ? "project" : "personal");
-  const [selected, setSelected] = useState("");
-  const [values, setValues] = useState<Record<string, string>>({});
-  const [editing, setEditing] = useState<TaskTemplate | null>(null);
-  const editName = useRef<HTMLInputElement>(null);
-  const [deleting, setDeleting] = useState(false);
-  const [error, setError] = useState("");
-  const [libraries, setLibraries] = useState(() => {
-    const read = (key: string) => {
-      try {
-        const raw = store.get(key);
-        return { ...parseComposerLibrary(raw === null ? EMPTY_LIBRARY : JSON.parse(raw), patterns.value), error: "" };
-      } catch (error) { return { ...EMPTY_LIBRARY, error: `Could not load templates: ${(error as Error).message}` }; }
-    };
-    return { project: project ? read(`composerLibrary:${project.id}`) : { ...EMPTY_LIBRARY, error: "" }, personal: read("composerLibrary") };
-  });
-  const library = scope === "project" ? libraries.project : libraries.personal;
-  const starters = STARTER_TEMPLATES.filter(item => patterns.value.some(pattern => pattern.id === item.pattern));
-  const saved = selected.startsWith("saved:") ? library.templates.find(item => `saved:${item.id}` === selected) : undefined;
-  const preset = selected.startsWith("workflow:") ? library.presets.find(item => `workflow:${item.id}` === selected) : undefined;
-  const template: TaskTemplate | undefined = saved ?? (preset ? { id: preset.id, name: preset.name, pattern: preset.config.pattern, task: task.value.trim() || "{{task}}", criteria: [...acceptanceCriteria.value], config: preset.config } : starters.find(item => item.id === selected));
-  const editable = !!saved;
-  useEffect(() => { if (editing) editName.current?.focus(); }, [editing?.id]);
-  const update = (replacement: TaskTemplate | null) => {
-    if (!template) return;
-    try {
-      const key = scope === "project" && project ? `composerLibrary:${project.id}` : "composerLibrary";
-      const raw = store.get(key);
-      const current = parseComposerLibrary(raw === null ? EMPTY_LIBRARY : JSON.parse(raw), patterns.value);
-      const latest = current.templates.find((item) => item.id === template.id);
-      if (!latest || JSON.stringify(latest) !== JSON.stringify(template)) throw new Error("This template changed elsewhere. Close and reopen the picker to load the latest version.");
-      const next = parseComposerLibrary({ ...current, templates: replacement ? current.templates.map((item) => item.id === template.id ? replacement : item) : current.templates.filter((item) => item.id !== template.id) }, patterns.value);
-      const serialized = JSON.stringify(next);
-      store.set(key, serialized);
-      if (store.get(key) !== serialized) throw new Error("The change could not be saved. Check that browser storage is available.");
-      setLibraries({ ...libraries, [scope]: { ...next, error: "" } });
-      setEditing(null); setDeleting(false); setValues({}); setError("");
-      if (!replacement) setSelected("");
-      showToast(replacement ? "Template updated." : "Template deleted.");
-    } catch (err) { setError((err as Error).message); }
-  };
-  const parameters = template ? templateParameters(template) : [];
-  let filled: ReturnType<typeof fillTemplate> | undefined;
-  if (template) { try { filled = fillTemplate(template, values); } catch { /* Required placeholders are incomplete. */ } }
-  const apply = () => {
-    if (!template || !filled || editing || deleting) return;
-    if (template.config) applyPreset(template.config, `Template ${template.name}`);
-    else setPattern(template.pattern);
-    if (template.id === "starter-explore") { setRoles("debate", "builder", []); setRoles("debate", "reviewer", []); }
-    intentDraft.value = preset ? intentDraft.value : template.intent;
-    setTask(filled.task); setAcceptanceCriteria(filled.criteria);
-    onConfigured?.(template); onUsed(scope);
-  };
-  return <dialog class="picker" ref={ref} aria-labelledby="use-task-template-title"><form class="picker-inner" onSubmit={(event) => { event.preventDefault(); if (editing) update({ ...editing, name: editing.name.trim(), criteria: editing.criteria.map((line) => line.trim()).filter(Boolean) }); else apply(); }}>
-    <div class="picker-head"><h3 id="use-task-template-title">Template library</h3></div>
-    <div class="dialog-body">
-      <label class="lbl" for="quick-use-library">Library</label><select id="quick-use-library" class="field" disabled={!!editing || deleting} value={scope} onChange={(event) => { setScope(event.currentTarget.value); setSelected(""); setValues({}); setError(""); }}>{project ? <option value="project">This project · {project.name}</option> : null}<option value="personal">Personal library · all projects</option></select>
-      {library.error ? <p class="msg err" role="alert">{library.error}</p> : (starters.length || library.templates.length || library.presets.length) ? <>
-        <label class="lbl" for="quick-use-template">Template</label><select id="quick-use-template" class="field" disabled={!!editing || deleting} value={selected} onChange={(event) => { setSelected(event.currentTarget.value); setValues({}); setError(""); }}><option value="">Choose a template…</option><optgroup label="Built-in templates">{starters.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</optgroup><optgroup label="Saved templates">{library.templates.map(item => <option key={item.id} value={`saved:${item.id}`}>{item.name}</option>)}</optgroup>{library.presets.length ? <optgroup label="Saved workflows (keep your task)">{library.presets.map(item => <option key={item.id} value={`workflow:${item.id}`}>{item.name}</option>)}</optgroup> : null}</select>
-        {editing ? <>
-          <label class="lbl" for="edit-template-name">Template name<input ref={editName} id="edit-template-name" class="field" required maxLength={80} value={editing.name} onInput={(event) => setEditing({ ...editing, name: event.currentTarget.value })} /></label>
-          <label class="lbl" for="edit-template-workflow">Workflow<select id="edit-template-workflow" aria-label="Workflow" class="field" value={editing.pattern} onChange={(event) => setEditing({ ...editing, pattern: event.currentTarget.value, config: event.currentTarget.value === editing.pattern ? editing.config : undefined })}>{patterns.value.map((workflow) => <option key={workflow.id} value={workflow.id}>{workflow.name}</option>)}</select></label>
-          <label class="lbl" for="edit-template-task">Template task<textarea id="edit-template-task" aria-label="Template task" class="field" required rows={5} maxLength={100000} value={editing.task} onInput={(event) => setEditing({ ...editing, task: event.currentTarget.value })} /></label>
-          <label class="lbl" for="edit-template-criteria">Acceptance criteria<textarea id="edit-template-criteria" aria-label="Acceptance criteria" class="field" rows={3} value={editing.criteria.join("\n")} onInput={(event) => setEditing({ ...editing, criteria: event.currentTarget.value.split("\n") })} /></label>
-          <p class="help">One acceptance criterion per line. Keep placeholders such as <code>{"{{component}}"}</code> for reusable prompts.</p>
-        </> : deleting && template ? <div role="group" aria-label="Delete template confirmation">
-          <p>Delete “{template.name}” from {scope === "project" ? "this project’s library" : "your personal library"}?</p>
-          <div class="settings-actions"><button type="button" class="btn" onClick={() => { setDeleting(false); setError(""); }}>Keep template</button><button type="button" class="btn danger" onClick={() => update(null)}>Delete template</button></div>
-        </div> : <>
-          {template && editable ? <div class="settings-actions"><button type="button" class="btn" onClick={() => { setEditing({ ...template, criteria: [...template.criteria] }); setError(""); }}>Edit template</button><button type="button" class="btn danger" onClick={() => { setDeleting(true); setError(""); }}>Delete template…</button></div> : null}
-          {parameters.map((name) => <label class="lbl" key={name} for={`quick-use-${name}`}>{name}<input class="field" id={`quick-use-${name}`} required maxLength={4000} value={values[name] ?? ""} onInput={(event) => setValues({ ...values, [name]: event.currentTarget.value })} /></label>)}
-          {filled ? <details><summary>Preview task</summary><pre class="template-preview" tabIndex={0}>{taskWithCriteria(filled.task, filled.criteria)}</pre></details> : null}
-          <p class="help">{template?.config ? `${preset ? "Keeps your task and restores the" : "Restores the task,"} workflow, agents, models and checks. Permissions, approvals, limits and agent isolation stay as set in this draft.` : "Replaces the task, workflow and acceptance criteria; current agent settings are retained."} Review the settings before choosing Start run.</p>
-        </>}
-      </> : <p class="help" role="status">No templates in this library yet. Choose “Save as template…” from the chat box menu to create one.</p>}
-      {repo.value && !editing && !deleting ? <Templates only="sources" onChoose={onClose} /> : null}
-      {error ? <p class="msg err" role="alert">{error}</p> : null}
-    </div>
-    <div class="picker-foot">{editing ? <><button type="button" class="btn" onClick={() => { setEditing(null); setError(""); }}>Cancel editing</button><button type="submit" class="btn primary" disabled={!editing.name.trim() || !editing.task.trim()}>Save changes</button></> : <><button type="button" class="btn" onClick={onClose}>Cancel</button><button type="submit" class="btn primary" disabled={!filled || deleting || configChecking.value || repoChecking.value}>Use template</button></>}</div>
-  </form></dialog>;
-}
-
-export function SaveTaskTemplateDialog({ p, initialScope, onClose, onSaved, runOptions, toolApprovals }: { p: PatternInfo; initialScope: string; onClose: () => void; onSaved: (scope: string) => void; runOptions?: TemplateRunOptions; toolApprovals?: boolean }) {
-  const ref = useDialog(true, onClose);
-  const [name, setName] = useState("");
-  const [project] = useState(() => target.value.project);
-  const [scope, setScope] = useState(project && initialScope === "project" ? "project" : "personal");
-  const [draft] = useState(() => ({ task: task.value, intent: intentDraft.value, pattern: p.id, criteria: [...acceptanceCriteria.value], config: currentConfig(p, toolApprovals), ...(runOptions ? { runOptions: structuredClone(runOptions) } : {}) }));
-  const [error, setError] = useState("");
-  const save = () => {
-    if (!name.trim() || !draft.task.trim()) return;
-    try {
-      const key = scope === "project" && project ? `composerLibrary:${project.id}` : "composerLibrary";
-      // Read at save time so other changes to the library are preserved. Invalid data must
-      // surface an error instead of being silently replaced with an empty library.
-      const raw = store.get(key);
-      const library = parseComposerLibrary(raw === null ? EMPTY_LIBRARY : JSON.parse(raw), patterns.value);
-      const next = parseComposerLibrary({ ...library, templates: [...library.templates, { id: crypto.randomUUID(), name: name.trim(), ...draft }] }, patterns.value);
-      const serialized = JSON.stringify(next);
-      store.set(key, serialized);
-      if (store.get(key) !== serialized) throw new Error("The template could not be saved. Check that browser storage is available.");
-      onSaved(scope);
-      showToast(`Template “${name.trim()}” saved.`);
-    } catch (err) { setError((err as Error).message); }
-  };
-  return <dialog class="picker" ref={ref} aria-labelledby="save-task-template-title"><form class="picker-inner" onSubmit={(event) => { event.preventDefault(); save(); }}>
-    <div class="picker-head"><h3 id="save-task-template-title">Save as template</h3></div>
-    <div class="dialog-body">
-      <label class="lbl" for="quick-template-name">Template name</label><input id="quick-template-name" class="field" maxLength={80} required value={name} onInput={(event) => setName(event.currentTarget.value)} placeholder="e.g. Review a component" />
-      <label class="lbl" for="quick-template-library">Save to</label><select id="quick-template-library" class="field" value={scope} onChange={(event) => setScope(event.currentTarget.value)}>{project ? <option value="project">This project · {project.name}</option> : null}<option value="personal">Personal library · all projects</option></select>
-      <p class="help">Saves the task, acceptance criteria, workflow, agents, models and checks in this browser. Using the template keeps the permissions, approvals, limits and agent isolation of the draft it's used in. Repository selection, remote worker assignments and attached files remain specific to each run. Use placeholders such as <code>{"{{component}}"}</code> for reusable prompts.</p>
-      {error ? <p class="msg err" role="alert">{error}</p> : null}
-    </div>
-    <div class="picker-foot"><button type="button" class="btn" onClick={onClose}>Cancel</button><button type="submit" class="btn primary" disabled={!name.trim() || !draft.task.trim()}>Save template</button></div>
-  </form></dialog>;
-}
-
-
 export function EffectiveSettings({ p, checkMode = p.id === "solo" ? "conversation" : "managed", toolApprovals, verificationProfile, container }: { p: PatternInfo; checkMode?: CheckMode; toolApprovals: { tools: boolean; source: string }; verificationProfile?: VerificationProfile | null; container?: { enabled: boolean; image: string; authVolume: string; network?: boolean } }) {
   const r = repo.value;
   const config = repoConfig.value?.config ?? {};
@@ -318,7 +193,7 @@ export function EffectiveSettings({ p, checkMode = p.id === "solo" ? "conversati
     const effort = overrides?.effort || base?.effort || configured?.effort || (catalog && !("error" in catalog) ? catalog.models.find((m) => m.id === model)?.defaultEffort || catalog.defaultEffort : undefined);
     rows.push([`${role} · ${id}`, `${model || "CLI default"} · ${effort || "default effort"}`, overrides?.model || overrides?.effort ? "Per-role override" : base?.model || base?.effort ? composerOrigins.value.models ?? "Provider settings" : configured?.model || configured?.effort ? fromConfig : "CLI defaults"]);
   }
-  return <details class="settings effective-settings"><summary><span class="st">Run details</span><span class="ss">Values and where they came from</span></summary><div class="settings-body"><div class="settings-table-scroll"><table><thead><tr><th>Setting</th><th>Value</th><th>Source</th></tr></thead><tbody>{rows.map(([label, value, source], i) => <tr key={`${label}-${i}`}><th scope="row">{label}</th><td>{value}</td><td>{source}</td></tr>)}</tbody></table></div></div></details>;
+  return <section class="advanced-group effective-settings" aria-labelledby="advanced-run-details"><h2 class="section-title" id="advanced-run-details">Run details</h2><p class="help">Values and where they came from</p><div class="settings-body"><div class="settings-table-scroll"><table><thead><tr><th>Setting</th><th>Value</th><th>Source</th></tr></thead><tbody>{rows.map(([label, value, source], i) => <tr key={`${label}-${i}`}><th scope="row">{label}</th><td>{value}</td><td>{source}</td></tr>)}</tbody></table></div></div></section>;
 }
 
 export function ContextInspector() {
@@ -340,12 +215,12 @@ export function ContextInspector() {
     } catch (err) { if (generation === request.current && selected === latest.current) setError((err as Error).message); }
     finally { if (generation === request.current && selected === latest.current) setBusy(false); }
   };
-  return <details class="settings context-inspector"><summary><span class="st">Context inspector</span><span class="ss">{paths.length} repository paths · {uploads.length} attachments</span></summary><div class="settings-body"><p class="help">Preview selected files and expand folders from the chosen committed base. Explicit files show your current copy. Credential paths and symbolic selections are refused during actual context preparation; preview redaction does not remove secrets from other repository files.</p>
+  return <section class="advanced-group context-inspector" aria-labelledby="advanced-context"><h2 class="section-title" id="advanced-context">Context inspector</h2><div class="settings-body"><p class="help">Preview selected files and expand folders from the chosen committed base. Explicit files show your current copy. Credential paths and symbolic selections are refused during actual context preparation; preview redaction does not remove secrets from other repository files.</p>
     <ul>{paths.map((item) => <li key={item.path}><code>{item.path}{item.type === "dir" ? "/" : ""}</code> · selected repository path</li>)}{uploads.map((attachment, index) => <li key={index}>{attachment.name} · {attachment.size.toLocaleString()} bytes · uploaded file</li>)}</ul>{!paths.length && !uploads.length ? <p class="help">No explicit context selected. Agents can inspect their worktree.</p> : null}
     <button class="btn" disabled={!repo.value || !paths.length && !uploads.length || busy} onClick={inspect}>{busy ? "Reading context…" : "Preview selected context"}</button>
     {report ? <div class="context-inspection-results"><p class="help">{report.fileBytes.toLocaleString()} inspected text bytes · {report.omittedBytes.toLocaleString()} known omitted-file bytes · {report.attachmentBytes.toLocaleString()} attachment bytes · approximately {report.approximateTokens.toLocaleString()} known text tokens. {report.note}</p>{report.truncated ? <p class="msg warn">Inspection reached its file or byte limit. Narrow the selection to review the remaining context.</p> : null}
       {report.files.map((file, index) => <details key={`${file.path}-${index}`}><summary>{file.path} · {file.source === "base-ref" ? "committed base" : "current copy"}{file.truncated ? " · preview truncated" : ""}</summary>{file.omitted ? <p class="help">{file.bytes !== undefined ? `${file.bytes.toLocaleString()} known bytes · ` : ""}{file.omitted}</p> : <><p class="help">{file.bytes?.toLocaleString()} bytes · approximately {file.approximateTokens?.toLocaleString()} tokens{file.redacted ? " · possible secret material redacted in this preview only" : ""}</p><pre class="template-preview" tabIndex={0}>{file.preview}</pre></>}</details>)}
       {report.attachments.map((attachment, index) => <p class="help" key={index}>{attachment.name}: {attachment.bytes.toLocaleString()} bytes · {attachment.omitted ?? (attachment.approximateTokens === undefined ? "token footprint unknown (image, binary or unrecognized format)" : `approximately ${attachment.approximateTokens.toLocaleString()} text tokens from byte size`)}</p>)}
     </div> : null}{error ? <p class="msg err" role="alert">{error}</p> : null}<ContextBudgetControls />
-  </div></details>;
+  </div></section>;
 }

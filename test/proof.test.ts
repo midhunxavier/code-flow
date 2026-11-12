@@ -13,6 +13,7 @@ process.env.CODEFLOW_HOME = mkdtempSync(join(tmpdir(), "codeflow-proof-home-"));
 
 const { RunManager } = await import("../src/engine.js");
 const { findPattern } = await import("../src/patterns/index.js");
+const { parallelPattern } = await import("./parallel-pattern.js");
 const { proofOutcome } = await import("../src/checks.js");
 const { isTestSide } = await import("../src/integrity.js");
 type Run = import("../src/engine.js").Run;
@@ -165,46 +166,14 @@ test("the tests side of a change: tests, fixtures and the runner's settings", ()
   }
 });
 
-test("loop until green: a check that already passes needs a test that fails without the change", async () => {
-  const r = await run("loop", { workers: ["claude"] }, { loop: { check: "node --test" }, options: { maxRounds: 4 } });
+test("pipeline: a change nobody proves is kept, and flagged", async () => {
+  const r = await withEnv({ FAKE_NO_PROOF: "1" }, () => run("pipeline", { planner: ["claude"], builder: ["codex"], reviewer: ["claude"] }, { loop: { check: "node --test" } }));
   assert.equal(r.status, "done", r.error);
   assert.equal(r.verdict, "passed");
-  assert.deepEqual(titles(r), [
-    "Baseline check:done",
-    "Round 1 [claude]:done",
-    "Check after round 1:done",
-    // The change touches no tests, so the baseline is the run on the base code: no step needed.
-    "Round 2 [claude]:done",
-    "Check after round 2:done",
-    "Proof: tests without the change:done",
-  ]);
-  const proof = proofOf(r)!;
-  assert.equal(proof.status, "proven");
-  assert.match(proof.tests.join(), /^proof-\w+\.test\.mjs$/);
-  assert.match(proof.detail, /feature is implemented/);
-  assert.equal(r.facts?.proof, "proven");
-  assert.match(await log(r), /Not proven: `node --test` passes on the base code too/);
-  assert.match(r.summary!, /Proven: `node --test` fails without the change \(with proof-\w+\.test\.mjs\)/);
-  assert.match(r.summary!, /Round 1 \(Claude Code\): changed code, check passed — but no test fails without the change/);
-});
-
-test("loop until green: a change nobody proves is kept, and flagged", async () => {
-  const r = await withEnv({ FAKE_NO_PROOF: "1" }, () => run("loop", { workers: ["claude"] }, { loop: { check: "node --test" } }));
-  assert.equal(r.status, "done", r.error);
-  assert.equal(r.verdict, "passed");
-  assert.deepEqual(titles(r), ["Baseline check:done", "Round 1 [claude]:done", "Check after round 1:done", "Round 2 [claude]:done", "Check after round 2:done"]);
+  assert.equal(titles(r).filter((t) => t.startsWith("Add a test that fails without the change")).length, 1, "asked once");
   assert.equal(proofOf(r)?.status, "unproven");
   assert.equal(r.facts?.proof, "unproven");
-  assert.match(await log(r), /no test fails without the change; review it before merging/);
   assert.match(r.summary!, /⚠ Not proven: no test fails without the change/);
-});
-
-test("loop until green: a failing baseline proves the fix without an extra run", async () => {
-  // Fails until Claude writes its file: the check itself is the test.
-  const r = await run("loop", { workers: ["claude"] }, { loop: { check: "ls claude-*.txt" } });
-  assert.equal(r.status, "done", r.error);
-  assert.deepEqual(titles(r), ["Baseline check:failed", "Round 1 [claude]:done", "Check after round 1:done"]);
-  assert.equal(proofOf(r)?.status, "proven");
 });
 
 test("pipeline: the builder is asked once for a test that fails without the change, and the reviewer sees the proof", async () => {
@@ -253,27 +222,17 @@ test("pipeline: a test that never passes is undone, so asking for a proof doesn'
   assert.equal(proofOf(r)?.status, "unproven");
 });
 
-test("test-first: tests that pass before anything is implemented go back to the tester", async () => {
-  const r = await withEnv({ FAKE_TESTS_PASS_FIRST: "1" }, () => run("tdd", { tester: ["codex"], builder: ["claude"] }));
-  assert.equal(r.status, "done", r.error);
-  const steps = titles(r);
-  assert.deepEqual(steps.slice(0, 4), ["Write failing tests [codex]:done", "New tests (should fail):failed", "Make the tests fail first [codex]:done", "Revised tests (should fail):done"]);
-  assert.match(r.summary!, /All tests pass/);
-});
-
-test("race: each passing candidate is proven, and the judge sees it", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "codeflow-proof-record-"));
-  const r = await withEnv({ FAKE_RECORD_DIR: dir }, () =>
-    run("race", { contestants: ["claude", "codex"], judge: ["claude"] }, { loop: { check: "ls *-*.txt 2>/dev/null | grep -q ." } }),
-  );
+test("parallel results: each passing candidate is proven on its own branch", async () => {
+  const started = await manager.start({ pattern: parallelPattern, task: "Add the feature", repo, roles: { writers: ["claude", "codex"] }, options: {}, loop: { check: "ls *-*.txt 2>/dev/null | grep -q ." } });
+  const r = await new Promise<Run>((resolve) => {
+    const check = () => started.status !== "running" && resolve(started);
+    manager.subscribe(started.id, check);
+    check();
+  });
   assert.equal(r.status, "done", r.error);
   assert.equal(titles(r).filter((t) => t.startsWith("Proof: tests without the change")).length, 2);
+  assert.equal(r.artifacts.length, 2);
   assert.ok(r.artifacts.every((a) => r.proofs?.[a.branch]?.status === "proven"));
-  assert.match(r.summary!, /- A: claude — completed, check passes, proven/);
-  const judge = recorded(dir).find((p) => p.includes('"winner"'))!;
-  assert.equal(judge.match(/## Fail-to-pass: proven/g)?.length, 2);
-  const proofs = judge.split("## Fail-to-pass").slice(1).map((part) => part.split("\n## ")[0]!);
-  assert.ok(proofs.every((p) => !/claude|codex/i.test(p)), `proofs don't name the vendor:\n${proofs.join("\n---\n")}`);
 });
 
 test("single-agent task checkpoint: the result's proof is reported, and nobody is asked for a test", async () => {

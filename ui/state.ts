@@ -17,10 +17,10 @@ import { readProjectDefaults } from "./project-defaults.js";
 import { api, sharedGet, ApiError, post, rememberFolders, showToast, showError, store, workspaceId, workspaceKey, SHORT } from "./lib.js";
 import { independentRoles, type RoleValue } from "./roles.js";
 import { onStreamState, subscribe } from "./stream.js";
+import { retiredPatternName } from "../src/patterns/retired.js";
 import { defaultPlanApproval, teamAwaitingAnswer } from "./team-state.js";
 import { hashFor, parseRouteHash, SIDE_TABS, type Route, type SideTab } from "./navigation.js";
 export { hashFor, SIDE_TABS, type Route, type SideTab } from "./navigation.js";
-import type { TeamRollout } from "../src/team-evaluation.js";
 import type {
   AgentId,
   AgentInfo,
@@ -50,16 +50,10 @@ export async function loadAgents(force = false) {
   agents.value = inventory;
 }
 export const patterns = signal<PatternInfo[]>([]);
+/** A workflow's name, including retired ones that earlier runs and automations still name. */
+export const patternName = (id: string) => patterns.value.find((p) => p.id === id)?.name ?? retiredPatternName(id) ?? id;
 export const catalogs = signal<Record<string, CatalogOrError>>({});
 export const runs = signal<Map<string, RunSummary>>(new Map());
-export const teamRollout = signal<TeamRollout | null>(null);
-export async function loadTeamRollout() {
-  try {
-    const rollout = await api<TeamRollout>("/api/team-rollout");
-    teamRollout.value = rollout;
-    // Evaluation describes evidence; it never changes the selected execution mode.
-  } catch { /* The existing app remains usable if optional evaluation metadata cannot load. */ }
-}
 /** The first list of runs has come: until then, a run missing from `runs` may just not be here yet. */
 export const runsLoaded = signal(false);
 
@@ -153,7 +147,7 @@ export const sideDraft = signal("");
 /**
  * Something to send that came from elsewhere, for a message box to pick up: the Browser's pins (text
  * and snapshots). `to`: "main:<run>" (the run's own conversation), "side:<chat>", "side:new", or
- * "composer" (a new run's task).
+ * "composer" (new work: a new chat's message, or the run form's task).
  */
 export interface ChatDraft {
   to: string;
@@ -276,7 +270,6 @@ export const projectPickerPurpose = signal<"filter" | "composer" | "chat">("filt
 export const repositoryChoice = signal<{ repository: string; project?: string } | null>(null);
 export const composerRunOptions = signal<{
   taskTeam?: import("../src/task-team.js").TaskTeamConfig;
-  remoteWorker?: import("./remote-workers.js").WorkerChoice;
   container?: { enabled: boolean; image: string; authVolume: string };
   verification?: string;
   verificationProfile?: import("../src/verification.js").VerificationProfile | null;
@@ -326,12 +319,17 @@ export async function loadProjects(fresh = false) {
   }
   if (completeProjectInventory) {
     const r = route.value;
-    const destination = r.view === "project" ? r.id : r.view === "composer" || r.view === "workspace" ? r.project : undefined;
+    const destination = r.view === "project" ? r.id : r.view === "composer" || r.view === "chat" && r.id === "new" ? r.project : undefined;
     if (destination && !projects.value.some(project => project.id === destination)) route.value = { view: "projects" };
   }
 }
 
 /** The project a run belongs to, as the server decides it (projectOf in projects.ts). */
+/** Repository tools live in the open repository's project; without one, on their own page. */
+export function repositoryToolsRoute(): Route {
+  const project = repo.value ? projects.value.find((p) => p.repos.includes(repo.value)) : undefined;
+  return project ? { view: "project", id: project.id, section: "repositories", repository: repo.value } : { view: "workspace" };
+}
 export function projectFor(run: { project?: string; repo: string }): Project | undefined {
   if (run.project) return projects.value.find((p) => p.id === run.project);
   return projects.value.find((p) => p.repos.includes(run.repo));
@@ -396,13 +394,13 @@ export async function pickRepo(path: string, project = composerProject.value) {
     if (request !== repositoryPick) return;
     if (!projectsStatus.value.available) {
       if (!await openComposer("", { repository: info.repo })) return;
-      route.value = { view: "composer", project: "" }; return;
+      route.value = { view: "composer", project: "", legacy: true }; return;
     }
     const p = projects.value.find(item => item.id === project);
     if (p?.repos.includes(info.repo)) {
       if (composerProject.value !== p.id && !await openComposer(p.id)) return;
       await chooseComposerRepository(info.repo);
-      route.value = { view: "composer", project: p.id };
+      route.value = { view: "composer", project: p.id, legacy: true };
       return;
     }
     const matches = projects.value.filter(item => item.repos.includes(info.repo));
@@ -428,9 +426,9 @@ export async function afterStart(project?: string) {
 
 /** Why a folder couldn't be opened: not a repository is only one of the reasons. */
 function repoProblem(name: string, err: unknown): string {
-  if (!(err instanceof ApiError)) return `Couldn't reach code-flow to open ${name}`;
+  if (!(err instanceof ApiError)) return `Couldn't reach Code Flow to open ${name}`;
   if (err.status === 400 && /not a git repository/i.test(err.message)) return `${name} isn't a git repository`;
-  if (err.status === 401) return "Not signed in to code-flow";
+  if (err.status === 401) return "Not signed in to Code Flow";
   if (err.status >= 500) return `Couldn't open ${name}: ${err.message}`;
   return err.message;
 }
@@ -479,15 +477,15 @@ const followed = computed<SideScope>(() => {
     if (run) return runScope(run);
     return projectScope(projects.value.find(project => project.id === chat.project), chat.repo);
   }
-  if (r.view === "project" || r.view === "workspace" && r.project) {
+  if (r.view === "project") {
     // A project's page: its repository you're working in, else the one its latest run used.
-    const p = projects.value.find((x) => x.id === (r.view === "project" ? r.id : r.project));
+    const p = projects.value.find((x) => x.id === r.id);
     if (p) {
-      const chosen = r.view === "project" ? r.repository : undefined;
+      const chosen = r.repository;
       const worktree = chosen && [...runs.value.values()].some(run => projectFor(run)?.id === p.id && p.repos.includes(run.repo) && run.worktrees.some(tree => tree.path === chosen));
       return projectScope(p, chosen ? p.repos.includes(chosen) || worktree ? chosen : "" : lastRepo(p));
     }
-    return waitingScope(`project:${r.view === "project" ? r.id : r.project}`, false);
+    return waitingScope(`project:${r.id}`, false);
   }
   if (r.view === "run" || r.view === "review") {
     const run = runs.value.get(r.id);
@@ -677,10 +675,9 @@ const forOpened: HandOff[] = [];
  * in the main window, the one that opened it (or a new one if that's gone), and the drafts go along.
  */
 export function navigate(to: Route, drafts: ChatDraft[] = []) {
-  // Existing draft handoffs target the workflow composer. New chat navigation
-  // uses its own route and must not consume or hide those saved workflow drafts.
-  if (to.view === "composer" && to.project === undefined) to = { ...to, legacy: true };
   if (route.value.view === "side") return handOff({ type: HANDOFF, route: to, drafts });
+  // A draft for new work joins the run form when that is the page open; otherwise it goes to the start screen.
+  if (to.view === "composer" && to.project === undefined && drafts.length && route.value.view === "composer") to = route.value;
   for (const d of drafts) draftTo(d.to, d.text, d.images);
   route.value = to;
 }
@@ -709,7 +706,7 @@ function handOff(h: HandOff) {
     forOpened.length = 0;
     openedReady = false;
     opened = window.open(`${location.origin}${location.pathname}${hashFor(h.route)}`, "_blank");
-    if (!opened) return showToast("The browser blocked the window: allow pop-ups for code-flow", 5000);
+    if (!opened) return showToast("The browser blocked the window: allow pop-ups for Code Flow", 5000);
   }
   forOpened.push(h);
 }
@@ -747,7 +744,7 @@ export function setAcceptanceCriteria(criteria: string[]) {
 const browserOrigins = (): Record<string, string> => ({ pattern: store.get("pattern") ? "Browser preference" : "Application default", roles: store.get("roleSel") ? "Browser preferences" : "Workflow defaults", models: store.get("agentSettings") ? "Browser preferences" : "CLI defaults" });
 export const composerOrigins = signal<Record<string, string>>(browserOrigins());
 /**
- * Values a draft keeps only when they were chosen for it: typed in Run options, picked in a
+ * Values a draft keeps only when they were chosen for it: typed in Advanced, picked in a
  * permissions menu, or brought back by Edit & run again. composerOrigins says where each chosen one
  * came from and is saved with the draft. A field without an origin is derived again from Settings,
  * .codeflow/config.json and the repository whenever the draft opens, so a saved draft never replays
@@ -771,7 +768,8 @@ export const contextPaths = signal<Map<string, ContextItem>>(new Map());
 export const attachments = signal<Attachment[]>([]);
 export const contextError = signal("");
 /** Settings > Run defaults: the workflow new drafts start with, unless their project remembers a team. */
-export const defaultPattern = signal(store.get("pattern") ?? "solo");
+const savedPattern = store.get("pattern");
+export const defaultPattern = signal(savedPattern && !retiredPatternName(savedPattern) ? savedPattern : "solo");
 /** The current draft's workflow. */
 export const patternId = signal(defaultPattern.value);
 export const pattern = computed(() => patterns.value.find((p) => p.id === patternId.value) ?? patterns.value[0]);
@@ -779,7 +777,7 @@ export const pattern = computed(() => patterns.value.find((p) => p.id === patter
 export type { RoleValue } from "./roles.js";
 export const roleSel = signal<Record<string, Record<string, RoleValue[]>>>(store.json("roleSel", {}));
 export const optionValues = signal<Record<string, Record<string, number | boolean>>>({});
-/** Settings > Agents & models: the saved provider models and efforts every fresh draft starts from. */
+/** Settings > Agents: the saved provider models and efforts every fresh draft starts from. */
 export const providerDefaults = signal<AgentSettings>(store.json("agentSettings", {}));
 /**
  * The current draft's provider models: the provider defaults, or what a project's remembered team,
@@ -914,7 +912,7 @@ export function planApprovalFor(patternId: string): boolean {
   return defaultPlanApproval(patternId, patternId !== "auto-team" && legacyApproval !== null ? legacyApproval === "1" : undefined);
 }
 /** Patterns with a plan checkpoint, and what you approve there. */
-export const CHECKPOINTS: Record<string, string> = { pipeline: "the plan", debate: "the plan", supervisor: "the subtasks", tdd: "the tests", "auto-team": "the team and plan" };
+export const CHECKPOINTS: Record<string, string> = { pipeline: "the plan", "auto-team": "the team and plan" };
 
 export function setTask(value: string) {
   task.value = value;
@@ -939,7 +937,7 @@ export function setAgentSetting(id: AgentId, patch: { model?: string; effort?: s
   agentSettings.value = { ...agentSettings.value, [id]: { ...(agentSettings.value[id] ?? {}), ...patch } };
   composerOrigins.value = { ...composerOrigins.value, models: "This run" };
 }
-/** Settings > Agents & models: save one provider's default, and use it in the current draft too. */
+/** Settings > Agents: save one provider's default, and use it in the current draft too. */
 export function setProviderDefault(id: AgentId, patch: { model?: string; effort?: string }) {
   providerDefaults.value = { ...providerDefaults.value, [id]: { ...(providerDefaults.value[id] ?? {}), ...patch } };
   store.set("agentSettings", JSON.stringify(providerDefaults.value));
@@ -988,7 +986,7 @@ export function rolesFor(p: PatternInfo | undefined): Record<string, RoleValue[]
   // Antigravity can't ask for approval: after an explicit Ask for approval, defaults go to Claude or Codex.
   // A draft keeps no container of its own while it matches the project's Docker default.
   const container = options.container ?? readProjectDefaults(repo.value).container;
-  const approvals = options.toolApprovals === true && trust.value !== "safe" && !options.remoteWorker && !container.enabled;
+  const approvals = options.toolApprovals === true && trust.value !== "safe" && !container.enabled;
   const eligibleDefaults = agents.value.filter((a) => {
     const diagnostic = health.value?.find(entry => entry.id === a.id);
     return a.available && supportsRunPermissions(a.id) && (a.id !== "agy" || !approvals && (options.antigravityExecution === "native" || diagnostic?.managedCompatible === true)) && diagnostic?.signedIn !== false && diagnostic?.compatible !== false;
@@ -1003,7 +1001,7 @@ export function rolesFor(p: PatternInfo | undefined): Record<string, RoleValue[]
     if (!ids.length && !role.optional && !saved[role.id] && firstAvailable) ids = [firstAvailable];
     roles[role.id] = ids;
   }
-  // Judges, reviewers and synthesizers default to a vendor that didn't do the work they check.
+  // Reviewers default to a vendor that didn't do the work they check.
   return independentRoles(p.id, roles, saved, eligibleDefaults.map((a) => a.id));
 }
 
@@ -1489,11 +1487,12 @@ export interface SourcePick {
   numbers?: number[];
 }
 export const templates = signal<Template[]>([]);
+/** The run the Workflow run form configured and handed to the Automations page to be scheduled. */
+export const scheduleRequest = signal<Record<string, any> | null>(null);
 /** The sweep dialog, open with the sweep template you picked. */
 export const sweepPicker = signal<Template | null>(null);
 /** The issue or PR the next run starts from. */
 export const source = signal<SourcePick | null>(null);
-export const externalSource = signal<import("../src/integrations.js").ExternalSource | null>(null);
 /** The GitHub picker, and the template waiting for its pick. */
 export const ghPicker = signal<{ kind: "issue" | "pr"; template?: Template; repository?: string; onPick?: (item: import("../src/conversational/github-context.js").GitHubContextItem) => void } | null>(null);
 
@@ -1501,7 +1500,6 @@ export const sourceTemplatePicker = signal<Template | null>(null);
 
 export function applyTemplate(t: Template, pick?: SourcePick, values: Record<string, string> = {}) {
   const filled = fillTemplate({ ...t, criteria: [] }, values).task;
-  externalSource.value = null;
   setPattern(t.pattern);
   const fill = (text: string) => (pick ? text.replace(/\{number\}/g, String(pick.number)).replace(/\{title\}/g, `${pick.kind} #${pick.number}`) : text);
   setTask(fill(filled));
@@ -1516,7 +1514,7 @@ export const markSeen = (id: string) => post(`/api/runs/${id}/seen`).catch(() =>
  * Where the draft's .codeflow/config.json comes from: the start branch you chose, or your checkout.
  * A run from an issue, a PR or an imported source, and a retry, use the checkout's, as the server does.
  */
-export const configRef = computed(() => source.value || externalSource.value || rerunDraft.value ? "" : baseRef.value);
+export const configRef = computed(() => source.value || rerunDraft.value ? "" : baseRef.value);
 // Choosing another start branch brings its defaults; what the draft chose stays (loadRepoCheck).
 effect(() => {
   const ref = configRef.value;
@@ -1549,7 +1547,7 @@ function composerSnapshot() {
     base: baseRef.value, branch: branchPrefix.value, check: checkCmd.value, setup: setupCmd.value,
     limits: limits.value, trust: trust.value, approvals: approvalChoices.value, origins: composerOrigins.value,
     selectedTemplate: selectedTeamTemplate.value,
-    source: source.value, externalSource: externalSource.value, runOptions: composerRunOptions.value, rerun: rerunDraft.value,
+    source: source.value, runOptions: composerRunOptions.value, rerun: rerunDraft.value,
   };
 }
 type ComposerSnapshot = ReturnType<typeof composerSnapshot>;
@@ -1568,6 +1566,20 @@ async function readComposerDraft(id: string) {
 export async function savedDraftTask(id: string): Promise<string> {
   if (id === composerProject.value) return draftUnavailable.value ? "" : task.value;
   return (await readComposerDraft(id))?.task ?? "";
+}
+/**
+ * Take a project's unsent task out of its workflow run draft so a chat can continue it. Only a draft
+ * that is nothing but its text moves: files, context, criteria, a GitHub source, a fixed workflow,
+ * a template or a retry stay with the form (null).
+ */
+export async function takeDraftTask(id: string): Promise<string | null> {
+  const active = id === composerProject.value;
+  if (!draftsReady.value || composerLoading.value || active && draftUnavailable.value) return null;
+  const snapshot = active ? composerSnapshot() : await readComposerDraft(id);
+  if (!snapshot?.task.trim() || snapshot.attachments.length || snapshot.paths.length || snapshot.acceptance.some(line => line.trim()) || snapshot.source || snapshot.rerun || snapshot.selectedTemplate || !["solo", "auto-team"].includes(snapshot.pattern)) return null;
+  if (active) setTask("");
+  else await draftStore.write(id, { ...snapshot, task: "" });
+  return snapshot.task;
 }
 let composerSwitch = 0;
 let composerWork: Promise<boolean> = Promise.resolve(true);
@@ -1594,7 +1606,7 @@ export function discardProjectDraft(id: string): Promise<void> {
     const r = route.value;
     const deletedChat = deletedRunNotice.value && deletedRunProjects.get(deletedRunNotice.value.id) === id;
     if (deletedChat) deletedRunNotice.value = null;
-    if (deletedChat || r.view === "project" && r.id === id || (r.view === "composer" || r.view === "workspace") && r.project === id || (r.view === "run" || r.view === "review") && runs.value.get(r.id)?.project === id) route.value = { view: "projects" };
+    if (deletedChat || r.view === "project" && r.id === id || r.view === "composer" && r.project === id || (r.view === "run" || r.view === "review") && runs.value.get(r.id)?.project === id) route.value = { view: "projects" };
     try { await removal; }
     catch { throw new Error("The project was deleted, but its saved draft could not be cleared. Reload to retry."); }
     draftError.value = unsavedDraftWarning();
@@ -1627,7 +1639,7 @@ export async function unsentDraft(project: string): Promise<{ task: string } | n
   const paths = (items: { path: string; type: string }[]) => JSON.stringify(items.map(item => [item.path, item.type]).sort(([a], [b]) => a!.localeCompare(b!)));
   const sameContext = retry && paths((snapshot.paths ?? []).map(([, item]) => item)) === paths(retry.contextPaths ?? []);
   if (retry && snapshot.task === retry.task && !files && sameContext) return null;
-  return task || files || !retry && (snapshot.paths?.length || snapshot.source || snapshot.externalSource) ? { task } : null;
+  return task || files || !retry && (snapshot.paths?.length || snapshot.source) ? { task } : null;
 }
 
 export async function saveComposerDraft() {
@@ -1651,7 +1663,7 @@ function restoreComposer(snapshot: ComposerSnapshot) {
     intentDraft.value = snapshot.intent;
     task.value = snapshot.task; acceptanceCriteria.value = snapshot.acceptance;
     contextPaths.value = new Map(snapshot.paths); attachments.value = snapshot.attachments;
-    patternId.value = snapshot.pattern; roleSel.value = snapshot.roles; roleModels.value = snapshot.models;
+    patternId.value = retiredPatternName(snapshot.pattern) ? defaultPattern.value : snapshot.pattern; roleSel.value = snapshot.roles; roleModels.value = snapshot.models;
     agentSettings.value = snapshot.settings; optionValues.value = snapshot.options;
     baseRef.value = snapshot.base; branchPrefix.value = snapshot.branch;
     // Counted as edits, so a lookup still on its way doesn't replace them.
@@ -1660,7 +1672,7 @@ function restoreComposer(snapshot: ComposerSnapshot) {
     if (origins.limits !== undefined) limits.value = snapshot.limits;
     if (origins.trust !== undefined) trust.value = snapshot.trust;
     approvalChoices.value = snapshot.approvals;
-    composerOrigins.value = origins; source.value = snapshot.source; externalSource.value = snapshot.externalSource;
+    composerOrigins.value = origins; source.value = snapshot.source;
     selectedTeamTemplate.value = snapshot.selectedTemplate ?? null;
     composerRunOptions.value = snapshot.runOptions ?? {};
     rerunDraft.value = snapshot.rerun ?? null;
@@ -1670,7 +1682,7 @@ function restoreComposer(snapshot: ComposerSnapshot) {
 function resetComposer(project?: Project) {
   intentDraft.value = undefined; contextBudget.value = undefined; contextBudgetOrigin.value = "Application default";
   task.value = ""; acceptanceCriteria.value = []; attachments.value = []; contextPaths.value = new Map();
-  source.value = null; externalSource.value = null; branchPrefix.value = ""; baseRef.value = "";
+  source.value = null; branchPrefix.value = ""; baseRef.value = "";
   roleSel.value = store.json("roleSel", {}); roleModels.value = store.json("roleModels", {});
   patternId.value = defaultPattern.value; agentSettings.value = structuredClone(providerDefaults.value);
   optionValues.value = {};
@@ -1682,7 +1694,7 @@ function resetComposer(project?: Project) {
 /** Switch only the draft destination. Viewing a project or filtering lists never calls this. */
 export function openComposer(id?: string, options: { repository?: string; carryUnassigned?: boolean; stay?: boolean } = {}): Promise<boolean> {
   const r = route.value;
-  const destination = id ?? (r.view === "project" ? r.id : r.view === "workspace" && r.project ? r.project : composerProject.value);
+  const destination = id ?? (r.view === "project" ? r.id : composerProject.value);
   const remembered = store.get("lastComposerProject");
   const fallback = id === undefined && !destination && !task.value.trim() && !attachments.value.length ? projects.value.find(project => project.id === remembered)?.id ?? legacyDraftProject(projects.value, "", repo.value) ?? "" : "";
   const next = projectDraftDiscarded(destination) ? "" : destination || fallback;
@@ -1698,7 +1710,7 @@ async function switchComposer(next: string, options: { repository?: string; carr
   if (!draftsReady.value) return false;
   const project = projects.value.find(item => item.id === next);
   if (next === composerProject.value && !options.repository) {
-    if (!options.stay) route.value = { view: "composer", project: next };
+    if (!options.stay) route.value = { view: "composer", project: next, legacy: true };
     return true;
   }
   const before = composerSnapshot();
@@ -1723,7 +1735,7 @@ async function switchComposer(next: string, options: { repository?: string; carr
         resetComposer(project);
       }
       if (saved && repository !== saved.repository) {
-        contextPaths.value = new Map(); source.value = null; externalSource.value = null; baseRef.value = "";
+        contextPaths.value = new Map(); source.value = null; baseRef.value = "";
         checkCmd.value = detectedCheck; setupCmd.value = detectedSetup; trust.value = detectedTrust; selectedTeamTemplate.value = null; composerRunOptions.value = {}; rerunDraft.value = null;
         forgetChoices(["check", "setup", "trust"]);
       }
@@ -1733,11 +1745,11 @@ async function switchComposer(next: string, options: { repository?: string; carr
       if (project) store.set("lastComposerProject", next);
     });
     if (project && project.repos.includes(repository)) store.set(`projectRepo:${next}`, repository);
-    if (!options.stay && request === composerSwitch) route.value = { view: "composer", project: next };
+    if (!options.stay && request === composerSwitch) route.value = { view: "composer", project: next, legacy: true };
     return true;
   } catch (error) {
     draftError.value = `Could not open the draft: ${(error as Error).message}`;
-    if (request === composerSwitch) route.value = { view: "composer", project: composerProject.value };
+    if (request === composerSwitch) route.value = { view: "composer", project: composerProject.value, legacy: true };
     return false;
   } finally { composerLoading.value = false; }
 }

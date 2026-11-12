@@ -10,7 +10,7 @@ const fingerprint = (connection: AcpConnection) => createHash("sha256").update(J
 export function acpBindings(roles: Record<string, readonly string[]>): AcpBinding[] {
   return [...new Set(Object.values(roles).flat().filter((id) => id.startsWith("acp:")))].sort().map((id) => {
     const binding = liveBindings.get(id);
-    if (!binding) throw new Error(`ACP connection ${id} is disabled or missing. Restore it in Settings → Agents & models.`);
+    if (!binding) throw new Error(`ACP connection ${id} is disabled or missing. Restore it in Settings → Agents.`);
     return { ...binding };
   });
 }

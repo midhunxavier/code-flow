@@ -1,7 +1,7 @@
 export type CheckMode = "conversation" | "team" | "managed";
 /** Follow the engine's execution contract without changing saved verification choices. */
-export function composerCheckMode(pattern: string | undefined, options: { checkpointOnFinish?: boolean; remote?: boolean; team?: boolean; container?: boolean } = {}): CheckMode {
-  if (pattern !== "solo" || options.checkpointOnFinish || options.remote) return "managed";
+export function composerCheckMode(pattern: string | undefined, options: { checkpointOnFinish?: boolean; team?: boolean; container?: boolean } = {}): CheckMode {
+  if (pattern !== "solo" || options.checkpointOnFinish) return "managed";
   return options.team && !options.container ? "team" : "conversation";
 }
 export function checkExplanation(mode: CheckMode, command = ""): string {

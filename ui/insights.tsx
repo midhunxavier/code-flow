@@ -6,12 +6,10 @@ import { CompareDialog, startProblem } from "./composer.js";
 import { useEffect, useState } from "preact/hooks";
 import { AgentTag } from "./bits.js";
 import { api, baseName, duration, fmtCost, fmtSize, fmtTokens, pct, post, showToast, showError, STATUS_TEXT } from "./lib.js";
-import { activeProject, currentProject, NONE, patterns, repo, route, runState } from "./state.js";
+import { activeProject, currentProject, NONE, patternName, patterns, repo, route, runState } from "./state.js";
 import type { AgentId, Stats } from "./types.js";
 import { ProjectButton } from "./projects.js";
-import { TeamEvaluations } from "./team-evaluation.js";
 
-const patternName = (id: string) => patterns.value.find((p) => p.id === id)?.name ?? id;
 const PERIODS = { "7": 7, "30": 30, all: 0 } as const;
 
 /**
@@ -22,7 +20,7 @@ export function InsightsView({ group }: { group?: string }) {
   // The project you're in (or the runs in none), one repo, or everything.
   const [comparing, setComparing] = useState(false);
   const draft = comparisonDraft.value;
-  const comparisonProblem = comparisonDraftProblem.value || (!draft ? "Configure a task in New run first." : startProblem(patterns.value.find(p => p.id === draft.pattern), draft.roles, true, undefined, draft.antigravityExecution, draft.acpExecution) || (!draft.task.trim() ? "Describe a task in New run first." : ""));
+  const comparisonProblem = comparisonDraftProblem.value || (!draft ? "Configure a task in New run first." : startProblem(patterns.value.find(p => p.id === draft.pattern), draft.roles, true, draft.antigravityExecution, draft.acpExecution) || (!draft.task.trim() ? "Describe a task in New run first." : ""));
   const project = activeProject.value;
   const inProject = !!project || currentProject.value === NONE;
   // A repo is worth its own button when it isn't simply the whole project.
@@ -193,8 +191,6 @@ export function InsightsView({ group }: { group?: string }) {
                     <th class="num">Runs</th>
                     <th class="num">Passed</th>
                     <th class="num">Sole-writer evidence</th>
-                    <th class="num">Race wins</th>
-                    <th class="num">Loops it got green</th>
                     <th class="num">Review findings</th>
                     <th class="num">Steps</th>
                     <th class="num">Failed steps</th>
@@ -216,8 +212,6 @@ export function InsightsView({ group }: { group?: string }) {
                       <td class="num" title={`${a.sharedJudged ?? 0} shared outcomes excluded from provider comparisons`}>
                         {a.attributedJudged ? <>{a.attributedPassed}/{a.attributedJudged}<div class="help">95%: {Math.round(100 * a.confidence.low)}–{Math.round(100 * a.confidence.high)}%</div></> : "No attributable samples"}
                       </td>
-                      <td class="num">{a.raceEntries ? `${a.raceWins}/${a.raceEntries}` : "–"}</td>
-                      <td class="num">{a.loopSolves || "–"}</td>
                       <td class="num" title="Findings, and how many another reviewer also raised">
                         {a.findings ? `${a.findings} (${a.agreedFindings} agreed)` : "–"}
                       </td>
@@ -291,14 +285,13 @@ export function InsightsView({ group }: { group?: string }) {
       ) : null}
       {stats || error ? <>
       <details class="settings"><summary>Experiments</summary><div class="settings-body"><p class="help">Compare workflows against your current New run draft. Each selected setup starts a separate run and uses provider capacity.</p>{draft ? <p>{draft.task.split("\n")[0] || "No task in the current draft"}</p> : null}<button class="btn" disabled={!!comparisonProblem} title={comparisonProblem} onClick={() => setComparing(true)}>Compare setups…</button>{comparisonProblem ? <p class="help">{comparisonProblem} <a href="#/">Configure task</a></p> : null}</div></details>
-      <details class="ins-advanced"><summary>Team evaluation</summary><TeamEvaluations /></details>
       <details class="ins-advanced"><summary>Storage</summary><DiskPanel scope={scopeQuery()} /></details>
       </> : null}
     </div>
   );
 }
 
-const PROOF_TITLE = "Proven: a test in the result fails on the base code without the change (code-flow ran the change's tests there)";
+const PROOF_TITLE = "Proven: a test in the result fails on the base code without the change (Code Flow ran the change's tests there)";
 
 function Card({ label, value, note }: { label: string; value: string; note?: string }) {
   return (

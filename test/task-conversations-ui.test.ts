@@ -19,7 +19,7 @@ async function until<T>(read: () => Promise<T>, check: (v: T) => boolean, descri
         return value;
     await new Promise(r => setTimeout(r, 100));
 } while (Date.now() < end); throw new Error(`${description}: ${JSON.stringify(value!)}`); }
-async function page() { const context = await browser.newContext({ viewport: { width: 1400, height: 1000 } }); await context.addInitScript(() => localStorage.setItem("sideOpen", "0")); const page = await context.newPage(); page.setDefaultTimeout(25000); page.on("pageerror", e => errors.push(e.message)); await page.goto(`${base}/?token=${token}#/project/${project.id}/new`); await page.getByLabel("Task", { exact: true }).waitFor(); return { context, page }; }
+async function page() { const context = await browser.newContext({ viewport: { width: 1400, height: 1000 } }); await context.addInitScript(() => localStorage.setItem("sideOpen", "0")); const page = await context.newPage(); page.setDefaultTimeout(25000); page.on("pageerror", e => errors.push(e.message)); await page.goto(`${base}/?token=${token}#/project/${project.id}/workflow`); await page.getByLabel("Task", { exact: true }).waitFor(); return { context, page }; }
 async function prepare(page: Page, request: string) { await page.evaluate(() => { location.hash = "#/task/new"; }); await page.getByLabel("What would you like to do?").fill(request); await page.getByRole("button", { name: "Prepare approach", exact: true }).click(); await page.waitForURL(/#\/task\/(?!new)[a-f0-9]+/); const id = page.url().split("#/task/")[1]!; return { id, ready: () => until(() => api(`/api/task-conversations/${id}`), s => !!s.proposal || !!s.task.question || !!s.task.error, "approach ready") }; }
 async function startServer() {
     server = spawn(process.execPath, ["--import", "tsx", "src/server.ts"], { cwd: root, env: { ...process.env, CODEFLOW_HOME: join(home, "state"), CODEFLOW_TOKEN: token, PORT: new URL(base).port, SHELL: "/bin/sh", PATH: `${join(root, "test/fake-bin")}:${process.env.PATH}`, CODEFLOW_RETRY_DELAYS_MS: "0" }, stdio: ["ignore", "pipe", "pipe"] });
@@ -124,7 +124,7 @@ test("web users prepare, edit participants, approve once, reload results, and re
         await details.getByRole("button", { name: "Close task details", exact: true }).click();
         await p.screenshot({ path: join(root, "output/playwright/task-conversation-mobile.png"), fullPage: true });
         await p.setViewportSize({ width: 1400, height: 1000 });
-        await p.getByRole("button", { name: "Back to existing workflows", exact: true }).click();
+        await p.getByRole("button", { name: "Open workflow run", exact: true }).click();
         await p.getByLabel("Task", { exact: true }).waitFor();
         assert.equal(await p.getByLabel("Task", { exact: true }).inputValue(), "Keep my existing workflow draft");
     }

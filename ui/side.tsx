@@ -169,7 +169,7 @@ function ScopeHeader({ popped }: { popped: boolean }) {
           </>
         ) : null}
       </span>
-      {currentChat ? null : popped ? <a class="btn ghost small" href="#/" target="_self">Open code-flow</a> : s.pinned ? (
+      {currentChat ? null : popped ? <a class="btn ghost small" href="#/" target="_self">Open Code Flow</a> : s.pinned ? (
         <button type="button" class="btn ghost small" title="Follow what you open again" onClick={() => pinSide(false)}>
           Follow
         </button>
@@ -365,10 +365,10 @@ function NotesTab() {
         <button
           type="button"
           class="btn ghost small"
-          title="Add the selection (or the whole note) to the task in the composer"
+          title="Add the selection (or the whole note) to the task you are writing"
           disabled={!text.trim()}
           onClick={() => {
-            // The composer takes it as a draft, so from a popped-out panel it goes to the main window's.
+            // New work takes it as a draft, so from a popped-out panel it goes to the main window's.
             if (activeChatContext.value) activeChatContext.value.appendText(selection());
             else navigate({ view: "composer" }, [{ to: "composer", text: selection(), images: [] }]);
             showToast("Added to the task");

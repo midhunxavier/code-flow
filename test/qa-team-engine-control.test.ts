@@ -192,23 +192,6 @@ test("t10-2: plan edits accept a trailing-slash directory like coordinator plans
   assert.throws(() => validateTeamPlanEdit(draft, team, policy), /Task 2 needs a title and instructions\./);
 });
 
-test("t10-4: a race names each candidate's model when one provider runs several", { timeout: 60_000 }, async () => {
-  const manager = new RunManager(findPattern);
-  try {
-    const race = await manager.start({ pattern: findPattern("race")!, task: "Do the thing", repo: repository({}), roles: { contestants: ["claude", "codex"], judge: ["codex"] }, options: {}, roleSettings: { contestants: { claude: { model: "first", effort: "high", variants: [{ model: "second" }] } } } });
-    await done(race);
-    // The fake judge picks B: claude's second model.
-    assert.match(race.summary!, /Winner: Candidate B — claude · second\*\*/);
-    assert.match(race.summary!, /- A: claude · first \(high\) — completed/);
-    assert.match(race.summary!, /- B: claude · second — completed/);
-    assert.match(race.summary!, /- C: codex — completed/);
-    assert.deepEqual(race.artifacts.map(artifact => artifact.label), ["Candidate B (claude · second)", "Candidate A (claude · first (high))", "Candidate C (codex)"]);
-    const plain = await manager.start({ pattern: findPattern("race")!, task: "Do the thing", repo: repository({}), roles: { contestants: ["claude", "codex"], judge: ["codex"] }, options: {} });
-    await done(plain);
-    assert.match(plain.summary!, /Winner: Candidate B — codex\*\*/, "a provider running one model is named as before");
-  } finally { await manager.shutdown(); }
-});
-
 test("t10-9: Auto fills a reviewer from a vendor other than the Auto planner's when one has room", () => {
   const independence = { reviewer: ["planner", "builder"] };
   const two = new Set<AgentId>(["claude", "codex"]), three = new Set<AgentId>(["claude", "codex", "agy"]);

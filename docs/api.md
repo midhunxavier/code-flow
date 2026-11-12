@@ -31,7 +31,7 @@ Errors contain an `error` string. No client-side mutation retry is automatic.
 | `GET /agents?refresh=1` | No body | Invalidate cached provider model listings before returning availability. Fetch `/models` and `/doctor` afterward to share fresh discovery. Filesystem restrictions still prevent CLI probes. Ordinary background listings retain their ten-minute cache. |
 | `POST /projects/:id/repositories` | `repo` absolute Git path | Owner-only explicit membership addition; canonicalizes the root and returns the updated project. Existing membership is idempotent; the 50-repository limit applies. |
 | `DELETE /projects/:id` | — | Delete the project and all its conversation/run history, including archived runs and related chats. Active or starting runs prevent deletion. Git branches, worktrees and repository files remain. Saved automations retain their current settings and use repository-based placement for future runs. |
-| `POST /runs` | Existing run fields; optional `projectSelection: "explicit"` with `project` | Explicit selection requires an existing project and current canonical repository membership. Rejected membership never silently creates or extends a project. Callers omitting the marker retain legacy placement behavior. A race or debate with fewer than two contestants or debaters (distinct agents, or model variants of one) returns 400 before any run is created. |
+| `POST /runs` | Existing run fields; optional `projectSelection: "explicit"` with `project` | Explicit selection requires an existing project and current canonical repository membership. Rejected membership never silently creates or extends a project. Callers omitting the marker retain legacy placement behavior. |
 | `POST /improve-prompt` | `repo`, `text`, optional `mode=quick\|repo`, `agent`, `context`, `criteria`, `source`, `execution=local` | Owner-only local prompt rewrite in a disposable private Git directory; returns `{prompt, summary, agent}` after cleanup. Acceptance `criteria` are separate rewrite context (up to 100 nonempty strings, each bounded to 2,000 characters); they stay separate in the composer. |
 | `POST /readiness` | `repo`, optional `baseRef`, `setup`, `check`, `execute`, `pattern`, `roles`, `providers` | Inspection by default; `execute: true` runs commands in a temporary worktree at a pinned commit. Provider scope is described below. |
 | `GET /verification/profile` | `repo`, `preset` query | Detect lightweight, standard or thorough checks. |
@@ -56,6 +56,8 @@ Errors contain an `error` string. No client-side mutation retry is automatic.
 | `POST /runs/:id/team-plan` | `revision`, `tasks`, `contracts`, `rationale` | Edit a pending Auto-team plan before dispatch. Keeps member identities and requirements fixed; validates owners, dependencies, paths and acceptance mappings. Returns `team`; stale revisions return 409. |
 | `GET /runs/:id/review-coverage` | `branch` query | Return current commit, changed files, reviewed files, percentage, heuristic risk, stale-review indicator and human rework history. After a conflict resolution whose target the run's branch doesn't have yet, `merged: { from, files }` names the changed files that came only from that target (they still count). Only run-owned branches are allowed. |
 | `POST /runs/:id/review-coverage` | `branch`, `expectedHead`, `path`, `reviewed` | Record or remove review of a changed file at that exact commit. Branch movement invalidates prior coverage; stale requests are rejected. |
+| `GET /runs/:id/collaboration` | none | Return the run's human comment thread: `revision` and `comments`, each with its author, branch, commit and time. Comments never enter an agent's prompt. |
+| `POST /runs/:id/collaboration` | `branch`, `expectedHead`, `text` | Add an owner comment (1–4000 characters) anchored to that exact result commit; 201 with the thread. A changed commit is rejected. |
 | `POST /runs/:id/human-rework` | `branch`, `expectedHead`, `minutes`, optional `note` | Append a user-entered correction-time record (1–1,440 minutes, note ≤2,000 characters, at most 100 records/run). Returns 201 with updated coverage. |
 | `POST /runs/:id/validate-merge` | `branch`, `into`, optional `allowUntrusted` | Verify the combined result with the current target in a disposable checkout. Returns pinned `source`, `target`, merge `tree`, `report` or `conflicts`. Requires a configured check/profile. |
 | `POST /runs/:id/merge` | `branch`, `into`, optional `archiveAfter`, `requireValidation`, `allowConflictMarkers` | Merge an owned result into the selected local branch; a run's result branch (whatever its prefix) is refused. A result that adds conflict markers (by each file's `conflict-marker-size`) gets 409 with `confirm: "allowConflictMarkers"`; send `allowConflictMarkers: true` to merge it anyway. `requireValidation: true` requires passing verification for unchanged source/target and the exact merged tree. |
@@ -177,25 +179,6 @@ a stale cursor triggers a fresh `hello`. `GET /runs/:id/events` streams that run
 retained events with a run-bound replay cursor. These are live feeds, not durable
 client acknowledgment queues.
 
-## Read-only external sources
-
-| Operation | Request | Behavior |
-| --- | --- | --- |
-| `GET /integrations` | none | List explicitly server-configured provider metadata and availability without credential names or values. |
-| `GET /integrations/:id/items` | `kind=issue\|pr`, optional `cursor` query | Return `{items, nextCursor?, truncated}` from a bounded provider listing. Supported kinds depend on the provider. |
-| `POST /integrations/:id/import` | `kind`, `key` | Read one item and return 201 with a server-issued source snapshot ID and untrusted marker. |
-
-Run creation accepts `externalSourceId` from the import response, or
-`externalSourceRef: {integration, kind, key}` for a server-side import. It rejects
-client-authored `externalSource` snapshots, invalid/expired IDs, and simultaneous
-ID/ref inputs. Snapshots expire after 30 minutes and the server retains at most
-200. Imported context forces Safe permissions, removes secret-file copying, and
-requires network-disabled checks in a container or explicit host authorization.
-Forks and continuations inherit the trust boundary. Source text is task context;
-PR imports do not fetch or check out remote code. No source providers are built
-in, so these routes list nothing unless a build adds a provider in code. See
-[external sources](external-sources.md).
-
 ## Outbound notifications
 
 | Operation | Request | Behavior |
@@ -227,7 +210,7 @@ Create accepts `repo`, `title`, `body`, optional `paths`, `tags`, and
 ordinary edit never accepts a proposal automatically. Feedback accepts `rating`,
 optional `note` and `runId`; a run reference must have selected that exact entry
 revision. Memory APIs remain owner-only; shared project roles use the separate
-closed review surface described below.
+closed team-board surface described below.
 
 ## Automation inspection and replay
 
@@ -258,28 +241,29 @@ Run creation accepts `loop.verification`, `loop.maxTokens`, `loop.maxCostUsd`,
 `loop.agentContainer`, and explicit `approvals.tools`. Token/cost limits count
 only provider-reported usage and are checked between operations. API-equivalent
 cost is not a subscription charge. Automated and locked-down runs never wait for
-native tool permissions. See [agent containers](agent-containers.md),
-[external sources](external-sources.md), and [maintenance](maintenance.md).
+native tool permissions. See [agent containers](agent-containers.md) and [maintenance](maintenance.md).
 
 The client has no automatic retry for mutations. A dropped response is not proof
 that an operation did not execute; inspect the run before repeating a creation.
 
-## Shared identities and project review
+## Shared identities
 
 `GET /auth/self`, `POST /auth/login {username,password}` and `POST /auth/logout`
-bootstrap the local viewer/reviewer dashboard. Owner identity includes `localOnlyApis`, which is false on the phone listener; clients skip local connection inventories and use this host’s board there. Login sets a distinct session
+bootstrap the shared dashboard. Owner identity includes `localOnlyApis`, which is false on the phone listener; clients skip local connection inventories and use this host’s board there. Login sets a distinct session
 cookie; tokens and password/session hashes are never returned. Shared sessions
 require actual TLS or a direct loopback connection without forwarding headers.
 Owner account administration uses `GET/POST /accounts`, `PUT /accounts/:id`, and
 `POST /accounts/:id/revoke-sessions`, with the current account-state `revision`.
 
-Shared routing is a closed allowlist. Project/run lists, result detail, safe
-events, diffs, coverage and exports are scoped before counts and cursors.
-Reviewers may record file coverage and `POST /runs/:id/collaboration
-{branch,expectedHead,text}`; both recheck current project membership and owned
-result HEAD. `GET` returns the separate human discussion. These comments never
-resume an agent. All execution, administrative and private-context operations
-remain owner-only. See [roles, projections and session limits](shared-projects.md).
+A shared session reaches the [team collaboration](#team-collaboration) routes
+(`/team/*`), the host queue (`/host-execution`) and granted team terminals
+(`/team-terminals`), each with its own role checks, and nothing else. Every
+other route answers 403 "This operation requires the Code Flow owner". That
+includes the run routes: `GET /runs`, `GET /runs/:id` and its `export`, `diff`,
+`review-coverage`, `collaboration` and `events`, `POST
+/runs/:id/review-coverage`, `POST /runs/:id/collaboration`, and `GET /events`,
+as well as `GET /projects`, `/patterns` and `/templates`. See
+[roles and session limits](shared-projects.md).
 
 ## Team collaboration
 
@@ -373,30 +357,13 @@ team server and never start a run again. See [team
 collaboration](team-collaboration.md) for roles, hand-overs, checkpoints and
 limits.
 
-## Explicit workers, coordination and extensions
+## Extensions
 
 | Operation | Request | Behavior |
 | --- | --- | --- |
-| `GET /remote-workers` | none | List explicitly configured SSH targets without private capabilities. |
-| `POST /remote-workers/:id/probe` | `repoMapping` | Probe the provisioned worker and its own provider inventory. |
-| `POST /runs/:id/remote-steps/:step/receipt` | empty body | Inspect an accepted execution receipt; never replay the turn. |
-| `POST /runs/:id/remote-steps/:step/cancel` | empty body | Explicitly request cancellation and inspect its receipt. |
-| `GET /coordinated-changes` | none | List durable multi-repository jobs and their current claims. |
-| `POST /coordinated-changes` | `project`, `name`, `nodes`, optional `operationId` | Create 2–10 explicitly configured repository tasks with a verified dependency DAG. |
-| `POST /coordinated-changes/:id/cancel` | `expectedRevision` | Cancel further dispatch; preserve accepted execution receipts. |
-| `POST /coordinated-changes/:id/shipping-preview` | `expectedRevision`, `targets` | Validate the current source/target/tree matrix without merging. |
-| `POST /coordinated-changes/:id/nodes/:node/retry` | `expectedRevision`, optional `acknowledgeUnknown` | Explicitly retry after inspecting an uncertain claim. |
-| `POST /coordinated-changes/:id/nodes/:node/attach` | `expectedRevision`, `runId` | Attach only an exact matching durable launch receipt. |
-| `POST /coordinated-changes/:id/nodes/:node/ship` | `expectedRevision`, `previewId` | Merge one unchanged verified local candidate; no automatic remote push. |
-| `POST /coordinated-changes/:id/nodes/:node/recover-shipping` | `expectedRevision`, `commit` | Confirm the exact reviewed parents/tree after an uncertain local merge. |
 | `GET /extensions` | none | Inspect host API version and explicitly configured trusted provider/workflow bundles. |
 
-Runs select SSH using `loop.remoteWorker: {workerId,repoMapping}`. Worker
-credentials stay on the provisioned worker; accepted turns are never retried
-automatically after a disconnected transport. See [worker setup and receipt
-recovery](remote-workers.md). Coordination ships each repository separately;
-there is no atomic transaction across repositories. See [coordinated
-changes](coordinated-changes.md). Extension installation is server configuration,
+Extension installation is server configuration,
 not an HTTP operation; immutable version/hash pins are rechecked before
 execution. See [trusted extension contracts](extensions.md).
 
@@ -449,7 +416,7 @@ reconnection, remote previews, supported hosts and authentication boundaries.
 
 Managed Tailscale certificates renew automatically while Tailscale remote access is enabled. `GET /remote` includes `tls.renewal` with `automatic`, `running`, `nextAttempt`, optional `lastSuccess` and a safe `error`. Renewal preserves paired sessions and control settings. Imported/environment certificates are excluded from automatic renewal. All TLS sources are validated for key identity, dates and the selected hostname. Environment configuration exposes `tls.expiresAt`; invalid validity or hostname sets `secure: false`, `control: false` and `tls.error`, and closes the network listener.
 
-For multi-agent roles in Race, Debate, Review council, Supervisor and Loop workflows, a role setting can include additional models from the same provider: `roleSettings.reviewers.claude = { model: "first", variants: [{ model: "second", effort: "low" }] }`. Each entry runs separately with its own settings and session. Pipeline and other single-agent roles still use one model. Auto team pools also accept variants in `roleSettings.pool`: these are allowed model/effort choices for workers and reviewers. The coordinator selects among them within the member limit; it does not launch every selected model. Coordinator settings stay fixed. Additional models use the same validation as primary models (maximum 128 additional models per provider).
+For multi-agent roles such as the Review council's reviewers, a role setting can include additional models from the same provider: `roleSettings.reviewers.claude = { model: "first", variants: [{ model: "second", effort: "low" }] }`. Each entry runs separately with its own settings and session. Pipeline and other single-agent roles still use one model. Auto team pools also accept variants in `roleSettings.pool`: these are allowed model/effort choices for workers and reviewers. The coordinator selects among them within the member limit; it does not launch every selected model. Coordinator settings stay fixed. Additional models use the same validation as primary models (maximum 128 additional models per provider).
 
 ### Result experiences
 

@@ -361,7 +361,7 @@ function SideComposer({ run, chat }: { run: RunSummary; chat?: SideChat }) {
                 <MenuItem on={mode === "change"} sub="Edit the worktree, commit changes and run the check" onClick={() => { setMode("change"); close(); }}>Change</MenuItem>
               </>}
             </Menu> : null}
-            <ChatControls showPermissions={run.pattern !== "solo" || !!chat} providers={run.pattern === "solo" && !chat ? agents.value.filter(item => item.id === "claude" || item.id === "codex" || item.id === "agy") : undefined} agent={agent} onAgent={(id) => { setAgent(id); store.set("sideAgent", id); }} settings={selectedSettings} onSettings={(value) => setSettings({ ...settings, [agent]: value })} permissions={permissions} onPermissions={setPermissions} restricted={!!run.lockdown || !!run.trigger} approvalsAvailable={!run.loop.remoteWorker && !run.loop.agentContainer} />
+            <ChatControls showPermissions={run.pattern !== "solo" || !!chat} providers={run.pattern === "solo" && !chat ? agents.value.filter(item => item.id === "claude" || item.id === "codex" || item.id === "agy") : undefined} agent={agent} onAgent={(id) => { setAgent(id); store.set("sideAgent", id); }} settings={selectedSettings} onSettings={(value) => setSettings({ ...settings, [agent]: value })} permissions={permissions} onPermissions={setPermissions} restricted={!!run.lockdown || !!run.trigger} approvalsAvailable={!run.loop.agentContainer} />
             <span class="chatbox-hint" />
             <button class="send" aria-label="Send" title="Send message" disabled={!draftReady || busy || !text.trim() || !wt} onClick={send}>
               <Icon name="send" />
@@ -369,7 +369,7 @@ function SideComposer({ run, chat }: { run: RunSummary; chat?: SideChat }) {
           </div>
         </div>
         <div class="side-hint help">
-          {run.pattern !== "solo" && mode === "change" ? `Edits ${wt?.branch ?? "the run's worktree"}; code-flow commits it and runs the check.` : "Reads the run's worktree; changes nothing."}
+          {run.pattern !== "solo" && mode === "change" ? `Edits ${wt?.branch ?? "the run's worktree"}; Code Flow commits it and runs the check.` : "Reads the run's worktree; changes nothing."}
           {run.status === "running" && run.pattern !== "solo" ? " Waits for the team to finish." : ""}
         </div>
       </div>
@@ -523,7 +523,7 @@ function NewChat({ scope }: { scope: SideScope }) {
               ? `${blocked ? `${whyNoSideChat(run)} ` : ""}${name} works on a branch of its own${base ? ", starting from the run's result" : ""}, and you keep talking to it; the chat is a run like any other.`
               : `Ask a question or ask for a change. ${name} works on its own branch of ${where} and you keep talking to it; its reply shows here and the chat is a run like any other.`}
           </p>
-          {!solo ? <p class="msg warn">This code-flow has no Single-agent pattern, which the chat needs.</p> : null}
+          {!solo ? <p class="msg warn">This Code Flow has no Single-agent pattern, which the chat needs.</p> : null}
         </div>
       </div>
       <div class="convo">

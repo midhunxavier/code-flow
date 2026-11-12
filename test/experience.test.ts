@@ -12,6 +12,11 @@ test("recommendations keep failures in the denominator and exclude different rep
   assert.deepEqual(pipeline.runIds, ["1", "2"]); assert.ok(pipeline.confidence.low < .5);
   assert.equal(taskIntent("not-an-intent"), undefined);
 });
+test("recommendations never name a workflow that no longer exists, however well it did", () => {
+  const records = [...["loop", "race", "debate", "supervisor", "tdd"].flatMap((pattern, i) => [1, 2, 3].map(n => run(`${i}-${n}`, { pattern }))), run("p")];
+  assert.deepEqual(workflowRecommendations(records, "/repo", "bug").map(row => row.pattern), ["pipeline"]);
+  assert.equal(outcomeMetrics(records).completed, 16, "their history still counts as outcomes");
+});
 test("metrics distinguish unrated and missing corrections from zero and use only independently verified results", () => {
   const records = [run("1", { outcome: { decision: "accepted", branch: "a", head: "abc", at: 1 }, humanRework: [{ id: "r", branch: "a", head: "abc", minutes: 12, note: "", at: 1 }] }), run("2", { status: "failed", verdict: undefined }), run("3", { verification: { state: "unchecked" } as any })];
   const m = outcomeMetrics(records); assert.equal(m.accepted, 1); assert.equal(m.rated, 1); assert.equal(m.verified, 1); assert.equal(m.reworkSamples, 1); assert.equal(m.medianReworkMinutes, 12); assert.equal(m.medianVerifiedMs, 5000);

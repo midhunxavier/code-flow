@@ -6,7 +6,6 @@ import { gzip, gunzip } from "node:zlib";
 import { promisify } from "node:util";
 import { acquireLock } from "./store.js";
 import { disableRestoredDeferredRuns } from "./deferred-runs.js";
-import { disableRestoredCoordinatedChanges } from "./repo-coordination.js";
 import { StrictRunLogReader } from "./run-log.js";
 import { MemoryStore } from "./memory.js";
 
@@ -169,7 +168,7 @@ export async function restoreEncryptedBackup(input: { input: string; destination
   const finalPath = join(parent, basename(destination));
   const staging = join(parent, `.${basename(destination)}.restore-${randomBytes(8).toString("hex")}`);
   await mkdir(staging, { mode: 0o700 });
-  let disabledAutomations = 0; let disabledNotifications = 0; let cancelledDeferredRuns = 0; let cancelledCoordinatedChanges = 0; let restoredBytes = 0;
+  let disabledAutomations = 0; let disabledNotifications = 0; let cancelledDeferredRuns = 0; let restoredBytes = 0;
   try {
     for (const file of manifest.files) {
       const target = join(staging, file.path);
@@ -193,11 +192,6 @@ export async function restoreEncryptedBackup(input: { input: string; destination
         cancelledDeferredRuns = restored.cancelled;
         data = Buffer.from(JSON.stringify(restored.document, null, 2));
       }
-      if (file.path === "coordinated-changes.json") {
-        const restored = disableRestoredCoordinatedChanges(JSON.parse(data.toString("utf8")));
-        cancelledCoordinatedChanges = restored.cancelled;
-        data = Buffer.from(JSON.stringify(restored.document, null, 2));
-      }
       const handle = await open(target, "wx", 0o600);
       try { await handle.writeFile(data); await handle.sync(); } finally { await handle.close(); }
       await syncDirectory(dirname(target));
@@ -208,7 +202,7 @@ export async function restoreEncryptedBackup(input: { input: string; destination
     await rename(staging, finalPath);
     await syncDirectory(parent);
   } catch (error) { await rm(staging, { recursive: true, force: true }); throw error; }
-  return { destination: finalPath, files: manifest.files.length, bytes: restoredBytes, createdAt: manifest.createdAt, omitted: manifest.omitted, disabledAutomations, disabledNotifications, cancelledDeferredRuns, cancelledCoordinatedChanges };
+  return { destination: finalPath, files: manifest.files.length, bytes: restoredBytes, createdAt: manifest.createdAt, omitted: manifest.omitted, disabledAutomations, disabledNotifications, cancelledDeferredRuns };
 }
 
 interface LogData { text: string; lines: string[]; events: Array<Record<string, any>>; snapshot: Record<string, any>; bytes: number; mtimeMs: number }
@@ -229,39 +223,6 @@ async function readRunLog(home: string, id: string): Promise<LogData> {
   if (!snapshot || !["done", "failed", "cancelled"].includes(snapshot.status)) throw new Error("Only completed, failed or cancelled runs can be maintained. Resumable runs are kept.");
   return { text, lines, events, snapshot, bytes: info.size, mtimeMs: info.mtimeMs };
 }
-export interface RetentionPlan { days: number; cutoff: number; candidates: Array<{ id: string; bytes: number; files: string[] }>; skipped: Array<{ id: string; reason: string }> }
-async function retentionPlan(home: string, days: number, now: number): Promise<RetentionPlan> {
-  if (!Number.isInteger(days) || days < 1 || days > 36500 || !Number.isFinite(now)) throw new Error("Retention days must be an integer from 1 to 36,500.");
-  const result: RetentionPlan = { days, cutoff: now - days * 86400000, candidates: [], skipped: [] };
-  const runDirectory = await lstat(join(home, "runs")).catch((error: NodeJS.ErrnoException) => error.code === "ENOENT" ? undefined : Promise.reject(error));
-  if (!runDirectory) return result;
-  if (!runDirectory.isDirectory()) throw new Error("Run storage must be a regular directory without a symbolic link.");
-  const entries = await readdir(join(home, "runs")).catch((error: NodeJS.ErrnoException) => error.code === "ENOENT" ? [] : Promise.reject(error));
-  for (const file of entries.filter((file) => file.endsWith(".jsonl") && !file.endsWith(".journal.jsonl"))) {
-    const id = file.slice(0, -6);
-    try {
-      const log = await readRunLog(home, id);
-      if (log.snapshot.archived !== true || log.mtimeMs >= result.cutoff) continue;
-      const files: string[] = []; let bytes = 0;
-      for (const name of [`${id}.jsonl`, `${id}.journal.jsonl`, `${id}.checkpoint.json`, `${id}.cold-index.json`, `${id}.cold-detail.json`]) {
-        const info = await lstat(join(home, "runs", name)).catch((error: NodeJS.ErrnoException) => error.code === "ENOENT" ? undefined : Promise.reject(error));
-        if (info?.isFile()) { files.push(name); bytes += info.size; }
-      }
-      result.candidates.push({ id, files, bytes });
-    } catch (error) { result.skipped.push({ id, reason: (error as Error).message }); }
-  }
-  return result;
-}
-
-/** Legacy age-only report. Deletion now requires the provenance-aware exact retention manifest. */
-export function retainArchivedRuns(input: { home: string; days: number; now?: number; apply?: boolean }): Promise<RetentionPlan & { applied: boolean; deletedFiles: number; nextStep: string }> {
-  return offline(input.home, async (home) => {
-    const plan = await retentionPlan(home, input.days, input.now ?? Date.now());
-    if (input.apply) throw new Error("Age-only retention cannot delete data. Save a retention policy, review retention-policy --output PLAN.json, then apply that exact plan with retention-policy --plan PLAN.json --apply.");
-    return { ...plan, applied: false, deletedFiles: 0, nextStep: "This legacy age-only report does not assess pins or provenance. Save a retention policy and review retention-policy --output PLAN.json before applying retention-policy --plan PLAN.json --apply." };
-  });
-}
-
 /** Removes intermediate metadata snapshots, preserving all transcripts, steps and recovery records. */
 export function compactRunLog(input: { home: string; runId: string; apply?: boolean }) {
   return offline(input.home, async (home) => {

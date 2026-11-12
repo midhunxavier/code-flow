@@ -76,15 +76,6 @@ test("a garbled answer gets one retry, which can succeed", async () => {
   }
 });
 
-test("judging: a panel votes; a judge that also competes gets a warning", async () => {
-  const panel = await runPattern("race", { contestants: ["claude", "codex"], judge: ["codex", "claude"] });
-  assert.equal(panel.status, "done", panel.error);
-  assert.deepEqual(agentTitles(panel).filter((t) => t.startsWith("Judge")).sort(), ["Judge 1", "Judge 2"]);
-  assert.match(await logs(panel), /Votes: B=2/);
-  assert.match(await logs(panel), /claude both competes and judges/);
-  assert.match(panel.summary!, /Winner: Candidate B — codex/);
-});
-
 test("per-file diff of a result branch", async () => {
   const run = await runPattern("pipeline", pipelineRoles);
   const files = await manager.diff(run.id, run.artifacts[0]!.branch);

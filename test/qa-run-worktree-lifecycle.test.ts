@@ -14,6 +14,7 @@ process.env.CODEFLOW_HOME = mkdtempSync(join(tmpdir(), "cf-qa-wt-life-home-"));
 
 const { RunManager } = await import("../src/engine.js");
 const { findPattern } = await import("../src/patterns/index.js");
+const { parallelPattern } = await import("./parallel-pattern.js");
 const { flushWrites } = await import("../src/store.js");
 const { openWorktree, openDetachedWorktree, removeDetachedWorktree } = await import("../src/git.js");
 const { removeWorktrees } = await import("../src/ship.js");
@@ -355,7 +356,7 @@ test("copy patterns that copied nothing say why", async () => {
   // In a run: said once, not once per worktree.
   const m = new RunManager(findPattern);
   symlinkSync(join(repo, ".env"), join(repo, "link.env"));
-  const run = await m.start({ pattern: findPattern("race")!, task: "Copy", repo, roles: { contestants: ["claude", "codex"], judge: ["claude"] }, options: {}, loop: { copy: [".env", "/etc/hosts", "missing.env", "link.env"] } });
+  const run = await m.start({ pattern: parallelPattern, task: "Copy", repo, roles: { writers: ["claude", "codex"] }, options: {}, loop: { copy: [".env", "/etc/hosts", "missing.env", "link.env"] } });
   await finished(m, run);
   const lines = await logs(m, run);
   assert.equal(lines.filter((l) => /^Didn't copy link\.env: it's a symbolic link/.test(l)).length, 1, "a refusal too");

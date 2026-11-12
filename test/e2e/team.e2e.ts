@@ -14,7 +14,7 @@ import type { Board, TaskSummary } from "../../src/collab/model.js";
  * The team board in a browser (docs/team-collaboration.md): this computer is its own team server. The owner finds
  * the board under Team, defines a repository key in Settings → Team, creates a task from the board form and works
  * its page (a comment, a decision, blocked and back to planned); a shared contributor signs in on the same server,
- * finds the task under the Team tab and comments, while every execution control stays with the owner's own
+ * finds the task on the board and comments, while every execution control stays with the owner's own
  * computer. Then the page's promises under pressure: the rail badge counts the inbox from the first paint and
  * marking items read clears the cards at once; a save that lost to a teammate (409) keeps every draft; an attempt
  * that stopped at its budget stays on the page with its run link and resumes under the same id; shared tabs hold
@@ -67,15 +67,12 @@ async function audit(target: Page, screen: string) {
 const fits = (target: Page) => target.evaluate(() => { const main = document.getElementById("main-content") ?? document.querySelector("main"); return document.documentElement.scrollWidth <= innerWidth && (!main || main.scrollWidth <= main.clientWidth + 1); });
 
 test("the People entry opens a useful empty board with a workflow summary", async () => {
-  await page.evaluate(() => localStorage.setItem("peopleEnabled", "1")); await page.reload();
   await page.goto(`${base}/#/settings/board`);
-  await page.waitForURL(/#\/settings\/board$/);
+  await page.waitForURL(/#\/team$/);
   await page.getByRole("heading", { name: "Board", exact: true }).waitFor();
   await page.getByRole("heading", { name: "Your board is ready for its first task", exact: true }).waitFor();
   assert.deepEqual(await page.locator(".team-workflow > span").evaluateAll(items => items.map(item => item.firstChild?.textContent)), ["Planned", "Working", "Blocked", "In review", "Done"]);
   assert.equal(await page.locator("section.team-column").count(), 0, "an empty board uses one actionable state instead of empty columns");
-  assert.equal(await page.getByText("Not connected to a team server", { exact: true }).count(), 0, "embedded board avoids a duplicate setup card");
-  await page.getByText("Activity inbox", { exact: true }).click();
   await page.getByRole("heading", { name: /^Inbox/ }).waitFor(); await page.getByText("Nothing yet.", { exact: false }).waitFor();
   assert.deepEqual(errors, []);
 });
@@ -242,9 +239,8 @@ test("a shared contributor signs in, finds the task under Team and comments, wit
   await shared.goto(base);
   await shared.getByRole("heading", { name: "Sign in to shared projects", exact: true }).waitFor();
   await shared.getByLabel("Username", { exact: true }).fill("casey"); await shared.getByLabel("Password", { exact: true }).fill(password); await shared.getByRole("button", { name: "Sign in", exact: true }).click();
-  await shared.getByRole("heading", { name: "Shared project review", exact: true }).waitFor();
-  await shared.getByRole("tab", { name: "Board", exact: true }).click();
-  await shared.waitForURL(/#\/team$/); await shared.getByRole("tab", { name: "Board", exact: true, selected: true }).waitFor();
+  await shared.getByRole("heading", { name: "Board", exact: true }).waitFor(); // the default address is the board
+  assert.equal(await shared.getByRole("tab").count(), 0, "the shared dashboard has no Results tab");
   const card = shared.getByRole("region", { name: /^Planned/ }).getByRole("button", { name: new RegExp(TITLE) }); await card.waitFor();
   assert.equal(await shared.getByText("Not connected to a team server").count(), 0, "the shared dashboard never talks about this computer's link");
   await card.click();
@@ -280,7 +276,7 @@ test("a signed-in maintainer can cancel task deletion in the app modal", async (
   // Navigate as soon as the dashboard renders, before deferred effects can subscribe.
   await maintainer.addInitScript((id) => {
     const observer = new MutationObserver(() => {
-      if (![...document.querySelectorAll("h1")].some(heading => heading.textContent === "Shared project review")) return;
+      if (!document.querySelector(".shared-top")) return;
       observer.disconnect(); location.hash = `#/team/task/${id}`;
     });
     observer.observe(document, { childList: true, subtree: true });
@@ -314,10 +310,9 @@ test("a route handed off by another window cancels destructive confirmation", as
 
 test("the rail's Team badge counts the inbox from the first paint, and marking items read clears the cards' Needs-you badges at once", async () => {
   await page.goto(`${base}/#/`); await page.reload(); await page.getByRole("button", { name: "New chat", exact: true }).waitFor();
-  await page.goto(`${base}/#/settings/board`); await page.waitForURL(/#\/settings\/board$/);
+  await page.goto(`${base}/#/team`); await page.waitForURL(/#\/team$/);
   const card = page.getByRole("region", { name: /^Planned/ }).getByRole("button", { name: new RegExp(TITLE) }); await card.waitFor();
   await page.locator(".team-card.needs-you").filter({ hasText: TITLE }).waitFor(); await card.getByText("Needs you", { exact: true }).waitFor();
-  await page.getByText("Activity inbox", { exact: true }).click();
   await page.getByRole("heading", { name: /^Inbox/ }).getByText("1", { exact: true }).waitFor();
   await page.getByRole("button", { name: "Mark all read", exact: true }).click();
   await page.locator(".team-card.needs-you").waitFor({ state: "hidden", timeout: 3_000 }); // the board reloads with the inbox, not on the next 15 s poll
@@ -382,8 +377,8 @@ test("a save that lost to a teammate keeps every draft: the title and blocker ed
 });
 
 test("an attempt that stopped at its budget stays on the page with its run link and a Resume that continues the same attempt", async () => {
-  // The loop pattern asks the agent again after a failing check, so a step budget of one ends the run at the limit: attempt state "stopped".
-  const started = await api<{ attemptId: string; runId: string }>(`/api/team-link/tasks/${taskId}/start`, { method: "POST", body: JSON.stringify({ pattern: "loop", roles: { workers: ["claude"] }, trust: "safe", loop: { check: "false", maxSteps: 1, maxMinutes: 2 } }) });
+  // A step budget of one ends the run after its plan, at the limit: attempt state "stopped".
+  const started = await api<{ attemptId: string; runId: string }>(`/api/team-link/tasks/${taskId}/start`, { method: "POST", body: JSON.stringify({ pattern: "pipeline", roles: { planner: ["claude"], builder: ["claude"], reviewer: ["claude"] }, trust: "safe", loop: { maxSteps: 1, maxMinutes: 2 } }) });
   const ended = ["paused", "finished", "failed", "stopped", "unknown", "superseded"];
   const attemptWhen = async (until: (attempt: AttemptView) => boolean, what: string): Promise<AttemptView> => { const deadline = Date.now() + 90_000; for (;;) { const current = await task(), attempt = current.attempts.find((entry) => entry.id === started.attemptId); if (attempt && until(attempt)) return attempt; assert.ok(Date.now() < deadline, `${what}: ${JSON.stringify(current.attempts)}\n${log.slice(-3000)}`); await sleep(300); } };
   const stopped = await attemptWhen((attempt) => ended.includes(attempt.state), "the attempt did not end in time"); assert.equal(stopped.state, "stopped");
@@ -430,29 +425,28 @@ test("an unknown execution blocks Start until the owner confirms it stopped and 
 test("three shared tabs on Team hold one connection each, so a request from the first still goes through", async () => {
   const extra: Page[] = [];
   try {
-    for (let n = 0; n < 2; n++) { const tab = await sharedContext.newPage(); extra.push(tab); await tab.goto(`${base}/#/team`); await tab.getByRole("tab", { name: "Board", exact: true, selected: true }).waitFor(); await tab.getByRole("heading", { name: "Board", exact: true }).waitFor(); }
-    await shared.getByRole("tab", { name: "Board", exact: true, selected: true }).waitFor(); // the first tab is still on the task page
+    for (let n = 0; n < 2; n++) { const tab = await sharedContext.newPage(); extra.push(tab); await tab.goto(`${base}/#/team`); await tab.getByRole("heading", { name: "Board", exact: true }).waitFor(); }
     // A browser gives one server six connections for all its tabs; with two streams per tab the third tab exhausted them and this fetch never returned.
     const result = await shared.evaluate(async () => { const started = performance.now(), control = new AbortController(), timer = setTimeout(() => control.abort(), 6_000); try { const response = await fetch("/api/team/inbox", { signal: control.signal }); return { status: response.status, ms: Math.round(performance.now() - started) }; } catch (error) { return { status: 0, ms: Math.round(performance.now() - started), error: String(error) }; } finally { clearTimeout(timer); } });
-    assert.equal(result.status, 200, `the request from the first Team tab stalled: ${JSON.stringify(result)}`);
+    assert.equal(result.status, 200, `the request from the first tab stalled: ${JSON.stringify(result)}`);
   } finally { for (const tab of extra) await tab.close().catch(() => undefined); }
   assert.deepEqual(errors, []);
 });
 
-test("a shared dashboard left open asks the server for nothing: no board, task or inbox polls in five minutes on either tab", async () => {
+test("a shared dashboard left open asks the server for nothing: no board, task or inbox polls in five minutes", async () => {
   // The clock is faked before the page loads, so every timer the dashboard sets runs on it; the event streams are real.
   const tab = await sharedContext.newPage(); tab.on("pageerror", (error) => errors.push(`shared idle: ${error.message}`));
   const polls: string[] = []; tab.on("request", (request) => { const path = new URL(request.url()).pathname; if (/^\/api\/team\/(?:board|inbox|tasks\/)/.test(path)) polls.push(`${request.method()} ${path}`); });
   try {
     await tab.clock.install();
-    await tab.goto(`${base}/#/team`); await tab.getByRole("tab", { name: "Board", exact: true, selected: true }).waitFor(); await tab.getByRole("region", { name: /^Working|^Planned/ }).first().waitFor(); await tab.getByRole("heading", { name: /^Inbox/ }).waitFor();
+    await tab.goto(`${base}/#/team`); await tab.getByRole("region", { name: /^Working|^Planned/ }).first().waitFor(); await tab.getByRole("heading", { name: /^Inbox/ }).waitFor();
     await tab.clock.runFor(2_000); await sleep(500); polls.length = 0; // the first loads and the reload the stream's hello asks for are done
     await tab.clock.runFor(5 * 60_000); await sleep(500);
-    assert.deepEqual(polls, [], "the Team tab reloads on events only; a timer would keep an idle shared session alive for ever");
-    await tab.goto(`${base}/#/`); await tab.getByRole("tab", { name: "Results", exact: true, selected: true }).waitFor(); await tab.getByRole("heading", { name: "Shared project review", exact: true }).waitFor();
+    assert.deepEqual(polls, [], "the board reloads on events only; a timer would keep an idle shared session alive for ever");
+    await tab.goto(`${base}/#/`); await tab.getByRole("heading", { name: "Board", exact: true }).waitFor(); await tab.getByRole("region", { name: /^Working|^Planned/ }).first().waitFor();
     await tab.clock.runFor(2_000); await sleep(500); polls.length = 0;
     await tab.clock.runFor(5 * 60_000); await sleep(500);
-    assert.deepEqual(polls, [], "the Results tab never asks for the inbox on a timer");
+    assert.deepEqual(polls, [], "the default address shows the same board and sets no timer either");
   } finally { await tab.close().catch(() => undefined); }
   assert.deepEqual(errors, []);
 });
@@ -533,12 +527,12 @@ test("Draft with agent prepares editable fields without creating a task; Build w
   const privateRun = await api<{ project: string; pattern: string }>(`/api/runs/${draftId}`);
   assert.equal(privateRun.project, projectId); assert.equal(privateRun.pattern, "team-task-draft");
   const sharedDraft = await shared.evaluate(async (id) => {
-    const list = await fetch("/api/runs").then((response) => response.json());
+    const list = await fetch("/api/runs");
     const statuses = await Promise.all(["", "/export", "/events"].map((suffix) => fetch(`/api/runs/${id}${suffix}`).then((response) => response.status)));
-    return { visible: list.runs.some((run: { id: string }) => run.id === id), statuses };
+    return { history: list.status, leaked: (await list.text()).includes(id), statuses };
   }, draftId);
-  assert.equal(sharedDraft.visible, false, "a shared project member cannot see an unreviewed draft in history");
-  assert.deepEqual(sharedDraft.statuses, [404, 404, 404], "draft detail, export and events remain owner-only");
+  assert.equal(sharedDraft.history, 403, "a shared project member has no run history"); assert.equal(sharedDraft.leaked, false);
+  assert.deepEqual(sharedDraft.statuses, [403, 403, 403], "draft detail, export and events remain owner-only");
   assert.equal((await api<{ tasks: unknown[] }>("/api/team/board")).tasks.length, before);
   assert.equal(await form.getByLabel("Title", { exact: true }).inputValue(), "");
   await audit(page, "task draft preview");
@@ -553,7 +547,7 @@ test("Draft with agent prepares editable fields without creating a task; Build w
   assert.equal(saved.title, "Reviewed agent draft"); assert.equal(saved.owner?.userId, "owner"); assert.equal(saved.attempts.length, 0);
   await page.getByRole("button", { name: "Build with agents", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Build with agents", exact: true });
-  await dialog.getByLabel("Workflow", { exact: true }).selectOption("auto-team");
+  await dialog.getByRole("combobox", { name: "Workflow", exact: true }).selectOption("auto-team");
   const pool = dialog.getByRole("group", { name: "Available providers", exact: true });
   assert.ok(await pool.getByRole("checkbox").count() >= 2);
   assert.ok(await pool.locator("input:checked").count() >= 2, "Auto team preserves multiple selected providers");
@@ -561,7 +555,7 @@ test("Draft with agent prepares editable fields without creating a task; Build w
   await page.setViewportSize({ width: 390, height: 844 });
   assert.equal(await fits(page), true); await audit(page, "build with agents phone");
   await page.setViewportSize({ width: 1440, height: 1000 });
-  await dialog.getByLabel("Workflow", { exact: true }).selectOption("solo");
+  await dialog.getByRole("combobox", { name: "Workflow", exact: true }).selectOption("solo");
   await dialog.getByLabel("Agent", { exact: true }).selectOption("claude");
   await dialog.getByLabel("Agent permissions").selectOption("safe");
   await dialog.getByLabel("Check command").fill("true");

@@ -13,7 +13,7 @@ const root = fileURLToPath(new URL("../..", import.meta.url)), scratch = mkdtemp
 const home = join(scratch, "data"), repo = join(scratch, "repo"), gh = join(scratch, "gh.json"), shots = join(root, "output/playwright/qa-integration-connections");
 const port = qaPorts.port, base = `http://127.0.0.1:${port}`, token = "connections50-fixture", headers = { authorization: `Bearer ${token}`, "content-type": "application/json", origin: base };
 let server: ChildProcess, browser: Browser, page: Page, project: string, other: string, connection: string, github: string;
-let sourceConfig: string, notificationConfig = "[]";
+let notificationConfig = "[]";
 const errors: string[] = [], expected: string[] = [], logs: string[] = [], expectedUrls = new Set<string>();
 const shutdowns: { start: number; end: number }[] = [], restartDiagnostics: unknown[] = [];
 const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -23,7 +23,7 @@ async function until<T>(read: () => Promise<T>, ready: (value: T) => boolean, ti
 async function start() {
   await qaPorts.release();
   const inherited = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(CODEFLOW_|FAKE_)/.test(key)));
-  server = spawn(process.execPath, ["--import", "./test/qa-integration-connections-transport.mjs", "--import", "tsx", "src/server.ts"], { cwd: root, env: { ...inherited, HOME: join(scratch, "os-home"), SHELL: join(scratch, "bash"), BASH_ENV: "", ENV: "", CODEFLOW_HOME: home, CODEFLOW_TOKEN: token, PORT: String(port), CODEFLOW_REMOTE_PORT: String(port + 1), PATH: `${join(root, "test/fake-bin")}:${process.env.PATH}`, FAKE_GH_STATE: gh, CODEFLOW_INTEGRATIONS_JSON: sourceConfig, CODEFLOW_NOTIFICATIONS_JSON: notificationConfig, FAKE_NO_APP_SERVER: "1", CODEFLOW_CODEX_TRANSPORT: "exec" }, stdio: ["ignore", "pipe", "pipe"] });
+  server = spawn(process.execPath, ["--import", "./test/qa-integration-connections-transport.mjs", "--import", "tsx", "src/server.ts"], { cwd: root, env: { ...inherited, HOME: join(scratch, "os-home"), SHELL: join(scratch, "bash"), BASH_ENV: "", ENV: "", CODEFLOW_HOME: home, CODEFLOW_TOKEN: token, PORT: String(port), CODEFLOW_REMOTE_PORT: String(port + 1), PATH: `${join(root, "test/fake-bin")}:${process.env.PATH}`, FAKE_GH_STATE: gh, CODEFLOW_NOTIFICATIONS_JSON: notificationConfig, FAKE_NO_APP_SERVER: "1", CODEFLOW_CODEX_TRANSPORT: "exec" }, stdio: ["ignore", "pipe", "pipe"] });
   server.stdout?.on("data", data => logs.push(String(data))); server.stderr?.on("data", data => logs.push(String(data)));
   await until(() => fetch(base + "/api/health", { headers }).then(r => r.ok, () => false), Boolean);
 }
@@ -34,7 +34,7 @@ async function actions() { await card("GitHub").getByRole("button", { name: "Cho
 before(async () => {
   mkdirSync(shots, { recursive: true }); mkdirSync(repo); mkdirSync(join(scratch, "os-home")); writeFileSync(join(scratch, "bash"), '#!/bin/sh\nexec /bin/bash --noprofile --norc\n', { mode: 0o755 });
   git("init", "-qb", "main"); writeFileSync(join(repo, "README.md"), "Fixture\n"); writeFileSync(join(repo, "sum.mjs"), "export function sum(a,b) { return a-b; }\n"); mkdirSync(join(repo, ".codeflow")); writeFileSync(join(repo, ".codeflow/config.json"), '{"check":"true","prove":false}'); git("add", "."); git("commit", "-qm", "fixture"); git("branch", "feature"); git("clone", "--bare", "-q", repo, join(scratch, "origin.git")); git("remote", "add", "origin", join(scratch, "origin.git")); git("fetch", "origin");
-  writeFileSync(gh, JSON.stringify({ issues: [{ number: 3, title: "GitHub issue", body: "Fixture", url: "https://github.com/fixture/repo/issues/3" }], prs: { 7: { number: 7, title: "GitHub PR", body: "Fixture", url: "https://github.com/fixture/repo/pull/7", headRefName: "feature", baseRefName: "main", state: "OPEN", isCrossRepository: false } }, comments: [], reviews: [] })); sourceConfig = "[]";
+  writeFileSync(gh, JSON.stringify({ issues: [{ number: 3, title: "GitHub issue", body: "Fixture", url: "https://github.com/fixture/repo/issues/3" }], prs: { 7: { number: 7, title: "GitHub PR", body: "Fixture", url: "https://github.com/fixture/repo/pull/7", headRefName: "feature", baseRefName: "main", state: "OPEN", isCrossRepository: false } }, comments: [], reviews: [] }));
   execFileSync(process.execPath, ["scripts/build-ui.mjs"], { cwd: root, env: { ...process.env, CODEFLOW_HOME: join(scratch, "build-home") } }); await start(); project = (await api("/api/projects", { name: "Alpha fixture", repos: [repo] })).id; other = (await api("/api/projects", { name: "Beta fixture", repos: [repo] })).id;
   const checked = await api("/api/integration-connections/test", { provider: "webhook", name: "Managed updates", url: "https://fixture.invalid/updates" }); connection = (await api("/api/integration-connections/connect", { testId: checked.testId, projectId: project, repository: repo })).id;
   const checkedGh = await api("/api/integration-connections/test", { provider: "github", name: "Fixture GitHub", scope: "fixture/repo", projectId: project, repository: repo }); github = (await api("/api/integration-connections/connect", { testId: checkedGh.testId, projectId: project, repository: repo })).id;
@@ -96,9 +96,9 @@ test("disconnect previews every project and Cancel preserves the encrypted conne
 });
 test("GitHub issue drafts replace a previous council workflow and criteria", async () => {
   await open(); let work = await actions(); await work.getByRole("button", { name: "Review pull request", exact: true }).click(); await work.getByRole("button", { name: "Load PR preview", exact: true }).click(); await work.getByRole("article", { name: "Source preview" }).getByRole("button", { name: "Review pull request", exact: true }).click(); await page.getByLabel("Task", { exact: true }).waitFor();
-  await page.getByRole("button", { name: "Edit run options", exact: true }).click(); await page.locator(".acceptance-editor > summary").click(); await page.getByLabel("One requirement per line", { exact: true }).fill("Stale PR criterion");
+  await page.locator(".advanced-controls").evaluate(el => { (el as HTMLDetailsElement).open = true; }); await page.getByLabel("One requirement per line", { exact: true }).fill("Stale PR criterion");
   await open(); work = await actions(); await work.getByRole("button", { name: "Choose issue", exact: true }).click(); await work.getByRole("article", { name: "Source preview" }).getByRole("button", { name: "Start task from issue", exact: true }).click(); await page.getByLabel("Task", { exact: true }).waitFor();
-  await page.getByRole("button", { name: "Edit run options", exact: true }).click(); const advanced = page.locator("details.advanced-controls"); if (!await advanced.evaluate(el => (el as HTMLDetailsElement).open)) await advanced.locator(":scope > summary").click(); assert.equal(await page.getByLabel("Workflow", { exact: true }).inputValue(), "fix-review"); assert.equal(await page.getByLabel("One requirement per line", { exact: true }).inputValue(), "");
+  await page.locator(".advanced-controls").evaluate(el => { (el as HTMLDetailsElement).open = true; }); const advanced = page.locator("details.advanced-controls"); if (!await advanced.evaluate(el => (el as HTMLDetailsElement).open)) await advanced.locator(":scope > summary").click(); assert.equal(await page.getByRole("combobox", { name: "Workflow", exact: true }).inputValue(), "fix-review"); assert.equal(await page.getByLabel("One requirement per line", { exact: true }).inputValue(), "");
 });
 test("an offline connection test keeps its failure beside the account and recovers on Retry", async () => {
   await open(); const url = base + `/api/integration-connections/${github}/test`; expectedUrls.add(url);
@@ -128,22 +128,17 @@ test("Settings has one Integrations heading and fits a phone", async () => {
   await page.goto(base + "/#/settings/integrations"); await page.setViewportSize({ width: 390, height: 844 }); await page.getByRole("heading", { name: "Integrations", exact: true }).waitFor(); assert.equal(await page.getByRole("heading", { name: "Integrations", exact: true }).count(), 1); assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true); await page.setViewportSize({ width: 1366, height: 768 });
 });
 test("invalid administrator JSON does not hide saved connections across restart", async () => {
-  const goodSources = sourceConfig;
-  for (const kind of ["source", "notification"] as const) {
-    await page.goto("about:blank"); await stop(); sourceConfig = kind === "source" ? "[{bad" : goodSources; notificationConfig = kind === "notification" ? "[{bad" : "[]"; await start(); await open(); await page.getByRole("status").filter({ hasText: kind === "source" ? "Administrator integration configuration" : "Administrator notification configuration" }).waitFor(); await api(`/api/integration-connections/${connection}/test`, {}); assert.ok((await api("/api/integration-connections")).connections.some((c: any) => c.id === github));
-  }
-  await page.goto("about:blank"); await stop(); sourceConfig = goodSources; notificationConfig = "[]"; await start(); await open(); assert.equal(await page.getByText(/Administrator .* configuration .*invalid/).count(), 0);
+  await page.goto("about:blank"); await stop(); notificationConfig = "[{bad"; await start(); await open(); await page.getByRole("status").filter({ hasText: "Administrator notification configuration" }).waitFor(); await api(`/api/integration-connections/${connection}/test`, {}); assert.ok((await api("/api/integration-connections")).connections.some((c: any) => c.id === github));
+  await page.goto("about:blank"); await stop(); notificationConfig = "[]"; await start(); await open(); assert.equal(await page.getByText(/Administrator .* configuration .*invalid/).count(), 0);
 });
 test("confirmed disconnect removes both bindings and leaves unrelated services", async () => {
   await open(other); await card("Webhooks").getByRole("button", { name: "Manage Managed updates connection" }).click(); await page.getByRole("menuitem", { name: "Disconnect", exact: true }).click(); await page.getByRole("dialog", { name: "Disconnect Managed updates?" }).getByRole("button", { name: "Disconnect", exact: true }).click(); await until(() => api("/api/integration-connections"), data => !data.connections.some((c: any) => c.id === connection));
-  for (const id of [project, other]) assert.ok(!(await api(`/api/integration-connections/projects/${id}?repository=${encodeURIComponent(repo)}`)).bindings.some((b: any) => b.connectionId === connection)); assert.ok((await api("/api/integration-connections")).connections.some((c: any) => c.id === github)); assert.deepEqual(await api("/api/integrations"), []);
+  for (const id of [project, other]) assert.ok(!(await api(`/api/integration-connections/projects/${id}?repository=${encodeURIComponent(repo)}`)).bindings.some((b: any) => b.connectionId === connection)); assert.ok((await api("/api/integration-connections")).connections.some((c: any) => c.id === github));
 });
 test("browser and process logs contain only explicit injected failures", () => {
   assert.deepEqual(errors, []); assert.doesNotMatch(logs.join(""), /UnhandledPromiseRejection|uncaughtException|ReferenceError|TypeError:/);
   const entries = readFileSync(join(home, "server.log"), "utf8").trim().split("\n").filter(Boolean).map(line => JSON.parse(line));
-  const badConfig = entries.filter(entry => entry.level === "error" && entry.message === "Administrator external sources disabled: invalid integration configuration" && entry.error === "Integration configuration is not valid JSON");
-  assert.equal(badConfig.length, 1);
   const restart = entries.filter(entry => entry.level === "error" && ["GET /api/health failed", "GET /api/workspace-projects failed"].includes(entry.message) && entry.error === "The backend is stopping" && shutdowns.some(window => Date.parse(entry.at) >= window.start && Date.parse(entry.at) <= window.end));
   restartDiagnostics.push(...restart);
-  assert.deepEqual(entries.filter(entry => entry.level === "error" && !badConfig.includes(entry) && !restart.includes(entry)), []);
+  assert.deepEqual(entries.filter(entry => entry.level === "error" && !restart.includes(entry)), []);
 });

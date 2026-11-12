@@ -1,14 +1,14 @@
 # ACP coding agents
 
-ACP connections can be saved and checked in Settings → Agents & models. They start runs only with an explicit per-run opt-in, because Code Flow cannot enforce its managed permission policy on them, including native delegation restrictions. Without the opt-in the provider menus show this limitation, and Full access alone does not enable ACP execution.
+ACP connections can be saved and checked in Settings → Agents. They start runs only with an explicit per-run opt-in, because Code Flow cannot enforce its managed permission policy on them, including native delegation restrictions. Without the opt-in the provider menus show this limitation, and Full access alone does not enable ACP execution.
 
 ## Unrestricted ACP runs
 
-In a chat, open Agent settings → Provider and turn on **Allow unrestricted ACP agents**, choose the connected CLI, then pick **Ask for approval** or **Full access** in Permissions. The workflow composer has the same switch under Advanced. A chat needs a project repository and Agent mode; a reply to work that started without the opt-in is refused, so start a new chat. The opt-in applies to that run and the chats started from it; the next new run starts without it.
+In a chat, open Agent settings → Provider and turn on **Allow unrestricted ACP agents**, choose the connected CLI, then pick **Ask for approval** or **Full access** in Permissions. A workflow run has the same switch under Advanced → Permissions. A chat needs a project repository and Agent mode; a reply to work that started without the opt-in is refused, so start a new chat. The opt-in applies to that run and the chats started from it; the next new run starts without it.
 
 - The CLI uses its own login, tools and settings. Code Flow cannot stop it from starting its own subagents, using the network or running external tools, and that usage is outside the worker budget. Read-only turns are a request in the prompt.
 - With Ask for approval, the permission requests the CLI sends appear in the approval inbox. Without it those requests are declined; anything the CLI approves by its own settings runs unasked.
-- It requires Full access on this computer. Remote workers, Docker isolation, automations, sweeps, read-only side chats and mandatory boundaries stay unavailable, and Auto never picks an ACP agent as a default.
+- It requires Full access on this computer. Docker isolation, automations, sweeps, read-only side chats and mandatory boundaries stay unavailable, and Auto never picks an ACP agent as a default.
 - Claude, Codex and Antigravity in the same run keep their managed permissions.
 - Each step records the `acp-native-v1` permission receipt, and the run shows an **Unrestricted ACP** badge.
 
@@ -16,7 +16,7 @@ The API field is `acpExecution: "native"` on `POST /api/runs` and in a chat's `d
 
 ## Connect your CLI
 
-Settings → Agents & models provides **Connect OpenCode**, **Connect Kilo** and **Connect Cline** presets through the shared Agent Client Protocol (ACP) v1 adapter. **Add compatible CLI** connects other agents implementing the same stdio protocol.
+Settings → Agents provides **Connect OpenCode**, **Connect Kilo** and **Connect Cline** presets through the shared Agent Client Protocol (ACP) v1 adapter. **Add compatible CLI** connects other agents implementing the same stdio protocol.
 
 ## Connect a supported CLI
 
@@ -31,7 +31,7 @@ Install and sign in on the machine running code-flow:
 Use a current CLI version with native ACP support. The Kilo preset uses the current `kilo` executable; Cline uses the official CLI's `--acp` flag.
 
 1. Install and sign in with the commands above. Complete provider/model setup in the CLI.
-2. Open Settings → Agents & models and choose the CLI's **Connect** button. If code-flow cannot find it, enter its absolute executable path. Reopening a saved preset edits its existing settings, preserving custom paths and arguments.
+2. Open Settings → Agents and choose the CLI's **Connect** button. If code-flow cannot find it, enter its absolute executable path. Reopening a saved preset edits its existing settings, preserving custom paths and arguments.
 3. Choose **Check connection**. This initializes ACP and creates a session in a temporary directory without sending a prompt. The result shows protocol compatibility, available models and advertised session loading. It does not verify inference, account quota or access to every advertised model.
 4. Choose **Save connection**. The connection and discovered models are retained immediately; no server restart is needed. The provider stays disabled for runs until a run opts in (see Unrestricted ACP runs).
 

@@ -112,16 +112,7 @@ test("memory feedback remains user scoped, revision bound, and cannot forge run 
   assert.equal((await api(path, { op: "feedback", id, expectedRevision: 99, rating: "incorrect" })).status, 409);
 });
 
-test("evaluation and rollout API requires evidence and never promotes from a caller's claims", async () => {
-  const rollout = await api("/api/team-rollout");
-  assert.equal(rollout.status, 200);
-  assert.equal(rollout.body.stage, "experimental");
-  const reports = await api("/api/team-evaluations");
-  assert.deepEqual(reports.body.reports, []);
-  assert.equal(reports.body.assessment.eligibleDefault, false);
-  assert.equal((await api("/api/team-rollout", { stage: "default", rationale: "Pretend all checks passed", evaluationIds: [] })).status, 400);
-  assert.equal((await fetch(`${base}/api/team-rollout`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ stage: "beta" }) })).status, 401);
-  assert.equal((await api("/api/team-rollout", { stage: "experimental", rationale: "Await representative verified comparisons", evaluationIds: [] })).status, 200);
+test("team capabilities report what each provider's CLI supports", async () => {
   const capabilities = await api("/api/team-capabilities");
   assert.equal(capabilities.status, 200);
   assert.deepEqual(capabilities.body.map((entry: any) => entry.provider), ["claude", "codex", "agy"]);

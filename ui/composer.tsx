@@ -1,5 +1,4 @@
 import { activeChatContext } from "./chat-context.js";
-import { OpenTaskSetup } from "./task-conversation.js";
 import { EXECUTION_BUDGET_PRESETS, budgetDuration } from "../src/execution-budget.js";
 import { teamApprovalProblem } from "./task-team-choices.js";
 import { composerCheckMode, checkExplanation, type CheckMode } from "./composer-checks.js";
@@ -19,7 +18,7 @@ import { intentDraft, WorkflowRecommendation } from "./experience.js";
 import { composerRunBody } from "./composer-body.js";
 import { NumberField, numberInputProblem } from "./number-field.js";
 import { EXECUTION_LIMITS, MAX_COMPARE_RUNS, acceptanceCriteriaProblem, executionLimitsProblem, numberProblem, taskTeamLimitsProblem } from "../src/start-input-validation.js";
-import { SCHEDULE_KINDS, type ScheduleKind } from "./scheduling.js";
+import { AUTOMATION_MANAGEMENT } from "./navigation.js";
 import { improveSettings } from "./improve-settings.js";
 import { IMPROVE_NAMES } from "../src/improve-settings.js";
 import { ModelSelect } from "./model-select.js";
@@ -33,11 +32,8 @@ import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import { AgentTag } from "./bits.js";
 import { api, showToast, ApiError, baseName, enc, fmtSize, post, readBase64, shownPath, SHORT, store, useLatest, plural } from "./lib.js";
 import { useDialog } from "./app.js";
-import { AcceptanceEditor, ContextInspector, EffectiveSettings, ProviderSetupPrompt, RepositoryReadiness, SaveTaskTemplateDialog, UseTaskTemplateDialog } from "./onboarding.js";
+import { AcceptanceEditor, ContextInspector, EffectiveSettings, ProviderSetupPrompt, RepositoryReadiness } from "./onboarding.js";
 import { rerunDraft } from "./rerun-draft.js";
-import { RemoteWorkerSelect, type WorkerChoice } from "./remote-workers.js";
-import type { WorkerCapabilities } from "../src/remote-workers/protocol.js";
-import { DeferredRunsPanel } from "./deferred-runs.js";
 import { contextBudget } from "./context-budget.js";
 import {
   agents,
@@ -85,7 +81,6 @@ import {
   optionsFor,
   pattern,
   patterns,
-  teamRollout,
   pickerOpen,
   refreshRuns,
   repo,
@@ -112,7 +107,6 @@ import {
   setTask,
   setupCmd,
   source,
-  externalSource,
   task,
   ghPicker,
   afterStart,
@@ -120,14 +114,14 @@ import {
   target,
   chatDrafts,
   takeDrafts,
+  scheduleRequest,
   type RoleValue,
 } from "./state.js";
 import { ProjectButton, openRepository } from "./projects.js";
 import { computerLabel } from "./ssh-projects.js";
 import { readProjectDefaults, projectDefaultsVersion } from "./project-defaults.js";
-import { TeamRolloutNotice } from "./team-evaluation.js";
-import { SourceChip } from "./github.js";
-import { SaveAutomationDialog } from "./automations.js";
+import { SourceChip, Templates } from "./github.js";
+import { chatAllowed } from "./chat-state.js";
 import { Icon } from "./icons.js";
 import { Menu, MenuItem, MenuTitle } from "./panel-bits.js";
 import { POLICY_PAUSED, PolicyPauseNotice } from "./policy-pause.js";
@@ -144,10 +138,6 @@ export function Composer() {
   const restored = rerunDraft.value?.repo === repo.value ? rerunDraft.value : null;
   const initialOptions = useRef(composerRunOptions.value);
   const [taskTeam, setTaskTeam] = useState<TaskTeamConfig | undefined>(initialOptions.current.taskTeam);
-  const [remoteWorker, setRemoteWorker] = useState<WorkerChoice | undefined>(initialOptions.current.remoteWorker);
-  const [remoteAgents, setRemoteAgents] = useState<AgentInfo[]>();
-  const [remoteError, setRemoteError] = useState("");
-  useEffect(() => { let alive = true; setRemoteAgents(undefined); setRemoteError(""); if (remoteWorker) void post<{ capabilities: WorkerCapabilities }>(`/api/remote-workers/${encodeURIComponent(remoteWorker.workerId)}/probe`, { repoMapping: remoteWorker.repoMapping }).then(({ capabilities }) => { if (alive) setRemoteAgents(agents.value.map((agent) => ({ ...agent, available: capabilities.providers.some((provider) => provider.id === agent.id && provider.available) }))); }, (error) => { if (alive) setRemoteError(error.message); }); return () => { alive = false; }; }, [remoteWorker?.workerId, remoteWorker?.repoMapping, agents.value]);
   const [containerEnabled, setContainerEnabled] = useState(initialOptions.current.container?.enabled ?? false);
   const [containerImage, setContainerImage] = useState(initialOptions.current.container?.image ?? "");
   const [containerVolume, setContainerVolume] = useState(initialOptions.current.container?.authVolume ?? "");
@@ -160,13 +150,11 @@ export function Composer() {
   const [permissionRequirements, setPermissionRequirements] = useState<PermissionRequirement[]>(initialOptions.current.permissionRequirements ?? []);
   // Only an explicit choice is kept (and saved with the draft); without one the default follows the workflow and provider.
   const [toolApprovals, setToolApprovals] = useState<boolean | undefined>(initialOptions.current.toolApprovals ?? storedToolApprovals());
-  const improve = useImprove(remoteWorker ? "Improve uses a local provider. Choose This computer to rewrite this task." : containerEnabled ? "Improve uses a local provider. Turn off Docker isolation to rewrite this task." : "");
+  const improve = useImprove(containerEnabled ? "Improve uses a local provider. Turn off Docker isolation to rewrite this task." : "");
   const p = pattern.value;
   const single = p?.id === "solo";
-  const checkMode = composerCheckMode(p?.id, { checkpointOnFinish: restored?.checkpointOnFinish, remote: !!remoteWorker, team: !!taskTeam?.enabled, container: containerEnabled });
+  const checkMode = composerCheckMode(p?.id, { checkpointOnFinish: restored?.checkpointOnFinish, team: !!taskTeam?.enabled, container: containerEnabled });
   const automaticChecks = checkMode !== "conversation";
-  const [moreOptions, setMoreOptions] = useState(false);
-  const [limitsOpen, setLimitsOpen] = useState(false);
   const [budgetRevision, setBudgetRevision] = useState(0);
   const chooseBudget = (budget: typeof EXECUTION_BUDGET_PRESETS[number]) => {
     batch(() => {
@@ -178,6 +166,10 @@ export function Composer() {
     setBudgetRevision(value => value + 1);
   };
   const [advancedOpen, setAdvancedOpen] = useState(() => store.get("composerAdvanced") === "1");
+  const showAdvanced = (open: boolean, group?: string) => {
+    setAdvancedOpen(open); store.set("composerAdvanced", open ? "1" : "0");
+    if (open && group) requestAnimationFrame(() => document.getElementById(group)?.scrollIntoView({ block: "start" }));
+  };
   const selectVerification = async (selected: string) => {
     const request = ++profileRequest.current;
     const current = repo.value;
@@ -195,7 +187,6 @@ export function Composer() {
     const defaults = readProjectDefaults(repo.value);
     const container = initialOptions.current.container ?? defaults.container;
     setContainerEnabled(container.enabled); setContainerImage(container.image); setContainerVolume(container.authVolume);
-    setRemoteWorker(initialOptions.current.remoteWorker);
     setToolApprovals(initialOptions.current.toolApprovals ?? storedToolApprovals());
     setProfileError("");
     if (initialOptions.current.verification === "restored") {
@@ -211,8 +202,8 @@ export function Composer() {
     // An option equal to the project's default isn't the draft's own: the draft follows a later default.
     const defaults = readProjectDefaults(repo.value), container = { enabled: containerEnabled, image: containerImage, authVolume: containerVolume };
     const ownContainer = container.enabled !== defaults.container.enabled || container.image !== defaults.container.image || container.authVolume !== defaults.container.authVolume;
-    if (!composerLoading.value) composerRunOptions.value = { taskTeam, remoteWorker, container: ownContainer ? container : undefined, verification: verificationPreset === defaults.verification ? undefined : verificationPreset, verificationProfile, toolApprovals, antigravityExecution: nativeAntigravity ? "native" : "isolated", acpExecution: nativeAcp ? "native" : undefined, permissionRequirements };
-  }, [taskTeam, remoteWorker, containerEnabled, containerImage, containerVolume, verificationPreset, verificationProfile, toolApprovals, nativeAntigravity, nativeAcp, permissionRequirements]);
+    if (!composerLoading.value) composerRunOptions.value = { taskTeam, container: ownContainer ? container : undefined, verification: verificationPreset === defaults.verification ? undefined : verificationPreset, verificationProfile, toolApprovals, antigravityExecution: nativeAntigravity ? "native" : "isolated", acpExecution: nativeAcp ? "native" : undefined, permissionRequirements };
+  }, [taskTeam, containerEnabled, containerImage, containerVolume, verificationPreset, verificationProfile, toolApprovals, nativeAntigravity, nativeAcp, permissionRequirements]);
   const [error, setError] = useState("");
   const [starting, setStarting] = useState(false);
   const startError = useRef<HTMLDivElement>(null);
@@ -237,23 +228,15 @@ export function Composer() {
   const soloAgent = roles.agent?.[0];
   const soloSettings = soloAgent && soloAgent !== "auto" ? { ...agentSettings.value[soloAgent], ...roleModels.value[p!.id]?.agent?.[soloAgent] } : {};
   // The Permissions control, Run details and the start request all use this one value.
-  const runTrust = externalSource.value ? "safe" : trust.value;
-  const approvals = toolApprovalState({ choice: toolApprovals, trust: runTrust, p, roles, remote: !!remoteWorker, container: containerEnabled, external: !!externalSource.value });
+  const runTrust = trust.value;
+  const approvals = toolApprovalState({ choice: toolApprovals, trust: runTrust, p, roles, container: containerEnabled });
   const choosePermissions = (value: ChatPermissions) => { setTrust(value.trust); setToolApprovals(value.tools); store.set("interactiveApprovals", value.tools ? "1" : "0"); };
-  // Both "Save as template…" and "Save task preset" save through one dialog, so they share one guard.
-  const templateBlocked = verificationPreset === "restored" ? "Choose a verification preset before saving a template" : "";
-  const canSaveTemplate = !!p && projectsLoaded.value && !!task.value.trim() && !templateBlocked;
-  const problem = (p?.id === "auto-team" && teamRollout.value?.enabled === false ? "Team is disabled on this server. Choose Agent or a template in Advanced." : "") || (remoteWorker ? remoteError || (!remoteAgents ? "Checking remote worker…" : startProblem(p, roles, true, remoteAgents)) : startProblem(p, roles, true, undefined, nativeAntigravity ? "native" : "isolated", nativeAcp ? "native" : undefined)) || approvals.conflict || (containerEnabled && !remoteWorker && !containerImage.trim() ? "Choose a prebuilt agent image in Run options → Agent isolation." : "") || (automaticChecks && profileLoading ? "Loading verification profile…" : automaticChecks && profileError ? "Verification profile unavailable. Choose another profile in Run options." : "");
+  const problem = startProblem(p, roles, true, nativeAntigravity ? "native" : "isolated", nativeAcp ? "native" : undefined) || approvals.conflict || (containerEnabled && !containerImage.trim() ? "Choose a prebuilt agent image in Advanced → Agent isolation." : "") || (automaticChecks && profileLoading ? "Loading verification profile…" : automaticChecks && profileError ? "Verification profile unavailable. Choose another profile in Advanced → Checks." : "");
 
-  const [scheduling, setScheduling] = useState(false);
-  const [savingTemplate, setSavingTemplate] = useState(false);
-  const [usingTemplate, setUsingTemplate] = useState(false);
-  const [libraryScope, setLibraryScope] = useState("project");
   const runBody = composerRunBody;
-  const [scheduleKind, setScheduleKind] = useState<ScheduleKind | null>(null);
   const start = async () => {
     if (problem || !p || starting || automaticChecks && profileLoading) return;
-    if (containerEnabled && !remoteWorker && !containerImage.trim()) { setError("Choose a prebuilt agent image"); return; }
+    if (containerEnabled && !containerImage.trim()) { setError("Choose a prebuilt agent image"); return; }
     improve.stop();
     setStarting(true);
     setError("");
@@ -283,7 +266,6 @@ export function Composer() {
     setAcceptanceCriteria([]);
     branchPrefix.value = "";
     source.value = null;
-    externalSource.value = null;
     contextPaths.value = new Map();
     attachments.value = [];
     intentDraft.value = undefined;
@@ -301,7 +283,7 @@ export function Composer() {
   </div>;
   return (
     <div class={`composer ${single ? "composer-single" : ""}`}>
-      <div class="eyebrow">Saved workflows</div>
+      <div class="eyebrow">{chatAllowed() ? "Workflow run" : "New run"}</div>
       <h1>{single ? "What would you like to work on?" : "What should the agents build?"}</h1>
       <p class="lede">{single ? "Choose a provider, describe your task, and start the conversation." : "Describe the task, add the files that matter, and pick how your agents work together."}</p>
       <div class="where" role="group" aria-label="Where the run works">
@@ -333,38 +315,33 @@ export function Composer() {
 
       {repoConfig.value?.found && repoConfig.value.error ? <div class="config-note bad" role="alert">⚠ {repoConfig.value.error}</div> : null}
 
-      {externalSource.value ? <div class="banner"><p>External context: {externalSource.value.provider} {externalSource.value.kind} {externalSource.value.key} · {externalSource.value.title}</p><p class="help">This source remains untrusted. The run uses Safe permissions and isolated checks.</p><button class="btn small" onClick={() => { externalSource.value = null; }}>Remove source</button></div> : null}
-      {p?.id === "auto-team" ? <TeamRolloutNotice /> : null}
       <PolicyPauseNotice what="Agent runs are paused" />
       <TaskBox onStart={start} improve={improve} controls={<>
-        {single ? <TaskTeamControl config={taskTeam} lead={soloAgent && soloAgent !== "auto" ? soloAgent : "claude"} project={composerProject.value || undefined} toolApprovals={approvals.tools} disabledReason={remoteWorker || containerEnabled ? "Teams in this conversation require This computer without Docker isolation. Standalone workflows remain available in Advanced." : undefined} onChange={next => { setTaskTeam(next); if (next.enabled) { setRoles(p!.id, "agent", [next.coordinator]); setRoleModel(p!.id, "agent", next.coordinator, next.settings[next.coordinator] ?? {}); } }} /> : <button class="btn ghost" onClick={() => setPattern("solo")}>Back to Agent conversation</button>}
-        {single ? taskTeam?.enabled && !remoteWorker && !containerEnabled ? null : <>
+        {single ? <TaskTeamControl config={taskTeam} lead={soloAgent && soloAgent !== "auto" ? soloAgent : "claude"} project={composerProject.value || undefined} toolApprovals={approvals.tools} disabledReason={containerEnabled ? "Teams in this conversation require This computer without Docker isolation. Standalone workflows remain available in Advanced." : undefined} onChange={next => { setTaskTeam(next); if (next.enabled) { setRoles(p!.id, "agent", [next.coordinator]); setRoleModel(p!.id, "agent", next.coordinator, next.settings[next.coordinator] ?? {}); } }} /> : <button class="btn ghost" onClick={() => setPattern("solo")}>Back to Agent conversation</button>}
+        {single ? taskTeam?.enabled && !containerEnabled ? null : <>
         {soloAgent && soloAgent !== "auto" ? <ChatControls
-          agent={soloAgent} providers={remoteAgents}
+          agent={soloAgent}
           onAgent={(id) => setRoles(p!.id, "agent", [id])}
           settings={soloSettings}
           onSettings={(value) => setRoleModel(p!.id, "agent", soloAgent, value)}
           permissions={{ trust: runTrust, tools: approvals.tools }}
           onPermissions={choosePermissions}
-          restricted={!!externalSource.value} approvalsAvailable={!remoteWorker && !containerEnabled}
+          approvalsAvailable={!containerEnabled}
           unrestricted={soloAgent === "agy" && nativeAntigravity}
           acpAllowed={nativeAcp}
         /> : <Menu above label="Provider" icon="layers" class="chat-choice" trigger={<><span>{soloAgent === "auto" ? "Auto provider" : "Choose provider"}</span><Icon name="chevron" /></>}>
-          {(close) => <>{(remoteAgents ?? agents.value).map((entry) => <MenuItem key={entry.id} disabled={!!providerProblem(entry, remoteAgents ? null : health.value)} sub={providerProblem(entry, remoteAgents ? null : health.value) || undefined} onClick={() => { setRoles(p!.id, "agent", [entry.id]); close(); }}>{entry.displayName}</MenuItem>)}</>}
+          {(close) => <>{agents.value.map((entry) => <MenuItem key={entry.id} disabled={!!providerProblem(entry, health.value)} sub={providerProblem(entry, health.value) || undefined} onClick={() => { setRoles(p!.id, "agent", [entry.id]); close(); }}>{entry.displayName}</MenuItem>)}</>}
         </Menu>}
         </> : <span class="help">{selectedTeamTemplate.value ? `Template: ${selectedTeamTemplate.value.template.name} v${selectedTeamTemplate.value.template.version}` : p?.id === "auto-team" ? "Plans and delegates dynamically" : `Template: ${p?.name}`}</span>}
-        {!single ? <><button type="button" class="btn ghost" onClick={() => { setMoreOptions(true); setAdvancedOpen(true); store.set("composerAdvanced", "1"); }}>Advanced</button><PermissionMenu permissions={{ trust: runTrust, tools: approvals.tools }} onPermissions={choosePermissions} restricted={!!externalSource.value} approvalsAvailable={!remoteWorker && !containerEnabled && Object.values(roles).flat().some(canAskForApproval)} agent={Object.values(roles).flat().find((id) => id.startsWith("acp:")) as AgentId | undefined} unrestricted={nativeAntigravity && Object.values(roles).flat().some(id => id === "agy" || id === "auto")} acpAllowed={nativeAcp} /></> : null}
+        {!single ? <><PermissionMenu permissions={{ trust: runTrust, tools: approvals.tools }} onPermissions={choosePermissions} approvalsAvailable={!containerEnabled && Object.values(roles).flat().some(canAskForApproval)} agent={Object.values(roles).flat().find((id) => id.startsWith("acp:")) as AgentId | undefined} unrestricted={nativeAntigravity && Object.values(roles).flat().some(id => id === "agy" || id === "auto")} acpAllowed={nativeAcp} /></> : null}
         <button class="btn primary task-start" disabled={!!problem || starting} onClick={start} title={problem || "Start run (⌘↵)"}>{starting ? "Starting…" : single ? "Send" : "Start run"}<Icon name="send" /></button>
         <Menu above label="Run actions" icon="more" class="chat-choice">{(close) => <>
-          <MenuItem disabled={!p || !projectsLoaded.value} onClick={() => { close(); setUsingTemplate(true); }}><Icon name="files" />Use template…</MenuItem>
-          <MenuItem disabled={!canSaveTemplate} sub={templateBlocked || undefined} onClick={() => { close(); setSavingTemplate(true); }}><Icon name="files" />Save as template…</MenuItem>
-          <MenuItem disabled={!!problem} onClick={() => { close(); setScheduleKind(null); setScheduling(true); }}><Icon name="clock" />Schedule…</MenuItem>
+          <MenuItem disabled={!!problem} onClick={() => { close(); if (!p) return; scheduleRequest.value = runBody(p); route.value = { view: "automations", kind: AUTOMATION_MANAGEMENT }; }}><Icon name="clock" />Schedule…</MenuItem>
         </>}</Menu>
       </>} />
       {error ? <div ref={startError} class="msg err composer-start-error" role="alert" tabIndex={-1}>{error}</div> : null}
-      <div class="task-setup-entry"></div>
       <div class="composer-summary" aria-label="Run configuration summary">
-        <span><b>Computer</b> {computerLabel()}{remoteWorker ? ` · Agent worker: ${remoteWorker.workerId}` : ""}</span>
+        <span><b>Computer</b> {computerLabel()}</span>
         <span><b>Project</b> {target.value.project?.name ?? "Choose project"}</span>
         <span><b>Repository</b> {repo.value ? baseName(repo.value) : "Choose repository"} · {startBranchLabel(source.value, baseRef.value, repoInfo.value?.current)}</span>
         <div class="composer-budget">
@@ -373,7 +350,7 @@ export function Composer() {
             {close => <>
               <MenuTitle>Run budget</MenuTitle>
               {EXECUTION_BUDGET_PRESETS.map(budget => <MenuItem key={budget.id} on={limits.value.maxSteps === budget.maxSteps && limits.value.maxMinutes === budget.maxMinutes && (restored?.loop.maxInvocations ?? budget.maxSteps) === budget.maxSteps} sub={`${budget.maxSteps.toLocaleString()} calls · ${budgetDuration(budget.maxMinutes)}`} onClick={() => { chooseBudget(budget); close(); }}>{budget.label}{budget.id === "extended" ? " · default" : ""}</MenuItem>)}
-              <MenuItem onClick={() => { close(); setMoreOptions(true); setLimitsOpen(true); }}>Custom limits…</MenuItem>
+              <MenuItem onClick={() => { close(); showAdvanced(true, "run-limits"); }}>Custom limits…</MenuItem>
             </>}
           </Menu>
         </div>
@@ -381,24 +358,35 @@ export function Composer() {
         {trust.value === "full" ? <span class="warn">Full access · no provider sandbox</span> : null}
         {nativeAntigravity ? <span class="warn">Unrestricted Antigravity · no Code Flow sandbox</span> : null}
         {nativeAcp ? <span class="warn">Unrestricted ACP agents · no Code Flow sandbox</span> : null}
-        <button class="btn small ghost" onClick={() => setMoreOptions(!moreOptions)} aria-expanded={moreOptions}>Edit run options</button>
+        <button class="btn small ghost" onClick={() => showAdvanced(!advancedOpen)} aria-expanded={advancedOpen} aria-controls="composer-advanced">Advanced options</button>
       </div>
       <WorkflowRecommendation repository={repo.value} intent={intentDraft.value} />
       {contextError.value ? <div class="msg err">{contextError.value}</div> : null}
-      <details class="composer-options compact" open={moreOptions} onToggle={(event) => setMoreOptions(event.currentTarget.open)}>
-        <summary>Run options <span>Agents, context, checks and limits for this task</span></summary>
-      {repoConfig.value?.found && !repoConfig.value.error ? <div class="config-note"><Icon name="sliders" />Using <code>.codeflow/config.json</code>{repoConfig.value.ref ? <> from <code>{repoConfig.value.ref}</code></> : null}{configSummary(repoConfig.value.config, !!repoConfig.value.ref)}</div> : null}
-      <AcceptanceEditor />
-
-      <div class="section">
+      <details id="composer-advanced" class="settings advanced-controls" open={advancedOpen} onToggle={(e) => showAdvanced(e.currentTarget.open)}>
+        <summary><span class="st">Advanced{nativeAntigravity ? " · Unrestricted Antigravity" : ""}{nativeAcp ? " · Unrestricted ACP" : ""}</span><span class="ss">Workflow, templates, checks, permissions, limits and isolation</span></summary>
+        <div class="settings-body">
+        {repoConfig.value?.found && !repoConfig.value.error ? <div class="config-note"><Icon name="sliders" />Using <code>.codeflow/config.json</code>{repoConfig.value.ref ? <> from <code>{repoConfig.value.ref}</code></> : null}{configSummary(repoConfig.value.config, !!repoConfig.value.ref)}</div> : null}
+        <section class="advanced-group" aria-labelledby="advanced-workflow"><h2 class="section-title" id="advanced-workflow">Workflow</h2>
+        <label class="lbl" for="workflow-select">Built-in workflow templates</label>
+        <select class="field" id="workflow-select" aria-label="Workflow" value={p?.id ?? "auto-team"} onChange={event => setPattern(event.currentTarget.value)}>
+          <option value="auto-team">Team — dynamic plan</option><option value="solo">Agent — one agent</option>
+          {patterns.value.filter(entry => !["solo", "auto-team"].includes(entry.id)).map(entry => <option key={entry.id} value={entry.id}>{entry.name}</option>)}
+        </select>
         {p ? <p class="pattern-why">{teamSentence(p, roles, true, checkMode)}</p> : null}
-        {trust.value === "full" ? <p class="full-warn" role="alert"><b>Full access: no sandbox.</b> Agents can run commands and change files outside their worktree with your credentials. Review permissions in Advanced agent settings.</p> : null}
-        {p && CHECKPOINTS[p.id] && (p.id !== "debate" || roles.builder?.length) ? (
+        {trust.value === "full" ? <p class="full-warn" role="alert"><b>Full access: no sandbox.</b> Agents can run commands and change files outside their worktree with your credentials. Review permissions below.</p> : null}
+        {p && CHECKPOINTS[p.id] ? (
           <label class="checkpoint">
             <input type="checkbox" checked={planApprovalFor(p.id)} onChange={(e) => setApprovePlan(e.currentTarget.checked, p.id)} />
             <span><b>Let me approve {CHECKPOINTS[p.id]}</b> before agents build.</span>
           </label>
         ) : null}
+        {p && !single ? <Team p={p} roles={roles} /> : null}
+        {p?.id === "auto-team" ? <WorkerModelCatalog remote={containerEnabled} nativeAntigravity={nativeAntigravity} /> : null}
+        </section>
+        {advancedOpen ? <TeamTemplateLibrary /> : null}
+        {repo.value ? <Templates flat only="sources" /> : null}
+        <AcceptanceEditor />
+        <section class="advanced-group" aria-labelledby="advanced-checks"><h2 class="section-title" id="advanced-checks">Checks</h2>
         <div class={`donewhen ${p?.requiresCheck && !checkCmd.value.trim() ? "required" : ""}`}>
           <label class="lbl" for="checkCmd">{automaticChecks ? "Done when this passes" : "Check command for merge validation"}</label>
           <div class="dw-row"><span class="dw-prompt">$</span><input class="field" id="checkCmd" disabled={repoChecking.value} placeholder="e.g. npm test" spellcheck={false} autocomplete="off" aria-describedby={checkWarning.value ? "checkCmd-warning" : undefined} value={checkCmd.value} onInput={(e) => { setRunCheck(e.currentTarget.value); checkWarning.value = ""; }} /></div>
@@ -410,21 +398,10 @@ export function Composer() {
           <div class="dw-row"><span class="dw-prompt">$</span><input class="field" id="setupCmd" disabled={repoChecking.value} placeholder="e.g. npm ci" spellcheck={false} autocomplete="off" value={setupCmd.value} onInput={(event) => setRunSetup(event.currentTarget.value)} /></div>
           <div class="help">Runs once in each new worktree before agent work and checks. Override for this run; save reusable defaults in Settings → Projects.</div>
         </div>
-        {!remoteWorker && !containerEnabled && !verificationProfile ? <RepositoryReadiness pattern={p?.id} roles={roles} /> : null}
-      </div>
-
-      {/* The optional controls read as one accordion: a card whose rows open in place. */}
-      <div class="composer-more">
-      <details class="settings advanced-controls" open={advancedOpen} onToggle={(e) => { setAdvancedOpen(e.currentTarget.open); store.set("composerAdvanced", e.currentTarget.open ? "1" : "0"); }}>
-        <summary><span class="st">Advanced{nativeAntigravity ? " · Unrestricted Antigravity" : ""}{nativeAcp ? " · Unrestricted ACP" : ""}</span><span class="ss">Templates, roles, models, permissions and limits</span></summary>
-        <div class="settings-body">
-        <label class="lbl" for="workflow-select">Built-in workflow templates</label>
-        <select class="field" id="workflow-select" aria-label="Workflow" value={p?.id ?? "auto-team"} onChange={event => setPattern(event.currentTarget.value)}>
-          <option value="auto-team">Team — dynamic plan</option><option value="solo">Agent — one agent</option>
-          {patterns.value.filter(entry => !["solo", "auto-team"].includes(entry.id)).map(entry => <option key={entry.id} value={entry.id}>{entry.name}</option>)}
-        </select>
-        {advancedOpen ? <TeamTemplateLibrary /> : null}
-        {p?.id === "auto-team" ? <WorkerModelCatalog remote={!!remoteWorker || containerEnabled} nativeAntigravity={nativeAntigravity} /> : null}
+        <div><label class="lbl" for="verification-profile">Verification gates</label><select class="field" id="verification-profile" value={verificationPreset} disabled={!repo.value} onChange={(event) => void selectVerification(event.currentTarget.value)}><option value="">Single configured check</option>{verificationPreset === "restored" ? <option value="restored">From original run · {verificationProfile?.name}</option> : null}<option value="lightweight">Lightweight profile</option><option value="standard">Standard profile</option><option value="thorough">Thorough profile</option></select>{automaticChecks && profileError ? <p class="msg err" role="alert">{profileError}</p> : null}{!automaticChecks ? <p class="help">Verification gates are inactive for Agent conversations. Turn on AI team or choose a managed workflow to run them.</p> : verificationProfile ? <p class="help">Required gates: {verificationProfile.checks.map((gate) => gate.command).join(" · ") || "No runnable gates detected"}. Each gate appears in the run's evidence.</p> : null}</div>
+        {!containerEnabled && !verificationProfile ? <RepositoryReadiness flat pattern={p?.id} roles={roles} /> : null}
+        </section>
+        <section class="advanced-group" aria-labelledby="advanced-permissions"><h2 class="section-title" id="advanced-permissions">Permissions</h2>
         <fieldset class="section"><legend>Antigravity execution</legend>
           <label class="checkpoint"><input type="checkbox" checked={nativeAntigravity} onChange={e => setNativeAntigravity(e.currentTarget.checked)} /><span>Use unrestricted Antigravity with my existing login</span></label>
           <p class="help">Opt-in for this run; the next run starts isolated again. Antigravity uses your normal profile without Code Flow's sandbox. Terminal, browser, MCP, hooks and native agents follow provider settings. Read-only requests are advisory and native child usage is outside the worker budget. Claude and Codex keep their run permissions. Requires a valid saved login, local attended execution, and no mandatory boundaries, Safe mode or tool approvals.</p>
@@ -437,39 +414,18 @@ export function Composer() {
           {([ ["workspace-writes", "Require an agent workspace write boundary"], ["no-command-network", "Block network access from agent commands"], ["no-external-tools", "Disable external browser and MCP tools"] ] as [PermissionRequirement, string][]).map(([id, label]) => <label class="checkpoint" key={id}><input type="checkbox" checked={permissionRequirements.includes(id)} onChange={e => setPermissionRequirements(e.currentTarget.checked ? [...permissionRequirements, id] : permissionRequirements.filter(p => p !== id))} /><span>{label}</span></label>)}
           <p class="help">Only providers that enforce these requirements can run. Command network restrictions do not cover provider inference or external tools. With none selected, the existing provider-specific permission profile applies.</p>
         </fieldset>
-        <div class="section"><button class="btn" disabled={!p || !projectsLoaded.value} onClick={() => setUsingTemplate(true)}>Browser task library</button>{" "}<button class="btn" disabled={!canSaveTemplate} aria-describedby={templateBlocked ? "save-preset-blocked" : undefined} onClick={() => setSavingTemplate(true)}>Save task preset</button>{templateBlocked ? <p class="help" id="save-preset-blocked">{templateBlocked}.</p> : null}<p class="help">Existing browser presets remain available. Applying a preset keeps this run's permissions and isolation.</p></div>
-        <RemoteWorkerSelect value={remoteWorker} onChange={(value) => { improve.stop(); setRemoteWorker(value); }} disabled={starting} />
-        {remoteWorker ? <p class="help">Provider availability comes from this worker. Checks and setup run on the application server. Copied workspace files and native interactive approvals are unavailable; use explicitly staged references.</p> : null}
-        {p && !single ? <Team p={p} roles={roles} providers={remoteAgents} remote={!!remoteWorker} /> : null}
-        <div class="section"><label class="lbl" for="verification-profile">Verification gates</label><select class="field" id="verification-profile" value={verificationPreset} disabled={!repo.value} onChange={(event) => void selectVerification(event.currentTarget.value)}><option value="">Single configured check</option>{verificationPreset === "restored" ? <option value="restored">From original run · {verificationProfile?.name}</option> : null}<option value="lightweight">Lightweight profile</option><option value="standard">Standard profile</option><option value="thorough">Thorough profile</option></select>{automaticChecks && profileError ? <p class="msg err" role="alert">{profileError}</p> : null}{!automaticChecks ? <p class="help">Verification gates are inactive for Agent conversations. Turn on AI team or choose a managed workflow to run them.</p> : verificationProfile ? <p class="help">Required gates: {verificationProfile.checks.map((gate) => gate.command).join(" · ") || "No runnable gates detected"}. Each gate appears in the run's evidence.</p> : null}</div>
+        </section>
+        {p ? <Settings p={p} roles={roles} budgetRevision={budgetRevision} /> : null}
+        <section class="advanced-group agent-isolation" aria-labelledby="advanced-isolation"><h2 class="section-title" id="advanced-isolation">Agent isolation</h2>
+        <p class="help">{containerEnabled ? `Prebuilt Docker image${containerImage.trim() ? ` · ${containerImage.trim()}` : ""}` : "Off · agents use this computer's CLIs"}</p>
+        <label class="checkpoint"><input type="checkbox" checked={containerEnabled} onChange={(event) => { improve.stop(); setContainerEnabled(event.currentTarget.checked); }} /><span>Run agents in a prebuilt Docker image</span></label>{containerEnabled ? <><label class="iso-field">Image<input class="field mono" placeholder="Your prepared image:tag" spellcheck={false} value={containerImage} onInput={(event) => setContainerImage(event.currentTarget.value)} /></label><label class="iso-field">Authentication volume<input class="field mono" spellcheck={false} placeholder="Optional explicitly named Docker volume" value={containerVolume} onInput={(event) => setContainerVolume(event.currentTarget.value)} /></label><p class="help">The image must contain compatible official CLIs and be authenticated inside the image or selected volume. Host credential folders are never mounted. Agents receive their worktree and read-only Git metadata; network access is {restored?.loop.agentContainer?.network === false ? "disabled by the original run" : "enabled for inference"}. Live team bridges use structured turn-boundary replies in containers.</p></> : null}
+        </section>
+        <ContextInspector />
+        {p ? <EffectiveSettings p={p} checkMode={checkMode} toolApprovals={approvals} verificationProfile={verificationProfile} container={{ enabled: containerEnabled, image: containerImage, authVolume: containerVolume, network: restored?.loop.agentContainer?.network }} /> : null}
         </div>
       </details>
-      {p ? <Settings p={p} roles={roles} open={limitsOpen} onToggle={setLimitsOpen} budgetRevision={budgetRevision} /> : null}
-      {p ? <EffectiveSettings p={p} checkMode={checkMode} toolApprovals={approvals} verificationProfile={verificationProfile} container={{ enabled: containerEnabled, image: containerImage, authVolume: containerVolume, network: restored?.loop.agentContainer?.network }} /> : null}
-      <ContextInspector />
-
-      <details class="settings agent-isolation"><summary><span class="st">Agent isolation</span><span class="ss">{containerEnabled && !remoteWorker ? `Prebuilt Docker image${containerImage.trim() ? ` · ${containerImage.trim()}` : ""}` : "Off · agents use this computer's CLIs"}</span></summary><div class="settings-body"><label class="checkpoint"><input type="checkbox" checked={containerEnabled} disabled={!!remoteWorker} onChange={(event) => { improve.stop(); setContainerEnabled(event.currentTarget.checked); }} /><span>Run agents in a prebuilt Docker image</span></label>{containerEnabled ? <><label class="iso-field">Image<input class="field mono" placeholder="Your prepared image:tag" spellcheck={false} value={containerImage} onInput={(event) => setContainerImage(event.currentTarget.value)} /></label><label class="iso-field">Authentication volume<input class="field mono" spellcheck={false} placeholder="Optional explicitly named Docker volume" value={containerVolume} onInput={(event) => setContainerVolume(event.currentTarget.value)} /></label><p class="help">The image must contain compatible official CLIs and be authenticated inside the image or selected volume. Host credential folders are never mounted. Agents receive their worktree and read-only Git metadata; network access is {restored?.loop.agentContainer?.network === false ? "disabled by the original run" : "enabled for inference"}. Live team bridges use structured turn-boundary replies in containers.</p></> : null}</div></details>
-
-      </div>
-      </details>
-
-      {usingTemplate ? <UseTaskTemplateDialog initialScope={libraryScope} onConfigured={template => { if (template.runOptions) void selectVerification(template.runOptions.verification); }} onClose={() => setUsingTemplate(false)} onUsed={(scope) => { setLibraryScope(scope); setUsingTemplate(false); }} /> : null}
-      {savingTemplate && p && !templateBlocked ? <SaveTaskTemplateDialog p={p} toolApprovals={approvals.tools} runOptions={{ verification: verificationPreset as "" | "lightweight" | "standard" | "thorough", container: { enabled: containerEnabled, image: containerImage, authVolume: containerVolume } }} initialScope={libraryScope} onClose={() => setSavingTemplate(false)} onSaved={(scope) => { setLibraryScope(scope); setSavingTemplate(false); }} /> : null}
-      {scheduling && p && !scheduleKind ? <ScheduleChoiceDialog onClose={() => setScheduling(false)} onChoose={kind => { if (kind === "backlog") { setScheduling(false); route.value = { view: "automations", kind }; } else setScheduleKind(kind); }} /> : null}
-      {scheduling && p && scheduleKind === "once" ? <ScheduleRunDialog body={runBody(p)} onClose={() => setScheduling(false)} /> : null}
-      {scheduling && p && scheduleKind === "repeat" ? <SaveAutomationDialog body={runBody(p)} onClose={() => setScheduling(false)} /> : null}
     </div>
   );
-}
-
-function ScheduleChoiceDialog({ onClose, onChoose }: { onClose: () => void; onChoose: (kind: ScheduleKind) => void }) {
-  const ref = useDialog(true, onClose);
-  return <dialog ref={ref} class="picker" aria-labelledby="schedule-choice-title"><div class="picker-inner"><div class="picker-head"><h3 id="schedule-choice-title">Schedule work</h3></div><div class="dialog-body purpose-choices">{SCHEDULE_KINDS.map(item => <button class="settings-result" onClick={() => onChoose(item.id)}><span><strong>{item.label}</strong><span>{item.description}</span></span></button>)}</div><div class="picker-foot"><button class="btn" onClick={onClose}>Cancel</button></div></div></dialog>;
-}
-
-function ScheduleRunDialog({ body, onClose }: { body: Record<string, any>; onClose: () => void }) {
-  const ref = useDialog(true, onClose);
-  return <dialog ref={ref} class="picker" aria-labelledby="schedule-run-title"><div class="picker-inner"><div class="picker-head"><h3 id="schedule-run-title">Start later</h3></div><div class="dialog-body"><DeferredRunsPanel runRequest={body} project={body.project} repo={body.repo} /></div><div class="picker-foot"><button class="btn" onClick={onClose}>Close</button></div></div></dialog>;
 }
 
 /** The repository (and its current branch) the run works in. */
@@ -508,7 +464,7 @@ export function CompareDialog({ base, onClose, onStarted }: { base: Record<strin
   const [error, setError] = useState("");
   const choices = patterns.value.map((p) => {
     const roles = rolesFor(p);
-    return { p, roles, problem: startProblem(p, roles, true, undefined, base.antigravityExecution, base.acpExecution) };
+    return { p, roles, problem: startProblem(p, roles, true, base.antigravityExecution, base.acpExecution) };
   });
   const runs = picked.size * repeat;
   const go = async () => {
@@ -572,7 +528,7 @@ export function CompareDialog({ base, onClose, onStarted }: { base: Record<strin
         <div class="picker-foot">
           <span class="ps">
             {runs} run{runs === 1 ? "" : "s"}
-            {runs > MAX_COMPARE_RUNS ? ` — at most ${MAX_COMPARE_RUNS}` : ""}; they share code-flow's agent slots, so some may wait their turn.
+            {runs > MAX_COMPARE_RUNS ? ` — at most ${MAX_COMPARE_RUNS}` : ""}; they share Code Flow's agent slots, so some may wait their turn.
           </span>
           <button class="btn" onClick={onClose}>
             Cancel
@@ -587,7 +543,7 @@ export function CompareDialog({ base, onClose, onStarted }: { base: Record<strin
 }
 
 /** Why the run can't start yet ("" when it can); `needsTask: false` for sweeps, whose items bring their tasks. */
-export function startProblem(p: PatternInfo | undefined, roles: Record<string, RoleValue[]>, needsTask = true, inventory?: AgentInfo[], antigravityExecution: "isolated" | "native" = "isolated", acpExecution?: "native"): string {
+export function startProblem(p: PatternInfo | undefined, roles: Record<string, RoleValue[]>, needsTask = true, antigravityExecution: "isolated" | "native" = "isolated", acpExecution?: "native"): string {
   const acpPolicy = acpExecution ? { acpExecution } : undefined;
   const invalid = numberInputProblem("composer:") || numberInputProblem("context:") || executionLimitsProblem(limits.value) || (needsTask ? acceptanceCriteriaProblem(acceptanceCriteria.value) : "");
   if (invalid) return invalid;
@@ -596,12 +552,10 @@ export function startProblem(p: PatternInfo | undefined, roles: Record<string, R
     const problem = numberProblem(optionsFor(p)[option.id], { label: option.label, min: option.min ?? 0, max: option.max ?? Number.MAX_SAFE_INTEGER, integer: true });
     if (problem) return problem;
   }
-  if (p?.id === "solo" && composerRunOptions.value.taskTeam?.enabled && !inventory && !composerRunOptions.value.remoteWorker && !composerRunOptions.value.container?.enabled) {
-    if (teamRollout.value?.enabled === false) return "Team is disabled on this server. Turn AI team off to continue with one agent.";
-    const approvals = toolApprovalState({ choice: composerRunOptions.value.toolApprovals, trust: externalSource.value ? "safe" : trust.value, p, roles, external: !!externalSource.value }).tools;
+  if (p?.id === "solo" && composerRunOptions.value.taskTeam?.enabled && !composerRunOptions.value.container?.enabled) {
+    const approvals = toolApprovalState({ choice: composerRunOptions.value.toolApprovals, trust: trust.value, p, roles }).tools;
     const permission = teamApprovalProblem(composerRunOptions.value.taskTeam, approvals); if (permission) return permission;
   }
-  if (p?.id === "auto-team" && teamRollout.value?.enabled === false) return "New teams are disabled. Existing teams can still be resumed.";
   // Before "Pick an agent": the providers are greyed out because the pause applies everywhere.
   if (executionPaused.value) return "Agent runs are paused by a project's filesystem restriction";
   if (composerLoading.value) return "Restoring project draft…";
@@ -613,48 +567,39 @@ export function startProblem(p: PatternInfo | undefined, roles: Record<string, R
   if (configChecking.value) return "Loading repository configuration…";
   if (needsTask && !task.value.trim()) return "Describe the task to start";
   if (!p) return "Pick how the agents work together";
-  if (!inventory) { const readiness = providerSetupProblem(agents.value, health.value, acpPolicy); if (readiness) return readiness; }
+  const readiness = providerSetupProblem(agents.value, health.value, acpPolicy); if (readiness) return readiness;
   for (const [role, ids] of Object.entries(roles)) for (const id of ids) {
     if (id === "auto") continue;
     const settings = { ...agentSettings.value[id], ...roleModels.value[p.id]?.[role]?.[id] };
     const invalid = [settings, ...(settings.variants ?? [])].find(value => modelIdProblem(id, value.model));
-    if (invalid) return `${(inventory ?? agents.value).find(entry => entry.id === id)?.displayName ?? id}: ${modelIdProblem(id, invalid.model)}`;
+    if (invalid) return `${agents.value.find(entry => entry.id === id)?.displayName ?? id}: ${modelIdProblem(id, invalid.model)}`;
   }
   const chosen = p.id === "auto-team" ? roles.coordinator ?? [] : Object.values(roles).flat();
   const unsupported = chosen.find(id => id !== "auto" && runProviderProblem(id, id, acpPolicy));
-  if (unsupported) return runProviderProblem(unsupported, (inventory ?? agents.value).find(agent => agent.id === unsupported)?.displayName, acpPolicy)!;
+  if (unsupported) return runProviderProblem(unsupported, agents.value.find(agent => agent.id === unsupported)?.displayName, acpPolicy)!;
   const acpChosen = chosen.find(id => id.startsWith("acp:"));
   if (acpChosen) {
-    const name = (inventory ?? agents.value).find(agent => agent.id === acpChosen)?.displayName ?? acpChosen;
-    if (inventory || composerRunOptions.value.remoteWorker || composerRunOptions.value.container?.enabled) return `${name} runs only on this computer without Docker isolation`;
-    if ((externalSource.value ? "safe" : trust.value) !== "full") return `${name} needs Full access. Choose Ask for approval or Full access in Permissions.`;
+    const name = agents.value.find(agent => agent.id === acpChosen)?.displayName ?? acpChosen;
+    if (composerRunOptions.value.container?.enabled) return `${name} runs only on this computer without Docker isolation`;
+    if (trust.value !== "full") return `${name} needs Full access. Choose Ask for approval or Full access in Permissions.`;
   }
   for (const role of p.roles) if (!role.optional && !roles[role.id]?.length) return p.roles.length === 1 ? "Choose a provider" : `Choose a provider for ${role.label}`;
-  const unavailableHint = !inventory && health.value?.some(item => item.installed && item.signedIn === false) ? " Some providers are signed out; open Settings → Providers." : "";
-  if (p.id === "race" && participantCount(p.id, "contestants", roles.contestants ?? []) < 2) return "A race needs at least two contestants." + unavailableHint;
-  if (p.id === "debate" && participantCount(p.id, "debaters", roles.debaters ?? []) < 2) return "A debate needs at least two debaters." + unavailableHint;
   if (p.id === "auto-team" && !roles.pool?.some(supportsRunPermissions)) return "Keep at least one compatible provider in the pool (Claude Code, Codex or Antigravity)";
   if (p.id === "auto-team" && limits.value.maxSteps < 4) return "A team needs at least 4 steps: planning, work, review and recovery";
   if (p.requiresCheck && !checkCmd.value.trim()) return `${p.name} needs a “Done when” command, e.g. npm test`;
   // An Auto pool is permission to choose from these providers; availability is checked by
   // the coordinator before building its roster, so one signed-out candidate needn't block it.
   const used = new Set<RoleValue>(p.id === "auto-team" ? roles.coordinator ?? [] : Object.values(roles).flat());
-  if (inventory) {
-    const installed = new Set(inventory.filter((agent) => agent.available).map((agent) => agent.id));
-    for (const id of used) if (id !== "auto" && !installed.has(id)) return `${SHORT[id]} is unavailable on the selected remote worker`;
-    if (used.has("auto") && !installed.size) return "No configured provider CLI is available on this remote worker";
-    return "";
-  }
   const signedOut = health.value?.find((h) => used.has(h.id) && h.installed && h.signedIn === false);
-  if (signedOut) return `${signedOut.name} isn't signed in — open Settings → Providers`;
+  if (signedOut) return `${signedOut.name} isn't signed in — open Settings → Agents`;
   const unready = agents.value.find(entry => used.has(entry.id) && providerProblem(entry, health.value, acpPolicy));
   if (unready) return `${unready.displayName}: ${providerProblem(unready, health.value, acpPolicy)}`;
   // Runs use isolated Antigravity unless the run opts out; the doctor knows whether this computer can.
   const needsIsolation = used.has("agy") && antigravityExecution !== "native";
   const agyHealth = health.value?.find((h) => h.id === "agy");
-  if (needsIsolation && !agyHealth) return healthError.value ? "Antigravity compatibility could not be checked. Refresh providers in Settings → Providers." : "Checking whether Antigravity can run isolated…";
+  if (needsIsolation && !agyHealth) return healthError.value ? "Antigravity compatibility could not be checked. Refresh providers in Settings → Agents." : "Checking whether Antigravity can run isolated…";
   const isolatedAgy = needsIsolation && agyHealth?.installed && agyHealth.managedCompatible === false ? agyHealth : undefined;
-  if (isolatedAgy) return `Antigravity${isolatedAgy.version ? ` ${isolatedAgy.version}` : ""} can't run isolated on this computer (it needs macOS, a verified CLI version and an existing Keychain login). Update Antigravity, or turn on Run options → Advanced → Use unrestricted Antigravity.`;
+  if (isolatedAgy) return `Antigravity${isolatedAgy.version ? ` ${isolatedAgy.version}` : ""} can't run isolated on this computer (it needs macOS, a verified CLI version and an existing Keychain login). Update Antigravity, or turn on Advanced → Use unrestricted Antigravity.`;
   return "";
 }
 
@@ -673,7 +618,7 @@ function useImprove(disabledReason: string) {
   const [mode, setMode] = useState<ImproveMode>(improveSettings.value.defaultMode);
   const reason = useRef(disabledReason);
   reason.current = disabledReason;
-  const capture = () => [task.value, repo.value, repoInfo.value, currentProject.value, target.value.project?.id, baseRef.value, contextPaths.value, attachments.value, source.value, externalSource.value, acceptanceCriteria.value, contextBudget.value, reason.current, improveSettings.value] as const;
+  const capture = () => [task.value, repo.value, repoInfo.value, currentProject.value, target.value.project?.id, baseRef.value, contextPaths.value, attachments.value, source.value, acceptanceCriteria.value, contextBudget.value, reason.current, improveSettings.value] as const;
   type ImproveSnapshot = ReturnType<typeof capture>;
   const same = (a: ImproveSnapshot, b: ImproveSnapshot) => a.every((value, index) => Object.is(value, b[index]));
   const observed = useRef(capture());
@@ -1020,13 +965,13 @@ function participantCount(pattern: string, role: string, selected: RoleValue[]) 
   return selected.reduce((total, agent) => total + 1 + (agent === "auto" ? 0 : roleModels.value[pattern]?.[role]?.[agent]?.variants?.length ?? 0), 0);
 }
 
-function Team({ p, roles, providers, remote }: { p: PatternInfo; roles: Record<string, RoleValue[]>; providers?: AgentInfo[]; remote?: boolean }) {
+function Team({ p, roles }: { p: PatternInfo; roles: Record<string, RoleValue[]> }) {
   return (
     <div class="team">
       {p.roles.map((role) => {
         const selected = roles[role.id] ?? [];
         const multipleModels = role.multiple;
-        const freeProviders = remote ? [] : (providers ?? agents.value).filter(a => a.available && supportsRunPermissions(a.id)).flatMap(a => {
+        const freeProviders = agents.value.filter(a => a.available && supportsRunPermissions(a.id)).flatMap(a => {
           const catalog = p.id === "auto-team" ? discoveredCatalogs.value[a.id] : catalogs.value[a.id];
           const free = catalog && !("error" in catalog) ? catalog.models.filter(isFreeModel) : [];
           return free.length ? [{ agent: a.id, models: free }] : [];
@@ -1046,7 +991,7 @@ function Team({ p, roles, providers, remote }: { p: PatternInfo; roles: Record<s
             </div>
             <div class="role-pick">
               <div class="pills" role="group" aria-label={`${role.label} providers`}>
-                {(providers ?? agents.value).map((a) => {
+                {agents.value.map((a) => {
                   const on = selected.includes(a.id);
                   return (
                     <button
@@ -1054,11 +999,11 @@ function Team({ p, roles, providers, remote }: { p: PatternInfo; roles: Record<s
                       type="button"
                       class="pill"
                       aria-pressed={on}
-                      disabled={!!providerProblem(a, providers ? null : health.value) && !on}
-                      title={providerProblem(a, providers ? null : health.value) || `${role.multiple ? "Toggle" : "Choose"} ${a.displayName}`}
+                      disabled={!!providerProblem(a, health.value) && !on}
+                      title={providerProblem(a, health.value) || `${role.multiple ? "Toggle" : "Choose"} ${a.displayName}`}
                       onClick={() => setRoles(p.id, role.id, role.multiple ? (on ? selected.filter((x) => x !== a.id) : [...selected, a.id]) : [a.id])}
                     >
-                      <span class="provider-check" aria-hidden="true">{on ? "✓" : "+"}</span><span>{a.displayName}{providerProblem(a, providers ? null : health.value) ? ` · ${providerProblem(a, providers ? null : health.value).split(" — ")[0]}` : ""}</span>
+                      <span class="provider-check" aria-hidden="true">{on ? "✓" : "+"}</span><span>{a.displayName}{providerProblem(a, health.value) ? ` · ${providerProblem(a, health.value).split(" — ")[0]}` : ""}</span>
                     </button>
                   );
                 })}
@@ -1066,7 +1011,7 @@ function Team({ p, roles, providers, remote }: { p: PatternInfo; roles: Record<s
                   type="button"
                   class="pill auto"
                   aria-pressed={selected.includes("auto")}
-                  title="code-flow picks an installed agent when the run starts, skipping plans that are near their usage limit"
+                  title="Code Flow picks an installed agent when the run starts, skipping plans that are near their usage limit"
                   onClick={() => {
                     const on = selected.includes("auto");
                     setRoles(p.id, role.id, role.multiple ? (on ? selected.filter((x) => x !== "auto") : [...selected, "auto"]) : ["auto"]);
@@ -1082,7 +1027,7 @@ function Team({ p, roles, providers, remote }: { p: PatternInfo; roles: Record<s
               </div>
               {multipleModels && participantCount(p.id, role.id, selected) > selected.length ? <span class="help">{participantCount(p.id, role.id, selected)} {p.id === "auto-team" ? "model choices · coordinator selects within the member limit" : "agents · each model runs separately"}</span> : null}
               {selected.some((id) => id !== "auto") ? (
-                <RoleModels p={p} roleId={role.id} roleLabel={role.label.toLowerCase()} agents={selected.filter((id): id is AgentId => id !== "auto")} remote={remote} />
+                <RoleModels p={p} roleId={role.id} roleLabel={role.label.toLowerCase()} agents={selected.filter((id): id is AgentId => id !== "auto")} />
               ) : null}
             </div>
           </div>
@@ -1116,29 +1061,16 @@ export function teamSentence(p: PatternInfo, roles: Record<string, RoleValue[]>,
   };
   const opts = optionsFor(p);
   const check = checkCmd.value.trim();
-  const doneWhen = (check ? ` · done when “${check}” passes` : "") + (checkpoints && CHECKPOINTS[p.id] && planApprovalFor(p.id) && (p.id !== "debate" || roles.builder?.length) ? ` · you approve ${CHECKPOINTS[p.id]} first` : "");
+  const doneWhen = (check ? ` · done when “${check}” passes` : "") + (checkpoints && CHECKPOINTS[p.id] && planApprovalFor(p.id) ? ` · you approve ${CHECKPOINTS[p.id]} first` : "");
   switch (p.id) {
     case "auto-team":
       return `${one("coordinator")} assembles up to ${opts.maxMembers ?? 4} members from ${many("pool")} → the team works through dependencies → an independent member verifies the result${doneWhen}`;
     case "pipeline":
       return `${one("planner")} plans → ${one("builder")} builds → ${one("reviewer")} reviews (up to ${opts.maxRounds} rounds of fixes)${doneWhen}`;
-    case "race":
-      return `${many("contestants")} each solve it separately → ${many("judge")} ${(roles.judge?.length ?? 0) > 1 ? "vote" : "picks"} the best, blind${doneWhen}`;
-    case "debate":
-      return `${many("debaters")} propose and debate → ${one("synthesizer")} writes the final plan${roles.builder?.length ? ` → ${one("builder")} builds it${roles.reviewer?.length ? ` → ${one("reviewer")} reviews it` : ""}` : " (design only)"}${doneWhen}`;
-    case "supervisor":
-      return `${one("supervisor")} splits the work and sets the contracts → ${many("workers")} build the parts in parallel → ${one("supervisor")} merges${roles.reviewer?.length ? ` → ${one("reviewer")} reviews` : " and reviews its own work"}${doneWhen}`;
-    case "tdd":
-      return `${one("tester")} writes tests → ${one("builder")} makes them pass → ${one("tester")} tries to break it${doneWhen}`;
     case "council":
       return `${many("reviewers")} review on their own, read-only → ${one("chair")} merges what they found · nothing is changed or posted without you`;
     case "solo":
       return `${one("agent")} works on it in its own branch; reply to keep going, like a chat. ${checkExplanation(checkMode, check)}`;
-    case "loop": {
-      const w = roles.workers ?? [];
-      const handoff = w.length > 1 ? `, handing over to ${w.slice(1).map((id) => SHORT[id]).join(", then ")} if stuck` : "";
-      return `${w.length ? SHORT[w[0]!] : "—"} fixes and code-flow re-runs “${check || "your check"}” until it passes${handoff} (max ${opts.maxRounds} rounds)`;
-    }
     default:
       return p.summary;
   }
@@ -1169,18 +1101,11 @@ function configSummary(config: Record<string, any>, atBranch = false): string {
  * Model and effort for each agent in a role, right under its pills (e.g. Opus to plan, Sonnet to
  * review). Empty means the agent's own setting from Settings, or the CLI's default.
  */
-export function RoleModels({ p, roleId, roleLabel, agents: ids, remote }: { p: PatternInfo; roleId: string; roleLabel: string; agents: AgentId[]; remote?: boolean }) {
+export function RoleModels({ p, roleId, roleLabel, agents: ids }: { p: PatternInfo; roleId: string; roleLabel: string; agents: AgentId[] }) {
   const current = roleModels.value[p.id]?.[roleId] ?? {};
   return <div class="role-models">{ids.map(id => {
     const s = current[id] ?? {};
     const cat = p.id === "auto-team" ? discoveredCatalogs.value[id] : catalogs.value[id];
-    if (remote) return <div key={id} class="provider-models">
-      <div class="provider-model-heading"><AgentTag id={id} /></div>
-      <div class="team-model-row">
-        <label>Model<input class="field" aria-label={`${SHORT[id]} model for the ${roleLabel}`} placeholder="Worker CLI default model" value={s.model ?? ""} onChange={event => setRoleModel(p.id, roleId, id, { model: event.currentTarget.value })} /></label>
-        <label>Effort<input class="field" aria-label={`${SHORT[id]} effort for the ${roleLabel}`} placeholder="Default effort" value={s.effort ?? ""} onChange={event => setRoleModel(p.id, roleId, id, { effort: event.currentTarget.value })} /></label>
-      </div>
-    </div>;
     if (!cat || "error" in cat) return <div key={id} class="provider-models"><div class="provider-model-heading"><AgentTag id={id} /><span class="help">{cat ? "Using CLI defaults · model list unavailable" : "Loading models…"}</span></div></div>;
     const c = cat as ModelCatalog;
     const base = p.id === "auto-team" && roleId === "pool" ? {} : agentSettings.value[id] ?? {};
@@ -1227,7 +1152,7 @@ export function RoleModels({ p, roleId, roleLabel, agents: ids, remote }: { p: P
 }
 
 // ---------------------------------------------------------------- settings
-function Settings({ p, roles, open, onToggle, budgetRevision }: { p: PatternInfo; roles: Record<string, RoleValue[]>; open: boolean; onToggle: (open: boolean) => void; budgetRevision: number }) {
+function Settings({ p, roles, budgetRevision }: { p: PatternInfo; roles: Record<string, RoleValue[]>; budgetRevision: number }) {
   const info = repoInfo.value;
   const used = new Set(Object.values(roles).flat().filter((id): id is AgentId => id !== "auto"));
   const models = [...used]
@@ -1241,14 +1166,12 @@ function Settings({ p, roles, open, onToggle, budgetRevision }: { p: PatternInfo
   const opts = optionsFor(p);
   const setLimits = (patch: Partial<typeof limits.value>) => setRunLimits(patch);
   return (
-    <details class="settings" open={open} onToggle={event => onToggle(event.currentTarget.open)}>
-      <summary>
-        <span class="st">Branches and limits</span>
-        <span class="ss">
-          from {baseLabel} · {models.length ? models.join(", ") : "default models"} · stops after {budgetDuration(limits.value.maxMinutes)} or {plural(limits.value.maxSteps, "step")}
-          {trust.value === "full" ? <span class="full-access"> · ⚠ full access</span> : null}
-        </span>
-      </summary>
+    <section class="advanced-group" id="run-limits" aria-labelledby="advanced-limits">
+      <h2 class="section-title" id="advanced-limits">Branches and limits</h2>
+      <p class="help">
+        from {baseLabel} · {models.length ? models.join(", ") : "default models"} · stops after {budgetDuration(limits.value.maxMinutes)} or {plural(limits.value.maxSteps, "step")}
+        {trust.value === "full" ? <span class="full-access"> · ⚠ full access</span> : null}
+      </p>
       <div class="settings-body">
         <div class="settings-grid">
           <div>
@@ -1298,13 +1221,13 @@ function Settings({ p, roles, open, onToggle, budgetRevision }: { p: PatternInfo
         </div>
         {info ? <div class="help">Each run works in git worktrees under {info.worktreeRoot}/ — your checkout is never touched.</div> : null}
       </div>
-    </details>
+    </section>
   );
 }
 
 export function ModelRow({ agent, used, settings, onChange }: { agent: AgentInfo; used: boolean; settings?: { model?: string; effort?: string }; onChange?: (patch: { model?: string; effort?: string }) => void }) {
   const cat = catalogs.value[agent.id];
-  // Without its own settings, the row edits the saved provider defaults (Settings > Providers).
+  // Without its own settings, the row edits the saved provider defaults (Settings > Agents).
   const s = settings ?? providerDefaults.value[agent.id] ?? {};
   const changeSetting = (patch: { model?: string; effort?: string }) => onChange ? onChange(patch) : setProviderDefault(agent.id, patch);
   // Hooks before any early return; null = "derive from the saved model".

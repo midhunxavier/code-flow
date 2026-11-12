@@ -121,7 +121,7 @@ test("startup catch-up fires the retained occurrence past one hour and skipped r
   await page.goto("about:blank"); await stop();
   const file = join(data, "triggers.json"), triggers = JSON.parse(readFileSync(file, "utf8")), due = Date.now() - 3590000;
   triggers.find((t: any) => t.id === edge.id).nextAt = due; triggers.find((t: any) => t.id === missed.id).nextAt = Date.now() - 7200000; writeFileSync(file, JSON.stringify(triggers));
-  await start(); await open("#/settings/automations");
+  await start(); await open("#/automations/manage");
   const row = page.locator(".auto-row", { hasText: "Missed schedule" }); await row.getByRole("button", { name: "Preview and events", exact: true }).click();
   await row.getByText(/Missed the .*code-flow was closed or the computer asleep/).waitFor();
   for (let i = 0; i < 400; i++) { const events = (await api(`/api/automations/${edge.id}/events`)).body; if (events.some((e: any) => e.state === "started")) break; await new Promise(resolve => setTimeout(resolve, 100)); }
@@ -131,14 +131,14 @@ test("startup catch-up fires the retained occurrence past one hour and skipped r
 });
 
 test("readiness validates a real command lasting longer than the old 120-second cap", { timeout: 180000 }, async () => {
-  await open(`#/project/${long.id}/new`); await page.locator(".composer-options > summary").click();
-  await page.getByText("Repository readiness", { exact: true }).click();
+  await open(`#/project/${long.id}/workflow`); await page.locator(".advanced-controls").evaluate(el => { (el as HTMLDetailsElement).open = true; });
+  await page.getByRole("group", { name: "Repository readiness", exact: true }).waitFor();
   const response = page.waitForResponse(r => r.url().endsWith("/api/readiness") && r.request().method() === "POST", { timeout: 160000 });
   const started = Date.now(); await page.getByRole("button", { name: "Validate commands", exact: true }).click();
   const result = await response; assert.equal(result.status(), 200); const body = await result.json();
   assert.ok(Date.now() - started >= 125000); assert.equal(body.executed, true); assert.equal(body.checkTimeoutMin, 3);
   assert.equal(body.items.find((item: any) => item.id === "check-run").status, "passed");
-  await page.getByText("Commands validated · ready", { exact: true }).waitFor();
+  await page.getByRole("group", { name: "Repository readiness", exact: true }).getByText("Repository readiness · Commands validated · ready", { exact: true }).waitFor();
   await page.screenshot({ path: join(evidence, "long-readiness.png"), fullPage: true });
   assert.deepEqual(pageErrors, []); assert.deepEqual(consoleErrors, []);
 });

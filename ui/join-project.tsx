@@ -24,7 +24,7 @@ export function JoinProject({ token }: { token: string }) {
   };
   return <main class="shared-surface shared-login"><div class="shared-card join-project"><div class="shared-brand">code<span>-flow</span></div>
       <h1>{invitation ? `Join ${invitation.project.name}` : "Join a project"}</h1><p class="help">Team server: <code>{location.host}</code></p>
-      {invitation ? <><p>You’ve been invited as a <b>{roleLabel(invitation.role)}</b>. {roleLabel(invitation.role)} {SHARED_ROLE_HELP[invitation.role]}.</p><p class="help">Your account can access this project’s tasks, discussions, and results. This is a Code Flow account on this team server, separate from your Git or coding-agent accounts.</p>
+      {invitation ? <><p>You’ve been invited as a <b>{roleLabel(invitation.role)}</b>. {roleLabel(invitation.role)} {SHARED_ROLE_HELP[invitation.role]}.</p><p class="help">Your account can open this project’s team board: its tasks, discussion and checkpoints. This is a Code Flow account on this team server, separate from your Git or coding-agent accounts.</p>
         <form class="shared-form" onSubmit={event => void accept(event)}><fieldset disabled={busy} class="team-setup-fields"><legend class="sr-only">Your account</legend>
           <label>Account option<select class="field" value={existing ? "existing" : "new"} onChange={event => { setExisting(event.currentTarget.value === "existing"); setPassword(""); setError(""); }}><option value="new">Create my account</option><option value="existing">Sign in with an existing account</option></select></label>
           {!existing ? <label>Your name<input class="field" required maxLength={120} autoComplete="name" value={name} onInput={event => setName(event.currentTarget.value)} /></label> : null}

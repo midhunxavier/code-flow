@@ -66,21 +66,21 @@ test("project drafts survive filters, navigation, attachment restoration and rem
 test("editable retry identity and execution settings stay with their project draft", async () => {
   state.projects.value = [a, b];
   await state.openComposer("a", { repository: "/shared" });
-  const retry = { id: "original", repo: "/shared", loop: { maxMinutes: 30, maxSteps: 12, checkTimeoutMin: 1, check: "retry-check", setup: "retry-setup", remoteWorker: { workerId: "worker", repoMapping: "mapped" } }, approvals: { tools: true } };
+  const retry = { id: "original", repo: "/shared", loop: { maxMinutes: 30, maxSteps: 12, checkTimeoutMin: 1, check: "retry-check", setup: "retry-setup", agentContainer: { image: "fixture:prepared" } }, approvals: { tools: true } };
   rerunDraft.value = retry;
-  state.composerRunOptions.value = { remoteWorker: retry.loop.remoteWorker, toolApprovals: true };
+  state.composerRunOptions.value = { verification: "standard", toolApprovals: true };
   state.setRunCheck("retry-check");
   await state.openComposer("b", { repository: "/shared" });
   assert.equal(rerunDraft.value, null, "a shared repository cannot carry another project's retry identity");
-  assert.equal(state.composerRunOptions.value.remoteWorker, undefined);
+  assert.equal(state.composerRunOptions.value.verification, undefined);
   assert.notEqual(state.checkCmd.value, "retry-check");
   await state.openComposer("a");
   assert.deepEqual(rerunDraft.value, retry);
-  assert.deepEqual(state.composerRunOptions.value.remoteWorker, retry.loop.remoteWorker);
+  assert.equal(state.composerRunOptions.value.verification, "standard");
   assert.equal(state.checkCmd.value, "retry-check");
   await state.chooseComposerRepository("/a");
   assert.equal(rerunDraft.value, null, "changing repository clears the original run identity");
-  assert.equal(state.composerRunOptions.value.remoteWorker, undefined);
+  assert.equal(state.composerRunOptions.value.verification, undefined);
 });
 
 test("project deletion clears inactive and current drafts, including attachments and retry settings", async () => {

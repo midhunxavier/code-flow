@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { gzipSync } from "node:zlib";
 
 process.env.CODEFLOW_HOME = mkdtempSync(join(tmpdir(), "codeflow-maintenance-module-"));
-const { compactRunLog, createEncryptedBackup, restoreEncryptedBackup, retainArchivedRuns } = await import("../src/maintenance.js");
+const { compactRunLog, createEncryptedBackup, restoreEncryptedBackup } = await import("../src/maintenance.js");
 const { RunLogWriter, decodeRunLog } = await import("../src/run-log.js");
 const PASSWORD = "test backup password 12345";
 const fixture = async (t: { after: (action: () => Promise<unknown>) => void }) => {
@@ -108,16 +108,6 @@ test("restoring encrypted backups cancels queued and ambiguous deferred work wit
   assert.ok(jobs.filter((job) => job.status === "cancelled").every((job) => /backup restore/.test(job.reason!)));
 });
 
-test("encrypted restore disables coordinated dispatch while retaining exact unknown launch receipts", async (t) => {
-  const { root, home } = await fixture(t); const { CoordinatedChanges } = await import("../src/repo-coordination.js");
-  const canonical = await realpath(root), repos = [join(canonical, "api"), join(canonical, "web")]; for (const repo of repos) { await mkdir(repo); execFileSync("git", ["init", "-q", "-b", "main"], { cwd: repo }); }
-  const file = join(home, "coordinated-changes.json"), options = { file, pin: async (run: { repo: string }) => ({ repo: run.repo, commit: "a".repeat(40) }), launch: async () => ({ runId: "unexpected" }), validateResult: async () => ({ status: "running" as const }), previewShipping: async () => { throw new Error("unexpected shipping"); }, ship: async () => { throw new Error("unexpected shipping"); } };
-  const coordinator = new CoordinatedChanges(options); await coordinator.load(); await coordinator.create({ project: "p-fixture", name: "Pending recovery", nodes: repos.map((repo, index) => ({ id: `repo${index}`, dependsOn: index ? ["repo0"] : [], run: { repo, pattern: "solo", task: "Pending repository work", roles: { agent: ["claude"] }, options: {} } })) });
-  const saved = JSON.parse(await readFile(file, "utf8")); Object.assign(saved.jobs[0].nodes[0], { status: "claimed", claimId: "crashed-owned-claim", claimedAt: Date.now(), attempts: 1, dependencies: [] }); await writeFile(file, JSON.stringify(saved));
-  const backup = join(root, "coordinated.cfb"); await createEncryptedBackup({ home, output: backup, password: PASSWORD }); const destination = join(root, "restored-coordination"); const report = await restoreEncryptedBackup({ input: backup, destination, password: PASSWORD }); assert.equal(report.cancelledCoordinatedChanges, 1);
-  let launches = 0; const restored = new CoordinatedChanges({ ...options, file: join(destination, "coordinated-changes.json"), launch: async () => { launches++; return { runId: "unexpected" }; } }); await restored.load(); await restored.tick(); assert.equal(launches, 0); const job = (await restored.list())[0]!; assert.equal(job.status, "cancelled"); assert.equal(job.nodes[0]!.status, "unknown"); assert.equal(job.nodes[0]!.claimId, "crashed-owned-claim"); assert.equal(job.nodes[1]!.status, "cancelled");
-});
-
 test("incorrect passwords and tampered archives leave no restored directory", async (t) => {
   const { root, home } = await fixture(t);
   await writeFile(join(home, "memory.json"), "[]");
@@ -162,27 +152,6 @@ test("authenticated malicious backups cannot escape the destination or restore o
 });
 
 const log = (id: string, status: string, archived: boolean) => JSON.stringify({ seq: 1, type: "run", run: { id, status, archived } }) + "\n";
-test("legacy age-only retention reports candidates but cannot bypass exact-plan deletion protections", async (t) => {
-  const { home } = await fixture(t);
-  const now = Date.now(); const old = new Date(now - 100 * 86400000);
-  for (const [id, status, archived] of [["old", "done", true], ["active", "running", true], ["resume", "interrupted", true], ["kept", "done", false], ["recent", "done", true]] as const) {
-    const path = join(home, "runs", `${id}.jsonl`); await writeFile(path, log(id, status, archived));
-    if (id !== "recent") await utimes(path, old, old);
-  }
-  await writeFile(join(home, "runs", "old.journal.jsonl"), '{"key":"done","value":true}\n');
-  await writeFile(join(home, "runs", "old.checkpoint.json"), "{}");
-  await writeFile(join(home, "memory.json"), "knowledge");
-  const preview = await retainArchivedRuns({ home, days: 90, now });
-  assert.deepEqual(preview.candidates.map((item) => item.id), ["old"]);
-  assert.equal(preview.deletedFiles, 0);
-  assert.equal(await lstat(join(home, "runs", "old.jsonl")).then(() => true, () => false), true);
-  assert.match(preview.nextStep, /pins or provenance/);
-  await assert.rejects(retainArchivedRuns({ home, days: 90, now, apply: true }), /Age-only retention cannot delete data/);
-  for (const suffix of [".jsonl", ".journal.jsonl", ".checkpoint.json"]) assert.equal(await lstat(join(home, "runs", "old" + suffix)).then(() => true, () => false), true);
-  assert.equal(await readFile(join(home, "memory.json"), "utf8"), "knowledge");
-  assert.equal(await lstat(join(home, "runs", "resume.jsonl")).then(() => true, () => false), true);
-});
-
 test("compaction preserves transcript, step and recovery evidence while removing repeated metadata", async (t) => {
   const { home } = await fixture(t);
   const events = [
@@ -226,19 +195,13 @@ test("patch-aware compaction preserves the latest state and rebases the retained
   assert.equal((await compactRunLog({ home, runId: id, apply: true })).snapshotsRemoved, 0);
 });
 
-test("maintenance reads latest archive patches and refuses incomplete or invalid chains without rewriting logs", async (t) => {
+test("maintenance refuses incomplete or invalid patch chains without rewriting logs", async (t) => {
   const { home } = await fixture(t), old = new Date(Date.now() - 100 * 86400000);
-  for (const [id, before, after] of [["archive-patch", false, true], ["unarchive-patch", true, false]] as const) {
-    const writer = new RunLogWriter(false), initial = { id, status: "done", archived: before };
-    const events = [initial, { ...initial, archived: after }].map((run, index) => writer.encode({ seq: index + 1, ts: 1, runId: id, type: "run", run: run as any }));
-    const file = join(home, "runs", id + ".jsonl"); await writeFile(file, events.map((event) => JSON.stringify(event)).join("\n") + "\n"); await utimes(file, old, old);
-  }
   for (const [id, patch] of [["missing", { base: 99, set: { archived: true } }], ["malformed", { base: 1, tail: { merges: [99, []] } }]] as const) {
     const initial = { id, status: "done", archived: true, merges: [] }, file = join(home, "runs", id + ".jsonl");
     const original = [{ seq: 1, type: "run", run: initial }, { seq: 2, type: "run-patch", runId: id, ...patch }].map((event) => JSON.stringify(event)).join("\n") + "\n";
     await writeFile(file, original); await utimes(file, old, old); await assert.rejects(compactRunLog({ home, runId: id, apply: true }), /patch/i); assert.equal(await readFile(file, "utf8"), original);
   }
-  const report = await retainArchivedRuns({ home, days: 30 }); assert.deepEqual(report.candidates.map((candidate) => candidate.id), ["archive-patch"]); assert.deepEqual(report.skipped.map((entry) => entry.id).sort(), ["malformed", "missing"]);
 });
 
 test("already compact patch logs stay within their original size instead of duplicating common metadata", async (t) => {
@@ -256,13 +219,12 @@ test("offline maintenance refuses to compete with a live server lock", async (t)
   await assert.rejects(createEncryptedBackup({ home, output: join(root, "backup.cfb"), password: PASSWORD }), /Another code-flow server/);
 });
 
-test("retention and compaction reject run-storage symlinks outside the data directory", async (t) => {
+test("compaction rejects run-storage symlinks outside the data directory", async (t) => {
   const { root, home } = await fixture(t);
   const outside = join(root, "outside-runs"); await mkdir(outside);
   await writeFile(join(outside, "keep.jsonl"), log("keep", "done", true));
   await rm(join(home, "runs"), { recursive: true });
   await symlink(outside, join(home, "runs"));
-  await assert.rejects(retainArchivedRuns({ home, days: 1, apply: true }), /symbolic link/);
   await assert.rejects(compactRunLog({ home, runId: "keep", apply: true }), /symbolic link/);
   assert.equal(await readFile(join(outside, "keep.jsonl"), "utf8"), log("keep", "done", true));
 });

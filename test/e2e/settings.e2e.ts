@@ -201,9 +201,7 @@ test("settings navigation, search, appearance, and run defaults persist and driv
   assert.equal(await page.getByLabel("Time (min)", { exact: true }).inputValue(), "37");
   await page.getByRole("button", { name: "New chat", exact: true }).click();
   await page.evaluate(() => { location.hash = "#/workflows"; });
-  await page.locator(".composer-options > summary").click();
-  await page.locator("details.advanced-controls > summary").click();
-  await page.locator("details.settings > summary").filter({ has: page.locator(".st", { hasText: /^Branches and limits$/ }) }).click();
+  await page.locator(".advanced-controls").evaluate(el => { (el as HTMLDetailsElement).open = true; });
   assert.equal(await page.locator("#maxMinutes").inputValue(), "37");
   assert.equal(await page.locator("#maxSteps").inputValue(), "18");
   assert.match(await page.locator(".taskbox").getByRole("button", { name: /^Permissions:/ }).innerText(), /Safe/);
@@ -291,10 +289,11 @@ test("all settings categories render; desktop and mobile preferences are accessi
 
 test("operational tools are direct destinations and old Settings links still work", async () => {
   await page.setViewportSize({ width: 1440, height: 1000 });
-  for (const [path, name] of [["workspace", "Repository tools"], ["automations", "Scheduling"], ["inbox", "Inbox"], ["insights", "Insights"]] as const) {
+  for (const [path, name] of [["workspace", "Repository tools"], ["automations", "Automations"], ["inbox", "Inbox"], ["insights", "Insights"]] as const) {
     await page.goto(`${base}/#/${path}`);
-    await page.getByRole("heading", { name: path === "automations" ? "What would you like to build?" : name, exact: true }).first().waitFor();
-    assert.ok(page.url().endsWith(`#/${path}`));
+    // Repository tools open in the repository's project when it has one.
+    if (path === "workspace") await page.getByRole("navigation", { name: "Repository tools" }).waitFor();
+    else { await page.getByRole("heading", { name: path === "automations" ? "What would you like to build?" : name, exact: true }).first().waitFor(); assert.ok(page.url().endsWith(`#/${path}`)); }
     assert.equal(await page.getByRole("navigation", { name: "Settings categories" }).count(), 0);
     await page.getByRole("button", { name: /^Open command palette/ }).click();
     await page.getByRole("combobox", { name: "Find a command, project or run" }).fill(name);

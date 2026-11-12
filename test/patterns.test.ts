@@ -106,102 +106,13 @@ test("fix & review: skips planning but keeps independent review and requested-ch
   } finally { delete process.env.FAKE_REVIEW_FAIL_ONCE; }
 });
 
-test("race: contestants in parallel, judge picks anonymized winner", async () => {
-  const run = await runPattern("race", { contestants: ["claude", "codex"], judge: ["claude"] });
-  assert.equal(run.status, "done", run.error);
-  assert.match(run.summary!, /Winner: Candidate B — codex/);
-  assert.equal(run.artifacts.length, 2);
-});
-
-test("debate: proposals, critique, synthesis, build", async () => {
-  const run = await runPattern("debate", { debaters: ["claude", "codex"], synthesizer: ["claude"], builder: ["claude"] }, "Design it", {
-    rounds: 1,
-  });
-  assert.equal(run.status, "done", run.error);
-  assert.equal(run.steps.filter((s) => s.role === "debaters").length, 4);
-  assert.ok(branchFiles(run.artifacts[0]!.branch).some((f) => f.startsWith("claude-")));
-});
-
-test("debate: proposals are anonymous, and the build is reviewed again after its fixes", async () => {
-  rmSync(join(process.env.CODEFLOW_HOME!, ".reviewed-once"), { force: true }); // an earlier test's review already failed once
-  process.env.FAKE_REVIEW_FAIL_ONCE = "1";
-  let recorded;
-  try {
-    recorded = await recording(() =>
-      runPattern("debate", { debaters: ["claude", "codex"], synthesizer: ["claude"], builder: ["claude"], reviewer: ["codex"] }, "Design it", { rounds: 1 }),
-    );
-  } finally {
-    delete process.env.FAKE_REVIEW_FAIL_ONCE;
-  }
-  const { result: run, prompts } = recorded;
-  assert.equal(run.status, "done", run.error);
-  // Proposals go by letter: no vendor name labels a proposal, for the debaters or the synthesizer.
-  const critiques = prompts.filter((p) => p.prompt.includes("current proposals"));
-  assert.equal(critiques.length, 2);
-  assert.match(critiques.find((p) => p.vendor === "claude")!.prompt, /yours is Proposal A[\s\S]*## Proposal B\n/);
-  assert.match(critiques.find((p) => p.vendor === "codex")!.prompt, /yours is Proposal B[\s\S]*## Proposal A\n/);
-  const synthesis = prompts.find((p) => p.prompt.includes("You are the synthesizer"))!.prompt;
-  assert.match(synthesis, /## Final position: Proposal A\n[\s\S]*## Final position: Proposal B\n/);
-  for (const p of [...critiques, { prompt: synthesis }]) assert.doesNotMatch(p.prompt, /^## .*(Claude|Codex|Antigravity)/m, "no section names a vendor");
-  assert.match(await logs(run), /claude both debates and synthesizes; a synthesizer from another vendor is fairer/);
-
-  // The reviewer asked for changes, the builder addressed them, and the reviewer checked again.
-  assert.deepEqual(
-    run.steps.filter((s) => s.role === "reviewer" || s.title.startsWith("Address review")).map((s) => s.title),
-    ["Review the build", "Address review", "Review the build (round 2)"],
-  );
-  assert.deepEqual([run.facts?.approved, run.facts?.reviewRounds], [true, 2]);
-  assert.match(run.summary!, /Review by codex: approved in round 2\./);
-  const second = prompts.find((p) => p.prompt.startsWith("The builder addressed your previous review"));
-  assert.ok(second, "the second review continues the reviewer's session with the updated diff");
-});
-
-test("debate without builder stops at the plan", async () => {
-  const run = await runPattern("debate", { debaters: ["claude", "codex"], synthesizer: ["codex"], builder: [] }, "Design it", {
-    rounds: 0,
-  });
-  assert.equal(run.status, "done", run.error);
-  assert.equal(run.artifacts.length, 0);
-  assert.match(run.summary!, /Synthesized plan/);
-});
-
-test("supervisor: decompose, parallel workers, clean merge", async () => {
-  const run = await runPattern("supervisor", { supervisor: ["claude"], workers: ["claude", "codex"] });
-  assert.equal(run.status, "done", run.error);
-  const files = branchFiles(run.artifacts[0]!.branch);
-  assert.ok(files.some((f) => f.startsWith("claude-")) && files.some((f) => f.startsWith("codex-")));
-});
-
-test("supervisor: merge conflict is resolved by the supervisor", async () => {
-  const run = await runPattern("supervisor", { supervisor: ["claude"], workers: ["claude", "codex"] }, "CONFLICT task");
-  assert.equal(run.status, "done", run.error);
-  assert.ok(run.steps.some((s) => s.title.startsWith("Resolve conflicts")));
-  const shared = execFileSync("git", ["show", `${run.artifacts[0]!.branch}:shared.txt`], { cwd: repo }).toString();
-  assert.equal(shared, "resolved by fake agent\n");
-});
-
-test("tdd: tester writes tests, builder implements, tester verifies", async () => {
-  const run = await runPattern("tdd", { tester: ["codex"], builder: ["claude"] });
-  assert.equal(run.status, "done", run.error);
-  assert.match(run.summary!, /All tests pass \(run by code-flow\)/);
-  assert.equal(run.verdict, "passed");
-  assert.ok(branchFiles(run.artifacts[0]!.branch).includes("spec.test.mjs"));
-  const checks = run.steps.filter((s) => s.kind === "check").map((s) => [s.title, s.status]);
-  assert.deepEqual(checks[0], ["New tests (should fail)", "done"], "the expected red check succeeded");
-  assert.ok(checks.slice(1).every(([, status]) => status === "done"));
-});
-
-test("a failing agent fails the pipeline but not a race", async () => {
+test("a failing agent fails the pipeline", async () => {
   process.env.FAKE_FAIL_VENDOR = "codex";
   try {
     const pipeline = await runPattern("pipeline", { planner: ["claude"], builder: ["codex"], reviewer: ["claude"] });
     assert.equal(pipeline.status, "failed");
     // Codex's app-server reports the failure as the turn's error.
     assert.match(pipeline.error!, /Implement plan \(codex\) failed: boom/);
-
-    const race = await runPattern("race", { contestants: ["claude", "codex"], judge: ["claude"] });
-    assert.equal(race.status, "done", race.error);
-    assert.match(race.summary!, /Winner: Candidate A — claude/);
   } finally {
     delete process.env.FAKE_FAIL_VENDOR;
   }
@@ -286,21 +197,11 @@ test("runs never touch the user's own checkout", () => {
 });
 
 
-test("one provider can run distinct models in a council, race and continued debate", async () => {
+test("one provider can run distinct models in a council", async () => {
   const choices = { claude: { model: "first", effort: "high", variants: [{ model: "second", effort: "low" }] } };
-  for (const [pattern, role, roles] of [
-    ["council", "reviewers", { reviewers: ["claude"], chair: ["codex"] }],
-    ["race", "contestants", { contestants: ["claude"], judge: ["codex"] }],
-    ["debate", "debaters", { debaters: ["claude"], synthesizer: ["codex"], builder: [] }],
-  ] as const) {
-    const run = await runPattern(pattern, roles, "Do the thing", { rounds: 1 }, { roleSettings: { [role]: choices } });
-    assert.equal(run.status, "done", run.error);
-    const steps = run.steps.filter(step => step.role === role);
-    assert.ok(steps.some(step => step.settings?.model === "first" && step.settings.effort === "high"));
-    assert.ok(steps.some(step => step.settings?.model === "second" && step.settings.effort === "low"));
-    if (pattern === "debate") {
-      assert.equal(steps.length, 4);
-      assert.equal(steps.filter(step => step.settings?.model === "second").length, 2);
-    }
-  }
+  const run = await runPattern("council", { reviewers: ["claude"], chair: ["codex"] }, "Do the thing", {}, { roleSettings: { reviewers: choices } });
+  assert.equal(run.status, "done", run.error);
+  const steps = run.steps.filter(step => step.role === "reviewers");
+  assert.ok(steps.some(step => step.settings?.model === "first" && step.settings.effort === "high"));
+  assert.ok(steps.some(step => step.settings?.model === "second" && step.settings.effort === "low"));
 });

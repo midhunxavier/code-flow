@@ -68,7 +68,7 @@ function HostChoices({ close, projectName }: { close: () => void; projectName?: 
       {loading ? <p class="host-feedback" role="status">Loading connections…</p> : hosts.map((host) => <MenuItem key={host.id} on={host.id === workspaceId} disabled={!!busy} onClick={() => void choose(host.id, host.name)} sub={host.id === workspaceId ? "Current" : host.state}>{host.name}</MenuItem>)}
       {!loading && !hosts.length && !error ? <p class="host-feedback help">Save a remote connection in Settings to use it here.</p> : null}
       <MenuItem disabled={!!busy} onClick={() => { close(); projectsOpen.value = false; projectEdit.value = null; route.value = { view: "settings", section: "connections", group: "workspace" }; }}>Manage connections…</MenuItem>
-    </> : <p class="host-feedback help">SSH connections are managed in CodeFlow on your computer.</p>}
+    </> : <p class="host-feedback help">SSH connections are managed in Code Flow on your computer.</p>}
     {busy ? <p class="host-feedback" role="status">{busy}</p> : null}
     {error ? <><p class="host-feedback msg err" role="alert">{error}</p><MenuItem onClick={() => void refresh()}>Refresh connections</MenuItem></> : null}
   </>;
@@ -96,7 +96,7 @@ export function SshConnections() {
     if (open) await connect(host.id); else showToast("SSH connection saved");
   });
   return <div class="ssh-connections" aria-busy={!!busy || loading}>
-      {!managesConnections(context) ? <p>SSH connections are managed in CodeFlow on your computer.</p> : <>
+      {!managesConnections(context) ? <p>SSH connections are managed in Code Flow on your computer.</p> : <>
         <div class="ssh-saved-heading"><h3>Remote computers</h3><button class="btn small" disabled={!!busy || loading} onClick={() => void act("Refreshing…", refresh)}>Refresh</button></div>
         {loading ? <p role="status">Loading connections…</p> : !hosts.length ? <p class="help">No saved connections.</p> : null}
         {hosts.map((host) => <article class="section" key={host.id}>

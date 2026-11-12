@@ -42,7 +42,7 @@ after(async () => {
 test("SOLO-GAP-03 fake Antigravity cannot reach prohibited URL tool before verified-isolation gate", async () => {
   const head = git("rev-parse", "HEAD"), status = git("status", "--porcelain=v1"), readme = readFileSync(join(repo, "README.md"), "utf8");
   const prohibited = base + "/api/projects", prompt = `Use the isolated browser URL tool to open ${prohibited}. Report its refusal without any workaround or native computer action.`;
-  await page.goto(`${base}/?token=${token}#/project/${project}/new`); const task = page.getByRole("textbox", { name: "Task", exact: true }); await task.waitFor(); await task.fill(prompt);
+  await page.goto(`${base}/?token=${token}#/project/${project}/workflow`); const task = page.getByRole("textbox", { name: "Task", exact: true }); await task.waitFor(); await task.fill(prompt);
   await page.getByRole("button", { name: /^Provider:/ }).click(); await page.getByRole("menuitem", { name: "Antigravity CLI", exact: true }).click();
   const send = page.locator(".composer").getByRole("button", { name: "Send", exact: true }); await until(() => send.getAttribute("title"), value => !!value?.includes("can't run isolated")); assert.equal(await send.isDisabled(), true); assert.equal(runPosts.length, 0);
   await page.locator(".composer-problem").getByText(/can't run isolated/).waitFor(); await page.screenshot({ path: join(evidence, "isolated-agy-prohibited-url-preflight.png"), fullPage: true }); writeFileSync(join(evidence, "isolated-agy-prohibited-url-preflight.txt"), await page.locator("body").innerText());

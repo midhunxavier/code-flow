@@ -55,7 +55,7 @@ export async function handleWorkspaceApi(req: IncomingMessage, url: URL, parts: 
     if (typeof value !== "string" || value.length > 4000 || value.includes("\0")) throw new HttpError(400, "Commands must be text under 4,000 characters");
     return value;
   };
-  if (parts[1] === "v1" && parts[2] === "capabilities" && req.method === "GET") return { status: 200, body: { version: 1, features: ["readiness", "verification", "file-editing", "code-search", "dependencies", "checkpoints", "diagnostics", "run-export", "cursor-history", "shared-projects", "ssh-projects", "ssh-workers", "coordinated-changes", "github-review-threads", "filesystem-policies", "provider-workflow-extensions", "team-collaboration"], authentication: "Bearer CODEFLOW_TOKEN", api: "/api", docs: "docs/api.md" } };
+  if (parts[1] === "v1" && parts[2] === "capabilities" && req.method === "GET") return { status: 200, body: { version: 1, features: ["readiness", "verification", "file-editing", "code-search", "dependencies", "checkpoints", "diagnostics", "run-export", "cursor-history", "shared-projects", "ssh-projects", "ssh-workers", "github-review-threads", "filesystem-policies", "provider-workflow-extensions", "team-collaboration"], authentication: "Bearer CODEFLOW_TOKEN", api: "/api", docs: "docs/api.md" } };
   if (parts[1] === "readiness" && req.method === "POST") {
     const boundedId = (value: unknown): value is string => typeof value === "string" && /^[a-zA-Z0-9][a-zA-Z0-9_:/.-]{0,127}$/.test(value);
     const provider = (value: unknown) => boundedId(value) && (value === "auto" || isAgentId(value));

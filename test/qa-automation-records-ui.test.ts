@@ -25,9 +25,9 @@ async function stop() { if (page && !page.isClosed()) await page.goto("about:bla
 async function open(hash = "#/automations/repeat") { await page.goto(`${base}/?token=${token}${hash}`); }
 async function shot(name: string) { if (evidence) await page.screenshot({ path: join(evidence, `${name}.png`), fullPage: true, animations: "disabled" }); }
 async function saveDialog(task: string) {
-  await open(`#/project/${project}/new`); await page.getByRole("textbox", { name: "Task", exact: true }).fill(task);
+  await open(`#/project/${project}/workflow`); await page.getByRole("textbox", { name: "Task", exact: true }).fill(task);
   await page.locator("#main-content").getByRole("button", { name: "Run actions", exact: true }).click(); await page.getByRole("menuitem", { name: "Schedule…" }).click();
-  await page.getByRole("dialog", { name: "Schedule work" }).getByRole("button", { name: /^Repeat/ }).click();
+  await page.getByRole("button", { name: "Repeat on a schedule or event", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Save as automation" }); await dialog.getByRole("radio", { name: "Only from a webhook", exact: true }).click(); return dialog;
 }
 before(async () => {
@@ -49,8 +49,8 @@ after(async () => { await stop(); await browser?.close(); if (evidence) { await 
 test("global automation routes reject bad purposes and extra path segments; valid and legacy routes work", { timeout: 60_000 }, async () => {
   for (const suffix of ["bogus", "Once", "repeat/extra", "repeat/"]) { await open(`#/automations/${suffix}`); await page.getByRole("heading", { name: "This link is invalid" }).waitFor(); }
   await shot("01-invalid-route");
-  for (const kind of ["once", "repeat", "backlog"]) { await open(`#/automations/${kind}`); assert.equal(await page.getByRole("navigation", { name: "Scheduling purpose" }).locator('[aria-current="page"]').getAttribute("href"), `#/automations/${kind}`); }
-  await open("#/settings/automations"); await page.getByRole("heading", { name: "Scheduling", exact: true }).waitFor();
+  for (const kind of ["once", "repeat", "backlog"]) { await open(`#/automations/${kind}`); for (const way of ["Run once later", "Repeat on a schedule or event", "Work through a GitHub backlog"]) await page.getByRole("heading", { name: way, exact: true }).waitFor(); await page.getByRole("heading", { name: "Saved automations" }).waitFor(); }
+  await open("#/settings/automations"); await page.getByRole("heading", { name: "Automations", exact: true }).waitFor(); await page.waitForURL(url => url.hash === "#/automations/manage");
 });
 
 test("row editing preserves identity and requires a trigger; concurrent edits keep the draft", { timeout: 60_000 }, async () => {

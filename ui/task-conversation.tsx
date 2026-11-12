@@ -24,10 +24,6 @@ type Draft = {
 };
 function draftFor(project = composerProject.value, repository = repo.value): Draft { return store.json<Draft>(`task-draft:${project}`, { project, repo: repository, request: "", source: "working_changes", untracked: [], coordinator: { id: "coordinator", provider: "claude" } }); }
 const OUTCOMES: Record<string, string> = { plan_ready: "Plan ready", agreed_plan: "Plan agreed", verified_changes: "Changes verified", review_complete: "Review complete", stopped_limit: "Stopped · partial work preserved", blocked: "Needs attention · partial work preserved" };
-export function OpenTaskSetup() {
-    const allowed = executionHost.value.kind === "local" && !onPhone && !!composerProject.value && !!repo.value;
-    return <button type="button" class="btn ghost" disabled={!allowed} title={allowed ? "Prepare a team and work sequence from your instructions" : "Choose a local project and repository first"} onClick={() => { store.set("task-entry", JSON.stringify({ project: composerProject.value, repo: repo.value })); route.value = { view: "task", id: "new" }; }}>Try conversational setup</button>;
-}
 export function TaskConversationPage({ id }: {
     id: string;
 }) {
@@ -230,11 +226,11 @@ export function TaskConversationPage({ id }: {
       {!proposal?.runId && approachCard ? <ChatTurn meta="Proposed approach">{approachCard}</ChatTurn> : null}
     </> : null;
     if (executionHost.value.kind !== "local" || onPhone)
-        return <div class="composer"><h1>Conversational tasks</h1><p>This preview runs on This computer. Existing remote workflows remain available.</p><button class="btn" onClick={() => void openComposer(project)}>Back to existing workflows</button></div>;
+        return <div class="composer"><h1>Conversational tasks</h1><p>This preview runs on This computer. From this device or an SSH host, start a run instead.</p><button class="btn" onClick={() => void openComposer(project)}>New run</button></div>;
     return <section class={`task-conversation ${id === "new" ? "task-is-new" : ""}`} aria-label="Task conversation">
       <header class="task-page-heading">
         <div class="task-heading-name"><span class="task-heading-mark"><Icon name="chat" /></span><div><p class="task-kicker">Task conversation <span>Preview</span></p><h1 title={repository}>{projectName}{repository && baseName(repository) !== projectName ? <span> / {baseName(repository)}</span> : null}</h1></div></div>
-        <div class="task-page-tools">{task ? <span class={`task-state ${active || preparing ? "working" : ""}`} role="status"><i />{phase}</span> : null}<button class="btn ghost small" aria-label="Back to existing workflows" title="Back to existing workflows" onClick={() => void openComposer(project)}><Icon name="layers" /><span>Workflows</span></button>{task ? <button class="btn small task-details-trigger" aria-expanded={detailsOpen} aria-controls="task-details" onClick={() => setDetailsOpen(true)}><Icon name="sliders" />Task details</button> : null}</div>
+        <div class="task-page-tools">{task ? <span class={`task-state ${active || preparing ? "working" : ""}`} role="status"><i />{phase}</span> : null}<button class="btn ghost small" aria-label="Open workflow run" title="Open workflow run" onClick={() => void openComposer(project)}><Icon name="layers" /><span>Workflow run</span></button>{task ? <button class="btn small task-details-trigger" aria-expanded={detailsOpen} aria-controls="task-details" onClick={() => setDetailsOpen(true)}><Icon name="sliders" />Task details</button> : null}</div>
       </header>
       <div class="task-chat-scroll-wrap">
         <div class="task-chat-scroll" ref={chatRef} tabIndex={0} role="region" aria-label="Conversation" onScroll={e => { const el = e.currentTarget, away = el.scrollHeight - el.clientHeight - el.scrollTop > 100; followChat.current = !away; setAwayFromLatest(away); }}>

@@ -24,8 +24,8 @@ test("shared successful outcomes are visible but never credited to individual pr
 });
 
 test("provider comparisons can be limited to a task cohort and confidence reflects sample size", () => {
-  const history = [...Array.from({ length: 4 }, () => run(["codex"])), ...Array.from({ length: 4 }, () => run(["claude"], false)), ...Array.from({ length: 4 }, () => run(["claude"], true, "race"))];
-  assert.deepEqual(rankAgents(history, "/repo", { pattern: "race" }).order, [], "both providers need comparable evidence");
+  const history = [...Array.from({ length: 4 }, () => run(["codex"])), ...Array.from({ length: 4 }, () => run(["claude"], false)), ...Array.from({ length: 4 }, () => run(["claude"], true, "council"))];
+  assert.deepEqual(rankAgents(history, "/repo", { pattern: "council" }).order, [], "both providers need comparable evidence");
   assert.deepEqual(rankAgents(history, "/repo", { pattern: "pipeline" }).order, ["codex", "claude"]);
   const stats = computeStats(history);
   assert.equal(stats.cohorts.length, 2);

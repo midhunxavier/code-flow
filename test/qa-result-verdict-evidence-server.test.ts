@@ -42,14 +42,17 @@ after(async () => {
   for (const path of [repo, home]) if (path) rmSync(path, { recursive: true, force: true });
 });
 
-test("a race or debate with too few participants is refused before any run exists (t07-11)", async () => {
+test("a workflow that no longer exists is refused by name before any run, queued job or template exists", async () => {
   const count = (await call("/api/runs")).body.length;
-  for (const contestants of [["codex", "codex"], ["codex"]]) {
-    const refused = await call("/api/runs", { repo, pattern: "race", task: "Race", roles: { contestants, judge: ["claude"] } });
-    assert.equal(refused.status, 400, JSON.stringify(refused.body)); assert.match(refused.body.error, /at least 2 contestants/);
+  for (const pattern of ["loop", "race", "debate", "supervisor", "tdd"]) {
+    const refused = await call("/api/runs", { repo, pattern, task: "Old workflow", roles: {} });
+    assert.equal(refused.status, 400, JSON.stringify(refused.body));
+    assert.match(refused.body.error, /^The ".+" workflow is no longer available\. Start a new run with Auto team instead\.$/);
   }
-  const debate = await call("/api/runs", { repo, pattern: "debate", task: "Debate", roles: { debaters: ["claude"], synthesizer: ["claude"], builder: [] } });
-  assert.equal(debate.status, 400); assert.match(debate.body.error, /at least 2 debaters/);
+  const queued = await call("/api/deferred-runs", { run: { repo, pattern: "race", task: "Old workflow", roles: {} }, at: Date.now() + 3_600_000 });
+  assert.equal(queued.status, 400, JSON.stringify(queued.body)); assert.match(queued.body.error, /"Best-of-N race" workflow is no longer available/);
+  const unknown = await call("/api/runs", { repo, pattern: "nope", task: "Unknown", roles: {} });
+  assert.equal(unknown.status, 400); assert.equal(unknown.body.error, "Unknown pattern");
   assert.equal((await call("/api/runs")).body.length, count, "nothing was created");
 });
 

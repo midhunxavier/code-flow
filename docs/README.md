@@ -50,7 +50,7 @@ Read the story: [Describe the team. Code Flow builds the workflow.](https://midh
 - [Claude Code and Codex terminal setup](cli-conversational-teams.md) · [Team patterns](patterns.md) · [Auto team](auto-team.md)
 - [Runs and the workspace](runs.md) · [Review inbox](review-inbox.md) · [Verification](verification.md)
 - [GitHub and shipping](github.md) · [GitHub review threads](github-review-threads.md)
-- [Selective task reruns](task-reruns.md) · [Deferred starts](deferred-runs.md)
+- [Selective task reruns](task-reruns.md) · [Run once later](deferred-runs.md)
 
 ## Make the workspace yours
 
@@ -58,14 +58,12 @@ Read the story: [Describe the team. Code Flow builds the workflow.](https://midh
 - [Project conventions](project-conventions.md) · [Checkpoints and reversions](checkpoint-review.md)
 - [Code intelligence](code-intelligence.md) · [Architecture explorer](architecture-explorer.md)
 - [Project memory](memory-storage.md)
-- [Coordinated repository changes](coordinated-changes.md)
 
 ## Connect and collaborate
 
 - [Project integrations](project-integrations.md) · [Claude Desktop and Codex app](desktop-mcp.md)
 - [Team collaboration](team-collaboration.md) · [Shared project accounts](shared-projects.md)
-- [SSH projects](ssh-projects.md) · [Remote workers](remote-workers.md)
-- [External sources](external-sources.md)
+- [SSH projects](ssh-projects.md)
 - [Automations and remote access](automations.md) · [Notifications](notifications.md)
 
 ## Operate safely
@@ -89,4 +87,4 @@ These documents record implementation decisions and evidence at a particular poi
 
 [Project README](../README.md) · [Getting started](getting-started.md)
 
-Project collaboration lives in **More → Board** and **More → People**. Scheduled tasks and backlogs live in **More → Automation**; configured Board and Automation tabs stay visible. Global Inbox and Scheduling cover the current computer.
+Project collaboration lives in **More → Board** and **More → People**. Scheduled tasks and backlogs live in **More → Automations**; configured Board and Automations tabs stay visible. Global Inbox and Automations cover the current computer.

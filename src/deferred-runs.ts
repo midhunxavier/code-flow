@@ -11,6 +11,7 @@ import { validateVerificationProfile } from "./verification.js";
 import { validateContextBudget } from "./context-budget.js";
 import { exhausted, type Quota } from "./routing.js";
 import { redactText } from "./privacy.js";
+import { assertNoRemoteWorker } from "./run-environment.js";
 import type { AgentId } from "./adapters/types.js";
 import type { LoopSettings } from "./engine.js";
 import type { SourceInput } from "./github.js";
@@ -22,12 +23,14 @@ export interface DeferredRunRequest {
   permissionRequirements?: import("./run-permissions.js").PermissionRequirement[];
   roles: Record<string, (AgentId | "auto")[]>; options: Record<string, number | boolean>;
   baseRef?: string; branchPrefix?: string; parentRunId?: string;
+  /** Set on jobs stored before external sources were removed. Such a job loads but is never started. */
+  externalSourceRef?: true;
   context?: { paths: { path: string }[] };
   agentSettings?: AgentSettings; roleSettings?: Record<string, AgentSettings>;
-  loop: Partial<LoopSettings> & { copy: [] };
+  /** `remoteWorker` survives only in jobs queued by versions with SSH workers; it is kept so such a job is refused at launch rather than started here. */
+  loop: Partial<LoopSettings> & { copy: []; remoteWorker?: { workerId: string; repoMapping: string } };
   trust: "safe"; allowUntrusted: false; approvals: { plan: false; tools: false };
   source?: SourceInput;
-  externalSourceRef?: { integration: string; kind: "issue" | "pr"; key: string };
 }
 export type DeferredRunStatus = "queued" | "waiting-time" | "waiting-provider" | "claimed" | "started" | "failed" | "unknown" | "cancelled";
 export interface DeferredRunJob {
@@ -83,6 +86,10 @@ const diagnostic = (value: unknown) => redactText(String(value ?? "Unknown defer
 const canonical = (value: any): string => JSON.stringify(value, (_key, item) => object(item) ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => a.localeCompare(b))) : item);
 
 /** A second defense behind server validation: only configuration and source references persist. */
+/** External sources are gone: starting the job without its source text would run a different task than the one queued. */
+export function assertNoExternalSource(run: { externalSourceRef?: unknown }): void {
+  if (run.externalSourceRef !== undefined) throw new Error("This run was queued from an external source, which is no longer supported. Start a new run with the task written out.");
+}
 export function sanitizeDeferredRequest(value: unknown): DeferredRunRequest {
   const raw = keys(value, ["templateRef", "permissionRequirements", "repo", "project", "projectSelection", "pattern", "task", "roles", "options", "baseRef", "branchPrefix", "parentRunId", "context", "agentSettings", "roleSettings", "loop", "trust", "allowUntrusted", "approvals", "source", "externalSourceRef"], "run request");
   const repo = text(raw.repo, 4000, "repository");
@@ -104,8 +111,8 @@ export function sanitizeDeferredRequest(value: unknown): DeferredRunRequest {
     if (typeof number !== "number" || !Number.isFinite(number) || number < min! || number > max!) throw new Error(`Invalid deferred ${key}`);
     loop[key] = number;
   }
-  // The composer sends null for "none" (the single configured check, no worker or container), as POST /api/runs accepts.
-  if (given(loopRaw.remoteWorker)) loop.remoteWorker = validateWorkerSelection(loopRaw.remoteWorker);
+  // The composer sends null for "none" (the single configured check, no container), as POST /api/runs accepts.
+  if (given(loopRaw.remoteWorker)) loop.remoteWorker = { workerId: text((loopRaw.remoteWorker as Record<string, unknown>).workerId, 64, "worker"), repoMapping: text((loopRaw.remoteWorker as Record<string, unknown>).repoMapping, 64, "repository mapping") };
   if (given(loopRaw.verification)) loop.verification = validateVerificationProfile(loopRaw.verification);
   if (given(loopRaw.contextBudget)) loop.contextBudget = validateContextBudget(loopRaw.contextBudget);
   if (given(loopRaw.agentContainer)) loop.agentContainer = validateAgentContainer(loopRaw.agentContainer);
@@ -154,12 +161,10 @@ export function sanitizeDeferredRequest(value: unknown): DeferredRunRequest {
       }
     } else if (source.tool !== undefined || source.numbers !== undefined) throw new Error("Alert fields require an alert source");
   }
-  if (raw.externalSourceRef !== undefined) {
-    const ref = keys(raw.externalSourceRef, ["integration", "kind", "key"], "external source reference");
-    if (!["issue", "pr"].includes(ref.kind) || run.source) throw new Error("Choose one deferred source reference");
-    run.externalSourceRef = { integration: text(ref.integration, 100, "integration"), kind: ref.kind, key: text(ref.key, 240, "source key") };
-  }
   if (Buffer.byteLength(JSON.stringify(run)) > DEFERRED_RUN_LIMITS.requestBytes) throw new Error("Deferred run configuration is too large");
+  // Jobs queued from an external source before that feature was removed must still load, or one of them would
+  // disable the whole queue. The reference is kept only so the job can be refused (assertNoExternalSource).
+  if (raw.externalSourceRef !== undefined) run.externalSourceRef = true;
   return run;
 }
 
@@ -202,6 +207,7 @@ export class DeferredRuns {
 
   async enqueue(raw: { name?: string; run: unknown; notBefore?: number; waitForProviders?: AgentId[]; maxAttempts?: number; operationId?: string }): Promise<DeferredRunJob> {
     const run = sanitizeDeferredRequest(raw.run), now = this.now();
+    assertNoRemoteWorker(run.loop); assertNoExternalSource(run);
     const notBefore = raw.notBefore ?? now;
     if (!positiveDate(notBefore) || notBefore > now + DEFERRED_RUN_LIMITS.futureMs) throw new Error("Choose a deferred start within the next year");
     if (raw.waitForProviders !== undefined && (!Array.isArray(raw.waitForProviders) || raw.waitForProviders.length > AGENTS.length || raw.waitForProviders.some((provider) => !AGENTS.includes(provider)))) throw new Error("Choose valid providers to wait for");
@@ -430,4 +436,3 @@ async function writeDocument(file: string, document: Document) {
   try { const handle = await open(temporary, "wx", 0o600); try { await handle.writeFile(body); await handle.sync(); } finally { await handle.close(); } await rename(temporary, file); const folder = await open(dirname(file), "r"); try { await folder.sync(); } finally { await folder.close(); } }
   finally { await rm(temporary, { force: true }); }
 }
-import { validateWorkerSelection } from "./remote-workers/protocol.js";

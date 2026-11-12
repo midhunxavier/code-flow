@@ -223,7 +223,7 @@ test("Retry reply recovers in place and shows one answer with provider failures 
 test("new tasks expose a clear Team toggle, lead-only controls and searchable branches", { skip: live, timeout: 60000 }, async () => {
   execFileSync("git", ["branch", "feature/searchable-branch"], { cwd: repo });
   const project = await api("/api/projects", { name: "Composer fixture", repos: [repo] });
-  await page.goto(`${base}/?token=${token}#/project/${project.id}/new`);
+  await page.goto(`${base}/?token=${token}#/project/${project.id}/workflow`);
   const composer = page.locator(".composer");
   await composer.getByRole("button", { name: /^Start from branch:/ }).click();
   const search = composer.getByRole("combobox", { name: "Search Start from branch", exact: true });

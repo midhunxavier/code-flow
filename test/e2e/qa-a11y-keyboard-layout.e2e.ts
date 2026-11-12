@@ -112,7 +112,7 @@ after(async () => {
   assert.doesNotMatch(logs, /uncaughtException|unhandledRejection|ReferenceError|TypeError:/);
 }, { timeout: 20000 });
 test('visible provider, model, branch and permission choices are in accessible names in both themes and phone layout', { timeout: 45000 }, async () => {
-  const p = await open(`project/${project}/new`, {}, { repo });
+  const p = await open(`project/${project}/workflow`, {}, { repo });
   const provider = p.locator('.taskbox').getByRole('button', { name: /^Provider: Claude Code/ });
   await provider.waitFor();
   await p.getByRole('button', { name: /^Model: Default model/ }).waitFor();

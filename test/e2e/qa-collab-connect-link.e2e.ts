@@ -100,7 +100,7 @@ test("hosting setup restores its project and remembers the selected clone for ag
   const task = await api(hub, "/api/team/tasks?teamConnection=local", { projectId: created.id, repository: key, title: "Mapped build", goal: "Add a short note", acceptance: "A note exists", owner: "owner" });
   await p.goto(`${hub.base}/?team=local#/team/task/${task.id}`); await p.getByRole("button", { name: "Build with agents", exact: true }).click();
   const build = p.getByRole("dialog", { name: "Build with agents", exact: true }); assert.equal(await build.locator("#tt-start-repo").inputValue(), repo);
-  await build.getByLabel("Workflow", { exact: true }).selectOption("solo"); await build.getByLabel("Agent", { exact: true }).selectOption("claude"); await build.getByLabel("Check command", { exact: true }).fill("true"); await build.getByRole("button", { name: "Build with agents", exact: true }).click();
+  await build.getByRole("combobox", { name: "Workflow", exact: true }).selectOption("solo"); await build.getByLabel("Agent", { exact: true }).selectOption("claude"); await build.getByLabel("Check command", { exact: true }).fill("true"); await build.getByRole("button", { name: "Build with agents", exact: true }).click();
   await until(() => api(hub, `/api/team/tasks/${task.id}?teamConnection=local`), value => value.checkpoints?.length > 0);
   await p.getByRole("button", { name: "Fetch to this computer…", exact: true }).first().click(); const fetchDialog = p.getByRole("dialog", { name: "Fetch to this computer", exact: true });
   assert.equal(await fetchDialog.getByLabel("Repository path", { exact: true }).inputValue(), repo); await shot("fetch-prefilled");

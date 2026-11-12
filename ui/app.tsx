@@ -16,7 +16,7 @@ import { useLayoutEffect, useEffect, useRef, useState } from "preact/hooks";
 import { ApprovalInbox } from "./approval-inbox.js";
 import { Composer } from "./composer.js";
 import { TaskConversationPage } from "./task-conversation.js";
-import { openChat } from "./chat-state.js";
+import { chatAllowed, openChat } from "./chat-state.js";
 const ChatPage = lazyView(() => import("./chat.js").then(module => module.ChatPage));
 import { CommandPalette } from "./command-palette.js";
 import { SidePanel } from "./side.js";
@@ -35,7 +35,7 @@ const TeamTaskView = lazyView(() => import("./collab-task.js").then((module) => 
 import { board as teamBoard, openTask, watchTeam } from "./collab-state.js";
 import { Rail } from "./rail.js";
 import { Icon } from "./icons.js";
-import { api, baseName, onPhone, ownerOnLocalListener, dismissToast, post, rememberFolders, showToast, store, toast } from "./lib.js";
+import { api, baseName, dismissToast, post, rememberFolders, showToast, store, toast } from "./lib.js";
 import { theme, toggleTheme } from "./theme.js";
 import {
   composerProject,
@@ -105,7 +105,7 @@ function PoppedSide({ tab }: { tab: SideTab }) {
     return () => document.removeEventListener("click", handOffLink);
   }, []);
   useEffect(() => {
-    document.title = `code-flow · ${tab}`;
+    document.title = `Code Flow · ${tab}`;
   }, [tab]);
   return (
     <div class="popped">
@@ -136,7 +136,7 @@ function MainApp() {
   const skipTarget = sideFullWidth.value ? "side-panel" : "main-content";
   useEffect(() => {
     const host = executionHost.value;
-    document.title = `${waitingCount.value ? `(${waitingCount.value}) ` : ""}code-flow${host.kind === "ssh" ? ` · SSH ${host.name}` : ""}`;
+    document.title = `${waitingCount.value ? `(${waitingCount.value}) ` : ""}Code Flow${host.kind === "ssh" ? ` · SSH ${host.name}` : ""}`;
   }, [waitingCount.value, executionHost.value]);
   useEffect(() => {
     const resetTraversal = () => runNavigation.reset();
@@ -175,8 +175,6 @@ function MainApp() {
               <ProjectsPage />
             ) : route.value.view === "project" ? (
               <ProjectView key={route.value.id} {...route.value} />
-            ) : route.value.view === "workspace" && route.value.project ? (
-              <ProjectView key={route.value.project} id={route.value.project} section="repositories" />
             ) : ["inbox", "automations", "workspace", "insights"].includes(route.value.view) ? (
               <ActivityView key={route.value.view} current={route.value} />
             ) : route.value.view === "settings" ? (
@@ -194,7 +192,7 @@ function MainApp() {
                 <button class="btn primary" onClick={() => (route.value = { view: "composer" })}>New chat</button>
               </div>
             ) : (
-              !draftsReady.value || composerLoading.value || route.value.view === "composer" && route.value.project !== undefined && route.value.project !== composerProject.value ? <div class="composer" role="status">{draftError.value || "Restoring your project draft…"}</div> : route.value.view === "composer" && !route.value.legacy && route.value.project === undefined && !onPhone && ownerOnLocalListener.value && executionHost.value.kind === "local" ? <ChatPage id="new" /> : <Composer key={composerProject.value} />
+              !draftsReady.value || composerLoading.value || route.value.view === "composer" && route.value.project !== undefined && route.value.project !== composerProject.value ? <div class="composer" role="status">{draftError.value || "Restoring your project draft…"}</div> : route.value.view === "composer" && !route.value.legacy && route.value.project === undefined && chatAllowed() ? <ChatPage id="new" /> : <Composer key={composerProject.value} />
             )}
           </main>
         </div>
@@ -224,7 +222,7 @@ const MOD_KEY = typeof navigator !== "undefined" && /Mac|iPhone|iPad|iPod/.test(
 function TopBar() {
   const dark = theme.value === "dark";
   const current = route.value;
-  const hostInComposer = !onPhone && ownerOnLocalListener.value && executionHost.value.kind === "local" &&
+  const hostInComposer = chatAllowed() &&
     (current.view === "chat" && current.id === "new" || current.view === "composer" && !current.legacy && current.project === undefined);
   return (
     <header class="topbar">
@@ -297,7 +295,7 @@ function Crumbs() {
     );
   } else if (r.view === "project") {
     trail = (
-      <><a class="crumb" href={`#/project/${encodeURIComponent(r.id)}`} aria-current={!r.section ? "page" : undefined}>{projects.value.find((p) => p.id === r.id)?.name ?? "Project"}</a>{r.section ? <>{sep}<span class="crumb here" aria-current="page">{{ runs: "History", repositories: "Repositories", settings: "Project settings", board: "Board", people: "People", automation: "Automation", connections: "Connections" }[r.section]}</span></> : null}</>
+      <><a class="crumb" href={`#/project/${encodeURIComponent(r.id)}`} aria-current={!r.section ? "page" : undefined}>{projects.value.find((p) => p.id === r.id)?.name ?? "Project"}</a>{r.section ? <>{sep}<span class="crumb here" aria-current="page">{{ runs: "History", repositories: "Repositories", settings: "Project settings", board: "Board", people: "People", automation: "Automations", connections: "Connections" }[r.section]}</span></> : null}</>
     );
   } else if (r.view === "team" || r.view === "team-task" || r.view === "team-people") {
     // The board, or a task under it: its title comes from the open task, else from the board's card.
@@ -329,7 +327,7 @@ function Crumbs() {
       </span>
     );
   } else if (r.view === "inbox" || r.view === "automations" || r.view === "workspace" || r.view === "insights") {
-    trail = <>{r.view === "workspace" && r.project ? <><a class="crumb" href={`#/project/${encodeURIComponent(r.project)}`}>{projects.value.find(p => p.id === r.project)?.name ?? "Project"}</a>{sep}</> : null}<span class="crumb here" aria-current="page">{{ inbox: "Inbox", automations: "Scheduling", workspace: r.view === "workspace" && r.project ? "Repositories" : "Repository tools", insights: "Insights" }[r.view]}</span></>;
+    trail = <span class="crumb here" aria-current="page">{{ inbox: "Inbox", automations: "Automations", workspace: "Repository tools", insights: "Insights" }[r.view]}</span>;
   } else if (r.view === "settings") {
     const section = SETTINGS_SECTIONS.find((item) => item.id === settingsSection(r.section));
     trail = section ? (
@@ -348,7 +346,7 @@ function Crumbs() {
       </span>
     );
   } else {
-    const page = r.view === "chat" ? r.id === "new" ? "New chat" : "Chat" : r.view === "composer" ? !r.legacy && r.project === undefined && !onPhone && ownerOnLocalListener.value && executionHost.value.kind === "local" ? "New chat" : "Saved workflows" : r.view === "projects" ? "Projects" : "";
+    const page = r.view === "chat" ? r.id === "new" ? "New chat" : "Chat" : r.view === "composer" ? !chatAllowed() ? "New run" : !r.legacy && r.project === undefined ? "New chat" : "Workflow run" : r.view === "projects" ? "Projects" : "";
     if (page === "New chat" || page === "Chat") return <span class="spacer" aria-hidden="true" />;
     trail = page ? (
       <span class="crumb here" aria-current="page">
@@ -377,20 +375,20 @@ export function notifyFinished(run: RunSummary) {
   const watch = run.status !== "running" && !run.awaiting ? watchNeedingYou(run) : undefined;
   const leadTurn = run.pattern === "chat-lead" || run.pattern === "chat-discussion";
   const leadChat = leadTurn ? run.conversationId ?? run.cliTeam?.taskConversation?.chatId ?? run.cliTeam?.taskConversation?.id : undefined;
-  const title = leadTurn ? `code-flow: ${run.status === "done" ? chatLeadReplyLabel(run.patternSummary ?? run.summary ?? "").toLowerCase() : `conversation lead ${verbs[run.status] ?? run.status}`}` : run.awaiting
-    ? `code-flow: ${run.awaiting.title.toLowerCase()}`
-    : teamAwaitingAnswer(run) ? "code-flow: your team needs an answer" : watch
-      ? `code-flow: PR needs you — ${watch.detail}`
-      : `code-flow: run ${verbs[run.status] ?? run.status}`;
+  const title = leadTurn ? `Code Flow: ${run.status === "done" ? chatLeadReplyLabel(run.patternSummary ?? run.summary ?? "").toLowerCase() : `conversation lead ${verbs[run.status] ?? run.status}`}` : run.awaiting
+    ? `Code Flow: ${run.awaiting.title.toLowerCase()}`
+    : teamAwaitingAnswer(run) ? "Code Flow: your team needs an answer" : watch
+      ? `Code Flow: PR needs you — ${watch.detail}`
+      : `Code Flow: run ${verbs[run.status] ?? run.status}`;
   const body = leadTurn ? "Continue in chat to review the reply." : run.task.split("\n")[0]!;
-  announcement.value = `${title.replace(/^code-flow: /, "")}: ${body.slice(0, 120)}`;
+  announcement.value = `${title.replace(/^Code Flow: /, "")}: ${body.slice(0, 120)}`;
   if (!canNotify() || (viewing && !document.hidden)) return;
   let n: Notification;
   try {
     n = new Notification(title, { body, tag: run.id });
   } catch {
     // Android Chrome (the phone link) only shows notifications from a service worker: a toast instead.
-    return showToast(title.replace(/^code-flow: /, ""), 5000);
+    return showToast(title.replace(/^Code Flow: /, ""), 5000);
   }
   n.onclick = () => {
     window.focus();
@@ -407,9 +405,9 @@ const SHORTCUTS: [string, string][] = [
   ["j / k", "Next / previous run in the list"],
   ["[ / ]", "Previous / next step or agent turn"],
   ["n", "New chat"],
-  ["p", "Pick the project for new runs, Insights and Scheduling"],
+  ["p", "Pick the project for new runs, Insights and Automations"],
   ["i", "Insights"],
-  ["a", "Scheduling"],
+  ["a", "Automations"],
   ["⌘↵", "Start reviewed work, or send your message"],
   ["Esc", "Close a dialog, or leave the search box"],
   ["\\", "Show or hide the side panel"],
@@ -529,7 +527,7 @@ function HealthDialog() {
       <div class="picker-inner">
         <div class="picker-head">
           <h3 id="health-title">Health</h3>
-          <div class="help">What code-flow can see about each CLI — it uses the CLIs' own commands and never reads their credentials.</div>
+          <div class="help">What Code Flow can see about each CLI — it uses the CLIs' own commands and never reads their credentials.</div>
         </div>
         <div class="dialog-body">
           <PolicyPauseNotice what="Provider health checks are paused" />

@@ -1,6 +1,3 @@
-import { AutomationManagement } from "./scheduling.js";
-import { ActivityView } from "./activity.js";
-import { TeamBoardView } from "./collab-board.js";
 import { browserPerformance } from "./performance.js";
 import { DesktopUpdatesCard } from "./desktop-updates.js";
 import { ConnectionsView } from "./connections.js";
@@ -30,7 +27,7 @@ import {
   executionPaused, healthError, healthOpen, refreshProviders, providersRefreshing, loadHealth, loadModels, loadAgents, limitPreference, setLimits, type Limits, trust, setTrust, settingsProject,
   patterns, defaultPattern, setPattern,
   railView, setRailView, shortcutsOpen, projectsOpen, projects, repo, route,
-  externalSource, source, setTask, type Trust,
+  source, setTask, type Trust,
 } from "./state.js";
 
 export function SettingsView({ section = "general", group, connection }: { section?: SettingsSection; group?: string; connection?: string }) {
@@ -57,7 +54,7 @@ export function SettingsView({ section = "general", group, connection }: { secti
       <aside class="settings-sidebar">
         <div class="settings-search"><Icon name="search" /><input class="field" type="search" aria-label="Search settings" placeholder="Search settings…" value={query} onInput={(e) => setQuery(e.currentTarget.value)} /></div>
         <nav ref={navigation} aria-label="Settings categories">
-          {["Preferences", "Connections", "Tools & activity", "Management"].map((group) => <div key={group} class="settings-nav-group"><div class="settings-nav-label">{group}</div>{SETTINGS_SECTIONS.filter((entry) => entry.group === group).map((entry) => <a key={entry.id} class={`settings-nav-item ${section === entry.id && !query.trim() ? "active" : ""}`} href={`#/settings/${entry.id}`} aria-current={section === entry.id && !query.trim() ? "page" : undefined} onClick={() => setQuery("")}><Icon name={entry.icon} />{entry.label}</a>)}</div>)}
+          {["Preferences", "Connections", "Management"].map((group) => <div key={group} class="settings-nav-group"><div class="settings-nav-label">{group}</div>{SETTINGS_SECTIONS.filter((entry) => entry.group === group).map((entry) => <a key={entry.id} class={`settings-nav-item ${section === entry.id && !query.trim() ? "active" : ""}`} href={`#/settings/${entry.id}`} aria-current={section === entry.id && !query.trim() ? "page" : undefined} onClick={() => setQuery("")}><Icon name={entry.icon} />{entry.label}</a>)}</div>)}
         </nav>
       </aside>
       <div class="settings-content">
@@ -71,9 +68,6 @@ export function SettingsView({ section = "general", group, connection }: { secti
             {section === "notifications" ? <><section class="settings-card settings-compact" aria-label="Desktop notifications"><div class="settings-inline-row"><strong>Desktop notifications</strong><button class="settings-switch" role="switch" aria-label="Desktop notifications" title="Notify when work finishes or needs your attention. Saved for this browser and workspace." aria-checked={canNotify()} onClick={() => void setDesktopNotifications(!canNotify())}><span /></button></div>{"Notification" in window ? notificationPermission.value === "denied" ? <p class="help">Blocked by your browser. Allow notifications in site permissions.</p> : null : <p class="help">This browser doesn’t support desktop notifications.</p>}</section><NotificationsView /></> : null}
             {section === "integrations" ? <IntegrationsScreen /> : null}
             {section === "projects" ? <ProjectSettings /> : null}
-            {section === "automations" ? <AutomationManagement /> : null}
-            {section === "board" ? <TeamBoardView embedded navigate={to => { route.value = to; }} /> : null}
-            {section === "inbox" || section === "insights" ? <ActivityView current={{ view: section, ...(section === "insights" && group ? { group } : {}) }} /> : null}
             {section === "data" ? <WorkbenchRetentionPanel /> : null}
             {section === "advanced" ? <AdvancedSettings /> : null}
           </div>
@@ -144,7 +138,7 @@ function RunSettings() {
       <NumberSetting label="Token limit" hint="Reported token ceiling; checked between operations. Empty means unlimited." value={savedLimits.maxTokens} optional save={(value) => setLimits({ maxTokens: value })} />
       <NumberSetting label="Cost limit ($)" hint="API-equivalent cost ceiling, based on provider reports. This is not your subscription bill. Empty means unlimited." value={savedLimits.maxCostUsd} optional min={0.01} step={0.01} save={(value) => setLimits({ maxCostUsd: value })} />
     </div></section>
-    <p class="help">Repository setup, checks, branch names, team roles and per-run isolation are available in <a href="#/workflows">Saved workflows → Advanced agent settings</a>.</p>
+    <p class="help">Repository setup, checks, branch names, team roles and per-run isolation are available in <a href="#/workflows">Workflow run → Advanced</a>.</p>
   </>;
 }
 function ProjectSettings() {

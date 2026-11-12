@@ -1,13 +1,12 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { IntegrationConnections, repositoryConnectionHint } from "./integration-connections.js";
-import type { Integrations } from "./integrations.js";
 import type { Projects } from "./projects.js";
 import { HttpError, readJson, send } from "./http.js";
 import { listGitHubPicker, viewIssue, viewPullRequest, prChecks } from "./github.js";
 
 /** Mounted after owner authorization and filesystem policy checks. Shared accounts never read server credentials. */
-export function createIntegrationConnectionsApi(options: { connections: IntegrationConnections; integrations: Integrations; projects: Pick<Projects, "get"> }) {
-  const { connections, integrations, projects } = options;
+export function createIntegrationConnectionsApi(options: { connections: IntegrationConnections; projects: Pick<Projects, "get"> }) {
+  const { connections, projects } = options;
   const context = (projectId: unknown, repository: unknown) => {
     const project = typeof projectId === "string" ? projects.get(projectId) : undefined;
     if (!project) throw new HttpError(404, "Choose an existing project");
@@ -32,19 +31,16 @@ export function createIntegrationConnectionsApi(options: { connections: Integrat
       else if (parts.length === 3 && req.method === "DELETE") { await connections.detach({ ...scope, connectionId: body.connectionId }); result = { ok: true }; }
       else if (parts.length === 5 && parts[3]) {
         const connection = connections.requireBinding({ ...scope, connectionId: parts[3] });
+        if (connection.provider !== "github") throw new HttpError(400, "Only GitHub connections list issues and pull requests");
         const kind = req.method === "GET" ? url.searchParams.get("kind") : body.kind;
         if (kind !== "issue" && kind !== "pr") throw new HttpError(400, "Choose issues or pull requests");
         if (parts[4] === "items" && req.method === "GET") {
-          if (connection.provider === "github") {
-            const listed = await listGitHubPicker(scope.repository, kind === "issue" ? "issue" : "pr", url.searchParams.get("q") ?? "");
-            result = { items: listed.items.map(item => ({ integration: connection.id, provider: "github", kind, key: String(item.number), title: item.title, body: item.body, url: item.url })), truncated: listed.truncated };
-          } else result = await integrations.items(connection.id, kind, url.searchParams.get("cursor") ?? undefined);
+          const listed = await listGitHubPicker(scope.repository, kind === "issue" ? "issue" : "pr", url.searchParams.get("q") ?? "");
+          result = { items: listed.items.map(item => ({ integration: connection.id, provider: "github", kind, key: String(item.number), title: item.title, body: item.body, url: item.url })), truncated: listed.truncated };
         } else if (parts[4] === "import" && req.method === "POST") {
-          if (connection.provider === "github") {
-            if (typeof body.key !== "string" || !/^[1-9]\d{0,9}$/.test(body.key)) throw new HttpError(400, "Choose a valid issue or PR number");
-            const number = Number(body.key), value = kind === "issue" ? await viewIssue(scope.repository, number) : await viewPullRequest(scope.repository, number);
-            result = { project: project.id, repository: scope.repository, github: { ...value, kind }, ...(kind === "pr" ? { checks: await prChecks(scope.repository, body.key) } : {}) };
-          } else result = { project: project.id, repository: scope.repository, source: await integrations.importSource(connection.id, kind, body.key, { project: project.id, repository: scope.repository }) };
+          if (typeof body.key !== "string" || !/^[1-9]\d{0,9}$/.test(body.key)) throw new HttpError(400, "Choose a valid issue or PR number");
+          const number = Number(body.key), value = kind === "issue" ? await viewIssue(scope.repository, number) : await viewPullRequest(scope.repository, number);
+          result = { project: project.id, repository: scope.repository, github: { ...value, kind }, ...(kind === "pr" ? { checks: await prChecks(scope.repository, body.key) } : {}) };
         } else throw new HttpError(404, "Unknown project connection operation");
       } else throw new HttpError(404, "Unknown project connection operation");
     } else if (parts.length === 3 && parts[2] === "test" && req.method === "POST") result = await connections.testExisting(parts[1]!);

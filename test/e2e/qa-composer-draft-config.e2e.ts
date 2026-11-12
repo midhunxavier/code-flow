@@ -71,13 +71,12 @@ async function until(read: () => Promise<string>, expected: string | RegExp, wha
   }
   assert.fail(`${what}: ${value}`);
 }
-/** The project's New run with Run options and Run details open, once the repository's config is in. */
+/** The project's workflow run with Advanced open, once the repository's config is in. */
 async function newRun(check: string) {
-  await page.goto(`${base}/#/project/${project}/new`);
+  await page.goto(`${base}/#/project/${project}/workflow`);
   await page.getByLabel("Task", { exact: true }).waitFor();
-  if (!await page.locator("#checkCmd").isVisible()) await page.getByRole("button", { name: "Edit run options", exact: true }).click();
+  if (!await page.locator("#checkCmd").isVisible()) await page.locator(".advanced-controls").evaluate(el => { (el as HTMLDetailsElement).open = true; });
   await until(() => page.locator("#checkCmd").inputValue({ timeout: 1000 }), check, "check command");
-  if (await page.locator(".effective-settings").getAttribute("open") === null) await page.locator(".effective-settings > summary").click();
 }
 async function send(task: string) {
   await page.getByLabel("Task", { exact: true }).fill(task);
@@ -174,7 +173,7 @@ test("Edit & run again asks before replacing unsent work, and its pins end with 
 
   await rerun();
   await dialog.getByRole("button", { name: "Replace draft", exact: true }).click();
-  await page.waitForURL(url => url.hash === `#/project/${project}/new`);
+  await page.waitForURL(url => url.hash === `#/project/${project}/workflow`);
   await until(() => page.getByLabel("Task", { exact: true }).inputValue({ timeout: 1000 }), "Original run task", "restored task");
   const retried = await send("Unrelated new task");
   assert.deepEqual([retried.parentRunId, retried.baseRef, retried.trust, retried.loop.maxMinutes, retried.loop.maxSteps], [original.id, saved.baseRef, "full", 33, 44]);
@@ -197,14 +196,14 @@ test("context added to an otherwise untouched retry draft is protected before an
   const reopenRetry = async () => {
     await page.goto(`${base}/#/run/${original.id}`); await page.getByRole("button", { name: "More run actions", exact: true }).click(); await page.getByRole("menuitem", { name: "Edit & run again", exact: true }).click();
   };
-  await reopenRetry(); await page.waitForURL(url => url.hash === `#/project/${project}/new`);
+  await reopenRetry(); await page.waitForURL(url => url.hash === `#/project/${project}/workflow`);
   await page.locator(".taskbox").getByRole("button", { name: "Files", exact: true }).click();
   await page.getByRole("button", { name: "Add notes.md to the task", exact: true }).click();
   await page.locator(".chip-ctx").getByText("notes.md", { exact: true }).waitFor();
   await reopenRetry();
   const dialog = page.getByRole("dialog", { name: "Replace your unsent draft?" }); await dialog.waitFor();
   await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
-  await page.goto(`${base}/#/project/${project}/new`);
+  await page.goto(`${base}/#/project/${project}/workflow`);
   await page.locator(".chip-ctx").getByText("notes.md", { exact: true }).waitFor();
   assert.deepEqual(errors, []);
 });
@@ -218,7 +217,7 @@ test("project defaults refresh saved drafts for both an inactive and the current
     await page.getByLabel("Task", { exact: true }).fill("Keep this unsent text while defaults change");
     const otherRepo = join(directory, "other-repo"); execFileSync("git", ["clone", "-q", repo, otherRepo], { cwd: directory });
     const other = (await api("/api/projects", { name: "Other composer", repos: [otherRepo] })).id;
-    await page.goto(`${base}/#/project/${other}/new`); await page.getByLabel("Task", { exact: true }).waitFor();
+    await page.goto(`${base}/#/project/${other}/workflow`); await page.getByLabel("Task", { exact: true }).waitFor();
     const defaults = async (check: string, setup: string, verification: string) => {
       await page.goto(`${base}/#/settings/projects`); await page.locator("#settings-project").selectOption(project);
       await page.getByLabel("Default check command", { exact: true }).fill(check);

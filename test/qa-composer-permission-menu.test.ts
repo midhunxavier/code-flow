@@ -39,8 +39,6 @@ test("Run details and the request use the value the control shows (t02-6, t03-6,
   assert.deepEqual(fresh, { tools: true, source: "Default for Claude and Codex conversations", conflict: "" });
   assert.deepEqual(toolApprovalState({ choice: true, trust: "safe", p: solo, roles: { agent: ["claude"] } }), { tools: false, source: "Safe permissions", conflict: "" });
   assert.deepEqual(toolApprovalState({ trust: "standard", p: solo, roles: { agent: ["claude"] }, container: true }), { tools: false, source: "Unavailable with Docker isolation", conflict: "" });
-  assert.equal(toolApprovalState({ choice: true, trust: "standard", p: solo, roles: { agent: ["codex"] }, remote: true }).source, "Unavailable on a remote worker");
-  assert.equal(toolApprovalState({ choice: true, trust: "safe", p: solo, roles: { agent: ["codex"] }, external: true }).source, "External source · Safe permissions");
   assert.deepEqual(toolApprovalState({ choice: false, trust: "standard", p: solo, roles: { agent: ["claude"] } }), { tools: false, source: "Explicit choice", conflict: "" });
 });
 
@@ -54,17 +52,15 @@ test("Antigravity: alone it runs without approvals; beside providers that ask, S
   assert.equal(toolApprovalState({ trust: "standard", p: fixReview, roles: { builder: ["codex"], reviewer: ["agy"] } }).tools, false, "templates don't ask unless chosen");
 });
 
-test("default reviewer, judge and synthesizer avoid Antigravity after an explicit Ask for approval (t10-8)", () => {
+test("the default reviewer avoids Antigravity after an explicit Ask for approval (t10-8)", () => {
   state.agents.value = ["claude", "codex", "agy"].map((id) => ({ id, displayName: id, binary: id, available: true })) as typeof state.agents.value;
   state.health.value = ["claude", "codex", "agy"].map((id) => ({ id: id as "claude", name: id, installed: true, signedIn: true, compatible: true, managedCompatible: true }));
   state.roleSel.value = {};
   state.trust.value = "standard";
   const workflows = {
     pipeline: { id: "pipeline", roles: [{ id: "planner", default: ["claude"] }, { id: "builder", default: ["codex"] }, { id: "reviewer", default: ["codex"] }] },
-    race: { id: "race", roles: [{ id: "contestants", multiple: true, default: ["claude", "codex"] }, { id: "judge", default: ["claude"] }] },
-    debate: { id: "debate", roles: [{ id: "debaters", multiple: true, default: ["claude", "codex"] }, { id: "synthesizer", default: ["claude"] }] },
   } as unknown as Record<string, PatternInfo>;
-  const independent = { pipeline: "reviewer", race: "judge", debate: "synthesizer" } as const;
+  const independent = { pipeline: "reviewer" } as const;
   for (const [id, role] of Object.entries(independent)) {
     state.composerRunOptions.value = {};
     assert.deepEqual(state.rolesFor(workflows[id])[role], ["agy"], `${id}: a third vendor checks the work by default`);
@@ -88,5 +84,5 @@ test("the server names approvals when Antigravity refuses them, and keeps the ex
     assert.doesNotMatch(error.message, /Keychain|macOS executor/);
     return true;
   });
-  assert.throws(() => resolveRunPermissions({ policy: createRunPermissions("standard", false, false), provider: "agy", mode: "write", currentTrust: "standard", currentTools: false, remote: true }), new RegExp(AGY_MANAGED_PERMISSION_PROBLEM.slice(0, 40)));
+  assert.throws(() => resolveRunPermissions({ policy: createRunPermissions("standard", false, false), provider: "agy", mode: "write", currentTrust: "standard", currentTools: false, container: true }), new RegExp(AGY_MANAGED_PERMISSION_PROBLEM.slice(0, 40)));
 });

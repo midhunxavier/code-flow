@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright-core";
 
-// Templates, saved workflows and a project's remembered team prefill one draft; Settings keeps the
+// Browser templates, saved workflows and a project's remembered team prefill one draft; Settings keeps the
 // saved provider models and default workflow. Template dialogs describe what applying restores.
 const root = fileURLToPath(new URL("../..", import.meta.url));
 const TOKEN = "qa-composer-presets-global";
@@ -71,13 +71,11 @@ async function freshPage(seed: Record<string, string> = {}): Promise<{ context: 
   return { context, page };
 }
 async function newRun(page: Page, project: string) {
-  await page.goto(`${base}/#/project/${project}/new`);
+  await page.goto(`${base}/#/project/${project}/workflow`);
   await page.getByLabel("Task", { exact: true }).waitFor({ timeout: 15000 });
   await page.locator(".composer-summary").getByText("Restoring", { exact: false }).waitFor({ state: "detached" }).catch(() => {});
 }
 async function openAdvanced(page: Page) {
-  const options = page.locator(".composer-options");
-  if (await options.getAttribute("open") === null) await options.locator(":scope > summary").click();
   const advanced = page.locator(".advanced-controls");
   if (await advanced.getAttribute("open") === null) await advanced.locator(":scope > summary").click();
 }
@@ -87,25 +85,30 @@ async function settingsModels(page: Page) {
   const stored = await page.evaluate(() => JSON.parse(localStorage.getItem("agentSettings") ?? "null"));
   return { claude: stored?.claude?.effort, codex: stored?.codex?.effort, stored };
 }
-async function useTemplate(page: Page, label: string, values: Record<string, string> = {}) {
-  await page.locator(".composer").getByRole("button", { name: "Run actions", exact: true }).click();
-  await page.getByRole("menuitem", { name: "Use template…", exact: true }).click();
-  const dialog = page.getByRole("dialog", { name: "Template library", exact: true });
-  await dialog.getByLabel("Library", { exact: true }).selectOption("personal");
-  await dialog.getByLabel("Template", { exact: true }).selectOption({ label });
+/** Templates saved in the browser by earlier versions are applied from Project settings. */
+async function useTemplate(page: Page, project: string, label: string, values: Record<string, string> = {}) {
+  await page.goto(`${base}/#/settings/projects`);
+  await page.waitForLoadState("networkidle");
+  await page.locator("#settings-project").selectOption(project);
+  await page.getByLabel("Library scope").selectOption("personal");
+  const library = page.locator(".composer-library");
+  if (await library.getAttribute("open") === null) await library.locator(":scope > summary").click();
+  await library.getByLabel("Task template", { exact: true }).selectOption({ label });
+  const help = await library.locator("p.help").first().innerText();
+  await library.getByRole("button", { name: "Apply template", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: `Apply ${label}`, exact: true });
   for (const [name, value] of Object.entries(values)) await dialog.getByLabel(name, { exact: true }).fill(value);
-  const help = await dialog.locator("p.help", { hasText: "Review the settings" }).innerText();
   await dialog.getByRole("button", { name: "Use template", exact: true }).click();
   await dialog.waitFor({ state: "detached" });
+  await newRun(page, project); await openAdvanced(page);
   return help;
 }
 async function modelSource(page: Page, row: string) {
-  const details = page.locator("details.effective-settings");
-  if (await details.getAttribute("open") === null) await details.locator(":scope > summary").click();
+  const details = page.locator(".effective-settings");
   return details.locator("tbody tr", { has: page.locator("th", { hasText: row }) }).first().innerText();
 }
 
-test("templates and saved workflows set this draft's models without changing Settings > Agents & models", { timeout: 90_000 }, async () => {
+test("templates and saved workflows set this draft's models without changing Settings > Agents", { timeout: 90_000 }, async () => {
   const config = (agentSettings: object) => ({ pattern: "solo", roles: { agent: ["claude"] }, options: {}, agentSettings, roleSettings: {}, trust: "full", limits: { maxMinutes: 9, maxSteps: 4 }, approvePlan: false, toolApprovals: true, check: "true", setup: "" });
   const library = { schemaVersion: 1, presets: [{ id: "workflow", name: "Saved workflow", revision: 1, updatedAt: 1, config: config({}), history: [] }], templates: [
     { id: "plain", name: "Saved with defaults", pattern: "solo", task: "Review {{component}}", criteria: [], config: config({}), runOptions: { verification: "", container: { enabled: true, image: "qa-image:1", authVolume: "" } } },
@@ -114,22 +117,20 @@ test("templates and saved workflows set this draft's models without changing Set
   const { context, page } = await freshPage({ composerLibrary: JSON.stringify(library) });
   try {
     await newRun(page, projectB);
-    await page.getByRole("button", { name: "Edit run options", exact: true }).click(); await openAdvanced(page);
+    await openAdvanced(page);
     await page.getByLabel("Verification gates", { exact: true }).selectOption("lightweight");
-    await page.locator("details.agent-isolation > summary").click();
     const permissions = await page.locator(".taskbox").getByRole("button", { name: /^Permissions:/ }).innerText();
     const budget = [await page.locator("#maxMinutes").inputValue(), await page.locator("#maxSteps").inputValue()];
-    const help = await useTemplate(page, "Saved with defaults", { component: "README" });
-    assert.doesNotMatch(help, /permissions \((safe|standard|trusted|full)\)/, "the dialog doesn't promise to restore the template's permissions");
-    assert.match(help, /Permissions, approvals, limits and agent isolation stay as set in this draft/);
+    const help = await useTemplate(page, projectB, "Saved with defaults", { component: "README" });
+    assert.doesNotMatch(help, /permissions \((safe|standard|trusted|full)\)/, "the library doesn't promise to restore the template's permissions");
+    assert.match(help, /permissions, approvals, limits and agent isolation stay as they are/);
     assert.equal(await page.getByLabel("Task", { exact: true }).inputValue(), "Review README");
     assert.equal(await page.locator(".taskbox").getByRole("button", { name: /^Permissions:/ }).innerText(), permissions, "the draft keeps its permissions");
-    assert.equal(await page.getByLabel("Verification gates", { exact: true }).inputValue(), "", "a template saved with the single check restores it");
     assert.equal(await page.getByRole("checkbox", { name: "Run agents in a prebuilt Docker image" }).isChecked(), false, "the draft keeps its isolation");
     assert.deepEqual([await page.locator("#maxMinutes").inputValue(), await page.locator("#maxSteps").inputValue()], budget, "the template does not apply its saved budget");
     assert.deepEqual(await page.evaluate(() => JSON.parse(localStorage.getItem("agentSettings")!)), SAVED_MODELS, "a template saved with Default models doesn't erase the provider defaults");
 
-    await useTemplate(page, "Saved with medium", { component: "the broker" });
+    await useTemplate(page, projectB, "Saved with medium", { component: "the broker" });
     assert.match(await modelSource(page, "agent · claude"), /medium[\s\S]*Template Saved with medium/, "the template's model applies to this draft");
     const started = page.waitForRequest(request => new URL(request.url()).pathname === "/api/runs" && request.method() === "POST");
     await page.locator(".task-start").click();
@@ -160,19 +161,19 @@ test("a project's remembered team prefills only its own draft and Settings says 
   const { context, page } = await freshPage();
   try {
     await newRun(page, projectA);
-    await page.getByRole("button", { name: "Edit run options", exact: true }).click(); await openAdvanced(page);
+    await openAdvanced(page);
     assert.equal(await page.locator("#workflow-select").inputValue(), "pipeline", "the project's draft starts from its remembered workflow");
     assert.match(await modelSource(page, "Workflow"), /Project defaults/);
     assert.match(await modelSource(page, "planner · claude"), /low[\s\S]*Project defaults/);
     assert.deepEqual(await page.evaluate(() => [localStorage.getItem("pattern"), localStorage.getItem("roleSel"), JSON.parse(localStorage.getItem("agentSettings")!)]), ["solo", null, SAVED_MODELS]);
 
-    assert.deepEqual(await settingsModels(page), { claude: "high", codex: "low", stored: SAVED_MODELS }, "Settings > Agents & models keeps the saved choices");
+    assert.deepEqual(await settingsModels(page), { claude: "high", codex: "low", stored: SAVED_MODELS }, "Settings > Agents keeps the saved choices");
     await page.goto(`${base}/#/settings/runs`);
     assert.equal(await page.getByLabel("Default chat mode").inputValue(), "solo", "Settings > Run defaults keeps its default workflow");
     assert.deepEqual(await page.getByLabel("Default chat mode").locator("option").allTextContents(), ["Agent", "Team"]);
 
     await newRun(page, projectC);
-    await page.getByRole("button", { name: "Edit run options", exact: true }).click(); await openAdvanced(page);
+    await openAdvanced(page);
     assert.equal(await page.locator("#workflow-select").inputValue(), "solo", "another project starts from Settings > Run defaults");
     assert.doesNotMatch(await modelSource(page, "Workflow"), /Project defaults/, "another project's label doesn't carry over");
     assert.match(await modelSource(page, "agent · claude"), /high/);
@@ -180,36 +181,3 @@ test("a project's remembered team prefills only its own draft and Settings says 
   } finally { await context.close(); }
 });
 
-test("both template save entries refuse a restored verification profile with the same explanation", { timeout: 90_000 }, async () => {
-  const run = await api("/api/runs", { repo: repoB, project: projectB, task: "Verify with custom gates", pattern: "pipeline", roles: { planner: ["claude"], builder: ["codex"], reviewer: ["claude"] }, options: {}, trust: "standard", approvals: { plan: false }, loop: { check: "true", maxSteps: 10, maxMinutes: 5, verification: { name: "lightweight", checks: [{ id: "unit", kind: "unit", command: "true", required: true, timeoutMs: 10000 }] } } });
-  await finished(run.id);
-  const { context, page } = await freshPage();
-  try {
-    await page.goto(`${base}/#/run/${run.id}`);
-    await page.getByRole("button", { name: "More run actions", exact: true }).click();
-    await page.getByRole("menuitem", { name: "Edit & run again", exact: true }).click();
-    await page.waitForURL(url => /^#\/project\/[^/]+\/new$/.test(url.hash));
-    await page.getByRole("button", { name: "Edit run options", exact: true }).click(); await openAdvanced(page);
-    assert.equal(await page.getByLabel("Verification gates", { exact: true }).inputValue(), "restored");
-    const reason = "Choose a verification preset before saving a template";
-    await page.locator(".composer").getByRole("button", { name: "Run actions", exact: true }).click();
-    const item = page.getByRole("menuitem", { name: /Save as template/ });
-    assert.equal(await item.isDisabled(), true); assert.match(await item.innerText(), new RegExp(reason));
-    await page.keyboard.press("Escape");
-    const button = page.getByRole("button", { name: "Save task preset", exact: true });
-    assert.equal(await button.isDisabled(), true, "the Advanced entry has the same guard");
-    assert.equal(await page.locator(`#${await button.getAttribute("aria-describedby")}`).innerText(), `${reason}.`);
-
-    await page.getByLabel("Verification gates", { exact: true }).selectOption("lightweight");
-    await button.click();
-    const save = page.getByRole("dialog", { name: "Save as template", exact: true });
-    assert.doesNotMatch(await save.locator("p.help").innerText(), /permissions, checks and run settings/);
-    await save.getByLabel("Template name", { exact: true }).fill("Lightweight after retry");
-    await save.getByLabel("Save to").selectOption("personal");
-    await save.getByRole("button", { name: "Save template", exact: true }).click();
-    await save.waitFor({ state: "detached" });
-    const stored = await page.evaluate(() => JSON.parse(localStorage.getItem("composerLibrary")!).templates.find((item: any) => item.name === "Lightweight after retry"));
-    assert.equal(stored.runOptions.verification, "lightweight");
-    assert.deepEqual(errors, []);
-  } finally { await context.close(); }
-});

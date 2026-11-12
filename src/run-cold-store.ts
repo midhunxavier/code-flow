@@ -17,7 +17,7 @@ const shorten = (text: string | undefined, size: number) => text && text.length 
 
 /** Pending/resumable work stays hot. Archiving never grants a new execution permission. */
 export function coldEligible(run: Run): boolean {
-  return run.archived && run.status === "done" && !run.awaiting && !run.team?.awaitingRequestId && !run.pauseRequested && !run.notes.some((note) => note.status === "queued") && !run.followUps.some((turn) => turn.status === "pending") && Object.keys(run.watches).length === 0 && !run.steps.some((step) => step.status === "running" || step.remote?.ambiguous || step.remote && ["accepted", "running", "unknown"].includes(step.remote.state));
+  return run.archived && run.status === "done" && !run.awaiting && !run.team?.awaitingRequestId && !run.pauseRequested && !run.notes.some((note) => note.status === "queued") && !run.followUps.some((turn) => turn.status === "pending") && Object.keys(run.watches).length === 0 && !run.steps.some((step) => step.status === "running");
 }
 
 /** Indexes keep ownership, source trust and exact statistical counters, without execution evidence. */

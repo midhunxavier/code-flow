@@ -1,19 +1,16 @@
 import { SshConnections, executionHost, managesConnections } from "./ssh-projects.js";
 import { ownerOnLocalListener } from "./lib.js";
-import { RemoteWorkersView } from "./remote-workers.js";
 import { RemoteAccess } from "./remote-access.js";
 import { TeamSettings, TeamJoinSettings } from "./collab-settings.js";
 import { lazyView } from "./lazy-view.js";
 const TeamServerWizard = lazyView(() => import("./team-server-wizard.js").then(module => module.TeamServerWizard));
 import { SharedAccountsPanel } from "./shared.js";
 import { projects } from "./state.js";
-import { peopleEnabled, setPeopleEnabled } from "./preferences.js";
 import { AcpConnectionsPanel } from "./acp-connections.js";
 
 export const CONNECTION_PURPOSES = [
   { id: "agents", label: "Coding agents", description: "Connect another coding agent installed on this computer." },
   { id: "workspace", label: "Computers", description: "Open a complete workspace over SSH, with files, terminals and agents on that computer." },
-  { id: "execution", label: "Workers", description: "Send individual agent turns to a provisioned SSH worker while keeping this workspace here." },
   { id: "sharing", label: "Sharing", description: "Open this computer from another device or collaborate with people." },
 ] as const;
 export function ConnectionsView({ purpose = "workspace", connection }: { purpose?: string; connection?: string }) {
@@ -24,7 +21,6 @@ export function ConnectionsView({ purpose = "workspace", connection }: { purpose
     <nav class="purpose-nav" aria-label="Connection purpose">{CONNECTION_PURPOSES.map(item => <a class={`btn ${selected.id === item.id ? "primary" : ""}`} href={`#/settings/connections/${item.id}`} title={item.description} aria-current={selected.id === item.id ? "page" : undefined}>{item.label}</a>)}</nav>
     {selected.id === "agents" ? <AcpConnectionsPanel /> : null}
     {selected.id === "workspace" ? <SshConnections /> : null}
-    {selected.id === "execution" ? <><RemoteWorkersView /><p class="help">To run shared tasks on a teammate’s computer or grant host execution, configure <a href="#/settings/connections/manage">Board and People under Share access</a>.</p></> : null}
     {selected.id === "sharing" ? <>
       <nav class="connection-journeys" aria-label="Share access options">
         {[
@@ -34,14 +30,13 @@ export function ConnectionsView({ purpose = "workspace", connection }: { purpose
         ].map(item => <a class="connection-journey" key={item.id} href={`#/settings/connections/${item.id}`} title={item.text} aria-current={purpose === item.id ? "page" : undefined}><b>{item.title}</b><span>{item.text}</span><span class="connection-action">{purpose === item.id ? "Selected" : "Get started →"}</span></a>)}
       </nav>
       {purpose === "devices" ? host.kind === "local" ? <RemoteAccess /> : <p class="help">Device access is configured on your local computer. {host.kind === "ssh" ? <a href="/#/settings/connections/devices">Open local access settings</a> : null}</p> : null}
-      {purpose === "join" ? host.kind === "local" ? ownerOnLocalListener.value ? <TeamJoinSettings connection={connection} /> : <p class="help">Team connections are managed in CodeFlow on your computer.</p> : <p class="help">Connect from CodeFlow on your own computer. <a href="/#/settings/connections/join">Open local team connections</a></p> : null}
+      {purpose === "join" ? host.kind === "local" ? ownerOnLocalListener.value ? <TeamJoinSettings connection={connection} /> : <p class="help">Team connections are managed in Code Flow on your computer.</p> : <p class="help">Connect from Code Flow on your own computer. <a href="/#/settings/connections/join">Open local team connections</a></p> : null}
       {purpose === "host" && managesConnections(host) ? <TeamServerWizard onClose={() => { location.hash = "#/settings/connections/sharing"; }} /> : null}
-      {purpose === "host" && !managesConnections(host) ? <p class="help">Open CodeFlow on the server’s owner computer to set up project access and invite teammates.</p> : null}
+      {purpose === "host" && !managesConnections(host) ? <p class="help">Open Code Flow on the server’s owner computer to set up project access and invite teammates.</p> : null}
       <a class={`btn small ${purpose === "manage" ? "primary" : ""}`} aria-current={purpose === "manage" ? "page" : undefined} href="#/settings/connections/manage">Manage existing connections and access</a>
       {purpose === "manage" ? <>
       <h3>Manage existing connections and access</h3>
-      {host.kind === "local" ? <RemoteAccess /> : null}
-      <section class="settings-card"><h3>People</h3><p>Shared boards, reviews and handovers. Manage project membership in Project → People and access.</p><label class="checkpoint"><input type="checkbox" checked={peopleEnabled.value} onChange={event => setPeopleEnabled(event.currentTarget.checked)} /><span>Show Board in the app menu</span></label><p class="help">Show an unused Board shortcut in this browser. Configured collaboration remains visible; access is controlled by project roles and grants.</p></section>
+      <section class="settings-card"><h3>People</h3><p>Shared boards, reviews and handovers. Manage project membership in Project → People and access.</p></section>
       {<><a class="btn" href="#/team">{host.kind === "ssh" ? "Open computer board" : "Open Board"}</a><TeamSettings />{host.kind !== "ssh" ? <SharedAccountsPanel projects={projects.value} /> : null}</>}
       </> : null}
     </> : null}

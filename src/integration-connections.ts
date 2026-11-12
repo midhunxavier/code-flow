@@ -5,7 +5,6 @@ import { join } from "node:path";
 import { CODEFLOW_HOME } from "./config.js";
 import { git } from "./git.js";
 import { ghAuthStatus, listIssues } from "./github.js";
-import type { Integrations } from "./integrations.js";
 import type { Notifications, TargetConfig } from "./notifications.js";
 
 export const CONNECTION_PROVIDERS = ["github", "slack", "webhook"] as const;
@@ -67,7 +66,7 @@ export class IntegrationConnections {
   private queue: Promise<unknown> = Promise.resolve();
   private tests = new Map<string, { record: ConnectionRecord; secrets: Record<string, string>; previous?: number; expiresAt: number }>();
   private readonly directory: string;
-  constructor(private readonly options: { integrations: Integrations; notifications: Notifications; directory?: string; githubTest?: (repository: string) => Promise<void>; notificationsAvailable?: boolean; warnings?: string[] }) {
+  constructor(private readonly options: { notifications: Notifications; directory?: string; githubTest?: (repository: string) => Promise<void>; notificationsAvailable?: boolean; warnings?: string[] }) {
     this.directory = options.directory ?? join(CODEFLOW_HOME, "integration-secrets");
   }
   async load() {
@@ -140,9 +139,8 @@ export class IntegrationConnections {
   list(): ConnectionSummary[] {
     this.assertReady();
     const managed = this.state.connections.filter(c => supported(c.provider)).map(c => ({ id: c.id, name: c.name, provider: c.provider, scope: c.scope, repository: c.repository, configured: true, administratorManaged: false, capabilities: capabilities(c.provider) }));
-    const admin = this.options.integrations.list().filter(c => c.administratorManaged).map(c => ({ id: c.id, name: c.name, provider: c.provider, scope: c.project, configured: c.configured, administratorManaged: true, capabilities: capabilities(c.provider) }));
     const destinations = this.options.notifications.list().filter(c => c.administratorManaged).map(c => ({ id: `notification:${c.id}`, name: c.name, provider: c.protocol, scope: c.host ?? "", configured: c.configured, administratorManaged: true, capabilities: capabilities(c.protocol) }));
-    return [...managed, ...admin, ...destinations].map(connection => ({ ...connection,
+    return [...managed, ...destinations].map(connection => ({ ...connection,
       projectIds: [...new Set(this.state.bindings.filter(binding => binding.connectionId === connection.id).map(binding => binding.projectId))],
       ...(notify(connection.provider) && this.options.notificationsAvailable === false ? { unavailable: "Notification delivery storage is unavailable. Repair it and restart before testing or enabling delivery." } : {}),
     }));
@@ -198,8 +196,7 @@ export class IntegrationConnections {
     const connection = this.get(id);
     if (connection.unavailable) throw new Error(connection.unavailable);
     if (connection.provider === "github") await this.checkGithub(repository || connection.repository!);
-    else if (notify(connection.provider)) return { message: "Use Send test notification to verify this destination. Testing sends a message." };
-    else await this.options.integrations.items(id, "issue");
+    else return { message: "Use Send test notification to verify this destination. Testing sends a message." };
     return { message: "Connection verified." };
   }
   private async checkGithub(repository: string) {

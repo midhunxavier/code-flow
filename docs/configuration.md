@@ -7,8 +7,8 @@ Use Settings for application preferences and connections. Open a project’s Rep
 Open **Settings** at the bottom of the sidebar, press **⌘, / Ctrl+,**, or search for a settings category in the command palette. Categories have shareable addresses such as `#/settings/ssh`; browser Back and Forward preserve navigation. Search settings by a feature name such as “theme”, “permissions”, “VM”, or “Tailscale”.
 
 - **General:** light, dark, or system appearance; sidebar grouping; archived runs; keyboard shortcuts. Terminals follow the selected appearance.
-- **Agents & models:** provider health and usage, model and effort defaults. Sign in through the provider CLI on the current machine.
-- **Run defaults:** workflow, plan approval, agent permissions and run limits. These update the composer’s remembered choices and the current draft; running work is unchanged. A project that remembers the team of its last run starts its new drafts from that workflow, team and models instead; Run defaults lists those projects, and opening one doesn’t change these settings. Models chosen by a project’s remembered team, a template or a per-role choice apply to that draft only; the Agents & models defaults stay as saved.
+- **Agents:** provider health and usage, model and effort defaults. Sign in through the provider CLI on the current machine.
+- **Run defaults:** workflow, plan approval, agent permissions and run limits. These update the composer’s remembered choices and the current draft; running work is unchanged. A project that remembers the team of its last run starts its new drafts from that workflow, team and models instead; Run defaults lists those projects, and opening one doesn’t change these settings. Models chosen by a project’s remembered team, a template or a per-role choice apply to that draft only; the Agents defaults stay as saved.
 - **Notifications:** browser notifications and outbound notification destinations.
 - **SSH connections:** save and open remote VMs, with optional port and identity-file overrides. See [SSH projects](ssh-projects.md).
 - **Remote access:** Tailscale, Wi-Fi, pairing and device access to the local workspace.
@@ -19,7 +19,7 @@ Open **Settings** at the bottom of the sidebar, press **⌘, / Ctrl+,**, or sear
 
 Appearance, run defaults and sidebar preferences save in this browser, separately for each SSH workspace. SSH definitions and the team link with its repository mappings save on the local server; project, access, notification and retention settings save on the machine hosting that workspace; team board tasks, checkpoints and runner registrations save on the team server the link points to. Controls with a **Save** action keep their existing explicit save behavior. Numeric run limits save when you leave the field; invalid values restore the previous setting.
 
-**Project → Repository tools** contains verification, code editing, dependency and context inspection, checkpoints and coordinated changes. **Inbox** and **Automations** are sidebar destinations. Open **Insights** and the workspace from the application menu or command palette. Older Settings URLs redirect to the current destinations.
+**Project → Repository tools** contains verification, code editing, dependency and context inspection and checkpoints. **Inbox**, **Automations** and **Insights** are sidebar destinations; **Board** joins them once a team is connected. Older Settings URLs such as `#/settings/inbox` redirect to the current destinations.
 
 ## Per-repo config
 
@@ -27,7 +27,7 @@ Commit `.codeflow/config.json` and every run in that repo (and every teammate) g
 
 - The check and setup commands live in this file. **Project → Settings → Advanced → Run defaults** reads them from it and **Save project defaults** writes them back into your checkout's file (your other settings in it are kept), for you to commit. A detected command is shown but never saved for you. A command an older version saved in your browser is used only while the file has none, and moves into the file the next time you save. In New run, a start branch whose committed file has no check or setup uses the ones saved in your checkout's file.
 
-- The defaults come from the commit the run starts on: choose another start branch in New run and its committed file supplies the check, setup, limits and models (the note in **Run options** names the branch). `trust` and `copy` always come from your checkout's file, since they concern this computer and a branch mustn't widen them. Runs from an issue, a pull request or an imported source, and continuations of a run, use your checkout's file.
+- The defaults come from the commit the run starts on: choose another start branch in New run and its committed file supplies the check, setup, limits and models (the note in **Advanced** names the branch). `trust` and `copy` always come from your checkout's file, since they concern this computer and a branch mustn't widen them. Runs from an issue, a pull request or an imported source, and continuations of a run, use your checkout's file.
 - A draft keeps only what you set for it: a check or setup you typed, limits you changed in **Advanced**, a permission you picked, or what **Edit & run again** restored. Everything else is read again from **Settings** and this file whenever the draft opens, so a changed file applies to drafts you saved earlier. **Run details** names where each value came from.
 - Limits saved in **Settings → Run defaults** count as set in the UI and win over this file's `limits`. Until you save some there, the file's `maxMinutes` and `maxSteps` are the composer's limits.
 
@@ -72,7 +72,7 @@ Commit `.codeflow/config.json` and every run in that repo (and every teammate) g
 | Trusted | any command | sandboxed, with network | sandboxed to the worktree |
 | Full access | any tool, no permission checks (`bypassPermissions`) | no sandbox (`danger-full-access`) | no sandbox (no `--sandbox`) |
 
-The composer's **Permissions** menu offers the same modes, plus **Ask for approval**: Standard, with supported tool requests sent to the approval inbox. A Claude or Codex conversation at Standard asks by default; a repository's `"trust"` default shows as its own mode. Remote workers, Docker isolation and Safe can't ask, so those runs start without approvals. Antigravity can't ask either: a team that gives it a role needs another mode, and Run details shows what the run will use.
+The composer's **Permissions** menu offers the same modes, plus **Ask for approval**: Standard, with supported tool requests sent to the approval inbox. A Claude or Codex conversation at Standard asks by default; a repository's `"trust"` default shows as its own mode. Docker isolation and Safe can't ask, so those runs start without approvals. Antigravity can't ask either: a team that gives it a role needs another mode, and Run details shows what the run will use.
 
 **Full access** turns every agent's sandbox off in steps that build: an agent can run anything, use the network, and change files outside its worktree with your credentials. Use it only on repos and tasks you trust completely. To keep it a choice you make:
 
@@ -85,7 +85,7 @@ Whatever the mode, code-flow never merges or pushes on its own.
 
 ## Models
 
-Per provider in **Settings → Agents & models**, and per role right under each role's agents in the team. See [Getting started](getting-started.md#models-and-effort).
+Per provider in **Settings → Agents**, and per role right under each role's agents in the team. See [Getting started](getting-started.md#models-and-effort).
 
 ## Light or dark
 
@@ -119,14 +119,12 @@ Once an agent CLI reports its final result, it gets 10 seconds to exit; one that
 | `CODEFLOW_REMOTE_PORT` | `PORT+1` | Port for the phone view (or the full app, with phone control) and webhooks on your network, when Wi-Fi or Tailscale is selected under **Remote access** |
 | `CODEFLOW_TLS_CERT`, `CODEFLOW_TLS_KEY` | unset | Optional certificate/key file paths overriding saved HTTPS setup in Settings → Connections → Share access. Configure both together; full control requires TLS on Wi-Fi and Tailscale so browser session cookies remain Secure |
 | `CODEFLOW_ALLOW_INSECURE_PHONE_CONTROL` | unset | Explicit `1` permits full phone control over HTTP for development |
-| `CODEFLOW_INTEGRATIONS_FILE`, `CODEFLOW_INTEGRATIONS_JSON` | unset | Explicit read-only [external source](external-sources.md) definitions with server credential references. No source providers are built in, so entries are rejected unless a build adds one in code |
-| `CODEFLOW_REMOTE_WORKERS_FILE`, `CODEFLOW_REMOTE_WORKERS_JSON` | unset | Explicit provisioned SSH targets and repository mapping names; see [remote workers](remote-workers.md) |
 | `CODEFLOW_EXTENSIONS_FILE`, `CODEFLOW_EXTENSIONS_JSON` | unset | Explicit trusted bundled provider/workflow plugins with API negotiation and SHA-256 pins; choose one configuration source; see [extensions](extensions.md) |
 | `CODEFLOW_NOTIFICATIONS_FILE`, `CODEFLOW_NOTIFICATIONS_JSON` | unset | Explicit outbound destinations; targets remain disabled until event/project opt-in; see [notifications](notifications.md) |
 | `CODEFLOW_SCHEDULER_TICK_MS` | `30000` | How often due automations are checked |
 | `CODEFLOW_WATCH_INTERVAL_MS` | `60000` | How often watched PRs are checked for CI results and new comments. A PR that stays green with no new comments is checked less often, up to every 10 minutes |
 | `CODEFLOW_CODEX_TRANSPORT` | `auto` | `auto`: `codex app-server` when the installed Codex has it, else `codex exec`. A Codex without app-server is re-checked every 10 minutes; a slow or failed app-server start fails only that turn. `app-server`: require it. `exec`: always `codex exec` (your notes then wait for Codex's next turn) |
-| `CODEFLOW_CODEX_PROFILE` | none | The Codex profile every Codex turn uses: Codex layers `<name>.config.toml` from its home (`~/.codex`, or `CODEX_HOME`) over its own config, for example to use Ollama or another OpenAI-compatible provider. It wins over the profile chosen in **Settings → Agents & models → Codex profile**. With a profile, Codex turns always run through `codex exec` (`codex app-server` has no profile option), so a message sent during a turn waits for the next one and runs that need tool approvals can't use Codex. A profile whose file is missing fails the turn instead of running on your default account. |
+| `CODEFLOW_CODEX_PROFILE` | none | The Codex profile every Codex turn uses: Codex layers `<name>.config.toml` from its home (`~/.codex`, or `CODEX_HOME`) over its own config, for example to use Ollama or another OpenAI-compatible provider. It wins over the profile chosen in **Settings → Agents → Codex profile**. With a profile, Codex turns always run through `codex exec` (`codex app-server` has no profile option), so a message sent during a turn waits for the next one and runs that need tool approvals can't use Codex. A profile whose file is missing fails the turn instead of running on your default account. |
 | `CODEFLOW_PYTHON` | `python3` | The Python 3 that runs the side panel Terminal's pseudo-terminal (`scripts/pty.py`). It's found once and run by its full path, so a repository that pins another Python (pyenv, asdf, mise) still gets a terminal. Without a working one, terminals are line-based (`interactiveTerminal: false` in `/api/health`) |
 | `CODEFLOW_CHROME` | first one installed | Chrome, Chromium, Edge or Brave executable for the live Browser and visual-comparison captures. The legacy `CODEFLOW_CHROME_PATH` alias is accepted only when `CODEFLOW_CHROME` is unset |
 | `CODEFLOW_AGY_SKIP_PERMISSIONS` | `1` | Legacy agy calls only, the ones without a run permission policy (prompt improvement, docs help, runs saved before run policies): set to `0` to stop passing `--dangerously-skip-permissions` there, then configure `permissions.allow` in `~/.gemini/antigravity-cli/settings.json`. Runs ignore it: isolated Antigravity never passes the flag, and unrestricted Antigravity always does |
@@ -143,13 +141,12 @@ Child processes exclude the application API token, scoped team capabilities, int
 | `runs/<run>.journal.jsonl` | The result of each completed step, written to disk at once, so **Resume** replays them instead of running them again |
 | `runs/<run>.cold-index.json`, `runs/<run>.cold-detail.json` | Optional source-validated archived projections; corrupt/stale projections rebuild from the event log. Full archived detail uses a bounded cache; see [run storage](run-storage.md) |
 | `shared-accounts.json` | Private password/session hashes, expiring accounts and project roles. Never exported in backups; see [shared projects](shared-projects.md) |
-| `shared-reviews/<run>.json` | Commit-anchored human comments, separate from agent notes and prompts |
+| `shared-reviews/<run>.json` | Commit-anchored human comments on a run's result (the owner's **Changes → Comments**, and comments shared reviewers recorded in earlier versions), separate from agent notes and prompts |
 | `team/` | The team board this instance serves: `board.json` (each project's repository keys and its tasks with attempts, checkpoint manifests, discussion, decisions, instructions, reviews, hand-overs and audit), `runners.json` (runner names and credential hashes, never credentials), `inbox.json` and `checkpoints/<checkpoint id>.bundle`. Written whole through temporary files (heartbeats and progress reports reach `board.json` with the next durable change or within 30 s); one that can't be read is moved aside to `<name>.corrupt-<time>` and logged. At startup, temporary files and bundles that no available checkpoint lists are removed from `checkpoints/` and the removal is logged. Included in backups; see [team collaboration](team-collaboration.md) |
 | `team-link.json` | This computer's link to a team server: its address, this computer's runner credential, your account, your repository mappings and defaults (mode 0600). Never exported in backups, like `shared-accounts.json`, and skipped by a restore; after restoring a backup on a linked computer, connect it again in **Settings → Connections → Share access → People** and re-enter its repository mappings and defaults |
 | `team-link/attempts/<attempt>.json` | Which local run belongs to which board attempt, and what was published; read at startup, by the recovery pass every minute and after a restore to reconcile with the team server, never to start anything again |
 | `team-link/bundles/<checkpoint id>.bundle` | A checkpoint bundle this computer created, kept until the team server has received it; a failed upload is retried with the same file, and the file of a checkpoint that was given up is deleted |
 | `filesystem-policies/<project>.json` | Revisioned read/write rules and content hashes; see [filesystem policy](filesystem-policy.md) |
-| `remote-worker-private/` | Private SSH receipt capabilities; excluded from ordinary result projections and restore authority |
 | `extension-cache/` | Captured trusted plugin bundles; excluded from backup/restore and rebuilt only from explicit reviewed configuration |
 | `projects.json` | Your [projects](runs.md#projects): names, repositories, and the team each one last used. Written whole (through a temporary file); a change that can't be saved fails and is undone. Invalid JSON or unusable entries are preserved in `projects.json.corrupt-<time>`; the composer shows the backup filename and recovery guidance for that server session. An unreadable file, or one that cannot be moved aside, is retained and projects are off. The composer explains the actual cause and can start unassigned runs. Stop Code Flow before repairing or restoring the file in `CODEFLOW_HOME`, then restart |
 | `server.log` | code-flow's own log, one JSON line per entry: failed requests, unhandled errors, failed writes, processes it cleaned up. Past 5 MB it moves to `server.log.1` (one old file is kept) |
@@ -158,11 +155,11 @@ Child processes exclude the application API token, scoped team capabilities, int
 
 ## Dynamic teams
 
-`CODEFLOW_AUTO_TEAM_ENABLED=false` disables new Auto team runs while preserving saved-run viewing and recovery. The rollout record and evaluation evidence are shown in Insights; the composer selects Auto initially only at the `default` stage when there is no saved workflow preference. The recorded stage is informational (and a composer default when set to `default`); only `CODEFLOW_AUTO_TEAM_ENABLED` changes whether new Auto runs can start. Existing runs without the `eventDriven` option retain dependency-wave replay; newly created Auto runs default it on.
+Auto team runs are always available. Existing runs without the `eventDriven` option retain dependency-wave replay; newly created Auto runs default it on.
 
 The authenticated run API accepts `loop.maxInvocations` as an additional per-allocation ceiling on actual CLI launches, including retries. Auto already caps launches with its step budget. Follow-up requests can specify `budget: { maxSteps, maxInvocations, maxMinutes }`; the UI exposes this fresh allocation and retains lifetime usage.
 
-Project memory is in `memory.sqlite`, with automatic verified import from `memory.json`, indexed keyword search and a lightweight knowledge graph. See [Memory storage](memory-storage.md) for migration, rollback, runtime requirements and backup behavior. Evaluation reports and the explicit rollout decision still use durable replacement files under the evaluation store in `CODEFLOW_HOME`. See [Auto team](auto-team.md) for scope, trust, revision and deletion semantics.
+Project memory is in `memory.sqlite`, with automatic verified import from `memory.json`, indexed keyword search and a lightweight knowledge graph. See [Memory storage](memory-storage.md) for migration, rollback, runtime requirements and backup behavior. See [Auto team](auto-team.md) for scope, trust, revision and deletion semantics.
 
 ---
 

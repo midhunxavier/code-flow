@@ -10,10 +10,12 @@ export const chatSearchTarget = signal<{ id: string; sequence: number } | undefi
 export const chatHistoryError = signal("");
 let cursor = "";
 let requestSequence = 0;
-export function openChat(project = composerProject.value) { if (onPhone || !ownerOnLocalListener.value || executionHost.value.kind !== "local") { void openComposer(project); return; } route.value = { view: "chat", id: "new", ...(project ? { project } : {}) }; }
+/** Chat runs for the owner on this computer. A phone, another device or an SSH host starts work in the run form. */
+export const chatAllowed = () => !onPhone && ownerOnLocalListener.value && executionHost.value.kind === "local";
+export function openChat(project = composerProject.value) { if (!chatAllowed()) { void openComposer(project); return; } route.value = { view: "chat", id: "new", ...(project ? { project } : {}) }; }
 export async function refreshChats() {
   const sequence = ++requestSequence;
-  if (onPhone || !ownerOnLocalListener.value || executionHost.value.kind !== "local") { chats.value = []; cursor = ""; return; }
+  if (!chatAllowed()) { chats.value = []; cursor = ""; return; }
   if (!agents.value.length || executionPaused.value) { cursor = ""; chatHistoryError.value = executionPaused.value ? "Chat history is paused by the filesystem restriction." : ""; return; }
   const params = new URLSearchParams({ q: chatQuery.value, archived: "false", ...(cursor ? { after: cursor } : {}) });
   try {
@@ -31,7 +33,7 @@ export function watchChats() {
   let stopped = false, timer: ReturnType<typeof setTimeout>, debounce: ReturnType<typeof setTimeout>, streamCursor: string | undefined;
   const schedule = () => { clearTimeout(debounce); debounce = setTimeout(() => { if (!stopped) void refreshChats(); }, 100); };
   const off = effect(() => {
-    const allowed = !onPhone && ownerOnLocalListener.value && agents.value.length && !executionPaused.value && executionHost.value.kind === "local";
+    const allowed = chatAllowed() && agents.value.length && !executionPaused.value;
     chatQuery.value; railView.value.archived; cursor = ""; schedule();
     if (!allowed) return;
     return subscribe("chats:all", data => { if (data.cursor) streamCursor = data.cursor; if (["changed", "hello"].includes(data.type)) schedule(); }, () => streamCursor);

@@ -17,13 +17,12 @@ function manager(pattern: Pattern) { const value = new RunManager((id) => id ===
 function latch() { let resolve!: () => void; const promise = new Promise<void>((done) => resolve = done); return { promise, resolve }; }
 async function finished(run: Run) { const deadline = Date.now() + 10_000; while (run.status === "running") { if (Date.now() > deadline) throw new Error("Fixture timed out"); await new Promise((done) => setTimeout(done, 10)); } return run; }
 
-test("restrictive filesystem policy rejects full-trust native, remote and setup/check startup before execution", async () => {
+test("restrictive filesystem policy rejects full-trust native and setup/check startup before execution", async () => {
   const path = repo(), marker = join(path, "MUST_NOT_RUN"); let workflowCalls = 0;
   const pattern: Pattern = { id: "fixture", name: "Fixture", summary: "", description: "", roles: [], options: [], run: async () => { workflowCalls++; return "forbidden"; } };
   const value = manager(pattern); value.setFilesystemPolicyGuard(async () => [policy(true)]);
   const input = { repo: path, pattern, task: "policy fixture", roles: { agent: ["claude" as const] }, options: {}, trust: "full" as const, loop: { setup: `touch '${marker}'`, check: `touch '${marker}'`, copy: [] } };
   await assert.rejects(value.start(input), /cannot enforce/);
-  await assert.rejects(value.start({ ...input, loop: { ...input.loop, remoteWorker: { workerId: "unprobed", repoMapping: "fixture" } } }), /cannot enforce/);
   assert.equal(workflowCalls, 0); assert.equal(value.list().length, 0); assert.equal(existsSync(marker), false);
 });
 

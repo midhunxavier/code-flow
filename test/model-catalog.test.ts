@@ -73,9 +73,8 @@ test('environment, account changes and removed models invalidate earlier eligibi
         data = { ...data, models: [data.models[1]!], defaultModel: 'no-effort' };
         const c = await store.get('codex', { force: true });
         assert.match(assignmentProblem(c, selection.model, selection.effort)!, /not reported/);
-        assert.notEqual(modelEnvironment(), modelEnvironment({}, 'remote-worker'));
         assert.notEqual(modelEnvironment(), modelEnvironment({ isolatedAgy: true }), 'host discovery cannot attest to the isolated worker environment');
-        assert.equal((await store.get('codex', { environment: modelEnvironment({}, 'other'), offline: true })).models.length, 0);
+        assert.equal((await store.get('codex', { environment: 'other', offline: true })).models.length, 0);
     }
     finally {
         await rm(home, { recursive: true, force: true });

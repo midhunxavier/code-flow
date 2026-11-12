@@ -33,16 +33,8 @@ const ASSERTION =
 
 export const isTestFile = (path: string) => TEST_FILE.test(path);
 
-const SOURCE = /\.(?:[cm]?[jt]sx?|py|go|rs|java|kt|kts|scala|rb|cs|swift|php|c|cc|cpp|h|hpp|m|mm|ex|exs|dart|lua|vue|svelte)$/i;
 /** Fixtures and expected outputs a test compares against: changing them makes a test pass too. */
 const FIXTURE = /(^|\/)(__snapshots__|__fixtures__|fixtures?|testdata|test-data|golden|snapshots?)\/|\.snap$/i;
-
-/**
- * Code that isn't a test, a test's config, or a fixture: a stub a tester added so its tests can
- * import something is this kind, and the builder's to fill in. Anything else the tester wrote
- * (snapshots, golden files, conftest.py) is part of the tests.
- */
-export const isPlainSource = (path: string) => SOURCE.test(path) && !TEST_FILE.test(path) && !TEST_CONFIG.test(path) && !FIXTURE.test(path);
 
 /** A test runner's own settings, which decide what it collects (not a build's, like vite.config). */
 const RUNNER_CONFIG = /(^|\/)(jest|vitest|playwright|cypress|karma|ava)\.config\.[cm]?[jt]s$|(^|\/)\.mocharc(\.[a-z]+)?$|(^|\/)(pytest\.ini|conftest\.py)$/;
@@ -52,19 +44,6 @@ const RUNNER_CONFIG = /(^|\/)(jest|vitest|playwright|cypress|karma|ava)\.config\
  * fail-to-pass proof puts these onto the base code, so they run there as they do on the change.
  */
 export const isTestSide = (path: string) => TEST_FILE.test(path) || FIXTURE.test(path) || RUNNER_CONFIG.test(path);
-
-/** A test runner's own config file (see RUNNER_CONFIG): nothing in it is anyone's but the tests'. */
-export const isRunnerConfig = (path: string) => RUNNER_CONFIG.test(path);
-
-/** Files that hold a test runner's settings among other things: package.json (`jest`…), pyproject.toml (`[tool.pytest…]`). */
-const SHARED_CONFIG = /(^|\/)(package\.json|pyproject\.toml)$/;
-
-/**
- * A change to what the test runner collects or how the check runs it: the runner's own config,
- * its settings in package.json or pyproject.toml, or the script the check runs. Build config the
- * tests also read (vite.config, babel) and CI workflows are left out: a change can need those.
- */
-export const changesRunner = (i: IntegrityIssue) => i.kind === "test-script" || (i.kind === "test-config" && (RUNNER_CONFIG.test(i.file) || SHARED_CONFIG.test(i.file)));
 
 /**
  * The check found nothing only means something if it could look: when git fails, that is the
@@ -362,10 +341,3 @@ export function describeIssues(issues: IntegrityIssue[]): string {
   return issues.map((i) => `- **${i.severity}** ${i.file ? `\`${i.file}\`: ` : ""}${i.detail}`).join("\n");
 }
 
-/** Stable identity of a set of issues, to tell "the same problem again" from a new one. */
-export function issuesKey(issues: IntegrityIssue[]): string {
-  return issues
-    .map((i) => `${i.kind}|${i.file}|${i.detail}`)
-    .sort()
-    .join("\n");
-}

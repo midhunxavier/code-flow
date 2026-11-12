@@ -13,7 +13,8 @@ import type { SharedPrincipal } from "../src/shared-accounts.js";
 import { configureStreamSharing, type StreamSharing } from "./stream.js";
 import logo from "./brand/code-flow-mark.svg";
 import { api, localApi, ownerOnLocalListener, workspaceId, initializeTeamConnection, ensureCollaborationSource, showToast, showError, store, SHORT } from "./lib.js";
-import { agents, composerProject, composerLoading, draftsReady, openBrowserPage, openComposer, hashFor, initializeProjectDrafts, listenForHandOffs, loadHealth, loadModels, loadProjects, loadTeamRollout, patterns, refreshRuns, replaceRouteHistory, route, routeFromHash, setRepo, templates, watchAllRuns } from "./state.js";
+import { chatAllowed } from "./chat-state.js";
+import { agents, composerProject, composerLoading, draftsReady, openBrowserPage, openComposer, hashFor, initializeProjectDrafts, listenForHandOffs, loadHealth, loadModels, loadProjects, patterns, projects, projectsLoaded, refreshRuns, replaceRouteHistory, repositoryToolsRoute, route, routeFromHash, setRepo, templates, watchAllRuns } from "./state.js";
 
 // Reuse the sidebar's stacked-layers mark for the browser tab.
 const icon = Object.assign(document.createElement("link"), { rel: "icon", type: "image/svg+xml", href: logo });
@@ -48,7 +49,7 @@ function BootError({ message, seconds, onRetry }: { message: string; seconds: nu
   }, [left]);
   return (
     <div role="alert" class="boot-error">
-      <h3>code-flow couldn't load</h3>
+      <h3>Code Flow couldn't load</h3>
       <div class="msg err">{message}</div>
       <p class="help">{left > 0 ? `Trying again in ${left}s…` : "Trying again…"}</p>
       <button class="btn primary" disabled={left <= 0} onClick={() => setLeft(0)}>
@@ -80,7 +81,6 @@ async function boot() {
   agents.value = agentList;
   for (const agent of agentList) SHORT[agent.id as keyof typeof SHORT] = agent.displayName;
   patterns.value = patternList;
-  void loadTeamRollout();
   readConnectionIntent();
   route.value = routeFromHash();
   effect(() => {
@@ -102,10 +102,22 @@ async function boot() {
   window.addEventListener("hashchange", readRoute);
   effect(() => {
     const destination = route.value;
-    if (!draftsReady.value || destination.view !== "composer" || destination.project === undefined) return;
+    if (destination.view !== "composer" || destination.project === undefined) return;
+    // A new-work link is the chat for the owner on this computer; elsewhere it is the run form.
+    if (!destination.legacy && chatAllowed()) {
+      // A bookmarked or refreshed project link arrives before the projects do. Chat reads the project's provider and model
+      // once, when it opens, so wait for the project to be known (or for the list to finish without it).
+      if (destination.project && !projects.value.some(project => project.id === destination.project) && !projectsLoaded.value) return;
+      replaceRouteHistory.value = true; route.value = { view: "chat", id: "new", ...(destination.project ? { project: destination.project } : {}) }; return; }
+    if (!draftsReady.value) return;
     untracked(() => {
       if (destination.project !== composerProject.value || composerLoading.value) void openComposer(destination.project, { stay: true });
     });
+  });
+  effect(() => {
+    if (route.value.view !== "workspace") return;
+    const destination = repositoryToolsRoute();
+    if (destination.view !== "workspace") { replaceRouteHistory.value = true; route.value = destination; }
   });
   render(<App />, root);
   shellReady();

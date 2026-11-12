@@ -103,7 +103,7 @@ export function fillTemplate(template: TaskTemplate, values: Record<string, stri
 }
 
 export function parseComposerLibrary(value: unknown, patterns: readonly PatternInfo[]): ComposerLibrary {
-  if (!object(value) || value.schemaVersion !== 1 || !Array.isArray(value.presets) || !Array.isArray(value.templates) || value.presets.length > 100 || value.templates.length > 100) return fail("Expected a version 1 code-flow library with at most 100 presets and 100 templates.");
+  if (!object(value) || value.schemaVersion !== 1 || !Array.isArray(value.presets) || !Array.isArray(value.templates) || value.presets.length > 100 || value.templates.length > 100) return fail("Expected a version 1 Code Flow library with at most 100 presets and 100 templates.");
   const presets = value.presets.map((p): TeamPreset => {
     if (!object(p) || !identifier(p.id) || !text(p.name, 80) || !p.name.trim() || !whole(p.revision, 1, 1000000) || !whole(p.updatedAt, 0, Number.MAX_SAFE_INTEGER) || !Array.isArray(p.history) || p.history.length > 10) return fail("Invalid team preset metadata.");
     const history = p.history.map((h) => {

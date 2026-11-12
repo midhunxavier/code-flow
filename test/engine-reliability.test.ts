@@ -16,6 +16,7 @@ process.env.CODEFLOW_HOME = mkdtempSync(join(tmpdir(), "codeflow-rel-home-"));
 process.env.CODEFLOW_RETRY_DELAYS_MS = "300,300";
 
 const { RunManager, failureKind } = await import("../src/engine.js");
+const { parallelPattern } = await import("./parallel-pattern.js");
 const { findPattern } = await import("../src/patterns/index.js");
 const { getAdapter, adapters } = await import("../src/adapters/index.js");
 const { inspectChanges } = await import("../src/integrity.js");
@@ -117,7 +118,7 @@ test("parallel: when a branch fails outside its agent turn, the others are stopp
   const manager = new RunManager(findPattern);
   const started = Date.now();
   const run = await withEnv({ FAKE_SLEEP_VENDOR: "codex", FAKE_SLEEP_MS: "30000" }, async () => {
-    const r = await start(manager, "race", { contestants: ["claude", "codex"], judge: ["claude"] }, { loop: { setup } });
+    const r = await manager.start({ pattern: parallelPattern, task: "Make it reliable", repo, roles: { writers: ["claude", "codex"] }, options: {}, loop: { setup } });
     await until(() => r.steps.some((s) => s.title === "Candidate B" && s.status === "running"));
     writeFileSync(signal, "1");
     return idle(manager, r);
@@ -465,58 +466,6 @@ test("lockdown: a container that allowed network runs an untrusted source's chec
   assert.ok(docker.length > 0 && docker.every((d) => d.args.join(" ").includes("--network none")));
 });
 
-// ---------------------------------------------------------------- patterns
-test("test-first: a stub source file the tester adds is the builder's to change, not a test it tampered with", async () => {
-  const dir = newRepo({ "src/.keep": "" });
-  const manager = new RunManager(findPattern);
-  // The tester also writes the module its tests import, as a stub; the builder fills it in.
-  const tester: Stub = async (opts, onEvent, original) => {
-    if (opts.prompt.includes('"test_command"')) writeFileSync(join(opts.cwd, "src/feature.mjs"), "export const feature = () => { throw new Error('todo'); };\n");
-    return original(opts, onEvent);
-  };
-  const builder: Stub = async (opts, onEvent, original) => {
-    if (opts.mode === "write" && opts.prompt.includes("Make the tests pass")) writeFileSync(join(opts.cwd, "src/feature.mjs"), "export const feature = () => 42;\n");
-    return original(opts, onEvent);
-  };
-  const run = await withStub("codex", tester, () =>
-    withStub("claude", builder, async () =>
-      idle(manager, await manager.start({ pattern: findPattern("tdd")!, task: "Add the feature", repo: dir, roles: { tester: ["codex"], builder: ["claude"] }, options: {} })),
-    ),
-  );
-  assert.equal(run.status, "done", run.error);
-  const text = await logs(manager, run);
-  assert.match(text, /test files: spec\.test\.mjs$/m);
-  assert.doesNotMatch(text, /Builder modified test files/);
-  assert.equal(sh(dir, "show", `${run.artifacts[0]!.branch}:src/feature.mjs`), "export const feature = () => 42;");
-});
-
-test("supervisor: subtasks beyond the maximum go to the last worker instead of being dropped", async () => {
-  const record = mkdtempSync(join(tmpdir(), "codeflow-rel-record-"));
-  const split = {
-    contracts: "",
-    subtasks: [
-      { id: "alpha", title: "Alpha part", instructions: "Build alpha", agent: "claude" },
-      { id: "beta", title: "Beta part", instructions: "Build beta", agent: "codex" },
-      { id: "gamma", title: "Gamma part", instructions: "Build gamma too", agent: "codex" },
-    ],
-  };
-  const { run, manager } = await withEnv({ FAKE_RECORD_DIR: record }, () =>
-    withStub(
-      "claude",
-      async (opts, onEvent, original) =>
-        opts.prompt.includes('"subtasks"') ? { ok: true, finalText: "```json\n" + JSON.stringify(split) + "\n```", structured: split, sessionId: "sup-1" } : original(opts, onEvent),
-      () => runPattern("supervisor", { supervisor: ["claude"], workers: ["claude", "codex"], reviewer: ["claude"] }, { options: { maxSubtasks: 2 } }),
-    ),
-  );
-  assert.equal(run.status, "done", run.error);
-  assert.match(await logs(manager, run), /split the task into 3 subtasks, more than the 2 allowed; "Gamma part" goes to the worker of "Beta part"/);
-  assert.match(run.summary!, /- Beta part \(\+1 more\) → codex: done/);
-  const beta = readdirSync(record)
-    .map((f) => JSON.parse(readFileSync(join(record, f), "utf8")) as { vendor: string; prompt: string })
-    .find((p) => p.prompt.includes("Your subtask: Beta part"))!;
-  assert.match(beta.prompt, /## Also part of your subtask: Gamma part\nBuild gamma too/);
-});
-
 test("integrity: a test renamed out of the runner's sight is a deleted test; a git error is an issue, not a clean bill", async () => {
   const dir = newRepo({ "parse.test.ts": 'test("p", () => expect(1).toBe(1));\n' });
   const base = sh(dir, "rev-parse", "HEAD");
@@ -529,24 +478,6 @@ test("integrity: a test renamed out of the runner's sight is a deleted test; a g
   const broken = await inspectChanges(dir, "no-such-ref");
   assert.deepEqual(broken.map((i) => [i.kind, i.severity]), [["unverified", "high"]]);
   assert.match(broken[0]!.detail, /^couldn't verify test integrity: /);
-});
-
-test("loop: removed assertions block a pass when the check's test count can't be read", async () => {
-  // `node t.mjs` prints no test summary, so code-flow can't see how many tests ran.
-  const dir = newRepo({ "t.test.mjs": 'import assert from "node:assert";\nassert.equal(1, 2);\n' });
-  const manager = new RunManager(findPattern);
-  const run = await withStub(
-    "claude",
-    async (opts) => {
-      writeFileSync(join(opts.cwd, "t.test.mjs"), 'import assert from "node:assert";\n');
-      return { ok: true, finalText: "Fixed it.", sessionId: "loop-1" };
-    },
-    async () =>
-      idle(manager, await manager.start({ pattern: findPattern("loop")!, task: "Make the check pass", repo: dir, roles: { workers: ["claude"] }, options: { maxRounds: 3 }, loop: { check: "node t.test.mjs" } })),
-  );
-  assert.equal(run.status, "done", run.error);
-  assert.deepEqual(run.steps.filter((s) => s.kind === "agent").map((s) => s.title), ["Round 1", "Round 2"], "round 1's pass didn't end the loop");
-  assert.match(await logs(manager, run), /The check passes, but only after changes to the tests[\s\S]*assertion line\(s\) removed/);
 });
 
 // ---------------------------------------------------------------- smaller guarantees
@@ -631,8 +562,8 @@ test("run ids are unique and unguessable; archive, merge and push wait while a r
   assert.equal(run.status, "done", run.error);
 });
 
-test("automations: a design-only run isn't empty, so its worktree stays and it waits for you", async () => {
-  const { run } = await runPattern("debate", { debaters: ["claude", "codex"], synthesizer: ["claude"], builder: [] }, { trigger: { id: "a1", name: "Nightly design", via: "manual" } });
+test("automations: a read-only run isn't empty, so its worktree stays and it waits for you", async () => {
+  const { run } = await runPattern("council", { reviewers: ["claude", "codex"], chair: ["claude"] }, { trigger: { id: "a1", name: "Nightly review", via: "manual" } });
   assert.equal(run.status, "done", run.error);
   assert.deepEqual(run.artifacts, []);
   assert.equal(run.triage?.state, "pending");

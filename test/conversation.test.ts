@@ -172,27 +172,6 @@ test("reply after the run: the agent follows up in its own worktree", async () =
   assert.match(run.summary!, /codex followed up on your reply in build/);
 });
 
-test("supervisor and test-first have their own checkpoints", async () => {
-  const m = new RunManager(findPattern);
-  const sup = await start(m, "supervisor", { supervisor: ["claude"], workers: ["claude", "codex"] }, { approvals: { plan: true } });
-  await until(() => !!sup.awaiting);
-  assert.equal(sup.awaiting!.title, "Approve the subtasks");
-  assert.match(sup.awaiting!.content, /1\. \*\*Alpha part\*\* → claude/);
-  m.answer(sup.id, { decision: "revise", note: "merge them into one" });
-  await until(() => sup.awaiting?.title === "Approve the revised subtasks (2)");
-  m.answer(sup.id, { decision: "approve" });
-  await finished(m, sup);
-  assert.equal(sup.status, "done", sup.error);
-
-  const tdd = await start(m, "tdd", { tester: ["codex"], builder: ["claude"] }, { approvals: { plan: true } });
-  await until(() => !!tdd.awaiting);
-  assert.equal(tdd.awaiting!.title, "Approve the tests");
-  m.answer(tdd.id, { decision: "reject" });
-  await finished(m, tdd);
-  assert.equal(tdd.status, "cancelled");
-  assert.match(tdd.error!, /You rejected the tests/);
-});
-
 test("single agent: one turn, then each reply continues its session on its branch", async () => {
   const record = mkdtempSync(join(tmpdir(), "codeflow-record-"));
   process.env.FAKE_RECORD_DIR = record;

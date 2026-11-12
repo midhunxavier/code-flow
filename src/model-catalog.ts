@@ -58,8 +58,8 @@ export interface ModelAssignment {
     source: string;
     stale: boolean;
 }
-export function modelEnvironment(context: DiscoveryContext = {}, remote?: string): string {
-    return createHash("sha256").update(JSON.stringify({ host: hostname(), home: process.env.HOME, codexHome: process.env.CODEX_HOME, claudeHome: process.env.CLAUDE_CONFIG_DIR, path: process.env.PATH, container: context.agentContainer, ...(context.isolatedAgy ? { isolation: `agy-${AGY_ISOLATION_VERSION}/${AGY_VERIFIED_CLI_VERSIONS.join(",")}` } : {}), remote })).digest("hex");
+export function modelEnvironment(context: DiscoveryContext = {}): string {
+    return createHash("sha256").update(JSON.stringify({ host: hostname(), home: process.env.HOME, codexHome: process.env.CODEX_HOME, claudeHome: process.env.CLAUDE_CONFIG_DIR, path: process.env.PATH, container: context.agentContainer, ...(context.isolatedAgy ? { isolation: `agy-${AGY_ISOLATION_VERSION}/${AGY_VERIFIED_CLI_VERSIONS.join(",")}` } : {}) })).digest("hex");
 }
 export function validateCapabilityCatalog(value: unknown): CapabilityCatalog {
     const c = value as CapabilityCatalog;

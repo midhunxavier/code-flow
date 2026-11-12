@@ -1,17 +1,17 @@
 import { constants } from "node:fs";
 import { open } from "node:fs/promises";
 import { join } from "node:path";
-import { DeferredRunRejectedError, DeferredRuns, deferredProviderReadiness, type DeferredRunRequest } from "./deferred-runs.js";
+import { DeferredRunRejectedError, DeferredRuns, assertNoExternalSource, deferredProviderReadiness, type DeferredRunRequest } from "./deferred-runs.js";
 import { RUNS_DIR, flushWrites } from "./store.js";
 import type { AgentId } from "./adapters/types.js";
 import type { Run, RunSummary, StartRunInput } from "./engine.js";
 import type { Quota } from "./routing.js";
+import { assertNoRemoteWorker } from "./run-environment.js";
 
 export interface DeferredLaunchHost {
   get(id: string): Run | undefined;
   list(): RunSummary[];
   quota: Quota;
-  quotaForWorker?(workerId?: string): Quota;
   start(input: StartRunInput): Promise<Run>;
   cancel(id: string): unknown;
 }
@@ -53,12 +53,13 @@ export function createDeferredRuns(host: DeferredLaunchHost, options: {
       const resolved = await options.resolveProviders(request);
       signal.throwIfAborted();
       const needed = [...new Set([...providers, ...Object.values(resolved.roles).flat()])];
-      return deferredProviderReadiness(needed, request.loop.remoteWorker ? host.quotaForWorker?.(request.loop.remoteWorker.workerId) ?? {} : host.quota, resolved.installed);
+      return deferredProviderReadiness(needed, host.quota, resolved.installed);
     },
     launch: async (request, claim, signal) => {
       let input: StartRunInput;
       try {
         signal.throwIfAborted();
+        assertNoRemoteWorker(request.loop); assertNoExternalSource(request);
         if (request.parentRunId && !host.get(request.parentRunId)) throw new Error("The parent run no longer exists; review and create another deferred request");
         input = await options.build(request);
         signal.throwIfAborted();

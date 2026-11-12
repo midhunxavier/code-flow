@@ -4,7 +4,7 @@ import { executionPaused } from "./state.js";
 
 type Status = { profile: string; source: "environment" | "settings" | null; problem: string | null; available: string[]; codexHome: string };
 
-/** Settings → Agents & models: which Codex profile runs use. Saved on this computer's server, read on every turn. */
+/** Settings → Agents: which Codex profile runs use. Saved on this computer's server, read on every turn. */
 export function CodexProfileSetting() {
   const [status, setStatus] = useState<Status>(), [error, setError] = useState(""), [busy, setBusy] = useState(false);
   // Under a filesystem restriction the server refuses provider settings, so nothing is asked for

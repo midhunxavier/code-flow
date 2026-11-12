@@ -126,7 +126,7 @@ export async function doctor(quota: Partial<Record<AgentId, HealthEntry["quota"]
       // Runs use isolated Antigravity unless one explicitly opts out, so say up front when it can't start.
       const problem = await getAdapter(id).managedAvailability?.();
       entry.managedCompatible = !problem;
-      if (problem) entry.warnings = [...entry.warnings ?? [], `Runs use isolated Antigravity by default, which isn't available here. ${problem} To run it anyway, turn on Run options → Advanced → Use unrestricted Antigravity (no Code Flow sandbox).`];
+      if (problem) entry.warnings = [...entry.warnings ?? [], `Runs use isolated Antigravity by default, which isn't available here. ${problem} To run it anyway, turn on Advanced → Use unrestricted Antigravity (no Code Flow sandbox).`];
     }
     return entry;
   }));
@@ -152,7 +152,7 @@ async function check(id: AgentId, quota: HealthEntry["quota"]): Promise<HealthEn
   if (id.startsWith("acp:")) {
     entry.installed = await adapter.available().catch(() => false);
     entry.warnings = [runProviderProblem(id, adapter.displayName)!, "Check connection in Settings probes protocol and models without sending a prompt. Authentication and inference are not verified."];
-    if (!entry.installed) entry.fix = "Install this CLI or edit its executable path in Settings → Agents & models.";
+    if (!entry.installed) entry.fix = "Install this CLI or edit its executable path in Settings → Agents.";
     return entry;
   }
   if (id.startsWith("plugin:")) {

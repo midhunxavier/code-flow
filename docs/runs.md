@@ -32,7 +32,7 @@ A provider usage limit shows the provider and its reported reset time. **Check p
 
 **Stopped by you** means execution was cancelled. **Plan rejected** ends the run at that checkpoint: use **Edit & run again** for a fresh plan; Resume cannot replay the rejected decision. **Pause dispatch** lets active work finish, then reports **Dispatch paused** until you resume dispatch. Run and repository History controls use the same High, Normal and Low priorities.
 
-Runs with no changes have no result-review card. Failed runs with saved changes say **Partial work saved**. Actual failed checks stay visible under **What went wrong**, including when execution finished; expected TDD failures and inconclusive proof checks are shown separately. Read-only councils show their findings and publication controls directly.
+Runs with no changes have no result-review card. Failed runs with saved changes say **Partial work saved**. Actual failed checks stay visible under **What went wrong**, including when execution finished; inconclusive proof checks are shown separately. Read-only councils show their findings and publication controls directly.
 
 **Request a fix** prepares an editable follow-up without sending it. Repeated clicks focus the same request without duplicating it or removing your own notes. **Fix check command** opens a continuation dialog: choose the saved result branch and correct setup/check commands. Starting it creates a child run with the same team and permissions and a single configured check. Original history and evidence remain available.
 
@@ -44,7 +44,7 @@ Independent agent review applies to the reviewed commit. When a follow-up change
 
 Runs are conversations, not fire-and-forget jobs:
 
-- **Approve the plan:** tick *Let me approve the plan* (the subtasks for Supervisor, the tests for Test-first). The run pauses at that checkpoint, and its time budget with it.
+- **Approve the plan:** tick *Let me approve the plan* (the team and plan for Auto team). The run pauses at that checkpoint, and its time budget with it.
   - **Approve:** the agents start building.
   - **Ask for changes:** your note goes to the author, who revises in its own session and asks again.
   - **Reject:** the run ends without building anything.
@@ -62,7 +62,7 @@ Your messages display exactly as typed, including code identifiers such as `__in
 
 Reply drafts, including attached browser screenshots, are saved for the run and the connected computer in this browser. They survive new tabs and browser restarts; legacy tab-only text is migrated when opened. Another tab's edits warn before replacing your local text, and a successful send clears the saved draft. If storage is unavailable, a warning explains that the draft remains only in the open tab. Draft-dependent actions wait for saved content to load.
 
-For a local provider known to be signed out, the reply box links to **Settings → Agents & models** and offers **Recheck sign-in**. The warning does not lock out a fresh retry after signing in. A failed reply is marked beside the reply box; it does not erase a previously completed conversation. Send another reply to continue. Provider errors appear once in the finished turn, with recovery actions below; **Show work** retains the full transcript.
+For a local provider known to be signed out, the reply box links to **Settings → Agents** and offers **Recheck sign-in**. The warning does not lock out a fresh retry after signing in. A failed reply is marked beside the reply box; it does not erase a previously completed conversation. Send another reply to continue. Provider errors appear once in the finished turn, with recovery actions below; **Show work** retains the full transcript.
 
 <kbd>↵</kbd> sends and <kbd>⇧</kbd><kbd>↵</kbd> adds a line.
 
@@ -125,8 +125,7 @@ Every run is saved to disk as it happens (`~/.codeflow/runs/<run>.jsonl`), and t
   - **Resume** re-runs the pattern from the top. Each step that already finished (agent turns, checks, commits, worktrees) is replayed instantly from a journal (`<run>.journal.jsonl`), and real work continues at the first unfinished step. Nothing finished is redone.
   - Runs that hit a time or step limit, failed, or were stopped by you can be resumed the same way, with a fresh budget.
   - A recorded check is replayed only if the code it checked is still the code at that point. A recorded commit is replayed only if it's still in the branch's history. Anything else runs again.
-  - While it replays, code-flow reads what changed at the commit the replay has reached, not at the newest one already in the worktree. So the pattern decides as it did the first time: Test-first doesn't take the builder's later rounds for the tester's changes and undo them.
-  - A race contestant or worker whose CLI wasn't signed in, or stalled, isn't recorded as failed: the resume gives it its turn. One that ran out of plan usage stopped the run, so its turn comes after the reset.
+  - While it replays, code-flow reads what changed at the commit the replay has reached, not at the newest one already in the worktree. So the pattern decides as it did the first time.
   - Follow-ups on a finished run don't replay the pattern at all; only the follow-ups run, each with a full time and step budget, and the run's check result stands until one of them runs the check again. A follow-up that fails doesn't undo the finished run.
   - Resume is claimed at once, so a double click or a PR watch can't start the same run twice. If the last attempt is still wrapping up (listing its work), the new one waits for it. Stop pressed meanwhile keeps it from starting: the run stays as it was. Archiving, merging, pushing and opening a pull request are refused while the run works (a follow-up or a side chat on it too, from any tab or your phone) and until a resume has started.
   - Notes delivered to a turn that never finished, or failed, go back in the queue for the next turn (the retry, or the resumed run).
@@ -140,7 +139,7 @@ Every run is saved to disk as it happens (`~/.codeflow/runs/<run>.jsonl`), and t
 
 - **Insights** (in the sidebar, or <kbd>i</kbd>) shows, per agent and per pattern, for the project you're in, one repo, or everything, over 7 days, 30 days or all time:
   - runs, how often the result passed its check, and how often it was proven (a test fails without the change; a weak proof, where the tests only fail to load without it, doesn't count);
-  - race wins, loops each agent got green, and review findings other reviewers agreed with;
+  - review findings other reviewers agreed with;
   - failed steps, tokens (input, output, cached) and time per step;
   - Claude's API-equivalent cost. Your plan isn't billed per token; it's a measure of size.
 - **Insights → Experiments → Compare setups…** starts the same task with several patterns at once, each with the team you last picked for it, optionally 2–3 times each. Insights shows them side by side: result, time, steps, tokens, cost, whether tests were touched, and whether the result was proven. The best value in each column is highlighted.

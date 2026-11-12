@@ -21,6 +21,7 @@ process.env.CODEFLOW_MAX_AGENTS = "1";
 
 const { RunManager } = await import("../src/engine.js");
 const { findPattern } = await import("../src/patterns/index.js");
+const { parallelPattern, withParallel } = await import("./parallel-pattern.js");
 const { adapters, getAdapter } = await import("../src/adapters/index.js");
 const { loadJournal } = await import("../src/store.js");
 type Run = import("../src/engine.js").Run;
@@ -94,61 +95,55 @@ const testFile = (body: string) => `import { test } from "node:test";\nimport as
 
 // ---------------------------------------------------------------- replay reads the replayed commit
 /**
- * Test-first, played by a stub: the tester's tests pass once impl.txt exists; its first probe
- * finds a gap (no edge.txt), which the builder's second round fills. A builder round after that
- * leaves a file named for it, so a run that goes round again shows in its tree.
+ * Plan → Build → Review, played by a stub: the first review finds a gap (no edge.txt), which the
+ * builder's second round fills. A builder round after that leaves a file named for it, so a run
+ * that goes round again shows in its tree.
  */
-function testFirst(control: { holdSecondProbe: boolean }): Stub {
+function reviewRounds(control: { holdSecondReview: boolean }): Stub {
   const fixes = new Map<string, number>();
   return async (opts) => {
     const at = (file: string) => join(opts.cwd, file);
-    if (opts.prompt.includes('"test_command"')) {
-      writeFileSync(at("spec.test.mjs"), testFile('test("implemented", () => assert.ok(existsSync("impl.txt")));'));
-      return json({ test_command: "node --test spec.test.mjs", test_files: ["spec.test.mjs"] });
+    if (opts.prompt.includes('"verdict": "approve" | "changes_requested"')) {
+      if (!existsSync(at("edge.txt"))) return json({ verdict: "changes_requested", issues: [{ severity: "medium", file: "impl.txt", problem: "empty input isn't handled", fix: "handle it", repro: { path: "", contents: "", command: "" } }] });
+      if (control.holdSecondReview) return stopped(opts.signal);
+      return json({ verdict: "approve", issues: [] });
     }
-    if (opts.prompt.includes('"verdict": "pass" | "fail"')) {
-      if (!existsSync(at("edge.txt"))) return json({ verdict: "fail", failures: ["empty input isn't handled"] });
-      if (control.holdSecondProbe) return stopped(opts.signal);
-      return json({ verdict: "pass", failures: [] });
-    }
-    if (opts.prompt.includes("Tests to satisfy")) {
+    if (opts.mode !== "write") return answer("Write impl.txt.");
+    if (opts.prompt.includes("## Plan from the planner")) {
       writeFileSync(at("impl.txt"), "v1\n");
       return answer("Implemented it.");
     }
-    if (opts.prompt.includes("Not done yet")) {
-      const n = (fixes.get(opts.cwd) ?? 0) + 1;
-      fixes.set(opts.cwd, n);
-      if (n === 1) {
-        writeFileSync(at("impl.txt"), "v2\n");
-        writeFileSync(at("edge.txt"), "empty input handled\n");
-      } else writeFileSync(at(`fix-${n}.txt`), "another round\n");
-      return answer("Handled empty input.");
-    }
-    return answer("Nothing to do.");
+    const n = (fixes.get(opts.cwd) ?? 0) + 1;
+    fixes.set(opts.cwd, n);
+    if (n === 1) {
+      writeFileSync(at("impl.txt"), "v2\n");
+      writeFileSync(at("edge.txt"), "empty input handled\n");
+    } else writeFileSync(at(`fix-${n}.txt`), "another round\n");
+    return answer("Handled empty input.");
   };
 }
 
-const tddRoles = { tester: ["codex"], builder: ["claude"] } as Record<string, any>;
+const pipelineRoles = { planner: ["claude"], builder: ["codex"], reviewer: ["claude"] } as Record<string, any>;
 const tree = (branch: string) => sh(repo, "rev-parse", `${branch}^{tree}`);
 
-test("a Test-first run stopped in its second round and resumed ends with the tree an uninterrupted run has", async () => {
+test("a run stopped in its second review round and resumed ends with the tree an uninterrupted run has", async () => {
   const manager = new RunManager(findPattern);
-  const start = () => manager.start({ pattern: findPattern("tdd")!, task: "Handle input", repo, roles: tddRoles, options: {} });
-  const control = { holdSecondProbe: false };
-  await withStub(["claude", "codex"], testFirst(control), async () => {
+  const start = () => manager.start({ pattern: findPattern("pipeline")!, task: "Handle input", repo, roles: pipelineRoles, options: {} });
+  const control = { holdSecondReview: false };
+  await withStub(["claude", "codex"], reviewRounds(control), async () => {
     const straight = await idle(manager, await start());
     assert.equal(straight.status, "done", straight.error);
     const expected = tree(straight.worktrees[0]!.branch);
-    assert.deepEqual(sh(repo, "ls-tree", "--name-only", expected).split("\n").sort(), ["README.md", "edge.txt", "impl.txt", "spec.test.mjs"]);
+    assert.deepEqual(sh(repo, "ls-tree", "--name-only", expected).split("\n").sort(), ["README.md", "edge.txt", "impl.txt"]);
 
-    control.holdSecondProbe = true;
+    control.holdSecondReview = true;
     const run = await start();
-    await until(() => run.steps.some((s) => s.title === "Try to break it (round 2)" && s.status === "running"));
+    await until(() => run.steps.some((s) => s.title === "Review (round 2)" && s.status === "running"));
     manager.cancel(run.id);
     await idle(manager, run);
     assert.equal(run.status, "cancelled");
 
-    control.holdSecondProbe = false;
+    control.holdSecondReview = false;
     await manager.resume(run.id);
     await idle(manager, run);
     assert.equal(run.status, "done", run.error);
@@ -156,7 +151,7 @@ test("a Test-first run stopped in its second round and resumed ends with the tre
     assert.equal(tree(branch), expected, "the builder's second round is kept, and no round runs again");
     assert.doesNotMatch(sh(repo, "log", "--format=%s", branch), /code-flow: (undo|restore)/, "nothing was undone on replay");
     const live = run.steps.filter((s) => s.kind === "agent").map((s) => `${s.title}:${s.status}`);
-    assert.deepEqual(live.slice(-2), ["Try to break it (round 2):cancelled", "Try to break it (round 2):done"], "only the probe that was stopped ran again");
+    assert.deepEqual(live.slice(-2), ["Review (round 2):cancelled", "Review (round 2):done"], "only the review that was stopped ran again");
   });
 });
 
@@ -260,32 +255,32 @@ test("a second conflict resolution with the same branch is committed, not replay
 });
 
 // ---------------------------------------------------------------- failed turns that aren't results
-const race = { contestants: ["claude", "codex"], judge: ["claude"] } as Record<string, any>;
+const writers = { writers: ["claude", "codex"] } as Record<string, any>;
 const realCodex = adapters.codex.run.bind(adapters.codex);
 
-test("a contestant whose CLI was signed out isn't journaled as failed; one out of plan usage stops the race for a resume", async () => {
-  const manager = new RunManager(findPattern);
+test("a parallel writer whose CLI was signed out isn't journaled as failed; one out of plan usage stops the run for a resume", async () => {
+  const manager = new RunManager(withParallel(findPattern));
   const signedOut = await withStub(["codex"], async () => ({ ok: false, finalText: "", error: "Not logged in", errorKind: "auth" }), async () =>
-    idle(manager, await manager.start({ pattern: findPattern("race")!, task: "Race me", repo, roles: race, options: {} })),
+    idle(manager, await manager.start({ pattern: parallelPattern, task: "Race me", repo, roles: writers, options: {} })),
   );
   assert.equal(signedOut.status, "done", signedOut.error);
   const keys = [...(await loadJournal(signedOut.id)).keys()];
-  assert.ok(keys.includes("ask:contestants|claude|candidate-a|Candidate A#1"), keys.join(", "));
-  assert.ok(!keys.some((k) => k.startsWith("ask:contestants|codex|")), "a resume gives it its turn again");
+  assert.ok(keys.includes("ask:writers|claude|candidate-a|Candidate A#1"), keys.join(", "));
+  assert.ok(!keys.some((k) => k.startsWith("ask:writers|codex|")), "a resume gives it its turn again");
 
   let limited = true;
   const run = await withStub(["codex"], async (opts, onEvent) => (limited ? { ok: false, finalText: "", error: "Plan exhausted", errorKind: "usage_limit" } : realCodex(opts, onEvent)), async () => {
-    const r = await idle(manager, await manager.start({ pattern: findPattern("race")!, task: "Race me again", repo, roles: race, options: {} }));
-    assert.equal(r.status, "stopped", "stopped, not judged with one candidate fewer");
+    const r = await idle(manager, await manager.start({ pattern: parallelPattern, task: "Race me again", repo, roles: writers, options: {} }));
+    assert.equal(r.status, "stopped", "stopped, not finished with one candidate fewer");
     assert.match(r.stopReason!, /usage limit of Codex/);
-    assert.ok(!r.steps.some((s) => s.title.startsWith("Judge")));
+    assert.deepEqual(r.artifacts.filter((a) => a.label.startsWith("Candidate")), []);
     limited = false;
     await manager.resume(r.id);
     return idle(manager, r);
   });
   assert.equal(run.status, "done", run.error);
   assert.ok(run.steps.some((s) => s.title === "Candidate B" && s.status === "done"), "B had its turn after the resume");
-  assert.ok(run.steps.some((s) => s.title === "Judge candidates" && s.status === "done"), "and both were judged");
+  assert.match(run.summary!, /Finished: Candidate A, Candidate B/, "and both were published");
 });
 
 // ---------------------------------------------------------------- notes after the last turn

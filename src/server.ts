@@ -14,7 +14,7 @@ import { agentToolBridge, validateAgentTool } from "./agent-tools.js";
 import { HISTORY_STATUSES, type HistoryStatus, type ProjectSection } from "./run-status.js";
 import { modelCatalogStore } from "./model-catalog.js";
 import { runProviderProblem, permissionProviderProblem, createRunPermissions as catalogPermissions } from "./run-permissions.js";
-import { inheritRunEnvironment } from "./run-environment.js";
+import { assertNoRemoteWorker, inheritRunEnvironment } from "./run-environment.js";
 import { TemplateConflictError, teamTemplateStore } from "./team-template-store.js";
 import { fillTeamTemplate, validateTeamTemplate, type TemplateSelection } from "./team-templates.js";
 import { antigravityExecution, AGY_NATIVE_LIMITATION, acpExecution, type AcpExecution, type AntigravityExecution, createRunPermissions, narrowerTrust, resolveRunPermissions, permissionRequirements, type PermissionRequirement } from "./run-permissions.js";
@@ -73,7 +73,6 @@ import { RetentionPolicyStore, RetentionPolicyConflictError, previewRetention } 
 import { SharedAccounts, SharedAccountError, type SharedPrincipal } from "./shared-accounts.js";
 import { canonicalSharedPath, SharedPathError } from "./shared-access.js";
 import { CollaborationReviews, CollaborationReviewError } from "./collaboration-reviews.js";
-import { handleSharedApi } from "./shared-api.js";
 import { CollabStore, memberActor, ownerActor, type ChangeEvent, type MemberRecord } from "./collab/store.js";
 import { handleRunnerConnect, handleTeamApi, looksLikeRunnerToken, runnerAllowed, teamRoutePolicy } from "./collab/api.js";
 import { CollabError } from "./collab/model.js";
@@ -81,15 +80,12 @@ import { TeamConnections } from "./collab/connections.js";
 import { handleTeamLinkApi, linkInfo } from "./collab/link-api.js";
 import type { CollabActor } from "./collab/model.js";
 import { userInfo } from "node:os";
-import { RemoteWorkers } from "./remote-workers/client.js";
-import { createCoordinatedApi } from "./coordinated-api.js";
 import { Extensions } from "./extensions.js";
 import { ShellLimitError, Shells, type ShellEvent } from "./shell.js";
 import { cursorSeq, StreamHub, TopicError, type Deliver, type TopicSource } from "./stream.js";
 import { replayEvents } from "./run-log.js";
 import { previewTarget, Previews } from "./preview.js";
 import { SnapshotError, takeSnapshot } from "./snapshot.js";
-import { Integrations } from "./integrations.js";
 import { IntegrationConnections } from "./integration-connections.js";
 import { createIntegrationConnectionsApi } from "./integration-connections-api.js";
 import { Notifications } from "./notifications.js";
@@ -102,10 +98,11 @@ import { handleWorkspaceApi } from "./workspace-api.js";
 import { TeamPlanEditError } from "./workflow-control.js";
 import { redactExport } from "./privacy.js";
 import { validateVerificationProfile, renderVerificationReport } from "./verification.js";
-import { CODEFLOW_HOME, autoTeamEnabled, envNumber, PORT } from "./config.js";
+import { CODEFLOW_HOME, envNumber, PORT } from "./config.js";
 import { ConflictMarkersError, RunManager, RunConflictError, UntrustedSourceError, roleParticipants, type LoopSettings, type Pattern } from "./engine.js";
 import { detectCheck } from "./checks.js";
 import { findPattern, patterns } from "./patterns/index.js";
+import { retiredPatternMessage } from "./patterns/retired.js";
 import { listDirectories } from "./fs.js";
 import { git, listBranches, repoRoot, worktreeRoot, type GitCwd } from "./git.js";
 import { ensureFolderMirror, findFolderMirror, openFolder as openFolderCopy } from "./folders.js";
@@ -133,7 +130,7 @@ import { adapterTeamCapabilities } from "./adapters/team-tools.js";
 import { createAcpAdapter, probeAcp } from "./adapters/acp.js";
 import { AcpConnections, validateAcpConnection } from "./acp-connections.js";
 import { teamToolBridge } from "./team-tools.js";
-import { teamEvaluationStore, buildTeamEvaluation, assessTeamRollout } from "./team-evaluation.js";
+import { buildTeamEvaluation } from "./team-evaluation.js";
 import type { Run, RunEvent, RunSummary, SideTurn, StartRunInput } from "./engine.js";
 import { CliTeamsService } from "./cli-teams/service.js";
 import { startCliTeamsTransport } from "./cli-teams/transport.js";
@@ -181,9 +178,7 @@ const extensions = new Extensions({ register: (providers, workflows) => {
 const projects = new Projects();
 const acpConnections = new AcpConnections((connections) => replaceAcpAdapters(connections.map(createAcpAdapter)));
 let acpChecks = 0;
-const remoteWorkers = new RemoteWorkers();
-await remoteWorkers.load().catch((error) => logError("SSH workers disabled; repair their configuration to enable remote execution", error));
-const manager = new RunManager(findPattern, projects, remoteWorkers);
+const manager = new RunManager(findPattern, projects);
 const filePolicies = new ProjectFilePolicies();
 const fileAccess = new FilesystemAccess(filePolicies, projects, manager);
 configureFilePolicyResolver((repo) => fileAccess.forRepo(repo), { suppressRepositoryCommands: () => fileAccess.hasRestrictions() });
@@ -218,25 +213,22 @@ const hostExecution = new HostExecution({ store: collab, manager, findPattern, m
 });
 const resolveQueuedProviders: Parameters<typeof createDeferredRuns>[1]["resolveProviders"] = (request) => trackPolicyPreparation(async () => {
     const pattern = findPattern(request.pattern);
-    if (!pattern) throw new Error("This pattern no longer exists; cancel and review the saved request");
-    const selection = request.loop?.remoteWorker;
-    const { roles } = await validateRoles(pattern, request.roles, request.repo, selection);
-    const inventory = selection ? (await manager.remoteInventory(selection)).providers : await agentAvailability();
+    if (!pattern) throw new Error(retiredPatternMessage(request.pattern) ?? "This pattern no longer exists; cancel and review the saved request");
+    assertNoRemoteWorker(request.loop);
+    const { roles } = await validateRoles(pattern, request.roles, request.repo);
+    const inventory = await agentAvailability();
     return { roles, installed: new Set(inventory.filter((entry) => entry.available).map((entry) => entry.id)) };
 });
 const deferredRuns = createDeferredRuns(manager, { build: buildStartInput, resolveProviders: resolveQueuedProviders });
 /** Set at startup: an unreadable queue file disables deferred runs only, and is kept for repair. */
 let deferredFault: string | undefined = "Deferred runs are still loading";
-const coordinatedApi = createCoordinatedApi({ manager, projects, build: buildStartInput, resolveProviders: resolveQueuedProviders });
-const integrations = new Integrations();
 const integrationWarnings: string[] = [];
-await integrations.load().catch(error => { logError("Administrator external sources disabled: invalid integration configuration", error); integrationWarnings.push("Administrator integration configuration (CODEFLOW_INTEGRATIONS_JSON/FILE) is invalid or unreadable. Those sources are unavailable; app-managed connections remain available."); });
 const notifications = new Notifications();
 const notificationsReady = await notifications.load(undefined, { allowInvalidAdministratorConfig: true }).then(() => true, (error) => { logError("Notifications disabled: delivery state cannot be read", error); integrationWarnings.push("Notification delivery storage is unavailable. Repair it and restart; other app-managed connections remain available."); return false; });
 if (notifications.configurationWarning) integrationWarnings.push(notifications.configurationWarning);
-const integrationConnections = new IntegrationConnections({ integrations, notifications, notificationsAvailable: notificationsReady, warnings: integrationWarnings });
+const integrationConnections = new IntegrationConnections({ notifications, notificationsAvailable: notificationsReady, warnings: integrationWarnings });
 await integrationConnections.load().catch(error => logError("Integration connection storage is unavailable", error));
-const integrationConnectionsApi = createIntegrationConnectionsApi({ connections: integrationConnections, integrations, projects });
+const integrationConnectionsApi = createIntegrationConnectionsApi({ connections: integrationConnections, projects });
 /** The side panel's terminals and notes. */
 const shells = new Shells();
 const teamTerminals = new TeamTerminals({
@@ -250,13 +242,13 @@ const notes = new Notes();
 const watcher = new PrWatcher(manager);
 const automations = new Automations(manager, (body, extra) => trackPolicyPreparation(async () => { if (!body.chatRecipe) return startFromBody(body, extra); if (!taskConversationsReady) throw new HttpError(503, "Chat automation is paused: repair chat storage and restart Code Flow"); return conversations.startAutomation(body, extra.trigger!, body.automationOccurrence, extra.untrustedText); }), (repo, kind) => trackPolicyPreparation(async () => { assertPolicyExecution(await fileAccess.execution(repo), "Automation source discovery"); return listSweep(repo, kind, manager.list()); }));
 async function pausePolicyBackground() {
-  const results = await Promise.allSettled([watcher.stop(), automations.stop(), deferredRuns.stop(), coordinatedApi.service.stop(), ...(notificationsReady ? [notifications.stop()] : [])]);
+  const results = await Promise.allSettled([watcher.stop(), automations.stop(), deferredRuns.stop(), ...(notificationsReady ? [notifications.stop()] : [])]);
   // Queue deadlines do not prove a child readiness request ended. Retain the underlying work too.
   while (policyPreparations.size) await Promise.allSettled([...policyPreparations]);
   const failure = results.find((result) => result.status === "rejected"); if (failure?.status === "rejected") throw failure.reason;
 }
 function startPolicyBackground() {
-  watcher.start(); automations.start(envNumber("CODEFLOW_SCHEDULER_TICK_MS", 30_000, { min: 100 })); if (!deferredFault) deferredRuns.start(); coordinatedApi.service.start();
+  watcher.start(); automations.start(envNumber("CODEFLOW_SCHEDULER_TICK_MS", 30_000, { min: 100 })); if (!deferredFault) deferredRuns.start();
   if (notificationsReady) notifications.start();
 }
 let remote: RemoteSettings;
@@ -664,23 +656,23 @@ function requestedRoles(pattern: Pattern, input: unknown): Record<string, string
 }
 
 /** Who fills each role; "auto" picks an installed agent whose plan has room (see routing.ts). */
-async function validateRoles(pattern: Pattern, input: unknown, repo?: string, remoteWorker?: LoopSettings["remoteWorker"], requestedTrust?: string, policy?: { required: PermissionRequirement[]; container: boolean; tools: boolean; antigravityExecution?: AntigravityExecution; acpExecution?: AcpExecution }): Promise<{ roles: Record<string, AgentId[]>; notes: string[] }> {
+async function validateRoles(pattern: Pattern, input: unknown, repo?: string, requestedTrust?: string, policy?: { required: PermissionRequirement[]; container: boolean; tools: boolean; antigravityExecution?: AntigravityExecution; acpExecution?: AcpExecution }): Promise<{ roles: Record<string, AgentId[]>; notes: string[] }> {
   assertPolicyExecution(await fileAccess.execution(repo ?? ""), "Provider selection");
   const requested = requestedRoles(pattern, input);
-  const inventory = remoteWorker ? (await manager.remoteInventory(remoteWorker)).providers : await agentAvailability();
+  const inventory = await agentAvailability();
   const installed = new Set(inventory.filter((a) => a.available).map((a) => a.id));
-  const runtimeProblems = new Map(await Promise.all([...installed].map(async id => [id, !remoteWorker && policy && id === "agy" && policy.antigravityExecution !== "native" ? await getAdapter(id).managedAvailability?.() : undefined] as const)));
+  const runtimeProblems = new Map(await Promise.all([...installed].map(async id => [id, policy && id === "agy" && policy.antigravityExecution !== "native" ? await getAdapter(id).managedAvailability?.() : undefined] as const)));
   const trust = requestedTrust ?? (repo ? (await readRepoConfig(repo)).config.trust : undefined);
   const eligible = new Set([...installed].filter((id) => {
     if (runtimeProblems.get(id)) return false;
     if (policy) {
       try {
         const runPolicy = createRunPermissions((trust ?? "standard") as Trust, policy.tools, pattern.id === "solo", policy.required, policy.antigravityExecution, policy.acpExecution);
-        resolveRunPermissions({ policy: runPolicy, provider: id, mode: "write", currentTrust: runPolicy.trust, currentTools: policy.tools, remote: !!remoteWorker, container: policy.container });
+        resolveRunPermissions({ policy: runPolicy, provider: id, mode: "write", currentTrust: runPolicy.trust, currentTools: policy.tools, container: policy.container });
         return true;
       } catch { return false; }
     }
-    return ["auto-team", "solo"].includes(pattern.id) ? id === "claude" || id === "codex" : !id.startsWith("acp:") || trust === "full" && !remoteWorker;
+    return ["auto-team", "solo"].includes(pattern.id) ? id === "claude" || id === "codex" : !id.startsWith("acp:") || trust === "full";
   }));
   if (pattern.id === "auto-team") {
     const supplied = input && typeof input === "object" ? input as Record<string, unknown> : {};
@@ -690,7 +682,7 @@ async function validateRoles(pattern: Pattern, input: unknown, repo?: string, re
   const wantsAuto = Object.values(requested).some((list) => list.includes("auto"));
   const rank = wantsAuto && repo ? rankAgents(manager.list(), repo, { pattern: pattern.id }) : undefined;
   const independence = Object.fromEntries(pattern.roles.flatMap((spec) => spec.independentOf ? [[spec.id, spec.independentOf]] : []));
-  const resolved = resolveAuto(requested, manager.quotaForWorker(remoteWorker?.workerId), eligible, rank, independence);
+  const resolved = resolveAuto(requested, manager.quota, eligible, rank, independence);
   const roles: Record<string, AgentId[]> = {};
   const needed = new Set<AgentId>();
   for (const spec of pattern.roles) {
@@ -717,7 +709,7 @@ const improvingControllers = new Set<AbortController>();
 
 /** The composer's Improve: rewrite the task in one read-only turn (see improve.ts). */
 async function improveTask(body: any, res: ServerResponse) {
-  if (body.execution !== undefined && body.execution !== "local" || body.remoteWorker || body.agentContainer || body.loop?.remoteWorker || body.loop?.agentContainer) throw new HttpError(400, "Prompt improvement supports local execution only; remote and container profiles cannot fall back to a host CLI");
+  if (body.execution !== undefined && body.execution !== "local" || body.agentContainer || body.loop?.agentContainer) throw new HttpError(400, "Prompt improvement supports local execution only; container profiles cannot fall back to a host CLI");
   const text = typeof body.text === "string" ? body.text : "";
   if (!text.trim()) throw new HttpError(400, "Write a task to improve first");
   if (text.length > MAX_IMPROVE_CHARS) throw new HttpError(400, `The task is too long to improve (${MAX_IMPROVE_CHARS.toLocaleString("en")} characters at most)`);
@@ -861,12 +853,6 @@ function validateRoleSettings(input: unknown): Record<string, ReturnType<typeof 
 /** "Done when" check and budgets from the client; commands are the user's own shell commands. */
 function validateLoop(input: unknown): Partial<LoopSettings> {
   const raw = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
-  let remoteWorker: LoopSettings["remoteWorker"];
-  if (raw.remoteWorker !== undefined) {
-    const value = raw.remoteWorker as Record<string, unknown>;
-    if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some((key) => !["workerId", "repoMapping"].includes(key)) || typeof value.workerId !== "string" || typeof value.repoMapping !== "string" || !remoteWorkers.list().some((worker) => worker.id === value.workerId && worker.repoMappings.includes(value.repoMapping as string))) throw new HttpError(400, "Choose an explicitly registered remote worker and repository mapping");
-    remoteWorker = { workerId: value.workerId, repoMapping: value.repoMapping };
-  }
   const text = (key: string) => {
     const value = typeof raw[key] === "string" ? (raw[key] as string).trim() : "";
     if (value.length > 1_000) throw new HttpError(400, `${key} command is too long`);
@@ -881,7 +867,6 @@ function validateLoop(input: unknown): Partial<LoopSettings> {
     return raw[key] as number;
   };
   return {
-    remoteWorker,
     check: text("check"),
     setup: text("setup"),
     copy: Array.isArray(raw.copy) ? raw.copy.filter((p): p is string => typeof p === "string" && !!p.trim()).slice(0, 50) : undefined,
@@ -920,7 +905,7 @@ async function buildStartInput(body: Record<string, any>): Promise<StartRunInput
 
 async function validatedStartInput(body: Record<string, any>): Promise<StartRunInput> {
   if (body.cliTeam !== undefined || body.cliTeamExecutionId !== undefined || ["cli-team", "task-prepare"].includes(body.pattern)) throw new HttpError(400, "Conversational teams start through an accepted proposal");
-  if (body.taskExecution !== undefined || body.teamTurns !== undefined || body.deferred !== undefined || body.teamRerun !== undefined || body.coordination !== undefined || body.beforeDispatch !== undefined || body.requireProjectRepo !== undefined) throw new HttpError(400, "Launch identities and selective rerun seeds are assigned by the server");
+  if (body.taskExecution !== undefined || body.teamTurns !== undefined || body.deferred !== undefined || body.teamRerun !== undefined || body.beforeDispatch !== undefined || body.requireProjectRepo !== undefined) throw new HttpError(400, "Launch identities and selective rerun seeds are assigned by the server");
   if (body.projectSelection !== undefined && body.projectSelection !== "explicit") throw new HttpError(400, "Unknown project selection mode");
   if (body.projectSelection === "explicit" && (!projects.available || typeof body.project !== "string" || !projects.get(body.project))) throw new HttpError(409, "Choose an available project before starting");
   if (body.templateCatalog !== undefined || body.teamTemplate !== undefined || body.permissions !== undefined) throw new HttpError(400, "Template snapshots and run authority are assigned by the server");
@@ -934,7 +919,7 @@ async function validatedStartInput(body: Record<string, any>): Promise<StartRunI
     teamTemplate = { template, inputs: ref.inputs };
   }
   const pattern = findPattern(String(body.pattern ?? "auto-team"));
-  if (!pattern) throw new HttpError(400, "Unknown pattern");
+  if (!pattern) throw new HttpError(400, retiredPatternMessage(body.pattern) ?? "Unknown pattern");
   let task = String(body.task ?? "").trim();
   if (teamTemplate) {
     const filled = fillTeamTemplate(teamTemplate.template, teamTemplate.inputs);
@@ -949,13 +934,12 @@ async function validatedStartInput(body: Record<string, any>): Promise<StartRunI
   if (body.trust !== undefined && !["safe", "standard", "trusted", "full"].includes(body.trust)) throw new HttpError(400, "Choose Safe, Standard, Trusted or Full access");
   for (const field of ["loop", "options", "agentSettings", "roleSettings"]) if (body[field] !== undefined && (!body[field] || typeof body[field] !== "object" || Array.isArray(body[field]))) throw new HttpError(400, `${field} must be an object`);
   if (body.projectSelection === "explicit" && !projects.get(body.project)?.repos.includes(await repoRoot(repo))) throw new HttpError(409, "This repository is no longer an explicit member of the selected project");
-  if (body.externalSource !== undefined || (body.externalSourceId !== undefined && typeof body.externalSourceId !== "string")) throw new HttpError(400, "Import the external source through its configured integration first");
-  if (body.externalSourceId !== undefined && body.externalSourceRef !== undefined) throw new HttpError(400, "Choose one external source reference");
+  if (body.externalSource !== undefined || body.externalSourceId !== undefined || body.externalSourceRef !== undefined) throw new HttpError(400, "Imported external sources are no longer available. Start from a GitHub issue or pull request instead.");
   if (body.checkpointOnFinish !== undefined && typeof body.checkpointOnFinish !== "boolean") throw new HttpError(400, "checkpointOnFinish must be a boolean");
   if (body.intent !== undefined && !taskIntent(body.intent)) throw new HttpError(400, "Choose a supported task type");
   const parent = typeof body.parentRunId === "string" ? manager.get(body.parentRunId) : undefined;
   if (body.parentRunId !== undefined && !parent) throw new HttpError(400, "Parent run not found; cannot inherit its permissions");
-  const inheritedLoop = inheritRunEnvironment(body.loop ?? {}, parent);
+  const inheritedLoop = await attempt(async () => inheritRunEnvironment(body.loop ?? {}, parent));
   const loop = validateLoop(inheritedLoop);
   if (inheritedLoop.agentContainer) loop.agentContainer = await attempt(async () => validateAgentContainer(inheritedLoop.agentContainer));
   const requiredPermissions = [...new Set([...(parent?.permissions?.required ?? []), ...permissionRequirements(body.permissionRequirements)])];
@@ -963,17 +947,8 @@ async function validatedStartInput(body: Record<string, any>): Promise<StartRunI
   const acpMode = await attempt(async () => acpExecution(body.acpExecution, parent?.permissions));
   const runTrust = parent?.permissions ? narrowerTrust(narrowerTrust(parent.permissions.trust, parent.trust), body.trust ?? parent.trust) : body.trust;
   const runTools = parent?.permissions ? parent.permissions.toolApprovals && !!parent.approvals.tools && body.approvals?.tools !== false : body.approvals?.tools === true;
-  const { roles, notes } = await validateRoles(pattern, body.roles, await repoRoot(repo).catch(() => repo), loop.remoteWorker, runTrust, { required: requiredPermissions, container: !!loop.agentContainer, tools: runTools, antigravityExecution: agyExecution, acpExecution: acpMode });
-  let externalSource = typeof body.externalSourceId === "string" ? await attempt(async () => integrations.resolveSource(body.externalSourceId)) : undefined;
-  if (body.externalSourceRef) {
-    const ref = body.externalSourceRef;
-    if (typeof ref.integration !== "string" || !["issue", "pr"].includes(ref.kind) || typeof ref.key !== "string") throw new HttpError(400, "Choose a configured external source");
-    externalSource = await attempt(() => integrations.importSource(ref.integration, ref.kind, ref.key, typeof body.project === "string" && projects.get(body.project) ? { project: body.project, repository: repo } : undefined));
-  }
-  if (externalSource && body.source) throw new HttpError(400, "Choose one external source for this run");
-  if (externalSource?.projectContext && (externalSource.projectContext.project !== body.project || externalSource.projectContext.repository !== repo)) throw new HttpError(400, "Keep the imported issue's project and repository, or import it again from the intended project");
+  const { roles, notes } = await validateRoles(pattern, body.roles, await repoRoot(repo).catch(() => repo), runTrust, { required: requiredPermissions, container: !!loop.agentContainer, tools: runTools, antigravityExecution: agyExecution, acpExecution: acpMode });
   if (body.loop?.verification) loop.verification = await attempt(async () => validateVerificationProfile(body.loop.verification));
-  if (loop.remoteWorker && (body.approvals?.tools || loop.agentContainer)) throw new HttpError(400, "Remote workers use their provisioned isolation profile and cannot wait for native tool approvals");
   const container = inheritedLoop.container;
   if (container && typeof container.image === "string" && /^[\w./:@-]{1,200}$/.test(container.image)) {
     loop.container = { image: container.image, network: container.network !== false };
@@ -1013,7 +988,6 @@ async function validatedStartInput(body: Record<string, any>): Promise<StartRunI
     roleSettings,
     agentSettings,
     source: validateSource(body.source),
-    externalSource,
     allowUntrusted: body.allowUntrusted === true,
     routing: notes,
     roles,
@@ -1044,11 +1018,6 @@ function automationRun(body: Record<string, any>) {
   if (body.taskTeam?.enabled === true) throw new HttpError(400, SCHEDULED_TEAM_UNAVAILABLE);
   const keep = ["templateRef", "permissionRequirements", "repo", "project", "projectSelection", "pattern", "task", "roles", "options", "baseRef", "loop", "trust", "agentSettings", "roleSettings", "source"];
   const run: Record<string, any> = Object.fromEntries(keep.filter((k) => body[k] !== undefined).map((k) => [k, body[k]]));
-  if (typeof body.externalSourceId === "string") {
-    try { const source = integrations.resolveSource(body.externalSourceId); run.externalSourceRef = { integration: source.integration, kind: source.kind, key: source.key }; }
-    catch (error) { throw new HttpError(400, (error as Error).message); }
-  }
-  else if (body.externalSourceRef) run.externalSourceRef = body.externalSourceRef;
   if (Array.isArray(body.context?.paths)) run.context = { paths: body.context.paths.map((p: any) => ({ path: String(p.path ?? "") })) };
   return run as Record<string, any> & { repo: string; pattern: string; task: string };
 }
@@ -1703,10 +1672,10 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
       return memberActor(memberOf(current), "browser");
     }, () => sharedMutation(req));
     if (parts[1] === "host-execution") return handleHostExecution(req, res, parts, hostExecution, memberActor(memberOf(shared.identity), "browser"), () => sharedMutation(req));
-    // The team board is the shared principals' second API: as closed as handleSharedApi (its own route table), and the session is re-checked on every stream frame.
+    // The team board is the shared principals' second API: closed (its own route table), and the session is re-checked on every stream frame.
     if (parts[1] === "team") return handleTeamApi(req, res, url, parts, { store: collab, actor: memberActor(memberOf(shared.identity), "browser"), principal: "browser", reauthorize: () => { const current = sharedAccounts.authenticate(shared.token, { touch: false }); if (!current) throw new HttpError(401, "Your session ended; sign in again"); return memberActor(memberOf(current), "browser"); }, mutation: sharedMutation });
-    if (req.method !== "GET") sharedMutation(req);
-    return attempt(() => handleSharedApi(req, res, url, parts, { accounts: sharedAccounts, token: shared.token, identity: shared.identity, manager, projects, comments: collaborationReviews, canReadFilePolicy: (run) => !fileAccess.restrictedRun(run), onFilePolicyChange: (listener) => filePolicies.onChange(listener), patterns: patterns.map(describePattern), templates }));
+    // Closed: a shared session reaches the team board, host queue and team terminals above and nothing else. It never falls through to the owner APIs below.
+    throw new HttpError(403, "This operation requires the Code Flow owner");
   }
   if (via === "lan" && !phoneControl()) throw new HttpError(404, "Not found");
   if (!owner) throw Object.assign(new HttpError(401, "Not signed in: use the owner link or sign in to shared projects"), { signIn: true });
@@ -1891,15 +1860,6 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     })));
     return send(res, 200, await attempt(() => sharedAccounts.revokeSessions(parts[2]!, body)));
   }
-  if (parts[1] === "remote-workers") {
-    if (parts.length === 2 && req.method === "GET") return send(res, 200, remoteWorkers.list());
-    if (parts.length === 4 && parts[3] === "probe" && req.method === "POST") {
-      const body = await readJson(req, 8192);
-      if (typeof body.repoMapping !== "string") throw new HttpError(400, "Choose a registered repository mapping");
-      return send(res, 200, await attempt(() => remoteWorkers.probe(parts[2]!, { repoMapping: body.repoMapping })));
-    }
-    throw new HttpError(404, "Unknown remote worker operation");
-  }
   if (parts.join("/") === "api/extensions" && req.method === "GET") return send(res, 200, { api: { major: 1, minor: 0 }, configuration: extensions.configuration(), extensions: extensions.list() });
   if (parts[1] === "acp-connections") {
     if (req.method === "GET" && parts.length === 2) return send(res, 200, acpConnections.snapshot());
@@ -1919,7 +1879,6 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     if (req.method === "DELETE" && parts[2] && parts.length === 3) return send(res, 200, await attempt(() => acpConnections.remove(Number(url.searchParams.get("revision")), parts[2]!)));
     throw new HttpError(404, "Unknown ACP connection operation");
   }
-  if (parts[1] === "coordinated-changes") return coordinatedApi.handle(req, res, parts);
   // The team board: served here in hub mode, forwarded to the team server under this computer's runner credential in linked mode. The link itself (connect, mappings, start/stop/hand over on this computer) is always local and the owner's own.
   if (parts[1] === "team-terminals") return handleTeamTerminals(req, res, parts, teamTerminals, () => ownerActor(collab.ownerName), () => sharedMutation(req));
   if (parts[1] === "host-execution") return handleHostExecution(req, res, parts, hostExecution, ownerActor(collab.ownerName), () => sharedMutation(req));
@@ -1945,9 +1904,6 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
       });
     });
   }
-  if (parts[1] === "runs" && parts.length === 6 && parts[3] === "remote-steps" && ["receipt", "cancel"].includes(parts[5]!) && req.method === "POST") {
-    return send(res, 200, redactExport(await attempt(() => manager.inspectRemoteStep(parts[2]!, parts[4]!, { cancel: parts[5] === "cancel" }))));
-  }
 
   if (["readiness", "verification", "workspace", "diagnostics", "v1"].includes(parts[1] ?? "")) {
     const abort = new AbortController();
@@ -1959,20 +1915,6 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
   if (parts[1] === "integration-connections") {
     if (fileAccess.hasRestrictions()) throw new HttpError(403, "Integration connections are unavailable under custom filesystem restrictions");
     if (await attempt(() => integrationConnectionsApi(req, res, url, parts.slice(1)))) return;
-  }
-  if (parts[1] === "integrations") {
-    if (req.method === "GET" && !parts[2]) return send(res, 200, integrations.list());
-    if (req.method === "GET" && parts[2] && parts[3] === "items") {
-      const kind = url.searchParams.get("kind");
-      if (kind !== "issue" && kind !== "pr") throw new HttpError(400, "Choose issues or review requests");
-      return send(res, 200, await attempt(() => integrations.items(parts[2]!, kind, url.searchParams.get("cursor") ?? undefined)));
-    }
-    if (req.method === "POST" && parts[2] && parts[3] === "import") {
-      const body = await readJson(req);
-      if (!["issue", "pr"].includes(body.kind) || typeof body.key !== "string") throw new HttpError(400, "Choose a source item");
-      return send(res, 201, await attempt(() => integrations.importSource(parts[2]!, body.kind, body.key)));
-    }
-    throw new HttpError(404, "Unknown external source operation");
   }
   if (parts[1] === "notifications") {
     if (!notificationsReady) throw new HttpError(503, "Notification settings and delivery history are unavailable because saved state could not be loaded. The file was preserved. Check the server log, repair the state, then restart the server.");
@@ -2000,18 +1942,6 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
   }
 
   if (req.method === "GET" && parts[1] === "team-capabilities") return send(res, 200, await Promise.all(AGENT_IDS.map(adapterTeamCapabilities)));
-  if (parts[1] === "team-rollout") {
-    if (req.method === "GET") return send(res, 200, await teamEvaluationStore.rollout(autoTeamEnabled()));
-    if (req.method === "POST") {
-      const body = await readJson(req);
-      await attempt(() => teamEvaluationStore.decide({ stage: body.stage, rationale: body.rationale, evaluationIds: body.evaluationIds }));
-      return send(res, 200, await teamEvaluationStore.rollout(autoTeamEnabled()));
-    }
-  }
-  if (req.method === "GET" && parts[1] === "team-evaluations") {
-    const reports = await teamEvaluationStore.list();
-    return send(res, 200, { reports, assessment: assessTeamRollout(reports), rollout: await teamEvaluationStore.rollout(autoTeamEnabled()) });
-  }
   // Under a restriction no CLI is probed: every provider is unavailable, and says why.
   if (req.method === "GET" && parts[1] === "agents") {
     if (url.searchParams.get("refresh") === "1" && !fileAccess.hasRestrictions()) invalidateAgentCatalogs();
@@ -2033,12 +1963,11 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     const project = url.searchParams.get("project") || undefined;
     if (project && !projects.list().some(p => p.id === project)) throw new HttpError(404, "Project not found");
     if (req.method === "GET" && !parts[2]) return send(res, 200, await attempt(() => teamTemplateStore.list(project, url.searchParams.get("history") === "1")));
-    if (req.method === "POST" && parts[2] === "migrate") return send(res, 200, await attempt(async () => teamTemplateStore.migrate(await readJson(req), project)));
     if (req.method === "POST" && !parts[2]) {
       const body = await readJson(req);
       const template = await attempt(async () => validateTeamTemplate(body.template));
       if (template.project && !projects.list().some(p => p.id === template.project)) throw new HttpError(404, "Project not found");
-      if (template.workflow && !findPattern(template.workflow)) throw new HttpError(400, "Unknown template workflow");
+      if (template.workflow && !findPattern(template.workflow)) throw new HttpError(400, retiredPatternMessage(template.workflow) ?? "Unknown template workflow");
       return send(res, 201, await attempt(() => teamTemplateStore.save(template, body.expectedVersion)));
     }
     throw new HttpError(404, "Unknown team template operation");
@@ -2140,7 +2069,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
       if (raw.context?.attachments !== undefined && (!Array.isArray(raw.context.attachments) || raw.context.attachments.length)) throw new HttpError(400, "Attachments cannot be deferred; remove them before queueing");
       const request = await attempt(async () => sanitizeDeferredRequest({ ...automationRun(raw), parentRunId: raw.parentRunId, branchPrefix: raw.branchPrefix }));
       const pattern = findPattern(request.pattern);
-      if (!pattern) throw new HttpError(400, "Unknown pattern");
+      if (!pattern) throw new HttpError(400, retiredPatternMessage(request.pattern) ?? "Unknown pattern");
       request.repo = await attempt(() => repoRoot(request.repo));
       if (request.project && !projects.get(request.project)?.repos.includes(request.repo)) throw new HttpError(400, "Choose a repository belonging to this project");
       if (request.parentRunId && manager.get(request.parentRunId)?.repo !== request.repo) throw new HttpError(400, "Choose an existing parent run in the same repository");
@@ -2451,7 +2380,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     return send(res, 200, ref ? await readRepoConfigAt(repo, ref) : await readRepoConfig(repo));
   }
   if (parts[1] === "codex-profile" && parts.length === 2) {
-    // Which Codex profile runs use (Settings → Agents & models); read again on every turn.
+    // Which Codex profile runs use (Settings → Agents); read again on every turn.
     if (req.method === "GET") return send(res, 200, codexProfileStatus());
     if (req.method === "PUT") {
       const body = await readJson(req);
@@ -2681,8 +2610,6 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     }
     if (req.method === "GET" && parts.length === 3) return send(res, 200, run);
     if (req.method === "GET" && parts[3] === "evaluation") {
-      const report = (await teamEvaluationStore.list()).find((item) => item.runId === run.id && item.at === run.endedAt);
-      if (report) return send(res, 200, report);
       const journal = await loadJournal(run.id, { strict: run.pattern === "auto-team" });
       const memoryEntries = run.project && projects.get(run.project)?.repos.includes(run.repo) ? await memoryStore.list({ repo: run.repo, projectId: run.project, scope: "project" }, { kind: "user", repo: run.repo, projectId: run.project }) : [];
       return send(res, 200, buildTeamEvaluation(run, { replay: run.recovery, journal, memoryEntries }));
@@ -2736,7 +2663,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
     }
     if (req.method === "POST" && parts[3] === "provider-chat" && parts.length === 4) {
       const body = await readJson(req, 64 * 1024);
-      const { roles } = await validateRoles(findPattern("solo")!, { agent: [body.agent] }, run.repo, run.loop.remoteWorker, typeof body.trust === "string" ? body.trust : run.trust);
+      const { roles } = await validateRoles(findPattern("solo")!, { agent: [body.agent] }, run.repo, typeof body.trust === "string" ? body.trust : run.trust);
       const next = await attempt(() => manager.startProviderChat(run.id, { agent: roles.agent![0]!, settings: body.settings, message: body.message, kind: body.kind, attachments: body.attachments, trust: body.trust, tools: body.tools }));
       return send(res, 201, { id: next.id });
     }
@@ -2949,10 +2876,6 @@ if (!fileAccess.hasRestrictions()) await extensions.load().catch((error) => logE
 else { extensions.defer("A custom filesystem policy is active. Clear it and restart to load extensions."); logWarn("Extensions deferred: custom filesystem policy cannot isolate trusted plugin initialization; clear the policy and restart to load extensions"); }
 await automations.load();
 deferredFault = await deferredRuns.load().then(() => undefined, (error) => { logError(`Deferred runs disabled: repair ${deferredRuns.file} and restart`, error); return (error as Error).message; });
-await coordinatedApi.service.load().then(
-  () => coordinatedApi.recover().catch((error) => logError("A coordinated launch requires manual recovery", error)),
-  (error) => logError("Coordinated changes disabled: their private storage cannot be read", error),
-);
 if (!deferredFault) await recoverDeferredRuns(deferredRuns, manager).catch((error) => logError("A deferred launch requires manual recovery", error));
 remote = await loadRemote();
 if (!tlsConfigured) {
@@ -3197,7 +3120,6 @@ async function stop(reason: string, code = 0) {
   await Promise.race([teamConnections.close(), new Promise((resolve) => setTimeout(resolve, 5000).unref())]).catch((err) => logError("Team runner shutdown failed", err));
   await hostExecution.close().catch((err) => logError("Host execution shutdown failed", err));
   await collab.close().catch((err) => logError("Team board shutdown failed", err));
-  await coordinatedApi.service.stop().catch((err) => logError("Coordinated changes shutdown failed", err));
   await deferredRuns.stop().catch((err) => logError("Deferred queue shutdown failed", err));
   docsHelp.close();
   for (const controller of improvingControllers) controller.abort();

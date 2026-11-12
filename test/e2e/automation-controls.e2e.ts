@@ -52,7 +52,7 @@ test("automation time zones, dry-run settings, failed events and explicit retry 
   const accepted = await fetch(`${base}/hooks/${trigger.id}`, { method: "POST", headers: { authorization: `Bearer ${trigger.token}`, "content-type": "application/json" }, body: JSON.stringify({ details: "Preserve this event on retry" }) });
   assert.equal(accepted.status, 202);
   await until(() => api<AutomationEvent[]>(`/api/automations/${trigger.id}/events`), (events) => events.some((event) => event.state === "failed"));
-  await page.goto(base + "/#/settings/automations");
+  await page.goto(base + "/#/automations/manage");
   const row = page.locator(".auto-row", { hasText: "Automation QA" });
   if (!await row.getByText("Schedule and next times", { exact: true }).isVisible()) await row.getByRole("button", { name: "Edit", exact: true }).click(); await row.getByText("Schedule and next times", { exact: true }).click();
   await row.getByLabel("Time zone", { exact: true }).fill("America/New_York");
@@ -138,13 +138,6 @@ test("a sweep configures single agents, team patterns and saved templates withou
     await dialog.getByRole("combobox", { name: "Agent", exact: true }).selectOption("codex");
     assert.equal(await dialog.getByRole("combobox", { name: "Planner", exact: true }).count(), 0);
     assert.equal(await failing.isChecked(), true);
-    await workflow.selectOption("race");
-    const contestants = dialog.getByRole("group", { name: "Contestants providers", exact: true });
-    for (const name of ["Claude", "Codex"]) { const choice = contestants.getByRole("button", { name, exact: true }); if (await choice.getAttribute("aria-pressed") !== "true") await choice.click(); }
-    assert.equal(await dialog.getByRole("button", { name: "Start 1 run", exact: true }).isEnabled(), true);
-    await contestants.getByRole("button", { name: "Codex", exact: true }).click();
-    await dialog.getByRole("status").filter({ hasText: "at least two contestants" }).waitFor();
-    assert.equal(await dialog.getByRole("button", { name: "Start 1 run", exact: true }).isEnabled(), false);
     await workflow.selectOption("pipeline");
     await mkdir(join(root, "output/playwright"), { recursive: true });
     for (const width of [1414, 390, 320]) {

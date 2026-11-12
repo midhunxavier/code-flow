@@ -101,7 +101,7 @@ export const codexAdapter: AgentAdapter = {
     if (profile) {
       // In a container Codex's home is the image's, so only Codex there can tell whether the file exists.
       const problem = opts.agentContainer ? undefined : codexProfileProblem(profile);
-      if (problem) return { ok: false, finalText: "", error: `${problem}, or clear the Codex profile in Settings → Agents & models.`, errorKind: "cli_incompatible" };
+      if (problem) return { ok: false, finalText: "", error: `${problem}, or clear the Codex profile in Settings → Agents.`, errorKind: "cli_incompatible" };
     }
     const transport = profile ? "exec" : codexTransport();
 
@@ -228,7 +228,7 @@ export const codexAdapter: AgentAdapter = {
     }
 
     if (!outcome) {
-      if (opts.permissions?.toolApprovals) return { ok: false, finalText: "", error: profile ? `This run requires interactive approvals, which the Codex profile “${profile}” can’t provide: a profile runs through codex exec. Clear the profile in Settings → Agents & models, or start the run without tool approvals.` : "This run requires interactive approvals; Codex exec cannot preserve them. Use an available app-server transport.", errorKind: "cli_incompatible" };
+      if (opts.permissions?.toolApprovals) return { ok: false, finalText: "", error: profile ? `This run requires interactive approvals, which the Codex profile “${profile}” can’t provide: a profile runs through codex exec. Clear the profile in Settings → Agents, or start the run without tool approvals.` : "This run requires interactive approvals; Codex exec cannot preserve them. Use an available app-server transport.", errorKind: "cli_incompatible" };
       if (opts.interactiveApprovals) onEvent({ kind: "status", text: "Native tool approvals require Codex app-server; this exec turn remains headless." });
       // `-c sandbox_mode=` works for both `exec` and `exec resume` (resume has no -s flag).
       const common = ["--json", "--skip-git-repo-check", ...(opts.permissions ? ["-c", 'approval_policy="never"'] : []), "-c", `sandbox_mode="${sandbox}"`, ...network, ...teamConfig, ...managedSandbox];

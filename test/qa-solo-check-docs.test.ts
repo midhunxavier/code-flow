@@ -12,7 +12,6 @@ test("conversation, team and managed check modes follow the execution contract",
   assert.equal(composerCheckMode("solo"), "conversation");
   assert.equal(composerCheckMode("solo", { container: true, team: true }), "conversation");
   assert.equal(composerCheckMode("solo", { team: true }), "team");
-  assert.equal(composerCheckMode("solo", { remote: true }), "managed");
   assert.equal(composerCheckMode("solo", { checkpointOnFinish: true }), "managed");
   for (const pattern of patterns.filter(p => p.id !== "solo")) assert.equal(composerCheckMode(pattern.id), "managed");
 });

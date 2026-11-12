@@ -67,8 +67,8 @@ test("a run belongs to the project it recorded; runs from before projects, to th
   assert.equal(projectOf({ repo: "/r/three" }, list), undefined);
 });
 
-test("strict coordinated placement cannot revive membership revoked ahead of it in the project queue", async () => {
-  const file = join(mkdtempSync(join(tmpdir(), "codeflow-projects-strict-")), "projects.json"), projects = new Projects(file); await projects.load(); const project = await projects.create({ name: "Strict coordinated project", repos: [api, web] });
+test("strict placement cannot revive membership revoked ahead of it in the project queue", async () => {
+  const file = join(mkdtempSync(join(tmpdir(), "codeflow-projects-strict-")), "projects.json"), projects = new Projects(file); await projects.load(); const project = await projects.create({ name: "Strict project", repos: [api, web] });
   const removed = projects.update(project.id, { repos: [api] });
   const placement = projects.place(web, { requested: project.id, lenient: true, requireRepo: true });
   await removed; await assert.rejects(placement, /no longer an explicit member/); assert.deepEqual(projects.get(project.id)!.repos, [api]);
@@ -152,11 +152,11 @@ test("the composer's defaults: the last pattern, and the last team per pattern",
   const projects = fresh();
   await projects.load();
   const { project } = await projects.place(api);
-  await projects.remember(project.id, { pattern: "race", roles: { contestants: ["claude", "codex"], judge: ["auto"] }, agentSettings: { claude: { model: "opus" } } });
+  await projects.remember(project.id, { pattern: "council", roles: { reviewers: ["claude", "codex"], chair: ["auto"] }, agentSettings: { claude: { model: "opus" } } });
   await projects.remember(project.id, { pattern: "pipeline", roles, roleSettings: { builder: { codex: { effort: "high" } } }, agentSettings: {} });
   const d = projects.get(project.id)!.defaults!;
   assert.equal(d.pattern, "pipeline");
-  assert.deepEqual(d.teams.race!.roles, { contestants: ["claude", "codex"], judge: ["auto"] }, "the race team is kept for when you pick it again");
+  assert.deepEqual(d.teams.council!.roles, { reviewers: ["claude", "codex"], chair: ["auto"] }, "the council team is kept for when you pick it again");
   assert.deepEqual(d.teams.pipeline!.roleSettings, { builder: { codex: { effort: "high" } } });
   assert.equal(d.agentSettings, undefined);
 });

@@ -38,7 +38,7 @@ async function stop() { if (!server || server.exitCode !== null || server.signal
 async function page() {
   const context = await browser.newContext({ viewport: { width: 1440, height: 1100 } }); await context.addInitScript(() => localStorage.setItem("sideOpen", "0")); const p = await context.newPage(); p.setDefaultTimeout(15000); p.on("pageerror", error => errors.push(error.message));
   p.on("console", message => { if (message.type() !== "error") return; const url = message.location().url, text = message.text(); const networkRestart = restarting && url.startsWith(base + "/api/") && /net::ERR_(?:CONNECTION_REFUSED|EMPTY_RESPONSE|INCOMPLETE_CHUNKED_ENCODING)/.test(text); (networkRestart ? expectedRestart : offlineRetry && url === offlineRetry && /net::ERR_FAILED/.test(text) ? expectedOffline : errors).push(`${text} [${url}]`); });
-  await p.goto(`${base}/?token=${token}#/settings/automations`); return p;
+  await p.goto(`${base}/?token=${token}#/automations/manage`); return p;
 }
 async function fixture(name: string, extra: Record<string, unknown> = {}) {
   const repo = mkdtempSync(join(scratch, "repo-")); git(repo, "init", "-q", "-b", "main"); git(repo, "config", "user.name", "Fixture"); git(repo, "config", "user.email", "fixture@example.test"); mkdirSync(join(repo, ".codeflow")); writeFileSync(join(repo, ".codeflow/config.json"), '{"prove":false}'); writeFileSync(join(repo, "README.md"), "QA webhook fixture\n"); git(repo, "add", "."); git(repo, "commit", "-qm", "fixture"); const project = await ok("/api/projects", { name, repos: [repo] });

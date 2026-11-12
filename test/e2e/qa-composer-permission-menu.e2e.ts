@@ -32,7 +32,7 @@ async function composer(project: string, storage: Record<string, string> = {}): 
   page.on("response", (response) => { if (response.url().includes("/api/") && response.status() >= 500) errors.push(`${response.status()} ${response.url()}`); });
   await page.goto(`${base}/?token=${token}#/workflows`);
   await page.evaluate((values) => { for (const [key, value] of Object.entries(values)) localStorage.setItem(key, value); }, storage);
-  await page.goto(`${base}/#/project/${encodeURIComponent(project)}/new`);
+  await page.goto(`${base}/#/project/${encodeURIComponent(project)}/workflow`);
   await page.getByRole("textbox", { name: "Task", exact: true }).waitFor();
   await page.waitForFunction(() => !/Loading|Checking|Restoring/.test(document.querySelector(".task-start")?.getAttribute("title") ?? ""));
   return { page, errors, close: () => context.close() };
@@ -44,11 +44,10 @@ async function checked(page: Page) {
   const items = await page.getByRole("menuitem").evaluateAll((elements) => elements.filter((element) => element.querySelector(".chat-choice-check")).map((element) => element.firstElementChild?.firstChild?.textContent ?? ""));
   await page.keyboard.press("Escape"); return items;
 }
-async function runOptions(page: Page) { if (!await page.locator("details.composer-options").evaluate((element) => (element as HTMLDetailsElement).open)) await page.getByRole("button", { name: "Edit run options" }).click(); }
+async function runOptions(page: Page) { await page.locator(".advanced-controls").evaluate(el => { (el as HTMLDetailsElement).open = true; }); }
 async function runDetails(page: Page, label: string) {
   await runOptions(page);
-  const details = page.locator("details.effective-settings");
-  if (!await details.evaluate((element) => (element as HTMLDetailsElement).open)) await details.locator("summary").click();
+  const details = page.locator(".effective-settings");
   return (await details.locator("tr").filter({ has: page.getByRole("rowheader", { name: label, exact: true }) }).locator("td").allInnerTexts()).join(" | ");
 }
 async function send(page: Page, task: string) {
@@ -101,22 +100,13 @@ test("Safe and Trusted stay in the menu so a level can be chosen again", { timeo
   assert.deepEqual(errors, []); await close();
 });
 
-test("a fresh Claude conversation asks, and Run details and a saved template say so", { timeout: 60_000 }, async () => {
+test("a fresh Claude conversation asks, and Run details says so", { timeout: 60_000 }, async () => {
   const { page, errors, close } = await composer(projects.plain);
   assert.equal(await permissions(page).innerText(), "Permissions:\nAsk for approval");
   assert.equal(await runDetails(page, "Tool permissions"), "Ask for supported native requests | Default for Claude and Codex conversations");
-  await page.getByRole("textbox", { name: "Task", exact: true }).fill("Template fixture");
-  await page.locator(".taskbox").getByRole("button", { name: "Run actions", exact: true }).click();
-  await page.getByRole("menuitem", { name: "Save as template…" }).click();
-  const dialog = page.getByRole("dialog", { name: "Save as template" });
-  await dialog.getByLabel("Template name").fill("Fresh");
-  await dialog.getByRole("button", { name: "Save template", exact: true }).click();
-  await dialog.waitFor({ state: "hidden" });
-  const saved = await page.evaluate((project) => JSON.parse(localStorage.getItem(`composerLibrary:${project}`)!).templates[0].config.toolApprovals, projects.plain);
-  assert.equal(saved, true, "the template records what the run would get");
   const { status, body, result } = await send(page, "Fresh conversation fixture");
   assert.equal(status, 201, JSON.stringify(result)); assert.equal(body.approvals.tools, true);
-  await page.goto(`${base}/#/project/${encodeURIComponent(projects.plain)}/new`);
+  await page.goto(`${base}/#/project/${encodeURIComponent(projects.plain)}/workflow`);
   await choose(page, "Approve for me");
   assert.equal(await runDetails(page, "Tool permissions"), "Decline requests requiring interaction | Explicit choice");
   assert.deepEqual(errors, []); await close();
@@ -125,8 +115,7 @@ test("a fresh Claude conversation asks, and Run details and a saved template say
 test("Docker isolation starts with the permission the control shows and keeps the preference", { timeout: 60_000 }, async () => {
   const { page, errors, close } = await composer(projects.plain);
   await runOptions(page);
-  const isolation = page.locator("details.agent-isolation");
-  await isolation.locator("summary").click();
+  const isolation = page.locator(".agent-isolation");
   const box = isolation.getByRole("checkbox", { name: "Run agents in a prebuilt Docker image" });
   await box.check();
   assert.equal(await permissions(page).innerText(), "Permissions:\nApprove for me");
@@ -149,9 +138,9 @@ test("Antigravity is left out of default checking roles after Ask for approval, 
   await page.route("**/api/runs", async (route) => { if (route.request().method() !== "POST") return route.continue(); bodies.push(JSON.parse(route.request().postData()!)); await route.fulfill({ status: 400, json: { error: "Intercepted" } }); });
   await page.reload(); await page.getByRole("textbox", { name: "Task", exact: true }).fill("Antigravity fixture");
   await runOptions(page);
-  await page.locator("details.advanced-controls > summary").click();
+  await page.locator(".advanced-controls").evaluate(el => { (el as HTMLDetailsElement).open = true; });
   const start = page.locator(".task-start");
-  for (const [workflow, role] of [["pipeline", "reviews"], ["race", "picks the best"], ["debate", "writes the final plan"]] as const) {
+  for (const [workflow, role] of [["pipeline", "reviews"]] as const) {
     await page.locator("#workflow-select").selectOption(workflow);
     assert.doesNotMatch(await page.locator(".pattern-why").innerText(), new RegExp(`Antigravity CLI ${role}`), workflow);
     assert.equal(await start.isDisabled(), false);

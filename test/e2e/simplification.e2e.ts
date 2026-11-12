@@ -47,100 +47,46 @@ after(async () => { await browser?.close(); server?.kill("SIGTERM"); await new P
 
 
 const errors: string[] = [];
-test("Connections consolidates old bookmarks and keeps access setup discoverable with an optional Board shortcut", { timeout: 45_000 }, async () => {
+test("Connections consolidates old bookmarks and keeps access setup discoverable", { timeout: 45_000 }, async () => {
   page.on("pageerror", error => errors.push(error.message));
   await page.goto(`${base}/#/settings/ssh`);
   await page.getByRole("navigation", { name: "Connection purpose" }).getByRole("link", { name: "Computers" }).waitFor();
   assert.equal(await page.getByRole("navigation", { name: "Settings categories" }).getByRole("link", { name: "Connections", exact: true }).count(), 1);
-  await page.getByRole("link", { name: "Workers", exact: true }).click();
-  await page.getByRole("heading", { name: /Remote workers/ }).waitFor();
+  assert.equal(await page.getByRole("navigation", { name: "Connection purpose" }).getByRole("link", { name: "Workers", exact: true }).count(), 0);
   await page.goto(`${base}/#/settings/team`);
-  const toggle = page.getByLabel("Show Board in the app menu");
-  assert.equal(await toggle.isChecked(), false);
-  await toggle.check();
   await page.getByRole("link", { name: "Open Board" }).waitFor();
-  await page.reload();
-  assert.equal(await toggle.isChecked(), true);
-  await toggle.uncheck();
-  assert.equal(await page.getByRole("link", { name: "Open Board" }).count(), 1, "navigation preference never hides access setup");
 });
 
-test("one template library restores complete saved configurations and keeps legacy workflows", { timeout: 45_000 }, async () => {
+test("the workflow run keeps one team template library and no browser presets", { timeout: 45_000 }, async () => {
   await page.goto(`${base}/#/workflows`);
-  await openAdvanced(page); await page.getByRole("button", { name: "Browser task library", exact: true }).click();
-  let dialog = page.getByRole("dialog", { name: "Template library", exact: true });
-  await dialog.getByLabel("Template", { exact: true }).selectOption("starter-explore");
-  await dialog.getByRole("button", { name: "Use template", exact: true }).click();
-  assert.equal(await page.getByLabel("Workflow", { exact: true }).inputValue(), "debate");
-  assert.deepEqual(await page.evaluate(() => JSON.parse(localStorage.getItem("roleSel")!).debate.builder), []);
-  await page.evaluate(() => {
-    const config = { pattern: "solo", roles: { agent: ["codex"] }, options: {}, agentSettings: { codex: { model: "gpt-5" } }, roleSettings: {}, trust: "safe", limits: { maxMinutes: 23, maxSteps: 17 }, approvePlan: false, toolApprovals: true, check: "node --test", setup: "", baseRef: "main" };
-    localStorage.setItem("composerLibrary", JSON.stringify({ schemaVersion: 1, presets: [{ id: "legacy", name: "Old workflow", revision: 1, updatedAt: 1, config, history: [] }], templates: [{ id: "complete", name: "Full task", pattern: "solo", task: "Review {{component}}", criteria: ["Keep behavior"], config, runOptions: { verification: "", container: { enabled: false, image: "", authVolume: "" } } }] }));
-  });
-  // Saved templates record the approvals the run would get: choose none, so a restored grant would show.
-  await page.locator(".taskbox").getByRole("button", { name: /^Permissions:/ }).click();
-  await page.getByRole("menuitem", { name: /^Approve for me/ }).click();
-  await openAdvanced(page); await page.getByRole("button", { name: "Browser task library", exact: true }).click();
-  await dialog.getByLabel("Library", { exact: true }).selectOption("personal");
-  await dialog.getByLabel("Template", { exact: true }).selectOption("saved:complete");
-  await dialog.getByLabel("component", { exact: true }).fill("sum");
-  await dialog.getByRole("button", { name: "Use template", exact: true }).click();
-  assert.equal(await page.getByLabel("Task", { exact: true }).inputValue(), "Review sum");
-  assert.doesNotMatch(await page.getByLabel("Run configuration summary").innerText(), /17 calls · 23 minutes/, "templates keep the run budget");
+  await page.getByText("Workflow run", { exact: true }).first().waitFor();
+  await page.getByLabel("Task", { exact: true }).fill("Review sum");
+  await openAdvanced(page);
+  await page.getByRole("region", { name: "Reusable team templates" }).waitFor();
+  for (const name of ["Browser task library", "Save task preset", "Import browser library"]) assert.equal(await page.getByRole("button", { name, exact: true }).count(), 0, name);
+  assert.equal(await page.locator(".advanced-controls details.settings").count(), 0, "Advanced holds titled groups, not further option disclosures");
   await page.getByRole("button", { name: "Run actions", exact: true }).click();
-  await page.getByRole("menuitem", { name: "Save as template…", exact: true }).click();
-  const save = page.getByRole("dialog", { name: "Save as template", exact: true });
-  await save.getByLabel("Template name", { exact: true }).fill("Roundtrip");
-  await save.getByLabel("Save to").selectOption("personal");
-  await save.getByRole("button", { name: "Save template", exact: true }).click();
-  const stored = await page.evaluate(() => JSON.parse(localStorage.getItem("composerLibrary")!).templates.find((item: any) => item.name === "Roundtrip"));
-  assert.equal(stored.config.agentSettings.codex.model, "gpt-5");
-  assert.equal(stored.config.check, "node --test"); assert.equal(stored.config.toolApprovals, false, "template grants are not restored");
-  assert.deepEqual(stored.runOptions.container, { enabled: false, image: "", authVolume: "" });
-  await openAdvanced(page); await page.getByRole("button", { name: "Browser task library", exact: true }).click();
-  await dialog.getByLabel("Template", { exact: true }).selectOption("workflow:legacy");
-  await dialog.getByRole("button", { name: "Use template", exact: true }).click();
-  assert.equal(await page.getByLabel("Task", { exact: true }).inputValue(), "Review sum");
+  assert.equal(await page.getByRole("menuitem", { name: /template/i }).count(), 0);
+  await page.keyboard.press("Escape");
 });
 
-test("templates wait for repository configuration before restoring check commands", { timeout: 45_000 }, async () => {
-  let release!: () => void;
-  const loading = new Promise<void>(resolve => { release = resolve; });
-  await page.route("**/api/repo-config?*", async request => { await loading; await request.continue(); });
-  try {
-    const requested = page.waitForRequest("**/api/repo-config?*");
-    await page.reload(); await requested;
-    await page.getByText("Restoring your project draft…", { exact: true }).waitFor();
-    assert.equal(await page.getByRole("button", { name: "Browser task library", exact: true }).count(), 0, "restoring blocks editing a partial draft");
-    release();
-    await openAdvanced(page); await page.getByRole("button", { name: "Browser task library", exact: true }).click();
-    const dialog = page.getByRole("dialog", { name: "Template library", exact: true });
-    await dialog.getByLabel("Library", { exact: true }).selectOption("personal");
-    await dialog.getByLabel("Template", { exact: true }).selectOption({ label: "Roundtrip" });
-    const apply = dialog.getByRole("button", { name: "Use template", exact: true });
-    await apply.click();
-    await openAdvanced(page);
-    assert.equal(await page.getByLabel("Check command for merge validation", { exact: true }).inputValue(), "node --test");
-  } finally { release(); await page.unroute("**/api/repo-config?*"); }
-});
-
-test("scheduling shares four purposes and comparisons live in Insights", { timeout: 45_000 }, async () => {
+test("scheduling shares one Automations page and comparisons live in Insights", { timeout: 45_000 }, async () => {
   await page.getByRole("button", { name: "Run actions", exact: true }).click();
   assert.equal(await page.getByRole("menuitem", { name: "Compare setups…", exact: true }).count(), 0);
   await page.getByRole("menuitem", { name: "Schedule…", exact: true }).click();
-  const choices = page.getByRole("dialog", { name: "Schedule work", exact: true });
-  await choices.getByRole("button", { name: /Run once later/ }).click();
-  await page.getByRole("dialog", { name: "Start later", exact: true }).waitFor();
-  await page.getByRole("dialog", { name: "Start later", exact: true }).getByRole("button", { name: "Close", exact: true }).click();
+  await page.waitForURL((url) => url.hash === "#/automations/manage");
+  for (const way of ["Run once later", "Repeat on a schedule or event", "Work through a GitHub backlog"]) await page.getByRole("heading", { name: way, exact: true }).waitFor();
+  await page.getByRole("button", { name: "Run once later", exact: true }).click();
+  await page.getByRole("dialog", { name: "Run once later", exact: true }).waitFor();
+  await page.getByRole("dialog", { name: "Run once later", exact: true }).getByRole("button", { name: "Close", exact: true }).click();
   await page.goto(`${base}/#/automations/once`);
-  await page.getByRole("navigation", { name: "Scheduling purpose" }).waitFor();
-  assert.equal(await page.getByRole("navigation", { name: "Scheduling purpose" }).getByRole("link").count(), 3);
-  await page.getByRole("region", { name: "Deferred runs", exact: true }).waitFor();
-  await page.getByRole("link", { name: "Process a backlog", exact: true }).click();
-  await page.getByRole("heading", { name: "Scheduled backlog work", exact: true }).waitFor();
+  await page.getByRole("region", { name: "Run once later queue", exact: true }).waitFor();
+  await page.getByRole("heading", { name: "Saved automations", exact: true }).waitFor();
+  await page.goto(`${base}/#/automations/backlog`);
+  await page.getByRole("heading", { name: "Work through a GitHub backlog", exact: true }).waitFor();
   await page.goto(`${base}/#/workflows`);
   await page.getByLabel("Task", { exact: true }).fill("Compare this task");
-  await page.goto(`${base}/#/settings/insights`);
+  await page.goto(`${base}/#/insights`);
   await page.getByText("Experiments", { exact: true }).click();
   await page.getByRole("button", { name: "Compare setups…", exact: true }).click();
   await page.getByRole("dialog", { name: "Compare setups", exact: true }).waitFor();
@@ -236,17 +182,14 @@ test("the shared browser keeps binary and oversized files in bounded read-only p
   }
 });
 
-test("revised hubs and template picker fit phones and have no serious accessibility errors", { timeout: 45_000 }, async () => {
+test("revised hubs and the workflow run options fit phones and have no serious accessibility errors", { timeout: 45_000 }, async () => {
   await page.setViewportSize({ width: 390, height: 844 });
   for (const route of ["#/automations/once", "#/automations/repeat", "#/automations/backlog", "#/settings/connections/workspace", "#/settings/connections/sharing", "#/workflows"]) {
     await page.goto(`${base}/${route}`);
     await page.locator("#main-content").waitFor();
     if (route === "#/workflows") {
-      await openAdvanced(page); await page.getByRole("button", { name: "Browser task library", exact: true }).click();
-      const picker = page.getByRole("dialog", { name: "Template library", exact: true });
-      await picker.waitFor();
-      // Contrast must measure the displayed dialog, not its transparent rise animation.
-      await picker.evaluate(async element => { await Promise.all(element.getAnimations({ subtree: true }).map(animation => animation.finished)); });
+      await openAdvanced(page);
+      await page.getByRole("heading", { name: "Run details", exact: true }).waitFor();
     }
     await page.addScriptTag({ content: axe.source });
     const result = await page.evaluate(async () => (window as any).axe.run(document, { runOnly: ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"] }));
@@ -257,8 +200,6 @@ test("revised hubs and template picker fit phones and have no serious accessibil
 });
 
 async function openAdvanced(page: Page) {
-  const options = page.locator(".composer-options");
-  if (await options.getAttribute("open") === null) await options.locator(":scope > summary").click();
   const advanced = page.locator(".advanced-controls");
   if (await advanced.getAttribute("open") === null) await advanced.locator(":scope > summary").click();
 }

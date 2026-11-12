@@ -184,7 +184,7 @@ test("Edit & run again from another repo: the run's check, setup, limits, team a
     worktrees: [],
     artifacts: [],
   });
-  assert.deepEqual(m.route.value, { view: "composer", project: "" });
+  assert.deepEqual(m.route.value, { view: "composer", project: "", legacy: true });
 
   assert.ok(asked.some((p) => p.startsWith("/api/check")), "the repo's own lookup ran");
   assert.equal(m.repo.value, "/other");

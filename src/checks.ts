@@ -286,7 +286,7 @@ const TEST_RUNNER =
   /^(npm (run )?test|npm run test:[\w:-]+|pnpm (run )?test|yarn (run )?test|bun (run )?test|npx (jest|vitest|mocha|ava|playwright test)|node --test|deno test|python3? -m (pytest|unittest)|pytest|(uv run (--no-sync )?|poetry run )(python3? -m )?pytest|cargo test|go test|make test|mvn test|gradle test|\.\/gradlew test|dotnet test|bundle exec rspec|rspec|mix test|swift test)(\s|$)/;
 
 /**
- * Agents can suggest a test command (e.g. the tester in Test-first). code-flow runs that outside
+ * Agents can suggest a test command (e.g. a reviewer, with a repro). code-flow runs that outside
  * the agent's sandbox, so only accept a plain invocation of a known test runner: no shell
  * operators, substitutions or redirects.
  */

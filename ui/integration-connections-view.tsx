@@ -8,7 +8,7 @@ import { NotificationsView } from "./notifications.js";
 import { Icon, type IconName } from "./icons.js";
 import { Menu, MenuItem } from "./panel-bits.js";
 import type { ConnectionProvider, ConnectionSummary, ConnectionBinding } from "../src/integration-connections.js";
-import type { ExternalSourceItem, ExternalSourcePage } from "../src/integrations.js";
+interface SourceItem { kind: "issue" | "pr"; key: string; title: string; body: string }
 import type { PullRequest, Check } from "../src/github.js";
 import type { RunSummary } from "./types.js";
 import { checksLabel, runPassed } from "../src/run-status.js";
@@ -95,7 +95,7 @@ export function IntegrationsScreen({ projectId }: { projectId?: string }) {
 function ProjectConnectionActions({ connection, projectId, repository }: { connection: ConnectionSummary; projectId: string; repository: string }) {
   const section = useRef<HTMLElement>(null);
   useEffect(() => { section.current?.scrollIntoView({ block: "start" }); section.current?.focus({ preventScroll: true }); }, []);
-  const [kind, setKind] = useState<"issue" | "pr">("issue"), [items, setItems] = useState<ExternalSourceItem[]>([]), [cursor, setCursor] = useState<string>();
+  const [kind, setKind] = useState<"issue" | "pr">("issue"), [items, setItems] = useState<SourceItem[]>([]);
   const [truncated, setTruncated] = useState(false), request = useRef(0);
   // Show loading on the first paint, but let the user change kind during a slow request.
   const [busy, setBusy] = useState(true), [error, setError] = useState(""), [preview, setPreview] = useState<{ project: string; repository: string; github: PullRequest & { kind: "issue" | "pr" }; checks?: Check[] }>();
@@ -106,17 +106,17 @@ function ProjectConnectionActions({ connection, projectId, repository }: { conne
   useEffect(() => { if (publish) reveal(publishRef.current); }, [publish]);
   const restoringDraft = !draftsReady.value || composerLoading.value;
   const base = `/api/integration-connections/projects/${enc(projectId)}/${enc(connection.id)}`;
-  const load = async (next?: string) => {
+  const load = async () => {
     const current = ++request.current; setBusy(true); setError("");
     try {
-      const result = await api<ExternalSourcePage>(`${base}/items?repository=${enc(repository)}&kind=${kind}${next ? `&cursor=${enc(next)}` : ""}`);
+      const result = await api<{ items: SourceItem[]; truncated: boolean }>(`${base}/items?repository=${enc(repository)}&kind=${kind}`);
       if (current !== request.current) return;
-      const values = [...new Map((next ? [...items, ...result.items] : result.items).map(item => [`${item.kind}:${item.key}`, item])).values()];
-      setItems(values.slice(0, 1000)); setCursor(result.nextCursor); setTruncated(result.truncated || values.length > 1000);
+      const values = [...new Map(result.items.map(item => [`${item.kind}:${item.key}`, item])).values()];
+      setItems(values.slice(0, 1000)); setTruncated(result.truncated || values.length > 1000);
     } catch (error) { if (current === request.current) setError((error as Error).message); } finally { if (current === request.current) setBusy(false); }
   };
-  useLayoutEffect(() => { setItems([]); setCursor(undefined); setTruncated(false); setPreview(undefined); void load(); return () => { ++request.current; }; }, [kind]);
-  const pick = async (item: ExternalSourceItem) => {
+  useLayoutEffect(() => { setItems([]); setTruncated(false); setPreview(undefined); void load(); return () => { ++request.current; }; }, [kind]);
+  const pick = async (item: SourceItem) => {
     const current = ++request.current;
     setBusy(true); setError("");
     try {
@@ -139,8 +139,7 @@ function ProjectConnectionActions({ connection, projectId, repository }: { conne
     {busy ? <p role="status">Loading…</p> : null}
     {!busy && !items.length ? <p>No open {kind === "issue" ? "issues" : "pull requests"} found. <button class="btn small" onClick={() => void load()}>Refresh</button></p> : null}
     <div class="connection-items">{items.map(item => <article key={item.key} class="connection-item"><div><strong>{item.key} · {item.title}</strong>{item.body ? <p class="help">{item.body.slice(0, 240)}</p> : null}</div><button class="btn small" disabled={busy} onClick={() => void pick(item)}>{kind === "issue" ? "Choose issue" : "Load PR preview"}</button></article>)}</div>
-    {cursor && items.length < 1000 ? <button class="btn" disabled={busy} onClick={() => void load(cursor)}>Load more</button> : null}
-    {truncated || cursor && items.length >= 1000 ? <p class="help" role="status">The listing reached its limit. Showing {items.length.toLocaleString()} {kind === "issue" ? "issues" : "pull requests"}. Narrow the project or open {SERVICE_NAMES[connection.provider as ConnectionProvider]} to see the rest.</p> : null}
+    {truncated ? <p class="help" role="status">The listing reached its limit. Showing {items.length.toLocaleString()} {kind === "issue" ? "issues" : "pull requests"}. Narrow the project or open {SERVICE_NAMES[connection.provider as ConnectionProvider]} to see the rest.</p> : null}
     {preview ? <article ref={previewRef} tabIndex={-1} class="connection-preview" aria-label="Source preview"><h3>{preview.github.title}</h3><p class="connection-source-body">{preview.github.body}</p>{safeHref(preview.github.url) ? <a href={safeHref(preview.github.url)} target="_blank" rel="noreferrer">Open source</a> : null}
       {preview.github.kind === "pr" ? <><p>{preview.github.headRefName} → {preview.github.baseRefName}</p><ul>{preview.checks?.map(check => <li key={check.name}>{check.name}: {check.state}</li>)}</ul></> : null}
       {restoringDraft ? <p class="help" role="status">Restoring your project draft…</p> : null}

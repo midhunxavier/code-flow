@@ -174,33 +174,6 @@ test("pipeline: a test the check never runs refutes nothing; the finding blocks 
   assert.equal(r.facts?.approved, false);
 });
 
-test("debate: a false alarm doesn't send the build back to the builder", async () => {
-  const r = await withEnv({ FAKE_REPRO: "passes" }, () =>
-    run("debate", { debaters: ["claude", "codex"], synthesizer: ["claude"], builder: ["codex"], reviewer: ["claude"] }, { loop: { check: "node --test" }, options: { rounds: 0 } }),
-  );
-  assert.equal(r.status, "done", r.error);
-  assert.ok(r.steps.some((s) => s.title.startsWith("Reviewer's test") && s.status === "done"));
-  assert.ok(!r.steps.some((s) => s.title === "Address review"));
-  assert.equal(r.facts?.approved, true);
-  assert.match(r.summary!, /Review by claude: approved\./);
-});
-
-test("supervisor: a confirmed finding goes to the supervisor with how it fails, and the reviewer looks again", async () => {
-  const dir = recordDir();
-  const r = await withEnv({ FAKE_REPRO: "fails", FAKE_RECORD_DIR: dir }, () =>
-    run("supervisor", { supervisor: ["claude"], workers: ["claude", "codex"], reviewer: ["codex"] }, { loop: { check: "node --test" } }),
-  );
-  assert.equal(r.status, "done", r.error);
-  assert.deepEqual(
-    r.steps.filter((s) => /^(Integration review|Reviewer's test|Fix integration issues)/.test(s.title)).map((s) => `${s.title}:${s.status}`),
-    ["Integration review:done", "Reviewer's test: Off-by-one in the loop bound:failed", "Fix integration issues:done", "Integration review (2):done"],
-  );
-  const fix = recorded(dir).find((p) => p.includes("Fix what blocks, run the tests"))!;
-  assert.match(fix, /## Confirmed: the reviewer's test fails on your code[\s\S]*off by one: the loop runs once too often/);
-  assert.equal(r.facts?.approved, true);
-  assert.match(r.summary!, /codex: approved — 0 issues, 0 blocking/);
-});
-
 test("review council: findings rank by severity, then by a confirming test, then by agreement; each reviewer's test runs once", async () => {
   const dir = recordDir();
   const r = await withEnv({ FAKE_REPRO: "council", FAKE_RECORD_DIR: dir }, () =>
