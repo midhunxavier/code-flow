@@ -289,9 +289,11 @@ export function InsightsView({ group }: { group?: string }) {
           </section>
         </>
       ) : null}
+      {stats || error ? <>
       <details class="settings"><summary>Experiments</summary><div class="settings-body"><p class="help">Compare workflows against your current New run draft. Each selected setup starts a separate run and uses provider capacity.</p>{draft ? <p>{draft.task.split("\n")[0] || "No task in the current draft"}</p> : null}<button class="btn" disabled={!!comparisonProblem} title={comparisonProblem} onClick={() => setComparing(true)}>Compare setups…</button>{comparisonProblem ? <p class="help">{comparisonProblem} <a href="#/">Configure task</a></p> : null}</div></details>
       <details class="ins-advanced"><summary>Team evaluation</summary><TeamEvaluations /></details>
       <details class="ins-advanced"><summary>Storage</summary><DiskPanel scope={scopeQuery()} /></details>
+      </> : null}
     </div>
   );
 }
