@@ -91,8 +91,8 @@ test("owner invites one project; a phone recipient chooses a password and reache
   await member.getByRole("button", { name: "Join project", exact: true }).click(); await member.getByText("You’re in Shared app", { exact: true }).waitFor();
   assert.ok(!member.url().includes("/join/"), "accepted secret leaves the address bar");
   await audit(member); await member.getByRole("heading", { name: "Your board is ready for its first task", exact: true }).waitFor();
-  const visible = await member.evaluate(async () => (await fetch("/api/projects")).json()); assert.deepEqual(visible.map((entry: { id: string }) => entry.id), [projectId]);
-  for (const path of ["/api/accounts/invitations", "/api/remote", `/api/team/board?project=${privateProject}`]) {
+  assert.equal(await member.evaluate(async path => (await fetch(path)).status, `/api/team/board?project=${projectId}`), 200, "the member reads the invited project's board");
+  for (const path of ["/api/projects", "/api/accounts/invitations", "/api/remote", `/api/team/board?project=${privateProject}`]) {
     const status = await member.evaluate(async path => (await fetch(path)).status, path); assert.ok([403, 404].includes(status), `${path} cannot expose owner/private data`);
   }
 });
