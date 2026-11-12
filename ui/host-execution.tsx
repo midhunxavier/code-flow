@@ -96,6 +96,6 @@ export function HostQueue({ board, project, compact = false }: { board: Board; p
     {error ? <p class="msg err" role="alert">{error}</p> : null}
     {refreshError ? <p class="msg err" role="alert">{refreshError}</p> : null}
     {!data && !error && !refreshError ? <p class="help">Loading…</p> : !jobs.length ? <p class="help">No host tasks queued or running.</p> : <ol>{jobs.map((job) => <li key={job.id}><a href={`#/team/task/${enc(job.taskId)}`}>{board.tasks.find((t) => t.id === job.taskId)?.title ?? job.taskId}</a> · {job.state} · {job.displayName}{job.message ? ` · ${job.message}` : ""} {(board.me.userId === "owner" || board.me.userId === job.userId) && job.state !== "stopping" ? <button class="btn small" disabled={!!busy} onClick={() => void cancel(job)}>{job.state === "queued" ? "Remove" : "Stop"}</button> : null}</li>)}</ol>}
-    {data ? <p class="help">Up to {data.concurrency} host task{data.concurrency === 1 ? "" : "s"} at a time, in queue order. You see tasks in your projects.</p> : null}
+    {data ? <p class="help">Up to {data.concurrency} host task{data.concurrency === 1 ? "" : "s"} at a time, in queue order. You see tasks in your projects.</p> : !error && !refreshError ? <p class="help" aria-hidden="true">&nbsp;</p> : null}
   </section>;
 }

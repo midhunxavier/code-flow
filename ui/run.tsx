@@ -196,6 +196,8 @@ export function RunView({ id }: { id: string }) {
   if (!run)
     return (
       <div class="runview">
+        {/* Most runs open with the agent tab strip: hold its place so the thread doesn't drop when it arrives. */}
+        {problem ? null : <div class="sess-strip" aria-hidden="true" />}
         <div class="run-scroll">
           {problem ? (
             <div class="thread">
@@ -2106,7 +2108,7 @@ export function ConversationBar({ run, steps, chat, onOpenChat }: { run: RunSumm
           <div class="notes">{sentNotes.map(noteChip)}</div>
         </details> : null}
         {running && pendingNotes.length ? <div class="notes">{pendingNotes.map(noteChip)}</div> : null}
-        {!draftReady ? <p class="help" role="status">Restoring reply draft…</p> : draftWarning ? <p class="msg warn" role="status">{draftWarning}</p> : null}
+        {!draftReady ? <p class="sr-only" role="status">Restoring reply draft…</p> : draftWarning ? <p class="msg warn" role="status">{draftWarning}</p> : null}
         {undelivered.length ? <UndeliveredNotes notes={undelivered} onRestore={note => { setText(value => appendDraftText(value, [note.text])); area.current?.focus(); }} /> : null}
         {signedOut || authFailed ? <p class="msg warn reply-provider-warning" role="alert">{latestReplyFailed ? "The latest reply didn't finish. " : ""}{signedOut ? `${signedOut.name} isn't signed in` : `The latest reply couldn't sign in to ${agentName(replyAgent)}`} — <a href="#/settings/providers">open Settings → Providers</a>. After signing in, send your reply again. <button type="button" class="btn small" disabled={providersRefreshing.value} onClick={() => void refreshProviders()}>{providersRefreshing.value ? "Checking…" : "Recheck sign-in"}</button></p> : latestReplyFailed ? <p class="help" role="status">The latest reply didn't finish. Work is saved; send another reply to continue.</p> : null}
         <BrowserDraftCards text={text} onText={setText} images={images} onImages={setImages} />
