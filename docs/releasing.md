@@ -23,7 +23,7 @@ npm pack ./dist/npm --dry-run
 node dist/npm/bin/codeflow.mjs --help
 ```
 
-The **Preview release** GitHub workflow builds and tests the tarball on macOS and Linux, builds both macOS architectures, and creates a **draft prerelease** with the exact artifacts. It accepts an existing Git ref and checks that its version matches the requested tag. Run it against a committed, reviewed release ref. Publishing that draft starts the separate **Publish npm release** workflow. Creating a draft alone does not publish npm or create a Homebrew tap.
+The **Preview release** GitHub workflow builds and tests the tarball on macOS and Linux, builds both macOS architectures, Windows ZIPs and Linux AppImage and `.deb` packages for x64 and arm64, and creates a **draft prerelease** with the exact artifacts. It accepts an existing Git ref and checks that its version matches the requested tag. Run it against a committed, reviewed release ref. Publishing that draft starts the separate **Publish npm release** workflow. Creating a draft alone does not publish npm or create a Homebrew tap.
 
 ## Automatic npm publishing
 
@@ -100,6 +100,22 @@ The desktop main process checks public GitHub releases on launch, every six hour
 Before publishing the first signed updater release, install it in Applications and test updating to a second signed version on both architectures. Unit and lifecycle tests cover release selection, failure/retry states, bridge isolation and restart cancellation; only this two-version acceptance check validates Apple's signing/notarization and Squirrel's actual app replacement. Existing desktop previews without the updater need a manual upgrade to acquire it.
 
 The GitHub workflow can import the following repository secrets into a temporary build keychain: `MACOS_CERTIFICATE_BASE64`, `MACOS_CERTIFICATE_PASSWORD`, `MACOS_SIGN_IDENTITY`, `APPLE_ID`, `APPLE_TEAM_ID` and `APPLE_APP_PASSWORD`. Supply all six for signed and notarized builds; with none set, it produces clearly labeled unnotarized developer builds. Partial credential configuration fails instead of silently dropping signing.
+
+## Linux AppImage and .deb
+
+Build on Linux (Debian or Ubuntu) with `squashfs-tools` and `dpkg-deb` installed, once per architecture on a matching host:
+
+```sh
+npm run package:linux -- x64
+npm run package:linux -- arm64
+xvfb-run -a npm run test:linux
+```
+
+The builder downloads an official Node runtime and the static AppImage type 2 runtime, each with a pinned SHA-256, and packages the pinned Electron runtime with the same prepared backend as the npm and macOS builds. It writes `output/linux/code-flow-VERSION-linux-ARCH-unsigned.AppImage` and `.deb`, each with a `.sha256`. Neither package is signed. The `.deb` installs to `/opt/code-flow`, adds `/usr/bin/code-flow` and a desktop entry, and makes Chromium's `chrome-sandbox` helper setuid root in `postinst`. The AppImage cannot carry a setuid helper, so its `AppRun` starts with `--no-sandbox` only when unprivileged user namespaces are unavailable, as on Ubuntu 24.04 by default. Git and the agent CLIs remain user-installed; the launcher reads the login shell's PATH.
+
+`test:linux` checks both package layouts, architectures, file permissions and checksums, then launches each packaged app (the extracted AppImage through its `AppRun`, and the installed `.deb` when its version is installed, otherwise its extracted files). It checks that the backend starts and the window loads, that closing the window keeps the backend and its running agent, that opening the app again shows the same instance, that Quit stops the backend, and that history in a fresh `~/.codeflow` survives reopening. The lifecycle tests need a display, so run them under `xvfb-run`. The release workflow's `linux` job does this on `ubuntu-latest` (x64) and `ubuntu-24.04-arm` (arm64), installing the `.deb` first, and attaches both packages to the draft release.
+
+Before calling a Linux release validated, open the AppImage and the installed `.deb` on a real desktop session (GNOME and KDE), sign in to a real CLI, and run an agent.
 
 ## Homebrew
 

@@ -26,7 +26,7 @@ const freePort = () => new Promise((resolve, reject) => {
 async function loginPath() {
   if (process.env.CODEFLOW_DESKTOP_TEST === '1') return process.env.PATH;
   const fallback = [join(homedir(), '.local/bin'), join(homedir(), '.bun/bin'), '/opt/homebrew/bin', '/usr/local/bin', process.env.PATH].filter(Boolean).join(':');
-  return new Promise(resolve => execFile(process.env.SHELL || '/bin/zsh', ['-ilc', 'printf "\\nCODEFLOW_PATH=%s\\n" "$PATH"'], { timeout: 5000, maxBuffer: 256 * 1024 }, (_error, stdout) => resolve(stdout?.match(/(?:^|\n)CODEFLOW_PATH=([^\n]+)/)?.[1] || fallback)));
+  return new Promise(resolve => execFile(process.env.SHELL || (process.platform === 'darwin' ? '/bin/zsh' : '/bin/sh'), ['-ilc', 'printf "\\nCODEFLOW_PATH=%s\\n" "$PATH"'], { timeout: 5000, maxBuffer: 256 * 1024 }, (_error, stdout) => resolve(stdout?.match(/(?:^|\n)CODEFLOW_PATH=([^\n]+)/)?.[1] || fallback)));
 }
 function external(url) {
   try { const parsed = new URL(url); if (['https:', 'http:'].includes(parsed.protocol) && !parsed.username && !parsed.password) void shell.openExternal(url); } catch {}
@@ -170,7 +170,8 @@ async function agentSetup() {
   if (answer.response === 0) clipboard.writeText(command);
 }
 function setupTray() {
-  if (process.platform !== 'win32') return;
+  // Linux desktops without a status area simply hide the icon; opening Code Flow again shows the window.
+  if (!['win32', 'linux'].includes(process.platform)) return;
   tray = new Tray(join(__dirname, 'icon.png'));
   tray.setToolTip(storeTitle);
   tray.on('double-click', () => { void ready?.then(createWindow); });
@@ -247,7 +248,8 @@ function setupUpdates() {
     ? new (require('./macos-update.cjs').MacUpdateInstaller)({ appPath: dirname(dirname(dirname(app.getPath('exe')))),
       cachePath: join(app.getPath('userData'), 'updates'), nodePath: node, arch: process.arch }) : undefined;
   updates = new DesktopUpdates({ version: app.getVersion(), arch: process.arch, platform: process.platform,
-    enabled: app.isPackaged && ['darwin', 'win32'].includes(process.platform), nativeUpdates, autoUpdater,
+    enabled: app.isPackaged && ['darwin', 'win32', 'linux'].includes(process.platform), nativeUpdates, autoUpdater,
+    linuxPackage: process.env.APPIMAGE ? 'AppImage' : 'deb',
     previewInstaller, openExternal: url => shell.openExternal(url), restart: () => quit(true) });
   for (const [action, handler] of Object.entries({ state: () => updates.state, check: () => updates.check(), download: () => updates.download(), installer: () => updates.openInstaller(), install: () => updates.install() })) {
     ipcMain.handle(`codeflow:updates:${action}`, (event) => {

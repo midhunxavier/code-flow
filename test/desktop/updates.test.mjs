@@ -44,6 +44,24 @@ test('Windows updates select only the matching portable ZIP and never offer nati
   assert.match(updates.state.message, /extract and open the new copy/);
 });
 
+test('Linux updates link to the matching AppImage or .deb and never offer native installation', async () => {
+  const next = '0.1.0-preview.10', tag_name = `v${next}`, base = `https://github.com/midhunxavier/code-flow/releases/download/${tag_name}/`;
+  const names = ['x64', 'arm64'].flatMap(arch => ['AppImage', 'deb'].map(format => `code-flow-${next}-linux-${arch}-unsigned.${format}`));
+  const linux = { tag_name, prerelease: true, assets: names.map(name => ({ name, size: 123, browser_download_url: base + name })) };
+  const appImage = selectRelease([release(), linux], version, 'x64', false, 'linux');
+  assert.equal(appImage.canInstall, false);
+  assert.match(appImage.downloadUrl, /linux-x64-unsigned\.AppImage$/);
+  assert.match(selectRelease([linux], version, 'arm64', false, 'linux', false, 'deb').downloadUrl, /linux-arm64-unsigned\.deb$/);
+  assert.equal(selectRelease([release()], version, 'arm64', false, 'linux'), undefined);
+  assert.equal(selectRelease([linux], version, 'x64', false), undefined);
+  for (const [linuxPackage, message] of [['AppImage', /new AppImage/], ['deb', /install it with your package manager/]]) {
+    const updates = new DesktopUpdates({ version, arch: 'x64', platform: 'linux', linuxPackage, enabled: true, nativeUpdates: false, autoUpdater: new EventEmitter(),
+      fetch: async () => ({ ok: true, json: async () => [linux] }) });
+    await updates.check();
+    assert.match(updates.state.message, message);
+  }
+});
+
 test('selects the newest compatible release, excluding drafts, older builds and other architectures', () => {
   const selected = selectRelease([release(version), release('0.1.0-preview.1'), release(), release('0.1.0-preview.11', { draft: true }), release('0.1.0-preview.12', { arch: 'x64' })], version, 'arm64', true);
   assert.equal(selected.version, '0.1.0-preview.10');
