@@ -26,6 +26,10 @@ test("Antigravity MCP is limited to the task capability and exact known tool nam
   for (const name of ["run_command", "browser_subagent", "invoke_subagent", "mcp_other_browser_snapshot", "mcp_codeflow_agent_shell"]) assert.equal(managedAgyToolAllowed(name, "write", true), false);
   assert.equal(managedAgyToolAllowed("call_mcp_tool", "write", true, { ServerName: "other", ToolName: "browser_snapshot" }), false);
   assert.equal(managedAgyToolAllowed("write_to_file", "read", true), false);
+  // CLI 1.5.6 reports its file tools under these names; writes stay out of read-only turns.
+  for (const name of ["read_file", "write_file", "edit_file"]) assert.equal(managedAgyToolAllowed(name, "write"), true);
+  assert.equal(managedAgyToolAllowed("read_file", "read"), true);
+  for (const name of ["write_file", "edit_file"]) assert.equal(managedAgyToolAllowed(name, "read", true), false);
   if (process.platform === "darwin") {
     const permissions = resolveRunPermissions({ policy: createRunPermissions("standard", false, true), provider: "agy", mode: "write", currentTrust: "standard", currentTools: false });
     assert.equal(permissions.externalTools, "task-scoped");

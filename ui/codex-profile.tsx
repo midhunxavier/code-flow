@@ -33,7 +33,6 @@ export function CodexProfileSetting() {
     {fromEnvironment ? <p class="help">Set by <code>CODEFLOW_CODEX_PROFILE</code> for this server; unset it to choose here.</p> : null}
     {status.problem ? <p class="msg warn" role="status">{status.problem}. Codex runs fail until it exists or the profile is cleared.</p> : null}
     {error ? <p class="msg err" role="alert">{error}</p> : null}
-    <p class="help">A profile is a file named <code>&lt;name&gt;.config.toml</code> in <code>{status.codexHome}</code> that Codex layers over its own config, for example to use Ollama or another OpenAI-compatible provider. {status.available.length ? "" : "No profile files are there yet. "}It applies from the next Codex turn.</p>
     {status.profile ? <p class="help">With a profile, Codex turns run one at a time through <code>codex exec</code>: a message you send during a turn waits for the next one, and runs that ask you to approve each tool can’t use Codex.</p> : null}
   </section>;
 }
