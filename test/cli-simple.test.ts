@@ -139,6 +139,10 @@ test("a review recipe runs with another provider and the result lands in a file"
   // Asking again reuses the file instead of paging the artifact again.
   const again = await runStatus(async (name, args) => { assert.notEqual(name, "codeflow_get_artifact"); return f.call(name, args); }, { runId });
   assert.equal(again.resultFile, status.resultFile);
+  // Two status calls for a newly finished run write the file at the same time without colliding.
+  rmSync(status.resultFile!);
+  const both = await Promise.all([runStatus(f.call, { runId }), runStatus(f.call, { runId })]);
+  assert.deepEqual(both.map(b => b.resultFile), [status.resultFile, status.resultFile]); assert.ok(existsSync(status.resultFile!));
   const listed = await simpleCall(f.call, "codeflow_status", {}, { nativeForm: false });
   assert.equal(listed.runs[0].runId, runId);
 });

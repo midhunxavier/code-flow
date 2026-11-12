@@ -1,5 +1,6 @@
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import { randomUUID } from "node:crypto";
 import { CODEFLOW_HOME } from "../config.js";
 import { CliTeamError, PROVIDERS, shapeProblem, type Provider } from "./model.js";
 import { composeRecipe, MODES, type Member } from "./recipes.js";
@@ -41,7 +42,7 @@ export const RESULTS_DIR = join(resolve(CODEFLOW_HOME), "cli-teams-results");
 const safeId = (runId: string) => /^[A-Za-z0-9._-]{1,200}$/.test(runId) ? runId : invalid("Unexpected run ID");
 async function atomic(file: string, body: string) {
   await mkdir(RESULTS_DIR, { recursive: true, mode: 0o700 });
-  const temp = `${file}.${process.pid}.tmp`;
+  const temp = `${file}.${process.pid}.${randomUUID()}.tmp`;
   try { await writeFile(temp, body, { mode: 0o600 }); await rename(temp, file); } finally { await rm(temp, { force: true }); }
 }
 
@@ -54,7 +55,7 @@ export async function toolSurface(env: NodeJS.ProcessEnv = process.env): Promise
 }
 export async function setToolSurface(surface: Surface) {
   await mkdir(resolve(CODEFLOW_HOME), { recursive: true });
-  const temp = `${SURFACE_FILE}.${process.pid}.tmp`;
+  const temp = `${SURFACE_FILE}.${process.pid}.${randomUUID()}.tmp`;
   try { await writeFile(temp, `${JSON.stringify({ surface })}\n`, { mode: 0o600 }); await rename(temp, SURFACE_FILE); } finally { await rm(temp, { force: true }); }
 }
 /** The tools advertised for a surface. Advanced tools stay callable either way, so an older skill keeps working. */
