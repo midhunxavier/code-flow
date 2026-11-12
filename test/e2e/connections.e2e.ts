@@ -217,7 +217,7 @@ test("owner stream sharing stays private across shared-account sign-in and uses 
   const identity = await sharedPage.evaluate(async () => (await fetch("/api/auth/self")).json()); assert.equal(identity.kind, "shared"); assert.equal(identity.streamSharing, undefined);
   assert.equal(await sharedPage.evaluate(async () => (await fetch("/api/stream?subs=%5B%7B%22id%22%3A1%2C%22topic%22%3A%22runs%22%7D%5D")).status), 403);
   await streamsAre({ streams: 0, subscriptions: 0 }, "shared login closes the prior owner's transport before it can outlive the identity switch");
-  await ownerPage.getByRole("heading", { name: "Shared project review", exact: true }).waitFor({ timeout: 10000 });
+  await ownerPage.getByRole("heading", { name: "Board", exact: true }).waitFor({ timeout: 10000 });
   await sharedPage.evaluate((lockId) => {
     const root = window as unknown as { received: unknown[]; publicChannels: BroadcastChannel[] };
     root.received = [];

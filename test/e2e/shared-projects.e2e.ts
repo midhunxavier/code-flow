@@ -5,6 +5,7 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { randomUUID } from "node:crypto";
 import { createServer, type AddressInfo } from "node:net";
 import { chromium, type Browser, type BrowserServer } from "playwright-core";
 import axe from "axe-core";
@@ -44,6 +45,8 @@ before(async () => {
   }
   writeFileSync(join(home, "projects.json"), JSON.stringify(projects)); const accounts = new SharedAccounts(join(home, "shared-accounts.json")); await accounts.load();
   await accounts.create({ revision: 0, username: "viewer", displayName: "Project viewer", password, roles: { "p-one": "viewer" } }); const state = await accounts.create({ revision: 1, username: "reviewer", displayName: "Project reviewer", password, roles: { "p-one": "reviewer" } }); reviewerId = state.users.find((user) => user.username === "reviewer")!.id;
+  // A comment a shared reviewer recorded while the shared dashboard still had its Results page: the owner must keep seeing it.
+  mkdirSync(join(home, "shared-reviews"), { recursive: true }); writeFileSync(join(home, "shared-reviews/shared-one.json"), JSON.stringify({ version: 1, revision: 1, comments: [{ id: randomUUID(), branch: "codeflow/shared-one/result", head, text: "Reviewed the exported answer and its changed commit.", actor: { id: `shared:${reviewerId}`, name: "Project reviewer" }, at: 5 }] }));
   execFileSync(process.execPath, ["scripts/build-ui.mjs"], { cwd: root }); processServer = spawn(process.execPath, ["--import", "tsx", "src/server.ts"], { cwd: root, env: { ...process.env, PORT: String(port), CODEFLOW_HOME: home, CODEFLOW_TOKEN: owner, PATH: `${join(root, "test/fake-bin")}:${process.env.PATH}` }, stdio: process.env.E2E_DEBUG ? "inherit" : "ignore" });
   let ready = false; for (let attempt = 0; attempt < 150; attempt++) { ready = await fetch(`${base}/api/health`, { headers: ownerHeaders }).then((response) => response.ok, () => false); if (ready) break; await new Promise((resolve) => setTimeout(resolve, 100)); } assert.equal(ready, true, "fixture server started");
   viewerCookie = await signIn("viewer"); reviewerCookie = await signIn("reviewer"); browserServer = await chromium.launchServer({ channel: "chrome", headless: true }); browser = await chromium.connect(browserServer.wsEndpoint());
@@ -64,73 +67,58 @@ after(async () => {
   }
 });
 
-test("shared route enforcement scopes aliases, search counts, exports and SSE while denying all execution surfaces", async () => {
+test("a shared session reaches the team board and is refused every run, project, catalog and execution route", async () => {
   const ownerSelf = await fetch(`${base}/api/auth/self`, { headers: ownerHeaders }).then((response) => response.json());
   assert.match(ownerSelf.streamSharing.channelKey, /^[a-f0-9]{64}$/); assert.match(ownerSelf.streamSharing.lockId, /^[a-f0-9]{32}$/);
+  const refused = async (path: string, cookie: string, init: RequestInit = {}) => { const response = await fetch(base + path, { ...init, headers: sharedHeaders(cookie) }); const text = await response.text(); assert.equal(response.status, 403, `${init.method ?? "GET"} ${path}`); assert.match(text, /This operation requires the Code Flow owner/, path); for (const value of ["Shared project", "Implementation ready", "private-", "repo-one", "repo-two", "worktreeDir", "Project one"]) assert.equal(text.includes(value), false, `${path} leaks ${value}`); };
+  const review = { branch: "codeflow/shared-one/result", expectedHead: head, path: "src/answer.ts", reviewed: true }, comment = { branch: "codeflow/shared-one/result", expectedHead: head, text: "Shared comment" };
   for (const prefix of ["/api", "/api/v1"]) {
     for (const cookie of [viewerCookie, reviewerCookie]) {
       const identity = await fetch(`${base}${prefix}/auth/self`, { headers: sharedHeaders(cookie) }).then((response) => response.json());
-      assert.equal("streamSharing" in identity, false); assert.equal(JSON.stringify(identity).includes(ownerSelf.streamSharing.channelKey), false);
+      assert.equal(identity.kind, "shared"); assert.equal("streamSharing" in identity, false); assert.equal(JSON.stringify(identity).includes(ownerSelf.streamSharing.channelKey), false);
       assert.equal((await fetch(`${base}${prefix}/stream?subs=[]`, { headers: sharedHeaders(cookie) })).status, 403);
       assert.equal((await fetch(`${base}${prefix}/stream/owner-client`, { method: "POST", headers: sharedHeaders(cookie), body: JSON.stringify({ subscribe: [{ id: 1, topic: "runs" }] }) })).status, 403);
+      // What a shared member has: the board of the projects where they hold a role.
+      const board = await fetch(`${base}${prefix}/team/board`, { headers: sharedHeaders(cookie) }); assert.equal(board.status, 200); assert.deepEqual((await board.json()).projects.map((project: { id: string }) => project.id), ["p-one"]);
+      // Runs are the owner's: history, detail, export, diff, coverage, comments and both event streams, in an assigned project (shared-one) as in another (shared-two).
+      for (const path of ["/runs", "/runs?limit=1&q=Shared", "/runs?project=p-one&q=DeepColdNeedle", "/events", "/events?limit=50", ...["shared-one", "shared-two", "cold-deep"].flatMap((id) => ["", "/events", "/export", "/export?transcript=1", "/diff?branch=codeflow/shared-one/result", "/review-coverage?branch=codeflow/shared-one/result", "/collaboration"].map((suffix) => `/runs/${id}${suffix}`)), "/projects", "/patterns", "/templates"]) await refused(prefix + path, cookie);
+      await refused(`${prefix}/runs/shared-one/review-coverage`, cookie, { method: "POST", body: JSON.stringify(review) }); await refused(`${prefix}/runs/shared-one/collaboration`, cookie, { method: "POST", body: JSON.stringify(comment) });
     }
-    const projects = await fetch(base + prefix + "/projects", { headers: sharedHeaders(viewerCookie) }).then((response) => response.json()); assert.deepEqual(projects.map((project: { id: string }) => project.id), ["p-one"]); assert.equal(JSON.stringify(projects).includes("private-default"), false); assert.equal(JSON.stringify(projects).includes("repo-one"), false);
-    const runs = await fetch(base + prefix + "/runs?limit=1&q=Shared", { headers: sharedHeaders(viewerCookie) }).then((response) => response.json()); assert.equal(runs.total, 1); assert.deepEqual(runs.runs.map((run: { id: string }) => run.id), ["shared-one"]); assert.equal(runs.nextCursor, undefined);
-    const deep = await fetch(base + prefix + "/runs?project=p-one&q=DeepColdNeedle", { headers: sharedHeaders(viewerCookie) }).then((response) => response.json()); assert.equal(deep.total, 1); assert.equal(deep.runs[0].id, "cold-deep"); assert.equal(deep.runs[0].cold, true); assert.equal(deep.runs[0].detailAvailable, true); assert.equal(deep.runs[0].task.includes("DeepColdNeedle"), false, "query reads the full authorized cold task while the list remains a bounded preview");
-    for (const path of ["/runs/shared-two", "/runs/shared-two/events", "/runs/shared-two/diff", "/runs/shared-two/export", "/runs/shared-two/review-coverage", "/runs/shared-two/collaboration"]) assert.equal((await fetch(base + prefix + path, { headers: sharedHeaders(viewerCookie) })).status, 404, path);
-    for (const path of ["/fs", "/file", "/tree", "/workspace/file", "/workspace/search", "/doctor", "/models", "/agents", "/stats", "/notes", "/approvals", "/remote", "/accounts", "/extensions", "/integrations", "/notifications", "/projects/p-one/conventions"]) assert.equal((await fetch(base + prefix + path, { headers: sharedHeaders(viewerCookie) })).status, 403, path);
-    for (const path of ["/runs", "/runs/shared-one/followups", "/runs/shared-one/notes", "/runs/shared-one/answer", "/runs/shared-one/resume", "/runs/shared-one/merge", "/runs/shared-one/validate-merge", "/runs/shared-one/triage", "/workspace/file", "/readiness", "/shells", "/preview", "/approvals/id"]) assert.equal((await fetch(base + prefix + path, { method: "POST", headers: sharedHeaders(reviewerCookie), body: "{}" })).status, 403, path);
+    for (const path of ["/fs", "/file", "/tree", "/workspace/file", "/workspace/search", "/doctor", "/models", "/agents", "/stats", "/notes", "/approvals", "/remote", "/accounts", "/extensions", "/integrations", "/notifications", "/projects/p-one/conventions", "/runs/shared-one/export/extra"]) assert.equal((await fetch(base + prefix + path, { headers: sharedHeaders(viewerCookie) })).status, 403, path);
+    for (const path of ["/runs", "/runs/shared-one/followups", "/runs/shared-one/notes", "/runs/shared-one/answer", "/runs/shared-one/resume", "/runs/shared-one/merge", "/runs/shared-one/validate-merge", "/runs/shared-one/triage", "/runs/shared-one/review-coverage/extra", "/workspace/file", "/readiness", "/shells", "/preview", "/approvals/id"]) assert.equal((await fetch(base + prefix + path, { method: "POST", headers: sharedHeaders(reviewerCookie), body: "{}" })).status, 403, path);
     for (const cookie of [viewerCookie, reviewerCookie]) for (const mode of ["quick", "repo"]) assert.equal((await fetch(base + prefix + "/improve-prompt", { method: "POST", headers: sharedHeaders(cookie), body: JSON.stringify({ text: "Clarify this task", mode, repo: join(fixture, "repo-one"), agent: "claude" }) })).status, 403, `${prefix}/improve-prompt ${mode}: shared roles cannot start provider turns`);
   }
-  const exported = await fetch(`${base}/api/runs/shared-one/export?transcript=1`, { headers: sharedHeaders(viewerCookie) }).then((response) => response.text()); for (const value of ["shared-two", "private-note-sentinel", "private-agent-session", "private-agent-prompt-sentinel", "private-setup-command", "repo-one", "worktreeDir"]) assert.equal(exported.includes(value), false, value);
-  const abort = new AbortController(); const timeout = setTimeout(() => abort.abort(), 5000);
-  try { const response = await fetch(`${base}/api/events?limit=50`, { headers: sharedHeaders(viewerCookie), signal: abort.signal }); const reader = response.body!.getReader(); let source = ""; while (!source.includes("\n\n")) { const part = await reader.read(); if (part.done) break; source += new TextDecoder().decode(part.value); } await reader.cancel(); assert.match(source, /shared-one/); assert.equal(source.includes("shared-two"), false); assert.equal(source.includes("private-note"), false); assert.equal(source.includes('"total":3'), false); }
-  finally { clearTimeout(timeout); abort.abort(); }
-  const review = { branch: "codeflow/shared-one/result", expectedHead: head, path: "src/answer.ts", reviewed: true };
-  assert.equal((await fetch(`${base}/api/runs/shared-one/review-coverage`, { method: "POST", headers: sharedHeaders(viewerCookie), body: JSON.stringify(review) })).status, 403);
-  assert.equal((await fetch(`${base}/api/runs/shared-one/review-coverage/extra`, { method: "POST", headers: sharedHeaders(reviewerCookie), body: JSON.stringify(review) })).status, 403);
-  assert.equal((await fetch(`${base}/api/runs/shared-one/export/extra`, { headers: sharedHeaders(viewerCookie) })).status, 403);
+  const coverage = await fetch(`${base}/api/runs/shared-one/review-coverage?branch=codeflow/shared-one/result`, { headers: ownerHeaders }).then((response) => response.json()); assert.deepEqual(coverage.reviewed, [], "a refused shared review records nothing");
+  const thread = await fetch(`${base}/api/runs/shared-one/collaboration`, { headers: ownerHeaders }).then((response) => response.json()); assert.equal(thread.comments.length, 1, "a refused shared comment records nothing");
 });
 
-test("shared login and reviewer dashboard record human review and commit-anchored comments with keyboard and phone layout", async () => {
-  const context = await browser.newContext({ viewport: { width: 1280, height: 900 } }); const page = await context.newPage(); await page.goto(base);
+test("shared login opens the board with no Results page, and the owner still reads and answers an earlier reviewer comment", async () => {
+  const context = await browser.newContext({ viewport: { width: 1280, height: 900 } }); const page = await context.newPage(); const runRequests: string[] = []; page.on("request", (request) => { const path = new URL(request.url()).pathname; if (/^\/api\/(?:runs|events|projects)(?:\/|$)/.test(path)) runRequests.push(path); }); await page.goto(base);
   await page.getByRole("heading", { name: "Sign in to shared projects", exact: true }).waitFor(); await auditShared(page, "shared login"); const username = page.getByLabel("Username", { exact: true }); await username.fill("reviewer"); await username.focus(); await page.keyboard.press("Tab"); assert.equal(await page.getByLabel("Password", { exact: true }).evaluate((element) => element === document.activeElement), true); await page.getByLabel("Password", { exact: true }).fill(password); await page.getByRole("button", { name: "Sign in", exact: true }).click();
-  await page.getByRole("heading", { name: "Shared project review", exact: true }).waitFor(); await page.getByRole("button", { name: /Shared project one result/ }).click();
-  await page.getByRole("heading", { name: "Shared project one result", exact: true }).waitFor();
-  let releaseHistory!: () => void, historyStarted!: () => void;
-  const historyGate = new Promise<void>((resolve) => { releaseHistory = resolve; }), historyPending = new Promise<void>((resolve) => { historyStarted = resolve; });
-  // Review writes emit an SSE event. Hold its background history refresh so a read cannot
-  // disable or silently consume the next explicit human comment action.
-  await page.route(/\/api\/runs\?/, async (route) => { historyStarted(); await historyGate; await route.continue(); });
-  try {
-    const written = page.waitForResponse((response) => response.url().endsWith("/api/runs/shared-one/review-coverage") && response.request().method() === "POST");
-    const file = page.getByRole("checkbox", { name: "Reviewed src/answer.ts", exact: true }); await file.check(); await page.getByText(/1 of 1 visible files reviewed/).waitFor();
-    let deadline: ReturnType<typeof setTimeout>;
-    try { await Promise.all([written, Promise.race([historyPending, new Promise<never>((_, reject) => { deadline = setTimeout(() => reject(new Error("Review SSE history refresh did not start")), 10_000); })])]); }
-    finally { clearTimeout(deadline!); }
-    await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
-    await page.getByLabel("Comment on this result commit", { exact: true }).fill("Reviewed the exported answer and its changed commit.");
-    assert.equal(await page.getByRole("button", { name: "Record human comment", exact: true }).isEnabled(), true, "background history refresh cannot block a human review mutation");
-    await page.getByRole("button", { name: "Record human comment", exact: true }).click(); await page.getByText("Reviewed the exported answer and its changed commit.", { exact: true }).waitFor();
-  } finally { releaseHistory(); await page.unrouteAll({ behavior: "wait" }); }
-  await auditShared(page, "shared review dashboard");
-  const comments = await fetch(`${base}/api/runs/shared-one/collaboration`, { headers: sharedHeaders(viewerCookie) }).then((response) => response.json()); assert.equal(comments.comments.length, 1); assert.deepEqual(comments.comments[0].actor, { id: `shared:${reviewerId}`, name: "Project reviewer" }); assert.equal(comments.comments[0].head, head);
-  const ownerThread = await fetch(`${base}/api/runs/shared-one/collaboration`, { headers: ownerHeaders }); assert.equal(ownerThread.status, 200); assert.equal((await ownerThread.json()).comments[0].actor.id, `shared:${reviewerId}`);
-  const ownerContext = await browser.newContext({ viewport: { width: 1440, height: 1000 } }); const ownerPage = await ownerContext.newPage(); await ownerPage.addInitScript(() => { localStorage.setItem("sideOpen", "1"); localStorage.setItem("sideTab", "changes"); }); await ownerPage.goto(`${base}/?token=${owner}#/run/shared-one`); await ownerPage.getByRole("tab", { name: "Changes", exact: true }).click(); const ownerPanel = ownerPage.locator(".collaboration-comments"); await ownerPanel.locator(":scope > summary").click(); await ownerPanel.getByText("Reviewed the exported answer and its changed commit.", { exact: true }).waitFor(); await ownerPanel.getByLabel("Your comment", { exact: true }).fill("Owner acknowledged the reviewer finding."); const ownerReply = ownerPage.waitForResponse((response) => response.url().endsWith("/api/runs/shared-one/collaboration") && response.request().method() === "POST"); await ownerPanel.getByRole("button", { name: "Add comment", exact: true }).click(); assert.equal((await ownerReply).status(), 201); await ownerPanel.getByText("Owner acknowledged the reviewer finding.", { exact: true }).waitFor();
-  const sharedReply = await fetch(`${base}/api/runs/shared-one/collaboration`, { headers: sharedHeaders(viewerCookie) }).then((response) => response.json()); assert.equal(sharedReply.comments.length, 2); assert.equal(sharedReply.comments[1].actor.id, "owner"); assert.equal(sharedReply.comments[1].text, "Owner acknowledged the reviewer finding."); assert.equal(sharedReply.comments[1].head, head);
+  // The default address is the board; so are #/, #/team and an address the owner's app would open as a run.
+  for (const hash of ["", "#/", "#/team", "#/run/shared-one"]) {
+    if (hash) await page.goto(`${base}/${hash}`);
+    await page.getByRole("heading", { name: "Board", exact: true }).waitFor(); await page.locator(".connection-status .cs-label").getByText("Connected", { exact: true }).waitFor();
+    assert.equal(await page.getByRole("tab").count(), 0, `${hash}: no tabs`); assert.equal(await page.getByRole("tablist").count(), 0);
+    for (const gone of ["Shared project review", "Shared project one result", "Export shared result", "Human collaboration comments"]) assert.equal(await page.getByText(gone).count(), 0, `${hash}: ${gone}`);
+  }
+  await page.getByRole("button", { name: "Sign out Project reviewer", exact: true }).waitFor(); await page.getByRole("button", { name: /^Team inbox/ }).waitFor();
+  assert.deepEqual(runRequests, [], "the shared dashboard asks for no runs, run events or project list");
+  await auditShared(page, "shared board");
+  await page.setViewportSize({ width: 390, height: 844 }); assert.equal(await page.locator(".shared-surface").evaluate((element) => element.scrollWidth <= element.clientWidth + 1), true, "the shared board fits a phone");
+  if (process.env.CODEFLOW_UI_SCREENSHOTS) { mkdirSync(join(root, "output/playwright"), { recursive: true }); await page.screenshot({ path: join(root, "output/playwright/shared-board-mobile.png") }); }
+  const ownerThread = await fetch(`${base}/api/runs/shared-one/collaboration`, { headers: ownerHeaders }); assert.equal(ownerThread.status, 200); assert.deepEqual((await ownerThread.json()).comments[0].actor, { id: `shared:${reviewerId}`, name: "Project reviewer" });
+  const ownerContext = await browser.newContext({ viewport: { width: 1440, height: 1000 } }); const ownerPage = await ownerContext.newPage(); await ownerPage.addInitScript(() => { localStorage.setItem("sideOpen", "1"); localStorage.setItem("sideTab", "changes"); }); await ownerPage.goto(`${base}/?token=${owner}#/run/shared-one`); await ownerPage.getByRole("tab", { name: "Changes", exact: true }).click(); const ownerPanel = ownerPage.locator(".collaboration-comments"); await ownerPanel.locator(":scope > summary").click(); await ownerPanel.getByText("Reviewed the exported answer and its changed commit.", { exact: true }).waitFor(); await ownerPanel.getByText("Project reviewer").first().waitFor(); await ownerPanel.getByLabel("Your comment", { exact: true }).fill("Owner acknowledged the reviewer finding."); const ownerReply = ownerPage.waitForResponse((response) => response.url().endsWith("/api/runs/shared-one/collaboration") && response.request().method() === "POST"); await ownerPanel.getByRole("button", { name: "Add comment", exact: true }).click(); assert.equal((await ownerReply).status(), 201); await ownerPanel.getByText("Owner acknowledged the reviewer finding.", { exact: true }).waitFor();
+  const replied = await fetch(`${base}/api/runs/shared-one/collaboration`, { headers: ownerHeaders }).then((response) => response.json()); assert.equal(replied.comments.length, 2); assert.equal(replied.comments[1].actor.id, "owner"); assert.equal(replied.comments[1].text, "Owner acknowledged the reviewer finding."); assert.equal(replied.comments[1].head, head);
   await auditShared(ownerPage, "owner collaboration thread");
-  await page.getByRole("button", { name: "Refresh result evidence", exact: true }).click(); await page.getByText("Owner acknowledged the reviewer finding.", { exact: true }).waitFor();
   const ownerRun = await fetch(`${base}/api/runs/shared-one`, { headers: ownerHeaders }).then((response) => response.json()); assert.equal(ownerRun.notes.length, 1, "human comments do not dispatch agent notes"); assert.equal(ownerRun.steps.length, 1, "human comments launch no agents");
-  const link = page.getByRole("link", { name: "Export shared result", exact: true }); assert.equal(await link.getAttribute("target"), "_blank"); assert.match(await link.getAttribute("rel") ?? "", /noopener/);
-  await page.setViewportSize({ width: 390, height: 844 }); assert.equal(await page.locator(".shared-surface").evaluate((element) => element.scrollWidth <= element.clientWidth + 1), true, "review dashboard fits a phone");
-  if (process.env.CODEFLOW_UI_SCREENSHOTS) { mkdirSync(join(root, "output/playwright"), { recursive: true }); await page.screenshot({ path: join(root, "output/playwright/shared-review-mobile.png") }); }
 });
 
 test("owner account changes revoke shared sessions immediately and stale account edits fail CAS", async () => {
   const state = await fetch(`${base}/api/accounts`, { headers: ownerHeaders }).then((response) => response.json()); const response = await fetch(`${base}/api/accounts/${reviewerId}`, { method: "PUT", headers: { ...ownerHeaders, ...jsonHeaders }, body: JSON.stringify({ revision: state.revision, roles: { "p-one": "viewer" } }) }); assert.equal(response.status, 200);
-  assert.equal((await fetch(`${base}/api/runs/shared-one`, { headers: sharedHeaders(reviewerCookie) })).status, 401);
+  assert.equal((await fetch(`${base}/api/team/board`, { headers: sharedHeaders(reviewerCookie) })).status, 401);
   assert.equal((await fetch(`${base}/api/accounts/${reviewerId}`, { method: "PUT", headers: { ...ownerHeaders, ...jsonHeaders }, body: JSON.stringify({ revision: state.revision, enabled: false }) })).status, 409);
-  reviewerCookie = await signIn("reviewer"); const denied = await fetch(`${base}/api/runs/shared-one/collaboration`, { method: "POST", headers: sharedHeaders(reviewerCookie), body: JSON.stringify({ branch: "codeflow/shared-one/result", expectedHead: head, text: "Role changed" }) }); assert.equal(denied.status, 403);
+  reviewerCookie = await signIn("reviewer"); const board = await fetch(`${base}/api/team/board`, { headers: sharedHeaders(reviewerCookie) }).then((response) => response.json()); assert.deepEqual(board.me.roles, { "p-one": "viewer" }, "the new session carries the changed role");
   const raw = readFileSync(join(home, "shared-accounts.json"), "utf8"); assert.equal(raw.includes(password), false); assert.equal(raw.includes(reviewerCookie.split("=")[1]!), false);
 });
 
@@ -142,8 +130,8 @@ test("owner account management creates scoped accounts, keeps conflicting drafts
   const external = await fetch(`${base}/api/accounts/${id}`, { method: "PUT", headers: { ...ownerHeaders, ...jsonHeaders }, body: JSON.stringify({ revision: state.revision, displayName: "Concurrent display name" }) }); assert.equal(external.status, 200);
   await panel.getByLabel("Display name", { exact: true }).fill("Preserved browser draft"); await panel.getByRole("button", { name: "Save account changes", exact: true }).click(); await panel.getByRole("alert").getByText(/Accounts changed/).waitFor(); assert.equal(await panel.getByLabel("Display name", { exact: true }).inputValue(), "Preserved browser draft");
   await panel.getByRole("button", { name: "Reload accounts", exact: true }).click(); await panel.getByRole("button", { name: "Save account changes", exact: true }).click(); await panel.getByRole("status").getByText(/Account saved/).waitFor();
-  const cookie = await signIn("browser-viewer"); const assigned = await fetch(`${base}/api/projects`, { headers: sharedHeaders(cookie) }).then((response) => response.json()); assert.deepEqual(assigned.map((project: { id: string }) => project.id), ["p-two"]);
-  await panel.getByRole("button", { name: "Sign out all sessions", exact: true }).click(); await panel.getByRole("status").getByText(/were revoked/).waitFor(); assert.equal((await fetch(`${base}/api/runs/shared-two`, { headers: sharedHeaders(cookie) })).status, 401);
+  const cookie = await signIn("browser-viewer"); const assigned = await fetch(`${base}/api/team/board`, { headers: sharedHeaders(cookie) }).then((response) => response.json()); assert.deepEqual(assigned.projects.map((project: { id: string }) => project.id), ["p-two"]);
+  await panel.getByRole("button", { name: "Sign out all sessions", exact: true }).click(); await panel.getByRole("status").getByText(/were revoked/).waitFor(); assert.equal((await fetch(`${base}/api/team/board`, { headers: sharedHeaders(cookie) })).status, 401);
   await page.setViewportSize({ width: 390, height: 844 }); assert.equal(await panel.evaluate((element) => element.scrollWidth <= element.clientWidth + 1), true);
 });
 
@@ -160,18 +148,11 @@ test("shared sign-in clears owner browser privileges and checks mutation origin 
   await page.goto(`${base}/?token=${owner}`); assert.equal(await page.evaluate(async () => (await fetch("/api/accounts")).status), 200, "explicit owner recovery link remains usable");
 });
 
-test("shared stream admission is bounded and project removal immediately revokes an existing run feed", async () => {
+test("shared stream admission is bounded on the team stream, the only one a shared session can open", async () => {
   const readers: ReadableStreamDefaultReader<Uint8Array>[] = [], controllers: AbortController[] = [];
   try {
-    for (let count = 0; count < 4; count++) { const abort = new AbortController(); controllers.push(abort); const response = await fetch(`${base}/api/events`, { headers: sharedHeaders(viewerCookie), signal: abort.signal }); assert.equal(response.status, 200); const reader = response.body!.getReader(); readers.push(reader); await reader.read(); }
-    const refused = await fetch(`${base}/api/events`, { headers: sharedHeaders(viewerCookie) }); assert.equal(refused.status, 429, "a session cannot create unbounded event subscriptions");
+    for (let count = 0; count < 4; count++) { const abort = new AbortController(); controllers.push(abort); const response = await fetch(`${base}/api/team/events`, { headers: sharedHeaders(viewerCookie), signal: abort.signal }); assert.equal(response.status, 200); const reader = response.body!.getReader(); readers.push(reader); await reader.read(); }
+    const refused = await fetch(`${base}/api/team/events`, { headers: sharedHeaders(viewerCookie) }); assert.equal(refused.status, 429, "a session cannot create unbounded event subscriptions");
+    for (const path of ["/api/events", "/api/runs/shared-one/events"]) assert.equal((await fetch(base + path, { headers: sharedHeaders(viewerCookie) })).status, 403, path);
   } finally { for (const reader of readers) await reader.cancel().catch(() => {}); for (const abort of controllers) abort.abort(); }
-  const abort = new AbortController(); const response = await fetch(`${base}/api/runs/shared-one/events`, { headers: sharedHeaders(viewerCookie), signal: abort.signal }); assert.equal(response.status, 200); const reader = response.body!.getReader(); await reader.read();
-  const removal = await fetch(`${base}/api/projects/p-one`, { method: "POST", headers: { ...ownerHeaders, ...jsonHeaders }, body: JSON.stringify({ repos: [] }) }); assert.equal(removal.status, 200);
-  let ended = false;
-  const drained = (async () => { while (true) { const part = await reader.read(); if (part.done) { ended = true; return; } } })();
-  const timer = setTimeout(() => abort.abort(), 2000);
-  try { await drained.catch((error) => { if (!abort.signal.aborted && error instanceof TypeError && error.message === "terminated") ended = true; else throw error; }); assert.equal(ended, true, "project membership changes close a previously authorized stream immediately"); }
-  finally { clearTimeout(timer); abort.abort(); }
-  assert.equal((await fetch(`${base}/api/runs/shared-one`, { headers: sharedHeaders(viewerCookie) })).status, 404);
 });

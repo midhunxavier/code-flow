@@ -62,9 +62,9 @@ test("persisted restrictions defer plugin initialization, CLI probes and prompt 
       await reader.cancel();
     } finally { clearTimeout(hubTimer); hubAbort.abort(); }
     const login = await fetch(`${base}/api/auth/login`, { method: "POST", headers: { origin: base, "content-type": "application/json" }, body: JSON.stringify({ username: "viewer", password }) }); assert.equal(login.status, 200); const cookie = login.headers.getSetCookie().find((value) => !value.includes("Max-Age=0"))!.split(";")[0]!;
-    const scopedHeaders = { cookie }; const listed = await fetch(`${base}/api/runs?limit=100`, { headers: scopedHeaders }).then((response) => response.json()); assert.equal(listed.total, 0); assert.deepEqual(listed.runs, []);
-    for (const suffix of ["", "/diff", "/export", "/review-coverage", "/collaboration"]) assert.equal((await fetch(`${base}/api/runs/restricted-result${suffix}`, { headers: scopedHeaders })).status, 404, suffix);
-    const controller = new AbortController(); try { const response = await fetch(`${base}/api/events?limit=100`, { headers: scopedHeaders, signal: controller.signal }); const reader = response.body!.getReader(); const first = await reader.read(); const content = new TextDecoder().decode(first.value); assert.equal(content.includes("RESTRICTED_PRIVATE"), false); assert.match(content, /"total":0/); await reader.cancel(); } finally { controller.abort(); }
+    // A shared session has the team board only: every run route, the run event streams included, answers the closed 403.
+    const scopedHeaders = { cookie };
+    for (const path of ["/api/runs?limit=100", "/api/events?limit=100", ...["", "/diff", "/export", "/review-coverage", "/collaboration", "/events"].map((suffix) => `/api/runs/restricted-result${suffix}`)]) { const refused = await fetch(base + path, { headers: scopedHeaders }); assert.equal(refused.status, 403, path); assert.equal((await refused.text()).includes("RESTRICTED_PRIVATE"), false, path); }
     assert.equal((await fetch(`${base}/api/docs-help`, { headers })).status, 403);
     assert.equal((await fetch(`${base}/api/docs-help`, { method: "POST", headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify({ agent: "claude", question: "How do I start?" }) })).status, 409);
     assert.equal((await fetch(`${base}/api/docs-help`, { headers: scopedHeaders })).status, 403);

@@ -56,6 +56,8 @@ Errors contain an `error` string. No client-side mutation retry is automatic.
 | `POST /runs/:id/team-plan` | `revision`, `tasks`, `contracts`, `rationale` | Edit a pending Auto-team plan before dispatch. Keeps member identities and requirements fixed; validates owners, dependencies, paths and acceptance mappings. Returns `team`; stale revisions return 409. |
 | `GET /runs/:id/review-coverage` | `branch` query | Return current commit, changed files, reviewed files, percentage, heuristic risk, stale-review indicator and human rework history. After a conflict resolution whose target the run's branch doesn't have yet, `merged: { from, files }` names the changed files that came only from that target (they still count). Only run-owned branches are allowed. |
 | `POST /runs/:id/review-coverage` | `branch`, `expectedHead`, `path`, `reviewed` | Record or remove review of a changed file at that exact commit. Branch movement invalidates prior coverage; stale requests are rejected. |
+| `GET /runs/:id/collaboration` | none | Return the run's human comment thread: `revision` and `comments`, each with its author, branch, commit and time. Comments never enter an agent's prompt. |
+| `POST /runs/:id/collaboration` | `branch`, `expectedHead`, `text` | Add an owner comment (1–4000 characters) anchored to that exact result commit; 201 with the thread. A changed commit is rejected. |
 | `POST /runs/:id/human-rework` | `branch`, `expectedHead`, `minutes`, optional `note` | Append a user-entered correction-time record (1–1,440 minutes, note ≤2,000 characters, at most 100 records/run). Returns 201 with updated coverage. |
 | `POST /runs/:id/validate-merge` | `branch`, `into`, optional `allowUntrusted` | Verify the combined result with the current target in a disposable checkout. Returns pinned `source`, `target`, merge `tree`, `report` or `conflicts`. Requires a configured check/profile. |
 | `POST /runs/:id/merge` | `branch`, `into`, optional `archiveAfter`, `requireValidation`, `allowConflictMarkers` | Merge an owned result into the selected local branch; a run's result branch (whatever its prefix) is refused. A result that adds conflict markers (by each file's `conflict-marker-size`) gets 409 with `confirm: "allowConflictMarkers"`; send `allowConflictMarkers: true` to merge it anyway. `requireValidation: true` requires passing verification for unchanged source/target and the exact merged tree. |
@@ -208,7 +210,7 @@ Create accepts `repo`, `title`, `body`, optional `paths`, `tags`, and
 ordinary edit never accepts a proposal automatically. Feedback accepts `rating`,
 optional `note` and `runId`; a run reference must have selected that exact entry
 revision. Memory APIs remain owner-only; shared project roles use the separate
-closed review surface described below.
+closed team-board surface described below.
 
 ## Automation inspection and replay
 
@@ -244,22 +246,24 @@ native tool permissions. See [agent containers](agent-containers.md) and [mainte
 The client has no automatic retry for mutations. A dropped response is not proof
 that an operation did not execute; inspect the run before repeating a creation.
 
-## Shared identities and project review
+## Shared identities
 
 `GET /auth/self`, `POST /auth/login {username,password}` and `POST /auth/logout`
-bootstrap the local viewer/reviewer dashboard. Owner identity includes `localOnlyApis`, which is false on the phone listener; clients skip local connection inventories and use this host’s board there. Login sets a distinct session
+bootstrap the shared dashboard. Owner identity includes `localOnlyApis`, which is false on the phone listener; clients skip local connection inventories and use this host’s board there. Login sets a distinct session
 cookie; tokens and password/session hashes are never returned. Shared sessions
 require actual TLS or a direct loopback connection without forwarding headers.
 Owner account administration uses `GET/POST /accounts`, `PUT /accounts/:id`, and
 `POST /accounts/:id/revoke-sessions`, with the current account-state `revision`.
 
-Shared routing is a closed allowlist. Project/run lists, result detail, safe
-events, diffs, coverage and exports are scoped before counts and cursors.
-Reviewers may record file coverage and `POST /runs/:id/collaboration
-{branch,expectedHead,text}`; both recheck current project membership and owned
-result HEAD. `GET` returns the separate human discussion. These comments never
-resume an agent. All execution, administrative and private-context operations
-remain owner-only. See [roles, projections and session limits](shared-projects.md).
+A shared session reaches the [team collaboration](#team-collaboration) routes
+(`/team/*`), the host queue (`/host-execution`) and granted team terminals
+(`/team-terminals`), each with its own role checks, and nothing else. Every
+other route answers 403 "This operation requires the Code Flow owner". That
+includes the run routes: `GET /runs`, `GET /runs/:id` and its `export`, `diff`,
+`review-coverage`, `collaboration` and `events`, `POST
+/runs/:id/review-coverage`, `POST /runs/:id/collaboration`, and `GET /events`,
+as well as `GET /projects`, `/patterns` and `/templates`. See
+[roles and session limits](shared-projects.md).
 
 ## Team collaboration
 

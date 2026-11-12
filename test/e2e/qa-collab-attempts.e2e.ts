@@ -250,7 +250,7 @@ test("reviewers and collaborators receive attempt outcomes and instruction propo
     const context = await browser.newContext(); contexts.push(context); const page = await context.newPage();
     watch(page);
     await page.goto(base); await page.getByLabel("Username", { exact: true }).fill(username); await page.getByLabel("Password", { exact: true }).fill(password); await page.getByRole("button", { name: "Sign in", exact: true }).click();
-    await page.getByRole("tab", { name: "Board", exact: true }).click();
+    await page.getByRole("heading", { name: "Board", exact: true }).waitFor();
     return page;
   };
   const reviewer = await signIn("rita");

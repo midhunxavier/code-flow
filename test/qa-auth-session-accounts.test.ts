@@ -7,7 +7,6 @@ import { randomUUID } from "node:crypto";
 
 const root = mkdtempSync(join(tmpdir(), "codeflow-qa-auth-unit-")); process.env.CODEFLOW_HOME = root;
 const { SharedAccounts, SharedAccountError } = await import("../src/shared-accounts.js");
-const { sharedCoverageProjection } = await import("../src/shared-access.js");
 const { computerSetupLink } = await import("../ui/team-join-link.js");
 after(() => rmSync(root, { recursive: true, force: true }));
 const password = "qa fixture long password only";
@@ -70,10 +69,6 @@ test("disabled accounts can be removed at the cap, with CAS and retryable access
   assert.equal(cleaned, true); assert.equal(full.snapshot().users.length, 127); assert.equal(full.authenticate(session.token), undefined);
   await create("bob"); assert.equal(full.snapshot().users.length, 128); assert.notEqual(full.snapshot().users.find(user => user.username === "bob")!.id, original.id);
   const reloaded = new SharedAccounts(file); await reloaded.load(); assert.equal(reloaded.snapshot().users.some(user => user.id === original.id), false);
-});
-test("coverage preserves the uncommitted flag without exposing omitted file names", () => {
-  const result = sharedCoverageProjection({ head: "a".repeat(40), files: [".env", "README.md"], reviewed: [], workingChanges: true });
-  assert.equal(result.workingChanges, true); assert.deepEqual(result.files, ["README.md"]); assert.equal(result.omittedCount, 1);
 });
 test("computer handoff targets the narrow local interstitial and carries only connection hints", () => {
   const url = new URL(computerSetupLink("http://127.0.0.1:4359", "https://hub.example/#/connect?username=bob&project=project"));

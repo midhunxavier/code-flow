@@ -57,7 +57,7 @@ async function stop(instance: Instance) {
 async function owner(page: Page, instance = a, hash = "") { await page.goto(`${base(instance)}/?token=${instance.token}${hash}`); await page.getByRole("button", { name: "New chat", exact: true }).waitFor(); }
 async function self(page: Page, instance = a) { await page.goto(base(instance)); return page.evaluate(async () => (await fetch("/api/auth/self")).json()); }
 async function login(page: Page, username = "bob", origin = base()) {
-  await page.goto(origin); await page.getByLabel("Username", { exact: true }).fill(username); await page.getByLabel("Password", { exact: true }).fill(password); await page.getByRole("button", { name: "Sign in", exact: true }).click(); await page.getByRole("tab", { name: "Board", exact: true }).waitFor();
+  await page.goto(origin); await page.getByLabel("Username", { exact: true }).fill(username); await page.getByLabel("Password", { exact: true }).fill(password); await page.getByRole("button", { name: "Sign in", exact: true }).click(); await page.getByRole("heading", { name: "Board", exact: true }).waitFor();
 }
 // Cookie transport checks switch principals on a document without background app reads.
 async function pagePost(page: Page, path: string, body: unknown) { await page.goto(new URL("/qa-cookie-document", page.url()).href); changingPrincipal = true; const result = await page.evaluate(async ({ path, body }) => { const r = await fetch(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }); return { status: r.status, body: await r.json() }; }, { path, body }); await pause(100); changingPrincipal = false; return result; }
@@ -123,15 +123,20 @@ test("a no-op invitation preserves another device's session and explains existin
   await p.screenshot({ path: join(evidence, "already-joined.png"), fullPage: true }); await c.close(); await other.close(); await ok(`/api/team-terminals/${terminal.id}`, {}, "DELETE");
 });
 
-test("uncommitted solo results explain blocked review until the owner commits", async () => {
+test("uncommitted solo results block file review until the owner commits, and a shared reviewer cannot read the run", async () => {
   const made = await ok("/api/runs", { repo, project: projectId, pattern: "solo", checkpointOnFinish: false, task: "QA uncommitted result", roles: { agent: ["claude"] }, loop: { check: "true", prove: false, maxSteps: 4, maxMinutes: 1 } }); let run: any;
   for (let i = 0; i < 300; i++) { run = await ok(`/api/runs/${made.id}`); if (run.status !== "running") break; await pause(100); } assert.equal(run.status, "done", run.error); assert.ok(run.worktrees.length);
-  const tree = run.worktrees[0], coverage = await ok(`/api/runs/${run.id}/review-coverage?branch=${encodeURIComponent(tree.branch)}`); assert.equal(coverage.workingChanges, true);
-  const c = await context(), p = await c.newPage(); await login(p, "reviewer"); await p.getByRole("tab", { name: "Results", exact: true }).click(); await p.getByRole("button", { name: /QA uncommitted result/ }).click(); await p.getByText(/These are uncommitted working changes/).waitFor(); assert.equal(await p.getByRole("checkbox", { name: /^Reviewed / }).count(), 0); assert.equal(await p.getByLabel("Comment on this result commit", { exact: true }).count(), 0); await p.screenshot({ path: join(evidence, "uncommitted-review.png"), fullPage: true });
+  const tree = run.worktrees[0], coveragePath = `/api/runs/${run.id}/review-coverage?branch=${encodeURIComponent(tree.branch)}`, coverage = await ok(coveragePath); assert.equal(coverage.workingChanges, true);
   const files = (await ok(`/api/runs/${run.id}/diff?branch=${encodeURIComponent(tree.branch)}`)).map((file: any) => file.path); assert.ok(files.length); assert.equal((await api(`/api/runs/${run.id}/review-coverage`, { branch: tree.branch, expectedHead: coverage.head, path: files[0], reviewed: true })).status, 409);
-  git(tree.path, "add", "."); git(tree.path, "commit", "-qm", "Owner commits reviewable result"); await p.getByRole("button", { name: "Refresh result evidence", exact: true }).click(); const reviewed = p.getByRole("checkbox", { name: `Reviewed ${files[0]}`, exact: true }); await reviewed.waitFor(); await reviewed.check(); await p.getByText(/1 of .* visible files reviewed/).waitFor(); await p.getByLabel("Comment on this result commit", { exact: true }).fill("Reviewed after owner commit"); await p.getByRole("button", { name: "Record human comment", exact: true }).click(); await p.getByText("Reviewed after owner commit", { exact: true }).waitFor(); await c.close();
+  git(tree.path, "add", "."); git(tree.path, "commit", "-qm", "Owner commits reviewable result");
+  const committed = await ok(coveragePath); assert.equal(committed.workingChanges, false); assert.ok((await ok(`/api/runs/${run.id}/review-coverage`, { branch: tree.branch, expectedHead: committed.head, path: files[0], reviewed: true })).reviewed.includes(files[0]));
+  // Shared members have the Board only: the run, its diff, coverage and comments stay with the owner.
+  const signedIn = await api("/api/auth/login", { username: "reviewer", password }, "POST", a, {}), cookie = { cookie: signedIn.headers.getSetCookie().find(v => v.startsWith("codeflow_shared_"))!.split(";")[0]! };
+  for (const path of ["/api/runs", `/api/runs/${run.id}`, `/api/runs/${run.id}/diff?branch=${encodeURIComponent(tree.branch)}`, coveragePath, `/api/runs/${run.id}/collaboration`]) { const refused = await api(path, undefined, "GET", a, cookie); assert.equal(refused.status, 403, path); assert.equal(JSON.stringify(refused.body).includes("QA uncommitted result"), false); }
+  for (const [path, body] of [[`/api/runs/${run.id}/review-coverage`, { branch: tree.branch, expectedHead: committed.head, path: files[0], reviewed: false }], [`/api/runs/${run.id}/collaboration`, { branch: tree.branch, expectedHead: committed.head, text: "Shared comment" }]] as const) assert.equal((await api(path, body, "POST", a, cookie)).status, 403, path);
+  assert.ok((await ok(coveragePath)).reviewed.includes(files[0]), "a refused shared request changes nothing");
+  const c = await context(), p = await c.newPage(); await login(p, "reviewer"); assert.equal(await p.getByRole("tab").count(), 0); assert.equal(await p.getByText("QA uncommitted result").count(), 0); await c.close();
 });
-
 test("owner deletes a disabled account, revoking runners and all execution grants with CAS", async () => {
   await stop(a); await start(a, true, "30000");
   const login = await api("/api/auth/login", { username: "leaver", password }, "POST", a, {}), cookie = login.headers.getSetCookie().find(v => v.startsWith("codeflow_shared_"))!.split(";")[0]!;

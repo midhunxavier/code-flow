@@ -73,7 +73,6 @@ import { RetentionPolicyStore, RetentionPolicyConflictError, previewRetention } 
 import { SharedAccounts, SharedAccountError, type SharedPrincipal } from "./shared-accounts.js";
 import { canonicalSharedPath, SharedPathError } from "./shared-access.js";
 import { CollaborationReviews, CollaborationReviewError } from "./collaboration-reviews.js";
-import { handleSharedApi } from "./shared-api.js";
 import { CollabStore, memberActor, ownerActor, type ChangeEvent, type MemberRecord } from "./collab/store.js";
 import { handleRunnerConnect, handleTeamApi, looksLikeRunnerToken, runnerAllowed, teamRoutePolicy } from "./collab/api.js";
 import { CollabError } from "./collab/model.js";
@@ -1673,10 +1672,10 @@ async function handle(req: IncomingMessage, res: ServerResponse, via: Via) {
       return memberActor(memberOf(current), "browser");
     }, () => sharedMutation(req));
     if (parts[1] === "host-execution") return handleHostExecution(req, res, parts, hostExecution, memberActor(memberOf(shared.identity), "browser"), () => sharedMutation(req));
-    // The team board is the shared principals' second API: as closed as handleSharedApi (its own route table), and the session is re-checked on every stream frame.
+    // The team board is the shared principals' second API: closed (its own route table), and the session is re-checked on every stream frame.
     if (parts[1] === "team") return handleTeamApi(req, res, url, parts, { store: collab, actor: memberActor(memberOf(shared.identity), "browser"), principal: "browser", reauthorize: () => { const current = sharedAccounts.authenticate(shared.token, { touch: false }); if (!current) throw new HttpError(401, "Your session ended; sign in again"); return memberActor(memberOf(current), "browser"); }, mutation: sharedMutation });
-    if (req.method !== "GET") sharedMutation(req);
-    return attempt(() => handleSharedApi(req, res, url, parts, { accounts: sharedAccounts, token: shared.token, identity: shared.identity, manager, projects, comments: collaborationReviews, canReadFilePolicy: (run) => !fileAccess.restrictedRun(run), onFilePolicyChange: (listener) => filePolicies.onChange(listener), patterns: patterns.map(describePattern), templates }));
+    // Closed: a shared session reaches the team board, host queue and team terminals above and nothing else. It never falls through to the owner APIs below.
+    throw new HttpError(403, "This operation requires the Code Flow owner");
   }
   if (via === "lan" && !phoneControl()) throw new HttpError(404, "Not found");
   if (!owner) throw Object.assign(new HttpError(401, "Not signed in: use the owner link or sign in to shared projects"), { signIn: true });
