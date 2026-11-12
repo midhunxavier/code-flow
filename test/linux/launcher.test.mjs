@@ -50,7 +50,8 @@ for (const format of ['AppImage', 'deb']) test(`Linux ${format} keeps its backen
   const launched = new Set();
   t.after(() => { for (const child of launched) if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); });
   async function launch() {
-    const instance = await electron.launch({ executablePath: executable, args: [...args, '--disable-gpu'], env, timeout: 90000 });
+    // Playwright adds --no-sandbox on Linux unless told otherwise; launch exactly as users do.
+    const instance = await electron.launch({ executablePath: executable, args: [...args, '--disable-gpu'], chromiumSandbox: true, env, timeout: 90000 });
     launched.add(instance.process());
     const page = await instance.firstWindow(); await page.getByRole('main').waitFor({ timeout: 90000 });
     const origin = new URL(page.url()).origin;
@@ -81,8 +82,10 @@ for (const format of ['AppImage', 'deb']) test(`Linux ${format} keeps its backen
   assert.equal(instance.process().exitCode, null, 'closing the window keeps the app running');
   assert.equal((await fetch(`${origin}/api/health`, { headers })).status, 200, 'closing the window keeps the backend');
   // Opening Code Flow again from the launcher hands off to the running instance and shows its window.
-  const second = spawn(executable, [...args, '--disable-gpu'], { env, stdio: 'ignore' }); launched.add(second);
-  assert.equal(await new Promise(resolve => second.once('exit', code => resolve(code))), 0);
+  const second = spawn(executable, [...args, '--disable-gpu'], { env, stdio: ['ignore', 'ignore', 'pipe'] }); launched.add(second);
+  let secondErrors = ''; second.stderr.on('data', data => { secondErrors = (secondErrors + data).slice(-4000); });
+  const [code, signal] = await new Promise(resolve => second.once('exit', (...result) => resolve(result)));
+  assert.equal(code, 0, `the second launch exits after handing off (signal ${signal}):\n${secondErrors}`);
   for (let i = 0; i < 50 && !await instance.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].isVisible()); i++) await pause(100);
   assert.equal(await instance.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].isVisible()), true, 'reopening shows the window');
   assert.equal(JSON.parse(await readFile(join(state, 'server.lock'), 'utf8')).pid, pid, 'the same backend keeps running');
