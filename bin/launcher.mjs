@@ -109,7 +109,7 @@ export async function launch(args = process.argv.slice(2)) {
     await supervise(client);
     return;
   }
-  if (["desktop", "terminal", "init", "doctor", "mcp", "approve", "open", "status", "result", "diff", "apply", "pause", "resume", "cancel", "attach", "preferences", "uninstall"].includes(args[0])) {
+  if (["desktop", "terminal", "init", "doctor", "mcp", "run", "wait", "tools", "metrics", "snippet", "approve", "open", "status", "result", "diff", "apply", "pause", "resume", "cancel", "attach", "preferences", "uninstall"].includes(args[0])) {
     const compiled = fileURLToPath(new URL("src/cli-teams/cli.js", root));
     const source = fileURLToPath(new URL("src/cli-teams/cli.ts", root));
     const compiledExists = await access(compiled).then(() => true, () => false);

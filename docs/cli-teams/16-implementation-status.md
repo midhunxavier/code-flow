@@ -108,3 +108,9 @@ MCP text now uses readable summaries alongside structured data. Progress disting
 `context.reuseRunId` resolves the prior deliverable, chat, source and matching participant settings while retaining source freshness checks. Verified results include check/review evidence and a handoff action. `codeflow diff` and `codeflow apply` preview and stage the exact task delta in a clean checkout after native/terminal confirmation. Retained implementation remains included across continuations; pre-existing user source changes are excluded. Durable effect receipts prevent duplicate application and fence interrupted writes.
 
 See [implementation plan](17-cli-ux-implementation.md).
+
+## Simple surface (2026-11-12)
+
+A CLI is now shown six tools by default: `codeflow_run` (three fixed recipes: review, plan, implement), `codeflow_start_run`, `codeflow_status`, `codeflow_steer_run`, `codeflow_apply` and `codeflow_providers`. They are composed in the host-side bridge from the fourteen owner operations, which are unchanged and listed after `codeflow tools all`. Starting returns at once; results are written to a file; `codeflow run` and `codeflow wait` give the same flow to any shell. Local funnel metrics, a Claude Code plugin and a live canary script are included.
+
+Design, decisions and limits: [CLI host simplification](../design/cli-host-simplification.md). Validation is with fixture providers only (`test/cli-simple.test.ts`); no live host or provider run has exercised this surface yet.

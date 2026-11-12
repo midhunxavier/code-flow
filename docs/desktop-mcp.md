@@ -82,7 +82,7 @@ In either app, ask:
 
 > Use Code Flow for this repository. Have Claude draft a login form plan and Codex review it. Plan only. Show the proposed work before starting.
 
-The connection exposes the same twelve tools used by the CLI integration. Both hosts receive the candidate format, workflow instructions, approval rules, and continuation instructions through MCP initialization.
+The connection exposes the same tools as the CLI integration: six by default, and the advanced ones after `codeflow tools all`. Both hosts receive the rules and the flow through MCP initialization. The candidate format for the advanced tools is served by `codeflow_get_guide`.
 
 When the host advertises form elicitation, starting a proposal opens its native confirmation form. Otherwise, follow **Open in Code Flow** to review and start the exact proposal. The interactive `codeflow approve` command remains a fallback. A host's generic tool permission or an assistant's approval claim does not replace proposal acceptance. Declining starts no work; retrying the same accepted proposal does not create a second run.
 
@@ -98,7 +98,7 @@ codeflow desktop remove
 
 `doctor` checks configuration ownership and whether it matches the current executable paths, PATH, repository, and state directory. It reports `configured`, `disabled`, `missing`, `modified`, `needs_update`, `invalid`, or `interrupted`, and exits nonzero unless every selected connection is configured. It does not launch MCP, verify provider login, or certify native app discovery.
 
-For a native smoke check, reload the connection as described above, verify all twelve `codeflow_*` tools appear, ask it to list Code Flow runs, then try the plan-only example. Check that the displayed repository is correct, decline one proposal, approve a fresh one, retrieve its result, and confirm the same run appears in Code Flow. This uses your installed CLIs and can consume provider quota once you approve a task. Retrieving a result with a separate CLI or stdio probe confirms the bridge works, but does not verify that the desktop chat can call its native MCP tools.
+For a native smoke check, reload the connection as described above, verify the six `codeflow_*` tools appear, ask it to list Code Flow runs, then try the plan-only example. Check that the displayed repository is correct, decline one proposal, approve a fresh one, retrieve its result, and confirm the same run appears in Code Flow. This uses your installed CLIs and can consume provider quota once you approve a task. Retrieving a result with a separate CLI or stdio probe confirms the bridge works, but does not verify that the desktop chat can call its native MCP tools.
 
 Setup refuses to overwrite an existing unowned or modified entry. Removal deletes only entries still matching the private ownership record and preserves other MCP servers/settings. Modified entries are reported and retained. Use the same `CODEFLOW_HOME` for setup and removal; ownership records are stored there. An interrupted transaction is recovered on the next non-dry setup/removal. Private transaction records can temporarily contain configuration snapshots and are written with owner-only file permissions.
 

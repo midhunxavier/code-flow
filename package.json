@@ -27,6 +27,7 @@
     "test:cli-ux:live": "tsx scripts/test-cli-ux-live.ts",
     "test:cli-native-flows:live": "node --import tsx scripts/test-cli-native-flows-live.mjs",
     "test:cli-crash:live": "tsx scripts/test-cli-crash-live.ts",
+    "canary:cli": "tsx scripts/canary-cli-review.ts",
     "client": "node scripts/codeflow.mjs",
     "maintenance": "tsx scripts/maintenance.ts",
     "test:containers": "CODEFLOW_TEST_DOCKER=1 tsx --test --test-concurrency=1 test/agent-container-docker.test.ts",
