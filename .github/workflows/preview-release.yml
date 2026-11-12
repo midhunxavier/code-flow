@@ -178,8 +178,46 @@ jobs:
         env:
           CODEFLOW_DESKTOP_BUNDLE: ${{ github.workspace }}/output/windows-unpacked/Code Flow/resources/app
 
+  linux:
+    needs: package
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, arch: x64 }
+          - { os: ubuntu-24.04-arm, arch: arm64 }
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install packaging and headless display tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends squashfs-tools xvfb xauth
+      - run: npm ci
+      - run: npm run package:linux -- ${{ matrix.arch }}
+      - name: Install the built .deb so its post-install sandbox setup is tested
+        run: sudo apt-get install -y ./output/linux/code-flow-*-linux-${{ matrix.arch }}-unsigned.deb
+      - run: xvfb-run -a npm run test:linux
+        env:
+          CODEFLOW_LINUX_ARCH: ${{ matrix.arch }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-preview-${{ matrix.arch }}
+          path: |
+            output/linux/*-unsigned.AppImage
+            output/linux/*-unsigned.AppImage.sha256
+            output/linux/*-unsigned.deb
+            output/linux/*-unsigned.deb.sha256
+
   draft:
-    needs: [package, macos, windows, windows-wsl]
+    needs: [package, macos, windows, windows-wsl, linux]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -198,7 +236,7 @@ jobs:
         run: |
           test ! -z "$RELEASE_TAG"
           gh release create "$RELEASE_TAG" --target "$(git rev-parse HEAD)" --draft --prerelease --title "Code Flow $RELEASE_TAG" --notes-file output/releases/preview-notes.md
-          gh release upload "$RELEASE_TAG" output/releases/*.tgz output/releases/*.sha256 output/releases/*.dmg output/releases/Formula/code-flow.rb
+          gh release upload "$RELEASE_TAG" output/releases/*.tgz output/releases/*.sha256 output/releases/*.dmg output/releases/*.AppImage output/releases/*.deb output/releases/Formula/code-flow.rb
           # Windows portable ZIPs and signed macOS Squirrel update ZIPs/feeds.
           shopt -s nullglob
           updates=(output/releases/*.zip output/releases/releases-*.json)

@@ -51,6 +51,15 @@ The app must be in a writable folder, such as Applications; copies running from 
 
 The preview stores settings and history in `~/.codeflow`, outside the installation. Updating or removing the launcher preserves that folder.
 
+### Download the Linux app
+
+Choose **0.1.0-preview.14** for your PC (x64 or ARM64):
+
+- [Download x64 AppImage](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.14/code-flow-0.1.0-preview.14-linux-x64-unsigned.AppImage) · [x64 .deb](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.14/code-flow-0.1.0-preview.14-linux-x64-unsigned.deb)
+- [Download ARM64 AppImage](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.14/code-flow-0.1.0-preview.14-linux-arm64-unsigned.AppImage) · [ARM64 .deb](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.14/code-flow-0.1.0-preview.14-linux-arm64-unsigned.deb)
+
+Run `chmod +x` on the AppImage and open it, or install the `.deb` on Debian or Ubuntu with `sudo apt install ./<file>.deb` and open **Code Flow** from your applications. Closing the window keeps agents running; open Code Flow again to show it, and use **Code Flow → Quit** to stop. Node is bundled; install Git and sign in to a supported agent CLI before your first run. Settings and history live in `~/.codeflow`, shared with the npm launcher. These builds are **unsigned**. Where the system blocks unprivileged user namespaces, as Ubuntu 24.04 does by default, the AppImage starts without Chromium's sandbox; the `.deb` keeps it. Linux apps update manually: **Settings → General → App updates** links to the matching new download.
+
 ### Install from source
 
 ```bash
