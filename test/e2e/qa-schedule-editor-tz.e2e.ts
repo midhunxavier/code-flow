@@ -92,7 +92,8 @@ test("a schedule saved without a zone stays in server local time when edited fro
   await save.click();
   const changed = await until(() => automation(saved.id), (a) => a.schedule.at === "09:00");
   assert.deepEqual(changed.schedule, { at: "09:00" }, "still server local time"); assert.match(changed.scheduleText, /server local time/);
-  assert.equal(changed.nextAt - saved.nextAt, 3_600_000, "an hour later, not the browser's offset");
+  // Between 08:00 and 09:00 server time the 08:00 run is tomorrow's and the 09:00 run today's, so compare the time of day.
+  assert.equal(((changed.nextAt - saved.nextAt) % 86_400_000 + 86_400_000) % 86_400_000, 3_600_000, "an hour later, not the browser's offset");
   assert.deepEqual(errors, []);
   await context.close();
 });
