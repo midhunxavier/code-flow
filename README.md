@@ -34,7 +34,7 @@
 You need **Node.js 22.13+**, **Git 2.38+**, and at least one of `claude`, `codex` or `agy`, installed and signed in. Runs on macOS, Linux, and Windows through WSL2.
 
 ```bash
-npm install -g https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.14/midhunxavier-code-flow-0.1.0-preview.14.tgz
+npm install -g @midhunxavier/code-flow
 codeflow
 ```
 
