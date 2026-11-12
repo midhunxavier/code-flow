@@ -2,147 +2,132 @@
   <img src="ui/brand/code-flow-mark.svg" alt="" width="64" height="64">
 </p>
 <h1 align="center">code-flow</h1>
-<p align="center">Your coding agents. One workspace.</p>
+<p align="center"><b>Turn Claude Code, Codex and Antigravity into an AI team.</b></p>
 <p align="center">
-  Bring Claude Code, Codex and Antigravity together to plan, build and review.<br>
-  Use your installed CLIs and existing logins, with work you can inspect before shipping.
+  Describe a goal. code-flow builds the team and the workflow, runs it on your machine<br>
+  with the CLIs you already use, and shows you the evidence before anything ships.
 </p>
 <p align="center">
-  <a href="#try-the-preview">Try the preview</a> ·
-  <a href="https://midhunxavier.com/code-flow/docs/">Documentation</a> ·
-  <a href="docs/patterns.md">Workflows</a> ·
+  <a href="#install">Install</a> ·
+  <a href="#use-it-from-your-cli">Use it from your CLI</a> ·
+  <a href="https://midhunxavier.com/code-flow/docs/">Docs</a> ·
   <a href="docs/security.md">Security</a>
 </p>
 
-## Quickstart
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/run-dark.png">
+  <img src="docs/images/run-light.png" alt="A code-flow task showing agent activity, verification evidence and review actions, captured with demo agents." width="100%">
+</picture>
 
-### Try the preview
+> **Preview.** code-flow is early software. Expect rough edges and breaking changes.
 
-Run Code Flow locally and open it in your browser with one command:
+## Why code-flow
+
+- **No team setup.** You say what you want. A lead agent proposes who does what, in what order, with which checks. You approve, then it runs.
+- **Mix providers.** One agent writes with Claude, another reviews with Codex. Pick models and effort per agent, or let the lead choose.
+- **Your subscriptions, your machine.** It drives the `claude`, `codex` and `agy` CLIs you've already signed in to. It never reads or reuses your tokens.
+- **Safe by default.** Agents work in separate Git worktrees. Nothing touches your checkout until you apply it.
+- **Proof, not promises.** Checks, independent reviews and test evidence are shown separately, so "finished" never quietly means "verified".
+
+## Install
+
+You need **Node.js 22.13+**, **Git 2.38+**, and at least one of `claude`, `codex` or `agy`, installed and signed in. Runs on macOS, Linux, and Windows through WSL2.
 
 ```bash
-npx --yes --package=https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.14/midhunxavier-code-flow-0.1.0-preview.14.tgz codeflow
+npm install -g https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.14/midhunxavier-code-flow-0.1.0-preview.14.tgz
+codeflow
 ```
 
-Requires **Node.js 22.13+**, **Git 2.38+**, and at least one supported CLI: `claude`, `codex` or `agy`, installed and signed in. Works on macOS, Linux and Windows through **WSL2**. Keep the terminal open while you work; press **Ctrl+C** to stop.
+This opens code-flow in your browser at [localhost:4317](http://localhost:4317). Keep the terminal open; press **Ctrl+C** to stop.
 
-Prefer a macOS app? Download **0.1.0-preview.14** for your Mac:
+<details>
+<summary>Desktop apps for macOS and Windows</summary>
 
-| Apple Silicon (M1 or later) | Intel |
+- **macOS 13+:** [Apple Silicon DMG](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.14/code-flow-0.1.0-preview.14-macos-arm64-unnotarized.dmg) · [Intel DMG](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.14/code-flow-0.1.0-preview.14-macos-x64-unnotarized.dmg). Drag **Code Flow** to Applications. These builds are unnotarized, so macOS may block them. If it does, use npm.
+- **Windows (WSL2):** [x64 ZIP](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.14/code-flow-0.1.0-preview.14-windows-x64-unsigned.zip) · [ARM64 ZIP](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.14/code-flow-0.1.0-preview.14-windows-arm64-unsigned.zip). Extract it and open **Code Flow.exe**. Git and your agent CLIs live inside WSL. See the [Windows guide](docs/windows-desktop.md).
+
+[Release notes and checksums](https://github.com/midhunxavier/code-flow/releases/tag/v0.1.0-preview.14) · [Full installation guide](docs/getting-started.md)
+
+</details>
+
+## Use it in the browser
+
+1. Click **New chat** and pick a project folder.
+2. Choose **Team**, then describe your goal:
+   > Add a password reset flow. Use Claude to build it and Codex to review it. Run the tests.
+3. Review the proposed team: agents, models, task order, checks and limits. Click **Start implementation** (or **Start planning** / **Start review** for plan-only or review-only work).
+4. Follow progress in the chat. When it's done, inspect the diff and the evidence, then apply the changes or open a pull request.
+
+Want a single agent instead? Keep **Agent** selected and chat as usual. You can switch to Team at any point in the same conversation. → [Chat guide](docs/conversational-tasks.md) · [How Team mode works](docs/auto-team.md)
+
+## Use it from your CLI
+
+Prefer to stay in Claude Code, Codex or Antigravity? Connect code-flow once:
+
+```bash
+codeflow init
+codeflow doctor
+```
+
+Then start your CLI inside any Git repository and ask for a team:
+
+| CLI | Invoke |
 | --- | --- |
-| [Download Apple Silicon DMG](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.14/code-flow-0.1.0-preview.14-macos-arm64-unnotarized.dmg) | [Download Intel DMG](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.14/code-flow-0.1.0-preview.14-macos-x64-unnotarized.dmg) |
+| Claude Code | `/codeflow` |
+| Codex | `$codeflow` |
+| Antigravity (`agy`) | `/codeflow` |
 
-Requires **macOS 13+**. Open the DMG, drag **Code Flow** to **Applications**, then open it in its own desktop window. Closing the window keeps agents running; use **Code Flow → Quit** to stop the app. Node is bundled; Git, a signed-in agent CLI and Chrome or Edge for the shared browser are still required. These DMGs are **unnotarized preview builds** and macOS may block them; use npm if blocked.
+> /codeflow Fix the empty-email validation bug, run the focused tests, and have another agent review the change.
 
-[Preview release notes and checksums](https://github.com/midhunxavier/code-flow/releases/tag/v0.1.0-preview.14) · [Installation and first-run guide](docs/getting-started.md)
+Your CLI shows the proposed team and asks you to approve it. If it can't show an approval form, you get a link or a `codeflow approve` command instead. Progress and results come back to the same conversation. → [CLI guide](docs/cli-conversational-teams.md)
 
-Download the **Windows desktop preview using WSL2**: [x64 ZIP](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.14/code-flow-0.1.0-preview.14-windows-x64-unsigned.zip) · [ARM64 ZIP](https://github.com/midhunxavier/code-flow/releases/download/v0.1.0-preview.14/code-flow-0.1.0-preview.14-windows-arm64-unsigned.zip). Extract the entire ZIP and open **Code Flow.exe**.
-It bundles Node.js and runs the backend in your Linux distribution, reusing the Git and
-agent CLI installations and logins there. Docker Desktop is not required. See the
-[Windows desktop guide](docs/windows-desktop.md) for setup and validation status. The portable ZIP is unsigned.
+`codeflow init` only touches your user settings. It never writes into your repositories. Remove it any time with `codeflow uninstall --user`.
 
-### Run from source
+### Claude Desktop and the Codex app
 
-With Node.js, Git and a signed-in agent CLI installed:
+Run this inside the repository you want to work on (macOS):
+
+```bash
+codeflow desktop setup
+```
+
+Reopen Claude Desktop, or enable the new `codeflow-…` server in the Codex app's MCP settings and open a fresh chat. Then ask: *"Use Code Flow to have Claude plan a login form and Codex review it. Plan only."* → [Desktop guide](docs/desktop-mcp.md)
+
+## Supported agents
+
+| Provider | Runs as | Sign-in |
+| --- | --- | --- |
+| Claude Code | `claude -p` | Claude Code's own login |
+| Codex | `codex app-server` / `codex exec` | `codex login` |
+| Antigravity | `agy -p` (sandboxed by default) | agy's own login |
+| Any ACP agent | Your saved command | That CLI's login |
+
+Models, limits and usage come from your own accounts. Repository checks run real code on your machine, so read the [security notes](docs/security.md) before pointing it at code you don't trust.
+
+## Learn more
+
+- [Getting started](docs/getting-started.md): install, first chat, first team
+- [Team mode](docs/auto-team.md): how the lead plans, assigns and verifies work
+- [Runs and the workspace](docs/runs.md): files, diffs, terminals and previews
+- [Automations](docs/automations.md): scheduled work and remote access
+- [Team collaboration](docs/team-collaboration.md) and [SSH projects](docs/ssh-projects.md)
+- [Full documentation](docs/README.md): also built into the app under **Help & documentation**
+
+## Development
 
 ```bash
 git clone https://github.com/midhunxavier/code-flow.git
 cd code-flow
 npm ci
-npm start
-```
-
-Open [localhost:4317](http://localhost:4317), or use the owner link printed in the terminal if sign-in is required.
-
-1. Choose **New chat**, then select or create a project and its Git repository.
-2. Keep **Agent** selected for a normal agent conversation, or choose **Team** to discuss an approach with a lead.
-3. Describe your goal. In Team mode, review the task-specific participants, models, efforts, source, checks and limits, then select **Start task**.
-4. Continue in the same chat. Inspect the result and its evidence before applying changes or opening a pull request.
-
-Each chat can contain multiple independently approved tasks. Agent/Team and model changes apply to future messages; accepted executions retain their reviewed settings. **Task details** shows participation receipts, allowances, preserved worktrees and history. No preset or saved agent team is needed.
-
-Changes live in separate Git worktrees. The [chat guide](docs/conversational-tasks.md) explains guidance, queued messages, chat context import and recovery. **Open workflow run** in a new chat opens the run form and its saved drafts: fixed workflows, team templates, run once later and schedules. On a phone, another device or an SSH host, that form is the start screen.
-
-Prefer working in your Claude Code or Codex CLI conversation? The experimental [conversational teams integration](docs/cli-conversational-teams.md) creates a task-specific team and process through a project MCP connection. Run `codeflow init` in your target repository using an installed launcher; no preset or saved-team setup is required. Existing web workflows remain available.
-
-Use the same bridge from **Claude Desktop or the Codex app** with `codeflow desktop setup` in your target repository. [Desktop setup, checks, and removal](docs/desktop-mcp.md) covers app-wide connections bound to a specific project.
-
-**Inbox**, **Automations** and **Insights** are in the sidebar, with **Board** once a team is connected. **Workflow run → Advanced** holds the team template library and every run option. Open **Repository tools** from a project; use **Settings → Connections** for remote work and sharing.
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/images/run-dark.png">
-  <img src="docs/images/run-light.png" alt="Code Flow run with the task, agent activity, verification evidence and review actions. Captured from the local app using demo agents." width="100%">
-</picture>
-
-*Screenshots show the current local app with deterministic demo agents. They do not represent real provider output or a production verification result.*
-
-## A workspace for the whole task
-
-| You want to… | Use… |
-| --- | --- |
-| Build a feature with an independent review | [Plan → Build → Review](docs/patterns.md) |
-| Let a coordinator propose a team and task graph | [Auto team](docs/auto-team.md), with plan approval and bounded execution |
-| Inspect files, changes, terminals and app previews | The [run workspace and side panel](docs/runs.md) |
-| See what needs a decision across projects | The [review inbox](docs/review-inbox.md) |
-| Run scheduled work or revisit it from another device | [Automations and remote access](docs/automations.md) |
-| Work with teammates or a remote machine | [Team collaboration](docs/team-collaboration.md) and [SSH projects](docs/ssh-projects.md) |
-
-Code Flow shows checks, independent review and fail-to-pass evidence separately. Finished work can still be unverified; the [verification guide](docs/verification.md) explains the distinction. Publishing remains an explicit workflow action.
-
-## Existing workflow choices
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/images/composer-dark.png">
-  <img src="docs/images/composer-light.png" alt="Code Flow composer with a task, workflow selection, agents and run options, using demo data." width="100%">
-</picture>
-
-| Workflow | Flow | Good for |
-| --- | --- | --- |
-| **Plan → Build → Review** | Plan, implement, review, repair | Features and bug fixes |
-| **Review council** | Independent reviews, evidence, ranked findings | Reviewing a change |
-| **Auto team** | Proposed team, dependency graph, bounded adaptation | Delegating workflow design |
-
-Assign providers, models and effort per role; see [Auto team](docs/auto-team.md).
-
-## Your CLIs, your machine
-
-| Provider | How Code Flow runs it | Authentication |
-| --- | --- | --- |
-| Claude Code | `claude -p` | The CLI's own login |
-| Codex | `codex app-server` or `codex exec` | `codex login` |
-| Antigravity | `agy -p` | The CLI's own login |
-| ACP connections | Saved executable and ACP arguments | The connected CLI's authentication |
-
-Code Flow delegates authentication to the CLIs. Provider access, model availability and usage limits depend on your account and CLI configuration. It does not extract or reuse OAuth tokens. Repository checks execute code; choose suitable permissions and isolation for the repository. Read the [security and execution boundaries](docs/security.md).
-
-## Documentation, wherever you work
-
-Open **Application menu → Help & documentation** or find it in the command palette. The bundled docs at [localhost:4317/docs/](http://localhost:4317/docs/) include search, page navigation and an **Ask code-flow** chat side panel that answers using your installed CLI and the guides. [How local help works](docs/help.md).
-
-The same docs can be hosted on GitHub Pages, with the local app's typography, colors and light/dark themes. The static site provides search and reading with no companion controls. CLI chat runs in the local app, keeping the conversation while you browse guides.
-
-```bash
-npm run docs:preview  # build and preview the static site at 127.0.0.1:4319
-npm run build:docs    # produces dist/docs for GitHub Pages
-```
-
-See [publishing and maintaining the docs](docs/documentation.md) for repository setup, screenshots and the deployment workflow. The complete [documentation library](docs/README.md) covers configuration, project memory, remote workers, shared accounts, integrations, APIs and maintenance.
-
-## Development
-
-```bash
-npm run dev          # deterministic demo agents; no real provider work
-npm run dev:real     # installed real CLIs; sign in to each CLI first
+npm run dev        # demo agents at localhost:4318, no real provider calls
+npm run dev:real   # your real, signed-in CLIs
 npm run typecheck
 npm test
-node node_modules/playwright-core/cli.js install ffmpeg # once, for test recordings
-npm run test:e2e     # browser acceptance tests; requires Chrome
+npm run test:e2e   # browser tests, requires Chrome
 ```
 
-Both development modes use http://localhost:4318 and `.codeflow-dev` as their home directory. They rebuild the UI and restart the server on source changes.
-
-The [development guide](docs/architecture.md) covers the source layout, adapter and workflow contracts, and tests. Engineering plans and evaluation records are grouped separately in the docs library.
+See the [development guide](docs/architecture.md) for the source layout and contracts.
 
 ## License
 
-[MIT](LICENSE). Bundled Inter fonts are distributed under the [SIL Open Font License 1.1](ui/fonts/OFL-1.1.txt).
+[MIT](LICENSE). Bundled Inter fonts use the [SIL Open Font License 1.1](ui/fonts/OFL-1.1.txt).
