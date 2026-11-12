@@ -4672,3 +4672,42 @@ dialog.rail::backdrop { background: rgb(0 0 0 / .28); }
   .task-create-footer { flex-wrap: wrap; }
   .task-create-footer > p { display: flex; }
 }
+
+/* One page frame for every destination: the same column width, gutters and heading size, so the
+   title doesn't jump sideways or change size when you move between Projects, Board, Insights,
+   Repository tools and Settings on a wide screen. */
+.project-page, .activity-page, .projects-page, .settings-page, .team-page { width: 100%; max-width: 1200px; margin-inline: auto; padding: 24px 32px 48px; }
+.project-page > .team-page, .settings-page .activity-page, .settings-page .team-page { max-width: none; padding: 0; }
+/* Insights and Repository tools sit inside the activity page: its frame is theirs. */
+.activity-page > .insights, .activity-page > .workbench, .project-page .workbench { max-width: none; margin: 0; padding: 0; }
+.team-board-head.page-head h1, .team-page .page-head h1 { font: 600 26px/1.3 var(--display); letter-spacing: -.65px; }
+.team-board-head .page-head-text p { margin-top: 6px; }
+.collaboration-eyebrow { margin-bottom: 6px; }
+@media (max-width: 760px) {
+  .project-page, .activity-page, .projects-page, .settings-page, .team-page { padding: 18px 16px 32px; }
+  .team-board-head.page-head h1, .team-page .page-head h1 { font-size: 24px; }
+}
+
+/* Spacing and alignment. */
+.pp-numbers { margin-bottom: 18px; }
+.topbar .crumbs-bar { margin-right: 12px; }
+.run-head { padding-top: 12px; }
+.run-result-summary dl { align-items: baseline; }
+.run-result-summary dd > details > summary { cursor: pointer; }
+.project-history-controls { align-items: flex-end; }
+.project-history-controls label.check { min-height: 34px; }
+@media (max-width: 760px) {
+  .topbar .crumbs-bar { margin-right: 4px; }
+  .run-head { padding-top: 8px; }
+  /* Stacked, the summary must not keep its row-layout basis as a height. */
+  .result-primary > div:first-child, .result-next-step .result-primary > div:first-child { flex: none; width: 100%; }
+}
+@media (max-height: 560px) { .run-head { padding-top: 4px; } }
+/* Settings fills the frame, so its cards end where the header rule ends. */
+.settings-content { max-width: none; }
+/* Eight project tabs fit a 1024px window without the last one being cut off. */
+@container pp (max-width: 800px) {
+  .project-tabs { gap: 0; }
+  .project-tabs .btn { padding-inline: 9px; }
+  .project-tabs-divider { margin-inline: 4px; }
+}
