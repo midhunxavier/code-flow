@@ -22,7 +22,7 @@ function installedDeb() {
 async function unpack(format, directory) {
   if (format === 'AppImage') {
     // Exercise the real AppImage runtime and AppRun; extraction avoids requiring FUSE on CI hosts.
-    execFileSync(`${base}.AppImage`, ['--appimage-extract'], { cwd: directory, stdio: 'ignore' });
+    execFileSync(`${base}.AppImage`, ['--appimage-extract'], { cwd: directory, stdio: ['ignore', 'ignore', 'pipe'] });
     return { executable: join(directory, 'squashfs-root/AppRun'), args: [] };
   }
   if (installedDeb()) return { executable: '/usr/bin/code-flow', args: [] };
