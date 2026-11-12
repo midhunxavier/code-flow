@@ -12,6 +12,8 @@ const home = mkdtempSync(join(tmpdir(), "codeflow-cli-team-"));
 process.env.CODEFLOW_HOME = home;
 process.env.PATH = `${fileURLToPath(new URL("./fake-bin", import.meta.url))}:${process.env.PATH}`;
 process.env.CODEFLOW_RETRY_DELAYS_MS = "0";
+// This suite covers the advanced tools (hand-written candidates, host participation). The default surface is in cli-simple.test.ts.
+process.env.CODEFLOW_TOOLS = "all";
 const { RunManager } = await import("../src/engine.js");
 const { findPattern, patterns } = await import("../src/patterns/index.js");
 const { adapters } = await import("../src/adapters/index.js");
@@ -358,13 +360,14 @@ test("startup instructions fit Claude Code's 4,096-character cap and the full gu
   // A deep checkout path: the repository is part of the instructions.
   const root = "/Users/someone/" + "nested-folder/".repeat(13) + "project";
   for (const nativeForm of [true, false]) {
-    const text = await startupInstructions(root, nativeForm);
+    const text = await startupInstructions(root, nativeForm, "all");
     assert.ok(text.length <= 4000, `startup instructions are ${text.length} characters; Claude Code keeps only the first 4,096`);
     assert.ok(text.startsWith(`This connection is bound exclusively to repository ${JSON.stringify(root)}.`));
     assert.match(text, nativeForm ? /native approval/ : /no form elicitation/);
-    for (const rule of [/codeflow_get_guide/, /Never answer, supply or simulate approval/, /follow\.next/, /operationId/, /Managed workers must never/, /Do not invent model IDs/]) assert.match(text, rule);
+    for (const rule of [/codeflow_get_guide/, /Never answer, supply or simulate approval/, /codeflow_status/, /operationId/, /worker must never start Code Flow/, /Do not invent model IDs/]) assert.match(text, rule);
+    assert.doesNotMatch(await startupInstructions(root, nativeForm), /codeflow_get_guide|codeflow_propose_run/, "the default surface names only its own tools");
   }
-  const skill = readFileSync(new URL("../integrations/cli-teams/SKILL.md", import.meta.url), "utf8");
+  const skill = readFileSync(new URL("../integrations/cli-teams/GUIDE.md", import.meta.url), "utf8");
   const headings = [...skill.matchAll(/^## (.+)$/gm)].map(m => m[1]);
   assert.equal(GUIDE_SECTIONS.length, headings.length, "every skill section has a guide section");
   const all = await guideText("all");
@@ -809,7 +812,7 @@ test("outside a Git repository the connection starts and explains instead of fai
   try {
     const init = await ask(1, "initialize", { protocolVersion: "2025-11-25", capabilities: {} });
     assert.match(init.result.instructions, /not inside one/);
-    assert.equal((await ask(2, "tools/list", {})).result.tools.length, CLI_TOOLS.length + 1);
+    assert.equal((await ask(2, "tools/list", {})).result.tools.length, CLI_TOOLS.length + 5);
     const call = await ask(3, "tools/call", { name: "codeflow_list_providers", arguments: {} });
     assert.equal(call.result.isError, true); assert.equal(call.result.structuredContent.error.code, "not_a_repository");
   } finally { child.kill(); }
@@ -844,7 +847,7 @@ test("project-scoped loopback and stdio MCP negotiate and deny owner-tool expans
     assert.match(stdout, /2025-03-26/, stderr);
     child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" }) + "\n");
     for (let i = 0; i < 200 && !stdout.includes('"id":2'); i++) await pause();
-    const response = stdout.trim().split("\n").map(s => JSON.parse(s)).find(r => r.id === 2); assert.equal(response.result.tools.length, 15);
+    const response = stdout.trim().split("\n").map(s => JSON.parse(s)).find(r => r.id === 2); assert.equal(response.result.tools.length, 19);
     const denied = await fetch(`${bridge.descriptor.endpoint}/call`, { method: "POST", headers: { "content-type": "application/json", origin: "https://evil.invalid", authorization: `Bearer ${bridge.descriptor.bootstrap}` }, body: "{}" }); assert.equal(denied.status, 403);
   } finally { child.stdin.end(); await new Promise<void>(resolve => { child.once("exit", () => resolve()); setTimeout(() => { child.kill(); resolve(); }, 3000).unref(); }); await bridge.close(); }
 });
@@ -1156,8 +1159,8 @@ test("desktop configs launch the same scoped MCP bridge from an unrelated cwd wi
         assert.match(peer.initialized.instructions, /bound exclusively to repository/);
         assert.ok(peer.initialized.instructions.includes(JSON.stringify(await (await import("node:fs/promises")).realpath(f.repo))));
         assert.match(peer.initialized.instructions, /codeflow_get_guide/);
-        assert.match(peer.initialized.instructions, /Managed workers must never|do not invoke provider CLIs/);
-        assert.equal((await peer.request("tools/list", {}).result).tools.length, 15);
+        assert.match(peer.initialized.instructions, /worker must never start Code Flow|Do not run provider CLIs/);
+        assert.equal((await peer.request("tools/list", {}).result).tools.length, 19);
         const guide = (await peer.call("get_guide", { section: "candidate" }).result); assert.equal(guide.isError, false); assert.match(guide.content[0].text, /^## Candidate contract/);
         assert.ok(peer.initialized.instructions.length <= 4000, "instructions fit Claude Code's cap");
         const p = (await peer.call("propose_run", { operationId: `desktop-proposal-${connection.host}`, task: "Plan a login form", candidate: planning() }).result).structuredContent.data;

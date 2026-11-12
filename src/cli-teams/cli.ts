@@ -13,6 +13,10 @@ import { hasProjectInstall, installUser, uninstallProject, uninstallUser } from 
 import { serveMcp } from "./mcp.js";
 import { configureDesktop, inspectDesktop, DESKTOP_HOSTS, type DesktopHost } from "./desktop.js";
 import { fail, isProvider, PROVIDERS, validatePreferences, type Provider } from "./model.js";
+import { formatStatusResult, proposeRecipe, runStatus, setToolSurface, toolSurface } from "./simple.js";
+import { hostProvider } from "./recipes.js";
+import { formatMetrics, readMetrics, summarizeMetrics } from "./metrics.js";
+import { randomUUID } from "node:crypto";
 
 const usage = `Code Flow conversational teams
 
@@ -21,6 +25,10 @@ const usage = `Code Flow conversational teams
   codeflow desktop setup|enable|disable|doctor|remove [--hosts claude-desktop,codex-app] [--project-root PATH] [--dry-run] [--json]
   codeflow doctor [--catalog] [--json]
   codeflow mcp [--project-root PATH]
+  codeflow run "TASK" [--mode review|plan|implement] [--by PROVIDER[:MODEL[:EFFORT]],...] [--check COMMAND] [--setup COMMAND]
+               [--source head|working_changes] [--untracked PATH,...] [--continue RUN_ID] [--wait] [--no-wait] [--json]
+  codeflow wait RUN_ID [--timeout MINUTES] [--json]
+  codeflow wait PROPOSAL_ID --revision NUMBER [--timeout MINUTES] [--json]
   codeflow approve PROPOSAL_ID --revision NUMBER
   codeflow open PROPOSAL_OR_RUN_ID
   codeflow status [RUN_ID] [--json]
@@ -30,22 +38,28 @@ const usage = `Code Flow conversational teams
   codeflow pause|resume|cancel RUN_ID
   codeflow attach RUN_ID --connection CONNECTION_ID
   codeflow preferences [--provider claude|codex|agy --model ID --effort VALUE] [--preferred-provider claude|codex|agy] [--personal]
+  codeflow tools [simple|all]
+  codeflow metrics [--json]
+  codeflow snippet
   codeflow uninstall --user | --project
 
-Use the codeflow skill in your Claude, Codex or Antigravity (agy) conversation to describe a task.
-Teams and processes are generated for that task. No presets or saved teams.
+Use the codeflow skill in your Claude, Codex or Antigravity (agy) conversation to describe a task,
+or codeflow run from any shell. The mode picks the team: review (default), plan or implement.
+codeflow run asks for approval in your terminal; an agent's shell gets an approval command for you instead.
+codeflow wait blocks until a task finishes and prints where its result file is.
+codeflow tools all also lists the advanced tools (hand-written teams, host participation) to your CLIs.
 Run approval uses your host's native confirmation form when available.
 Browser or terminal approval is a fallback. Host reattachment requires an interactive terminal.
 Existing bare codeflow and codeflow client commands are unchanged.
 `;
-export const CLI_COMMANDS = new Set(["terminal", "desktop", "open", "init", "doctor", "mcp", "approve", "status", "result", "diff", "apply", "pause", "resume", "cancel", "attach", "preferences", "uninstall"]);
+export const CLI_COMMANDS = new Set(["terminal", "desktop", "open", "run", "wait", "tools", "metrics", "snippet", "init", "doctor", "mcp", "approve", "status", "result", "diff", "apply", "pause", "resume", "cancel", "attach", "preferences", "uninstall"]);
 export async function launchCli(args = process.argv.slice(2)) {
   const command = args.shift();
   if (command === "terminal") { await launchTerminal(args.shift(), args); return; }
   if (!command || args.includes("--help")) { console.log(usage); return; }
   const option = (key: string) => { const index = args.indexOf(key); if (index < 0) return undefined; const value = args[index + 1]; if (!value || value.startsWith("--")) throw new Error(`Choose a value for ${key}`); return value; };
   const json = args.includes("--json");
-  const valuedOptions = new Set(["--hosts", "--project-root", "--providers", "--revision", "--connection", "--provider", "--model", "--effort", "--preferred-provider"]);
+  const valuedOptions = new Set(["--hosts", "--project-root", "--providers", "--revision", "--connection", "--provider", "--model", "--effort", "--preferred-provider", "--mode", "--by", "--check", "--setup", "--source", "--untracked", "--continue", "--timeout"]);
   const positional = args.filter((a, i) => !a.startsWith("--") && !valuedOptions.has(args[i - 1] ?? ""));
   const root = resolve(option("--project-root") ?? process.cwd());
   if (command === "desktop") {
@@ -129,6 +143,16 @@ export async function launchCli(args = process.argv.slice(2)) {
     }
     console.log(json ? JSON.stringify({ file, preferences: prefs, note: "Settings are validated against the actual catalog when a proposal is created." }, null, 2) : [`Preferences: ${file}`, `Preferred provider: ${prefs.preferredProvider ?? "not set"}`, ...Object.entries(prefs.providers ?? {}).map(([provider, value]) => `${provider}: ${value.model ?? "default model"} · ${value.effort ?? "default"} effort`), "Settings are validated when preparing an approach."].join("\n")); return;
   }
+  if (command === "metrics") { const summary = summarizeMetrics(await readMetrics()); console.log(json ? JSON.stringify(summary, null, 2) : `${formatMetrics(summary)}\n\nRecorded on this computer only. Set CODEFLOW_METRICS=0 to stop.`); return; }
+  if (command === "tools") {
+    const choice = positional[0];
+    if (choice !== undefined && choice !== "simple" && choice !== "all") throw new Error("Use codeflow tools simple or codeflow tools all");
+    if (choice) await setToolSurface(choice);
+    const surface = await toolSurface();
+    console.log(json ? JSON.stringify({ surface }) : `${surface === "all" ? "Your CLIs are shown every Code Flow tool, including hand-written teams and host participation." : "Your CLIs are shown the six simple Code Flow tools."}${choice ? " Reconnect Code Flow from /mcp in open sessions." : " Change with codeflow tools simple or codeflow tools all."}`);
+    return;
+  }
+  if (command === "snippet") { process.stdout.write(await readFile(new URL("../../integrations/cli-teams/AGENTS-SNIPPET.md", import.meta.url), "utf8")); return; }
   if (command === "status" && !positional.length) {
     // Identity never starts an owner; recent tasks are listed only when one is already running.
     const store = await ensureStore(), owner = await readOwnerDescriptor();
@@ -151,6 +175,77 @@ export async function launchCli(args = process.argv.slice(2)) {
   if (command === "open" && !args[0]) throw new Error("Choose a proposal or run ID");
   const client = await connectRuntime(root);
   try {
+    if (command === "run" || command === "wait") {
+      const minutes = Number(option("--timeout") ?? 120);
+      if (!Number.isFinite(minutes) || minutes <= 0 || minutes > 720) throw new Error("Choose --timeout between 1 and 720 minutes");
+      const pause = (ms: number) => new Promise(done => setTimeout(done, ms));
+      // Approval comes from the user's own terminal or browser. This only notices it and starts the approved revision.
+      const startWhenApproved = async (proposalId: string, revision: number) => {
+        const deadline = Date.now() + Math.min(minutes, 15) * 60_000;
+        for (;;) {
+          const state = await client.privileged("/approval-state", { projectRoot: root, proposalId, revision });
+          if (state.runId) return state.runId as string;
+          if (state.revision !== revision) fail("revision_conflict", "This proposal was revised. Start again from its current revision.");
+          if (state.accepted) {
+            const preview = await client.privileged("/preview", { projectRoot: root, proposalId, revision });
+            return (await client.call("codeflow_start_run", { operationId: `start-${proposalId}-${revision}`, proposalId, expectedRevision: revision, proposalHash: preview.hash })).runId as string;
+          }
+          if (Date.now() > deadline) fail("acceptance_required", "Not approved in time; nothing started.");
+          await pause(1500);
+        }
+      };
+      const report = async (runId: string) => {
+        const deadline = Date.now() + minutes * 60_000;
+        let status = await runStatus(client.call, { runId, waitSeconds: 25 });
+        while (status.state === "working" && Date.now() < deadline) status = await runStatus(client.call, { runId, waitSeconds: 25 });
+        console.log(json ? JSON.stringify(status, null, 2) : formatStatusResult(status));
+        // 0 finished · 1 stopped or cancelled · 2 needs the user or paused · 4 still working at the timeout
+        process.exitCode = status.state === "finished" ? 0 : status.state === "working" ? 4 : status.state === "needs_you" || status.state === "paused" ? 2 : 1;
+      };
+      if (command === "wait") {
+        const reference = positional[0], revision = option("--revision");
+        if (!reference) throw new Error("Use codeflow wait RUN_ID, or codeflow wait PROPOSAL_ID --revision NUMBER");
+        if (revision !== undefined && (!Number.isSafeInteger(Number(revision)) || Number(revision) < 1)) throw new Error("Choose --revision NUMBER");
+        await report(revision === undefined ? reference : await startWhenApproved(reference, Number(revision)));
+        return;
+      }
+      const task = positional.join(" ").trim(), mode = option("--mode") ?? "review";
+      if (!task) throw new Error('Use codeflow run "TASK" --mode review|plan|implement');
+      const team = (option("--by") ?? "").split(",").filter(Boolean).map(entry => {
+        const [provider, model, effort] = entry.split(":");
+        if (!isProvider(provider)) throw new Error("Choose --by claude, codex or agy, optionally as PROVIDER:MODEL:EFFORT");
+        return { provider, ...(model ? { model } : {}), ...(effort ? { effort } : {}) };
+      });
+      const untracked = (option("--untracked") ?? "").split(",").filter(Boolean);
+      const proposal = await proposeRecipe(client.call, { operationId: `run-${randomUUID()}`, task, mode, ...(team.length ? { team } : {}), check: option("--check"), setup: option("--setup"), source: option("--source"), ...(untracked.length ? { untracked } : {}), continueFrom: option("--continue") }, hostProvider());
+      const say = (line: string) => (json ? process.stderr : process.stdout).write(`${line}\n`);
+      say(proposal.summary); for (const note of proposal.recipe.notes) say(`Note: ${note}`);
+      if (proposal.workspace?.url) say(`Open in Code Flow: ${proposal.workspace.url}`);
+      const id = proposal.proposalId as string, revision = proposal.revision as number;
+      let runId: string;
+      if (process.stdin.isTTY && process.stdout.isTTY && !json) {
+        const prompt = createInterface({ input: process.stdin, output: process.stdout });
+        try {
+          if ((await prompt.question("\nStart this task? Type start: ")).trim() !== "start") { console.log("Not started."); return; }
+        } finally { prompt.close(); }
+        await client.privileged("/confirm", { projectRoot: root, proposalId: id, revision, hash: proposal.proposalHash });
+        runId = (await client.call("codeflow_start_run", { operationId: `start-${id}-${revision}`, proposalId: id, expectedRevision: revision, proposalHash: proposal.proposalHash })).runId;
+      } else {
+        // An agent's shell cannot approve. The user does, in their own terminal or in Code Flow.
+        const approve = `codeflow approve ${id} --revision ${revision}`, then = `codeflow wait ${id} --revision ${revision}`;
+        if (!args.includes("--wait")) {
+          say(`\nNot started: this needs the user's approval. Ask them to run this in their own terminal:\n  ${approve}\nThen run:\n  ${then}`);
+          if (json) console.log(JSON.stringify({ started: false, proposalId: id, revision, approve, then, workspace: proposal.workspace?.url }, null, 2));
+          process.exitCode = 3; return;
+        }
+        say(`\nWaiting for the user's approval. They run this in their own terminal:\n  ${approve}${proposal.workspace?.url ? "\nor press Start in Code Flow." : ""}`);
+        runId = await startWhenApproved(id, revision);
+      }
+      say(`Started. Run: ${runId}`);
+      if (args.includes("--no-wait")) { say(`Wait for it with: codeflow wait ${runId}`); if (json) console.log(JSON.stringify({ started: true, runId }, null, 2)); return; }
+      await report(runId);
+      return;
+    }
     if (command === "diff" || command === "apply") {
       const runId = positional[0]; if (!runId) throw new Error(`Use codeflow ${command} RUN_ID`);
       let cursor: number | undefined = 0, preview: any, diff = "";

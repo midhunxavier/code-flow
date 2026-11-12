@@ -10,6 +10,8 @@ import { fileURLToPath } from "node:url";
 import { spawn, execFileSync, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
 import { randomBytes } from "node:crypto";
+// These scripts exercise the advanced tools; the default surface lists six simpler ones.
+process.env.CODEFLOW_TOOLS ??= "all";
 if (process.env.CODEFLOW_TEST_LIVE_AGENTS !== "1") throw new Error("Explicitly set CODEFLOW_TEST_LIVE_AGENTS=1 to spend real provider calls on disposable fixtures");
 const root = fileURLToPath(new URL("..", import.meta.url));
 const directory = await realpath(await mkdtemp(join(tmpdir(), "codeflow-ux-live-")));

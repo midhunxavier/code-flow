@@ -137,6 +137,7 @@ test("packed conversational teams install, bootstrap one owner, execute through 
     execFileSync("git", ["-c", "user.name=Test", "-c", "user.email=test@localhost", "commit", "-qm", "fixture"], { cwd: repo });
     const [packed] = JSON.parse(execFileSync("npm", ["pack", "./dist/npm", "--ignore-scripts", "--json", "--pack-destination", directory], { cwd: root, encoding: "utf8" }));
     assert.ok(packed.files.some(f => f.path === "integrations/cli-teams/SKILL.md"));
+    for (const file of ["GUIDE.md", "CORE.md", "AGENTS-SNIPPET.md"]) assert.ok(packed.files.some(f => f.path === `integrations/cli-teams/${file}`), file);
     execFileSync("npm", ["install", "--prefix", install, "--ignore-scripts", "--no-audit", "--no-fund", join(directory, packed.filename)], { cwd: directory, stdio: "pipe" });
     const bin = join(install, "node_modules/.bin/codeflow");
     const env = { ...process.env, HOME: directory, CODEX_HOME: join(directory, ".codex"), CODEFLOW_HOME: home, PATH: [join(install, "node_modules/.bin"), join(root, "test/fake-bin"), process.env.PATH].join(delimiter) };
@@ -192,7 +193,7 @@ test("packed conversational teams install, bootstrap one owner, execute through 
       assert.equal(result.isError, false, JSON.stringify(result)); return result.structuredContent.data;
     };
     assert.equal((await rpc("initialize", { protocolVersion: "2025-11-25", capabilities: { elicitation: { form: {} } }, clientInfo: { name: "package-test", version: "1" } })).serverInfo.name, "code-flow");
-    assert.equal((await rpc("tools/list", {})).tools.length, 15);
+    assert.equal((await rpc("tools/list", {})).tools.length, 6);
     ownerPid = JSON.parse(await readFile(join(home, "server.lock"), "utf8")).pid;
     const candidate = { scope: "plan", participants: [{ id: "author", provider: "claude" }, { id: "reviewer", provider: "codex" }], completion: ["The plan has independent review"], steps: [
       { id: "draft", type: "task", operation: "propose", participant: "author", instructions: "Draft the login plan" },

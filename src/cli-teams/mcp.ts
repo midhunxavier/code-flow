@@ -10,6 +10,10 @@ import { realpath } from "node:fs/promises";
 import { repoRoot } from "../git.js";
 import { formatToolResult } from "./presentation.js";
 import { hasProjectInstall, installUser } from "./install.js";
+import { advertisedTools, formatSimple, isSimpleCall, runState, simpleCall, toolSurface, type Call } from "./simple.js";
+import { hostProvider } from "./recipes.js";
+import { recordMetric } from "./metrics.js";
+import type { Provider } from "./model.js";
 
 /** This release's version, so hosts and `claude mcp` show which Code Flow answers. */
 const VERSION = (() => { try { return String(JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")).version); } catch { return "0.0.0"; } })();
@@ -22,6 +26,8 @@ export async function serveMcp(projectRoot: string, explicit = true) {
   const found = await repoRoot(projectRoot).then(root => realpath(root)).catch(error => { if (explicit) throw error; return undefined; });
   if (!found) return serveOutsideRepository(projectRoot);
   projectRoot = found;
+  const surface = await toolSurface(), session = randomBytes(8).toString("hex");
+  let host: Provider | undefined, hostName: string | undefined, hostVersion: string | undefined;
   const client = await connectRuntime(projectRoot, true, "mcp");
   const heartbeat = setInterval(() => { void client.heartbeat().catch(() => undefined); }, 10000).unref();
   const prompts = new Map<string, { parent: string | number; resolve: (value: any) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
@@ -94,14 +100,19 @@ export async function serveMcp(projectRoot: string, explicit = true) {
         const elicitation = m.params?.capabilities?.elicitation;
         nativeForm = !!elicitation && typeof elicitation === "object" && !Array.isArray(elicitation) && (Object.hasOwn(elicitation, "form") || Object.keys(elicitation).length === 0);
         const versions = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
-        result = { protocolVersion: versions.includes(m.params?.protocolVersion) ? m.params.protocolVersion : "2025-03-26", capabilities: { tools: {} }, serverInfo: { name: "code-flow", version: VERSION }, instructions: await startupInstructions(projectRoot, nativeForm) };
+        const info = m.params?.clientInfo;
+        if (typeof info?.name === "string") hostName = info.name.slice(0, 80);
+        if (typeof info?.version === "string") hostVersion = info.version.slice(0, 40);
+        host = hostProvider(hostName ?? "");
+        result = { protocolVersion: versions.includes(m.params?.protocolVersion) ? m.params.protocolVersion : "2025-03-26", capabilities: { tools: {} }, serverInfo: { name: "code-flow", version: VERSION }, instructions: await startupInstructions(projectRoot, nativeForm, surface) };
       } else if (m.method === "ping") result = {};
       else if (!initialized) { rpcError(m.id, -32000, "Initialize first"); return; }
-      else if (m.method === "tools/list") result = { tools: [...CLI_TOOLS, ...HOST_TOOLS] };
+      else if (m.method === "tools/list") result = { tools: advertisedTools(surface, [...CLI_TOOLS, ...HOST_TOOLS]) };
       else if (m.method === "tools/call") {
-        let value: unknown, error = false;
-        try {
-          const name = m.params?.name, args = m.params?.arguments ?? {};
+        let value: any, error = false, text: string | undefined;
+        const name = m.params?.name, args = m.params?.arguments ?? {}, began = Date.now();
+        // One advanced operation, with native approval where it applies and the host-side additions to its result.
+        const advanced: Call = async (name, args: any = {}) => {
           let data: any;
           const hostTool = HOST_TOOLS.find(t => t.name === name);
           if (hostTool) {
@@ -114,7 +125,8 @@ export async function serveMcp(projectRoot: string, explicit = true) {
             await approveInHost(m.id, args, name === "codeflow_apply_handoff"); data = await client.call(name, args);
           }
           if (name === "codeflow_propose_run") data = { ...data, approvalMethod: nativeForm ? "native_form" : data.workspace ? "browser" : "terminal", ...(nativeForm ? { nextAction: "Paste the proposal card above into your reply word for word, with the Open in Code Flow link, before any other tool call. The approval form shows only its first lines, so your reply is where the user reads the plan. Then call codeflow_start_run with its ID, revision and hash; Code Flow asks the user to accept inside this session." } : data.workspace ? { nextAction: "Call codeflow_open_task now so the approach opens in the user's browser already signed in; the plain workspace.url works only in a browser that is already signed in to Code Flow, and no username or password is needed. The user reviews and starts it there. Then call codeflow_start_run with the same proposal revision and hash to recover the existing run. Terminal approval remains available." } : {}) };
-          if (name === "codeflow_start_run") data = { ...data, follow: { runId: data.runId, follow: true } };
+          // The task runs under the owner, not this call: the host may wait in the background or ask for status.
+          if (name === "codeflow_start_run") data = { ...data, follow: { runId: data.runId, follow: true }, ...(surface === "simple" ? { background: { wait: `codeflow wait ${data.runId}`, status: { runId: data.runId, waitSeconds: 25 } } } : {}) };
           if (name === "codeflow_list_providers") {
             // Inspect host-side files here, not in the owner (which may be a bundled remote host).
             let configuration: { state: string; message: string; pendingFiles?: string[] };
@@ -127,10 +139,28 @@ export async function serveMcp(projectRoot: string, explicit = true) {
               ...(!compatible ? { message: "The owner does not advertise this integration's current tools. Let active work settle, restart Code Flow with this version, then reconnect the host." } : {}) }, approvalMethod: nativeForm ? "native_form" : "terminal" };
           }
           if (name === "codeflow_preview_handoff") data = { ...data, approvalMethod: nativeForm ? "native_form" : "terminal", nextAction: nativeForm ? "Read all diff pages, then call codeflow_apply_handoff with the exact previewHash to show native confirmation." : `Review and apply in your interactive terminal: codeflow apply ${data.runId}` };
+          return data;
+        };
+        try {
+          let data: any;
+          if (isSimpleCall(name, args)) {
+            data = await simpleCall(advanced, name, args, { host, nativeForm });
+            if (name === "codeflow_run" && !nativeForm) {
+              // No form in this host: open the proposal for the user instead of asking the model to call another tool.
+              const opened = data.workspace ? await client.call("codeflow_open_task", { id: data.proposalId }).then(r => r.opened === true, () => false) : false;
+              data = { ...data, nextAction: `Show the card to the user. ${data.workspace ? `${opened ? "It is open in their browser" : `They can open ${data.workspace.url} in a browser signed in to Code Flow`} to review and press Start, or they` : "They"} can run \`codeflow approve ${data.proposalId} --revision ${data.revision}\` in their own terminal. After they approve, call codeflow_start_run with this proposal ID, revision and hash.` };
+            }
+            text = formatSimple(name, data);
+          } else data = await advanced(name, args);
           value = { protocolVersion: 1, ok: true, data };
         }
         catch (e) { error = true; value = { protocolVersion: 1, ok: false, error: { code: e instanceof CliTeamError ? e.code : "runtime_unavailable", message: e instanceof Error ? e.message : "CLI request failed", details: e instanceof CliTeamError ? e.details : undefined } }; }
-        result = { content: [{ type: "text", text: formatToolResult(m.params?.name, value) }], structuredContent: value, isError: error };
+        // Shared names report through the common formatter under the operation that actually ran.
+        const ran = name === "codeflow_steer_run" && args?.action !== undefined ? "codeflow_control_run" : name === "codeflow_apply" ? "codeflow_apply_handoff" : name === "codeflow_providers" ? "codeflow_list_providers" : name;
+        void recordMetric({ at: began, session, host: hostName, hostVersion, tool: String(name).slice(0, 60), ok: !error, ...(error ? { code: value.error.code } : {}), ms: Date.now() - began,
+          proposalId: value.data?.proposalId ?? (typeof args?.proposalId === "string" ? args.proposalId : undefined), runId: value.data?.runId ?? (typeof args?.runId === "string" ? args.runId : undefined),
+          state: value.data?.state ?? (value.data?.runtimeStatus ? runState(value.data) : undefined) });
+        result = { content: [{ type: "text", text: text ?? formatToolResult(ran, value) }], structuredContent: value, isError: error };
       } else { rpcError(m.id, -32601, "Method not found"); return; }
       send({ jsonrpc: "2.0", id: m.id, result });
     } finally { inflight--; }
@@ -183,7 +213,7 @@ async function serveOutsideRepository(folder: string) {
     const versions = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
     if (m.method === "initialize") send({ jsonrpc: "2.0", id: m.id, result: { protocolVersion: versions.includes(m.params?.protocolVersion) ? m.params.protocolVersion : "2025-03-26", capabilities: { tools: {} }, serverInfo: { name: "code-flow", version: VERSION }, instructions: message } });
     else if (m.method === "ping") send({ jsonrpc: "2.0", id: m.id, result: {} });
-    else if (m.method === "tools/list") send({ jsonrpc: "2.0", id: m.id, result: { tools: [...CLI_TOOLS, ...HOST_TOOLS] } });
+    else if (m.method === "tools/list") send({ jsonrpc: "2.0", id: m.id, result: { tools: advertisedTools(await toolSurface(), [...CLI_TOOLS, ...HOST_TOOLS]) } });
     else if (m.method === "tools/call") {
       const value = { protocolVersion: 1, ok: false, error: { code: "not_a_repository", message }, nextAction: message };
       send({ jsonrpc: "2.0", id: m.id, result: { content: [{ type: "text", text: message }], structuredContent: value, isError: true } });

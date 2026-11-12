@@ -1,8 +1,8 @@
 # Agent teams in your CLI conversation
 
-The conversational CLI integration builds a team and process from your task. You can choose Claude Code, Codex, Antigravity CLI (`agy`), individual models, and supported effort values in the same instruction. Existing web workflows and saved web teams are unchanged.
+The conversational CLI integration gets a second opinion or a small agent team from your other coding agents. Ask Claude Code for a Codex review of what it just changed, ask Codex for a plan that Claude reviews, or have one write and the other review. You can name Claude Code, Codex, Antigravity CLI (`agy`), individual models, and supported effort values in the same instruction; when you name none, Code Flow picks a provider different from the one you are talking to. Existing web workflows and saved web teams are unchanged.
 
-This integration is experimental. Automated tests exercise the project installer, public MCP protocol, worktrees, checks, agreement loops, host participation, and recovery with fixture providers. The current surface has fourteen tools, including exact diff preview and apply to checkout. Native-host compatibility and real-provider evidence are recorded separately in the QA reports; fixture checks do not certify model behavior or every CLI version.
+This integration is experimental. Automated tests exercise the project installer, public MCP protocol, worktrees, checks, agreement loops, host participation, and recovery with fixture providers. A CLI is shown six tools by default; the earlier fourteen, for hand-written teams and host participation, are listed after `codeflow tools all` (see [Advanced tools](#advanced-tools)). Native-host compatibility and real-provider evidence are recorded separately in the QA reports; fixture checks do not certify model behavior or every CLI version.
 
 For Claude Desktop and the Codex app, use the [desktop MCP setup](desktop-mcp.md). It reuses this bridge and supplies the workflow instructions without requiring project skill discovery.
 
@@ -38,13 +38,57 @@ Code Flow connects to the existing local owner. If none is running, it starts on
 ## Start in Claude Code, Codex or Antigravity
 
 1. In the same project directory, run `claude`, `codex` or `agy` and trust the project. Approve the Code Flow MCP connection if prompted; restart the CLI if the skill or connection is missing.
-2. In Claude Code or agy, invoke `/codeflow`. In Codex, invoke `$codeflow`. Native skill availability depends on your CLI version. When a CLI cannot show a native approval form, Code Flow gives you its link or a `codeflow approve` command instead.
-3. Describe the outcome, for example: “Use Claude to implement this bug fix and Codex to review it. Run the focused tests.” Both CLIs must be installed and signed in if you request both.
-4. Review the proposed participants, work, checks and limits. Approve the native confirmation, or open the provided Code Flow link and start the task there. Ask for changes before accepting if needed.
+2. In Claude Code or agy, invoke `/codeflow`. In Codex, invoke `$codeflow`. Native skill availability depends on your CLI version. When a CLI cannot show a native approval form, Code Flow opens the task in your browser or gives you a `codeflow approve` command instead.
+3. Describe the outcome, for example: “Have Codex review my current changes”, or “Use Claude to implement this bug fix and Codex to review it. Run the focused tests.” Both CLIs must be installed and signed in if you request both.
+4. Review the proposed participants, work, checks and limits. Approve the native confirmation, or open the provided Code Flow link and start the task there. Decline and ask for changes if needed.
+5. The task runs in the background and your conversation stays free. The assistant reads the result from a file when the task finishes and presents it.
+
+## Modes
+
+The assistant states what you want as one of three modes, and Code Flow composes the team. You do not pick a preset.
+
+| Mode | What runs | Changes files |
+|---|---|---|
+| `review` | Another agent reviews your current changes, including uncommitted ones. Name two providers for two independent reviews. | No |
+| `plan` | One agent drafts a plan, an agent from a different provider reviews it, the first revises it. | No |
+| `implement` | One agent writes in a separate worktree, Code Flow runs your check command, an agent from a different provider reviews, and the writer gets at most one repair pass. | Only in the worktree, until you apply |
+
+When you name no provider, the reviewer is a provider other than the CLI you are in, so the second opinion comes from a different model family. With one provider installed, the reviewer is a separate session of that provider and the proposal says so. Antigravity is experimental here: it is used only when you name it or it is the only provider installed, and it reviews but does not write. An implementation needs a check command, for example your test command; the assistant asks if you did not give one.
+
+## Background work and result files
+
+Starting a task returns at once. The assistant then learns that it finished in one of two ways:
+
+- it runs `codeflow wait RUN_ID` as a background shell command, in CLIs that tell the assistant when a background command exits;
+- it calls `codeflow_status` with a wait of up to 25 seconds.
+
+When the task has finished, the result is written to `~/.codeflow/cli-teams-results/RUN_ID.md` (under `CODEFLOW_HOME`) with the outcome, the check and review evidence, and the calls used per participant. The assistant reads that file with its own file tool. Your CLI may ask permission to read it because it is outside the repository. Nothing is written into your repository.
+
+A finished implementation stays on its own branch. The status names the branch, the check result and a `git diff` command to inspect it. To bring it in, ask the assistant to apply it: a dry run writes the full diff to `RUN_ID.diff` next to the result and changes nothing, and after your confirmation Code Flow stages exactly that diff, without committing or pushing. When the task started from a commit rather than from uncommitted work, the status also offers `git merge BRANCH`.
+
+## From any shell
+
+`codeflow run` gives the same three modes to any tool that can run a command, with no MCP connection or skill: other agent CLIs, scripts and CI.
+
+```sh
+codeflow run "Review my current changes" --mode review
+codeflow run "Plan the login form" --mode plan --by claude,codex
+codeflow run "Fix the empty-email bug" --mode implement --check "npm test"
+```
+
+In your own terminal it shows the proposal and asks you to type `start`, then waits and prints the result file. From an agent's shell there is no terminal, so it cannot approve: the command prints the proposal and a `codeflow approve PROPOSAL_ID --revision N` command for you to run yourself, and exits with code 3. With `--wait` it instead keeps waiting for your approval (in your terminal or in Code Flow), then starts the task and follows it, so an agent can run it as one background command.
+
+`codeflow wait RUN_ID` blocks until a task finishes. Exit codes: 0 finished, 1 stopped or cancelled, 2 needs you or is paused, 3 not approved yet, 4 still working at `--timeout`. `--by` takes `PROVIDER`, `PROVIDER:MODEL` or `PROVIDER:MODEL:EFFORT`, comma-separated in role order. `--json` prints machine-readable output.
+
+For a CLI without MCP or skills, `codeflow snippet` prints a short section to paste into the project's `AGENTS.md` that tells the agent how to use these commands and that only you approve.
+
+## Claude Code plugin
+
+As an alternative to `codeflow init` for Claude Code, install the launcher (`npm install -g @midhunxavier/code-flow@preview`), then in Claude Code run `/plugin marketplace add midhunxavier/code-flow` and `/plugin install codeflow@code-flow`. The plugin carries the same connection and skill. Use the plugin or `codeflow init`, not both. Codex and Antigravity have no plugin package; use `codeflow init` there.
 
 ## Describe your task
 
-Invoke the installed `codeflow` skill in the host conversation. Examples of native explicit invocation are `/codeflow` in Claude Code and `$codeflow` in Codex; availability follows your host's native skill support. Then describe your task:
+The examples in this section go beyond the three modes: agreement loops, fresh final reviewers and independent proposals need the [advanced tools](#advanced-tools). Invoke the installed `codeflow` skill in the host conversation. Examples of native explicit invocation are `/codeflow` in Claude Code and `$codeflow` in Codex; availability follows your host's native skill support. Then describe your task:
 
 > Use Claude and Codex to plan a login form. Claude drafts; both review and agree on the same plan. Then a fresh Claude reviewer examines the final plan. Resolve blocking findings. Plan only.
 
@@ -121,6 +165,34 @@ codeflow cancel RUN_ID
 Closing your host does not guarantee cancellation or a completion notification. Managed work can continue under the local owner; a required current-session step waits. After reopening a host, follow the `codeflow attach RUN_ID --connection ...` command returned by status in that conversation. Attachment requires interactive confirmation and revokes old claims.
 
 The current host can perform read-only planning/review assignments. Exact host model/effort and workspace control are not assumed. Strict model pins and implementation use managed workers. An interrupted writer without a durable result stops for inspection; create a new proposal from its preserved changes rather than blindly rerunning writes.
+
+## Advanced tools
+
+The six default tools are `codeflow_run`, `codeflow_start_run`, `codeflow_status`, `codeflow_steer_run`, `codeflow_apply` and `codeflow_providers`. They cover the three modes, approval, status, steering and applying.
+
+Run `codeflow tools all`, then reconnect Code Flow from `/mcp`, to also list the earlier tools to your CLIs: `codeflow_propose_run` with a hand-written team and process (agreement loops, parallel proposals, more than two participants, human checkpoints), step-by-step following with `codeflow_get_run` and `codeflow_get_artifact`, and taking part as the current session with `codeflow_claim_step` and `codeflow_submit_step`. The assistant reads their contract through `codeflow_get_guide`. `codeflow tools simple` goes back. `CODEFLOW_TOOLS=all` or `simple` in the environment of the MCP process overrides the saved choice.
+
+Two parts of the advanced surface are deprecated and planned for removal in a later release: the current session taking part in a run (`current_session` participants, `codeflow attach`), and separate project and personal preference layers. Say so in an issue if you rely on either. The sections below that describe following a run in the same turn, host assignments and reattachment apply to the advanced tools.
+
+## Host support
+
+What has been observed, and what has not. A fixture test is not live evidence.
+
+| Capability | Claude Code | Codex CLI | Antigravity CLI |
+|---|---|---|---|
+| Connection and skill discovered | Yes (2.1.317, 2026-11-03 probe) | Yes (0.165.0, 2026-11-03 probe) | Not verified |
+| Native approval form declared | Yes | Yes; a declined form was observed to start nothing | Not verified |
+| Native approval form accepted by a person | Not verified | Not verified | Not verified |
+| Review recipe run by this provider as the reviewer, real model | Yes (2.1.319, `claude-fable-5-2`, 19 s, 2026-11-12 canary) | Yes (0.167.0, `gpt-6.1-sol`, 14 s, 2026-11-12 canary) | Not verified |
+| Six-tool default surface driven by this CLI's own model | Not verified | Not verified | Not verified |
+| Told when a background `codeflow wait` exits | Not verified | Not verified | Not verified |
+| Fallback when a capability is missing | Browser link or `codeflow approve`; `codeflow_status` with a wait | Same | Same |
+
+`npm run canary:cli` with `CODEFLOW_CANARY=1` runs one real review per installed provider on a disposable repository and writes `output/cli-canary.json` with the CLI versions, outcome and duration. It spends real provider calls and needs signed-in CLIs, so it runs on your own computer, not on a hosted CI runner. Use it after a provider CLI update and before a release, and update this table from what you observe.
+
+## Local metrics
+
+The MCP connection records one line per tool call in `~/.codeflow/cli-teams-metrics.jsonl`: the time, the CLI's name and version, the tool, whether it succeeded, the error code, the duration and the proposal or run ID. It records no task text, file names or results, and nothing leaves your computer. `codeflow metrics` summarizes it per CLI: proposals made, started, declined and finished, tool calls per started task, and the median time to approval and to a result. Set `CODEFLOW_METRICS=0` to turn it off.
 
 ## Optional preferences
 

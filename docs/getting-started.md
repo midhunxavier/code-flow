@@ -94,6 +94,8 @@ Both modes use http://localhost:4318 and `.codeflow-dev` as their home directory
 4. Review the proposed approach. **Adjust approach** changes models, efforts, commands and limits without another inference call. **Start task** approves and starts that exact revision once.
 5. Follow progress and ask questions in the same chat. Completed plans, implementations and later tasks remain in order. Inspect evidence and changes before applying or publishing them.
 
+![The chat composer in Team mode: a project, a goal and the lead that will propose the team (demo data)](images/composer-light.png)
+
 The composer remains visible while you read. Enter sends; Shift + Enter adds a line. Messages sent while a turn runs queue with their selected settings. Files and unsent drafts survive reload. Mode changes affect future work, and accepted Team tasks keep their original scope and settings. See the [chat guide](conversational-tasks.md) for source selection, chat context import, allowances and recovery.
 
 Initial Team preparation supports local Git repositories with Claude/Codex managed participants. Other providers remain available in Agent mode; container execution uses a **Workflow run**.
@@ -101,9 +103,6 @@ Initial Team preparation supports local Git repositories with Claude/Codex manag
 ## Your first run
 
 On this computer every new-work link opens a chat. Choose **Open workflow run** in a new chat (or go to `#/workflows`) for the run form: fixed workflows, team templates, run once later and schedules. On a phone, another device or an SSH host the same form is the start screen, headed **New run**:
-
-
-![The composer: a task and its workflow, Plan → Build → Review, with the check that decides when it's done (demo data)](images/composer-light.png)
 
 1. Choose **Open repository**, browse to a Git repository on the displayed computer, and choose **Open this repository**. Accept or change the suggested project name, then choose **Create project**. If the repository already belongs to projects, choose its destination. This opens the composer without starting an agent; no workspace or team setup is required.
 2. Describe the task. Drag files from the **Files** panel, or from Finder, onto the task box to give the agents context. **Improve** (at the right of the task box) rewrites a rough task so agents can act on it: the same intent, with the goal first, the specifics, how to tell it's done, and any open questions. **Undo** puts your text back. Existing acceptance criteria are sent as separate context; the rewrite is told to preserve them without repeating or contradicting them.

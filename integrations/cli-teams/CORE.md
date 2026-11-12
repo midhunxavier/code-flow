@@ -1,20 +1,18 @@
-Code Flow runs agent teams for this repository. Hosts may keep only the start of these instructions, so the rules come first, most important first.
+Code Flow gets a second opinion or a small agent team from other coding agents (Claude Code, Codex, Antigravity) on this repository. Hosts may keep only the start of these instructions, so the rules come first.
 
 Rules:
-1. Never answer, supply or simulate approval. Only the user approves, through the native form, the Code Flow link or the terminal command a tool returns. An agent vote or tool permission is not approval.
-2. Before your first codeflow_propose_run in a conversation, call codeflow_get_guide with section "candidate" and follow it. Call codeflow_get_guide for any section you need later; the full guide is section "all".
-3. Do not invent model IDs, efforts or prices. Keep the user's explicit provider/model/effort choices; check them with codeflow_list_models and show supported choices when one is unavailable.
-4. A plan or review request never authorizes edits. Only write scope edits code, and it needs a check command.
-5. Every tool result ends with the next action. Follow it.
-6. Reuse the same operationId when retrying a call. Never start duplicate runs.
-7. Managed workers must never start Code Flow runs. Do not run provider CLIs yourself to do a team's work.
+1. Never answer, supply or simulate approval. Only the user approves, through the form, the Code Flow link or the terminal command a tool returns. An agent vote or tool permission is not approval.
+2. A review or a plan never edits files. Only mode "implement" writes code, in a separate worktree, and it needs a check command from the user or the project.
+3. Do not invent model IDs or efforts. Leave team empty unless the user named a provider or model; check a name with codeflow_providers.
+4. Every tool result ends with the next action. Follow it.
+5. Reuse the same operationId when retrying a call. Never start duplicate tasks.
+6. Do not run provider CLIs yourself to do a team's work. A Code Flow worker must never start Code Flow.
 
 Flow:
-- First use in a conversation: call codeflow_list_providers and report connection problems with the exact next action.
-- Propose: build the smallest adequate team and call codeflow_propose_run. Then paste the returned proposal card word for word, with the Open in Code Flow link, into your reply before starting. The approval form shows only its first lines.
-- Start: call codeflow_start_run with the proposal ID, revision and hash. Declined or cancelled means no work started; do not ask again unless the user wants to.
-- Follow: right after the start succeeds, call codeflow_get_run with the returned follow arguments, then pass follow.next unchanged to each next call until the run finishes or needs the user. Post a short update when progress changes and share each new finding.
-- Deliver: present the recorded result in this turn. Page through codeflow_get_artifact until no cursor remains. Say which checks ran on which snapshot; "completed" alone never means verified.
-- Steer: codeflow_steer_run for answers and in-scope guidance, codeflow_control_run to pause, resume or cancel. Changing the team, scope, models or limits needs a new proposal.
-- Continue earlier work: codeflow_list_runs, then pass the returned continuation context to codeflow_propose_run.
-- Apply changes only when asked: codeflow_preview_handoff (read every page), then codeflow_apply_handoff with the exact previewHash. It stages changes without committing or pushing.
+- codeflow_run with the task and a mode. "review": another agent reviews the current changes. "plan": draft, independent review, revised plan. "implement": write, run the check, independent review, at most one repair pass. Code Flow picks the team; the second opinion comes from a different provider than this session when one is installed.
+- Show the returned card to the user, then call codeflow_start_run with the proposal ID, revision and hash. Declined or cancelled means nothing started; do not ask again unless the user wants to.
+- The task runs in the background. Run the returned `codeflow wait` command as a background shell command, or call codeflow_status with waitSeconds until it finishes. Keep helping the user meanwhile.
+- When it has finished, read the result file that codeflow_status names and present it in this turn. Say which checks ran on the result; "finished" alone never means verified.
+- codeflow_steer_run answers a task's question, adds guidance inside the approved scope, or pauses, resumes or cancels. A different team, scope or limit needs a new codeflow_run.
+- codeflow_apply, only when the user asks: first a dry run that writes the diff to a file, then with its previewHash it stages the changes after the user confirms. It never commits or pushes.
+- Earlier work: codeflow_status without a run ID lists it. Pass continueFrom to codeflow_run to build on a finished task, for example to implement a plan.
