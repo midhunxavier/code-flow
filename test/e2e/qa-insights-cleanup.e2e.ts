@@ -114,6 +114,8 @@ test("Days takes only 0–365, the confirm discloses archiving and what's kept, 
 
   await page.setViewportSize({ width: 390, height: 844 });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), true, "no sideways scroll on a phone");
+  // On a phone the clean-up toast sits over the bottom of the page until it expires; a person waits it out too.
+  await page.locator(".toast").waitFor({ state: "detached", timeout: 20_000 });
   await row.click();
   await page.waitForURL(new RegExp(`#/run/${dirty.id}`));
   assert.deepEqual(browserErrors, []);
