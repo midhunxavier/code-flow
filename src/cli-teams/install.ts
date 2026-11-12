@@ -22,10 +22,9 @@ async function checkPath(repo: string, path: string) {
   let p = path;
   while (p !== repo) { const info = await lstat(p).catch(e => { if (e.code === "ENOENT") return; throw e; }); if (info?.isSymbolicLink()) fail("installation_conflict", `Move the symlink before configuring ${relative(repo, path)}`); p = dirname(p); }
 }
-/** The skill each CLI loads. Managed connections deliver the versioned rules at MCP start, so the skill stays small and stable. */
-async function skillText(managed: boolean) {
-  const workflow = await readFile(fileURLToPath(new URL("../../integrations/cli-teams/SKILL.md", import.meta.url)), "utf8");
-  return managed ? `${workflow.match(/^---\r?\n[\s\S]*?\r?\n---/)![0]}\n\n# Code Flow\n\nUse the connected Code Flow MCP tools. They work on the Git repository you started this session in. Follow the short rules the server supplies at initialization, and call \`codeflow_get_guide\` with section \`candidate\` before your first proposal (section \`all\` for the full guide). The guide and tool schemas come from the active shared runtime release. Before opening approval, show the team, steps, and full proposal link in the conversation. A plain plan uses a finish node with outcome \`plan_ready\` and inputs pointing to the plan task; it needs no agreement gate. Obtain explicit approval of the exact proposal before starting work. Managed workers must never recursively start Code Flow runs. If the tools are unavailable, ask the user to run \`codeflow init\` and reconnect Code Flow from /mcp; do not bypass it by launching provider CLIs.\n` : workflow;
+/** The skill each CLI loads. It names only the stable entry points; the versioned rules arrive with the MCP connection. */
+async function skillText() {
+  return readFile(fileURLToPath(new URL("../../integrations/cli-teams/SKILL.md", import.meta.url)), "utf8");
 }
 
 export interface UserPaths { claudeConfig: string; claudeSkill: string; codexConfig: string; codexSkill: string; agyConfig: string; agySkill: string }
@@ -79,7 +78,7 @@ export async function installUser(providers: Provider[], dryRun = false, options
     const managed = await managedLauncher(home);
     const explicitHome = env.CODEFLOW_HOME ? { CODEFLOW_HOME: resolve(env.CODEFLOW_HOME) } : undefined;
     const entry = { type: "stdio", command: managed ? process.execPath : "codeflow", args: managed ? [managed, "mcp"] : ["mcp"], ...(explicitHome ? { env: explicitHome } : {}) };
-    const skill = await skillText(!!managed);
+    const skill = await skillText();
     const files: { path: string; before?: string; after: string; kind: "codex-mcp" | "skill"; owned: string }[] = [];
     const changes: { host: string; path: string }[] = [], kept: UserEdit[] = [];
     let claude: "add" | "replace" | undefined, previousClaude: unknown;

@@ -63,7 +63,7 @@ Each chat can contain multiple independently approved tasks. Agent/Team and mode
 
 Changes live in separate Git worktrees. The [chat guide](docs/conversational-tasks.md) explains guidance, queued messages, chat context import and recovery. **Open workflow run** in a new chat opens the run form and its saved drafts: fixed workflows, team templates, run once later and schedules. On a phone, another device or an SSH host, that form is the start screen.
 
-Prefer working in your Claude Code or Codex CLI conversation? The experimental [conversational teams integration](docs/cli-conversational-teams.md) creates a task-specific team and process through a project MCP connection. Run `codeflow init` in your target repository using an installed launcher; no preset or saved-team setup is required. Existing web workflows remain available.
+Prefer working in your Claude Code or Codex CLI conversation? The experimental [conversational teams integration](docs/cli-conversational-teams.md) gets a second opinion from your other agents without leaving it: a review of your current changes, a reviewed plan, or an implementation that is checked and independently reviewed. Run `codeflow init` once using an installed launcher, or use `codeflow run` from any shell. Nothing starts without your approval. Existing web workflows remain available.
 
 Use the same bridge from **Claude Desktop or the Codex app** with `codeflow desktop setup` in your target repository. [Desktop setup, checks, and removal](docs/desktop-mcp.md) covers app-wide connections bound to a specific project.
 

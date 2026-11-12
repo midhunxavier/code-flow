@@ -11,3 +11,4 @@ output/releases/
 output/macos/
 output/windows/
 .playwright-cli/
+output/cli-canary.json

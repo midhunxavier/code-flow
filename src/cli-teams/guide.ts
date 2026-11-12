@@ -1,8 +1,8 @@
 import { readFile } from "node:fs/promises";
 
 // Hosts cap MCP server instructions (Claude Code keeps 4,096 characters by default),
-// so startup carries only CORE.md. The full workflow contract stays in SKILL.md and
-// is served on demand through codeflow_get_guide.
+// so startup carries only CORE.md. The advanced workflow contract (hand-written candidates,
+// host participation) stays in GUIDE.md and is served on demand through codeflow_get_guide.
 export const GUIDE_SECTIONS = ["prepare", "candidate", "start", "follow", "deliver", "workspace", "find", "connection", "handoff"] as const;
 export type GuideSection = typeof GUIDE_SECTIONS[number] | "all";
 const HEADINGS: Record<typeof GUIDE_SECTIONS[number], string> = {
@@ -10,15 +10,16 @@ const HEADINGS: Record<typeof GUIDE_SECTIONS[number], string> = {
   workspace: "Shared visual workspace", find: "Find work and report evidence", connection: "Connection, progress and follow-ups", handoff: "Bring completed changes into the checkout",
 };
 const text = (file: string) => readFile(new URL(`../../integrations/cli-teams/${file}`, import.meta.url), "utf8");
-const body = async () => (await text("SKILL.md")).replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/, "").trim();
+const body = async () => (await text("GUIDE.md")).replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/, "").trim();
 
-export async function startupInstructions(projectRoot: string, nativeForm: boolean) {
+export async function startupInstructions(projectRoot: string, nativeForm: boolean, surface: "simple" | "all" = "simple") {
   return [
     `This connection is bound exclusively to repository ${JSON.stringify(projectRoot)}. Show this repository when proposing work; never assume it is the current chat's working directory. Tools cannot switch repositories.`,
     "Surfaces share state only when they use the same Code Flow store; WSL and Docker may use separate stores. Chat context import, apply to checkout, team handover, and open in browser link are distinct operations.",
-    nativeForm ? "Call codeflow_start_run to show native approval in this session." : "This host has no form elicitation; use the Code Flow workspace or terminal confirmation returned by codeflow_propose_run.",
+    nativeForm ? "Call codeflow_start_run to show native approval in this session." : "This host has no form elicitation; the user approves in Code Flow or in a terminal, as the proposal's next action says.",
     "",
     (await text("CORE.md")).trim(),
+    ...(surface === "all" ? ["", "Advanced tools are enabled: codeflow_propose_run takes a hand-written candidate for teams the three modes do not cover, with codeflow_get_run, codeflow_get_artifact, codeflow_claim_step and the rest. Call codeflow_get_guide with section \"candidate\" before your first codeflow_propose_run."] : []),
   ].join("\n");
 }
 

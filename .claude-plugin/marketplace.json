@@ -1,0 +1,14 @@
+{
+  "name": "code-flow",
+  "description": "Code Flow: second opinions and agent teams across Claude Code, Codex and Antigravity.",
+  "owner": {
+    "name": "midhunxavier"
+  },
+  "plugins": [
+    {
+      "name": "codeflow",
+      "source": "./integrations/plugins/claude-code",
+      "description": "Second opinions and small agent teams from Claude Code, Codex and Antigravity on your repository."
+    }
+  ]
+}

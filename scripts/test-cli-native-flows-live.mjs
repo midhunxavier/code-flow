@@ -10,6 +10,8 @@ import {spawn,execFileSync} from 'node:child_process';
 import {createServer} from 'node:net';
 import {randomBytes} from 'node:crypto';
 import {nativeHost,until} from './cli-test-native-host.mjs';
+// These scripts exercise the advanced tools; the default surface lists six simpler ones.
+process.env.CODEFLOW_TOOLS ??= "all";
 if(process.env.CODEFLOW_TEST_LIVE_AGENTS!=='1')throw new Error('Set CODEFLOW_TEST_LIVE_AGENTS=1 for authorized live-provider fixture testing');
 const root=fileURLToPath(new URL('..',import.meta.url));
 const directory=await realpath(await mkdtemp(join(tmpdir(),'codeflow-native-flows-'))),home=join(directory,'state');

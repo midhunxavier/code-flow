@@ -5,6 +5,8 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+// These scripts exercise the advanced tools; the default surface lists six simpler ones.
+process.env.CODEFLOW_TOOLS ??= "all";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const temporary = await mkdtemp(join(tmpdir(), "codeflow-native-mcp-"));

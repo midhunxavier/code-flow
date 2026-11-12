@@ -1,6 +1,6 @@
 # Code Flow inside provider CLIs: simplification proposal
 
-Status: proposal, nothing here is built. Written 2026-11-12 from the CLI-teams design pack (`docs/cli-teams/`), the tool schemas in `src/cli-teams/tools.ts`, the candidate schema in `src/cli-teams/model.ts` and the installed skill (`integrations/cli-teams/SKILL.md`). No live host run was exercised for this document.
+Status: built on 2026-11-12, see section 9 for what was built, what differs from the proposal and what is not verified. Written from the CLI-teams design pack (`docs/cli-teams/`), the tool schemas in `src/cli-teams/tools.ts`, the candidate schema in `src/cli-teams/model.ts` and the installed skill (`integrations/cli-teams/SKILL.md`). No live host run was exercised for this document or for the implementation.
 
 This document covers how Code Flow is used from inside Claude Code, Codex, Antigravity and other agent CLIs: what to change so it is easier to use and fails less, what to remove, and what to add. It does not change the web app or the execution engine.
 
@@ -120,3 +120,28 @@ Slice 1 alone is shippable and is the cheapest way to find out whether the simpl
 3. Is standing approval for read-only runs acceptable at all? If yes, what are the bounds?
 4. Do any current users rely on host participation or on agreement loops from the CLI? If so, they stay in the advanced path instead of being removed.
 5. Which hosts notify the model when a background shell command exits? That decides how much weight `codeflow wait` can carry.
+
+## 9. Implementation status (2026-11-12)
+
+All six slices are implemented in the host-side bridge (`src/cli-teams/simple.ts`, `recipes.ts`, `metrics.ts`), composed from the owner's existing operations. The run engine, approval, receipts and the web app are unchanged, and an older running owner keeps working.
+
+| Slice | Built | Differs from the proposal |
+|---|---|---|
+| 1 | `codeflow_run` with `review`, `plan` and `implement`; result file under `CODEFLOW_HOME/cli-teams-results/` | Propose and start stay two calls, so the approval path is exactly the existing one |
+| 2 | `codeflow_start_run` returns at once with a `codeflow wait` command; `codeflow_status` with a bounded wait; `codeflow wait` | none |
+| 3 | Status names the branch, check, reviews, a `git diff` command and, for tasks started from a commit, `git merge`; `codeflow_apply` with a dry run that writes the diff to a file | none |
+| 4 | Six tools listed by default; `codeflow tools all` lists the advanced ones; short skill; long guide moved to `GUIDE.md` | The skill is 1.7 KB with its description, not under 1 KB. Host participation and the preference layers are marked deprecated in the guide, not removed. Advanced tools stay callable on the default surface for a host with an older skill |
+| 5 | Claude Code plugin and marketplace manifest (both pass `claude plugin validate`); `codeflow run`, `codeflow snippet` | No Codex or Antigravity plugin: no package format was verified for them, so `codeflow init` remains their path |
+| 6 | `npm run canary:cli`; host table in the CLI guide; `codeflow metrics` | The canary is a script for a signed-in computer, not a scheduled workflow: a hosted runner has no provider login |
+
+Decisions taken on the open questions:
+
+1. Result files live under `CODEFLOW_HOME`, written by the bridge on the host's computer, so a remote owner works and the repository stays untouched.
+2. Two calls (see slice 1).
+3. Standing approval is not built. Every run still needs the user's approval.
+4. Not known; hence deprecation rather than removal.
+5. Not verified for any host. `codeflow_status` with a wait is the fallback that does not depend on it.
+
+Not explored: quota-aware routing and ACP workers.
+
+Evidence: `test/cli-simple.test.ts` covers the recipes, the six-tool surface, a review and an implementation end to end with fixture providers, the stdio connection with a native approval form, the shell path without a terminal, metrics, and the plugin files. The live canary ran once on 2026-11-12: Claude Code 2.1.319 (`claude-fable-5-2`, 19 s) and Codex CLI 0.167.0 (`gpt-6.1-sol`, 14 s) each completed the review recipe with one call, wrote a result file and reported the planted bug. That proves the recipe, the run and the result file with real providers as workers. It does not prove the host side: no real Claude Code or Codex conversation has yet called the six tools, shown the approval form for them, or waited in the background.
