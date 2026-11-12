@@ -4676,7 +4676,7 @@ dialog.rail::backdrop { background: rgb(0 0 0 / .28); }
 /* One page frame for every destination: the same column width, gutters and heading size, so the
    title doesn't jump sideways or change size when you move between Projects, Board, Insights,
    Repository tools and Settings on a wide screen. */
-.project-page, .activity-page, .projects-page, .settings-page, .team-page { width: 100%; max-width: 1200px; margin-inline: auto; padding: 24px 32px 48px; }
+.project-page, .activity-page, .projects-page, .settings-page, .team-page { width: 100%; max-width: 1200px; margin-inline: auto; padding: 24px 32px 80px; }
 .project-page > .team-page, .settings-page .activity-page, .settings-page .team-page { max-width: none; padding: 0; }
 /* Insights and Repository tools sit inside the activity page: its frame is theirs. */
 .activity-page > .insights, .activity-page > .workbench, .project-page .workbench { max-width: none; margin: 0; padding: 0; }
@@ -4684,7 +4684,7 @@ dialog.rail::backdrop { background: rgb(0 0 0 / .28); }
 .team-board-head .page-head-text p { margin-top: 6px; }
 .collaboration-eyebrow { margin-bottom: 6px; }
 @media (max-width: 760px) {
-  .project-page, .activity-page, .projects-page, .settings-page, .team-page { padding: 18px 16px 32px; }
+  .project-page, .activity-page, .projects-page, .settings-page, .team-page { padding: 18px 16px 80px; }
   .team-board-head.page-head h1, .team-page .page-head h1 { font-size: 24px; }
 }
 
